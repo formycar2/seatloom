@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 98%; 
+    --foreground: 240 10% 15%;
+    --primary: 216 100% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 15%;
+    --muted: 240 5% 90%;
+    --muted-foreground: 240 5% 45%;
+    --accent: 216 100% 97%;
+    --border: 240 6% 88%;
+    --radius: 0.5rem;
+
+    --status-active: #22C55E;
+    --status-warning: #F59E0B;
+    --status-error: #EF4444;
+    --status-done: #6B7280;
+    --status-drifted: #A855F7;
+  }
+
+  [data-theme='dark'] {
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+    --primary: 216 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4% 16%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 4% 14%;
+    --muted-foreground: 240 5% 60%;
+    --accent: 216 100% 15%;
+    --border: 240 4% 18%;
+    --radius: 0.5rem;
+
+    --status-active: #4ADE80;
+    --status-warning: #FBBF24;
+    --status-error: #F87171;
+    --status-done: #9CA3AF;
+    --status-drifted: #C084FC;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+    letter-spacing: 0.01em;
+  }
+}
+
+.sl-clickable {
+  @apply transition-all cursor-pointer rounded-md;
+}
+.sl-clickable:hover {
+  @apply bg-black/5 !text-foreground;
+}
+.sl-clickable:hover * {
+  @apply !text-foreground;
+}
+
+.monospace {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', ui-monospace, monospace;
+}
+
+.tag-user { @apply bg-blue-500/10 text-blue-600 border border-blue-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
+.tag-ai { @apply bg-green-500/10 text-green-600 border border-green-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
+.tag-rule { @apply bg-amber-500/10 text-amber-600 border border-amber-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
+.tag-note { @apply bg-slate-500/10 text-slate-600 border border-slate-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
+
+.meta-header {
+  @apply bg-secondary/80 border border-border rounded-lg p-3 grid grid-cols-2 gap-3;
+}
+.meta-label {
+  @apply text-[11px] font-semibold tracking-wide text-muted-foreground;
+}
+.meta-value {
+  @apply text-sm text-foreground leading-5;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 8s linear infinite;
+}
