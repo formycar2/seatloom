@@ -3,6 +3,7 @@ import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target, Info, ChevronR
 import './styles/tokens.css';
 import { WorkNode, StageWorkflow } from './dag-model';
 import DagWorkflow from './DagWorkflow';
+import { useDataStore } from '../stores/useDataStore';
 
 // ═══════════════════════════════════════════════════════
 // Types
@@ -577,32 +578,313 @@ const MessageBubble: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
 // Project Dashboard (shown in project channels)
 // ═══════════════════════════════════════════════════════
 
-const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
+const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({ channelId, projectId }) => {
   const data = MOCK_CHANNEL_DATA[channelId];
+  const { projectData } = useDataStore();
   const [showEarlier, setShowEarlier] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<{ type: string; data: any; x: number; y: number } | null>(null);
 
-  if (!data) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-text-tertiary)', fontSize: 13 }}>暂无项目数据</div>;
+  // ── Hybrid source model ──
+  const mockPlanData = data;
+  const truthData = projectId ? projectData[projectId] : undefined;
 
-  const { goals, currentGoal, currentStage, justNow, earlierToday, yesterday } = data;
+  // ── Seat lookup helper ──
+  const seatMap = new Map<string, string>();
+  const truthSeats = truthData?.seats || [];
+  truthSeats.forEach(s => seatMap.set(s.id, s.name));
+  const mockSeatOverrides: Record<string, string> = {
+    'seat-1': 'Lyra', 'seat-2': 'Nimbus', 'seat-3': 'Mira', 'seat-4': 'Flux', 'seat-5': 'Aegis',
+  };
+  const getSeatName = (seatId?: string): string => {
+    if (!seatId) return 'Unknown';
+    return seatMap.get(seatId) || mockSeatOverrides[seatId] || seatId;
+  };
 
-  const stages = currentGoal.stages;
-  const ci = currentGoal.currentStageIndex;
+  // ── Formatting helpers ──
+  const formatClock = (iso: string): string => {
+    const m = iso.match(/T(\d{2}:\d{2})/);
+    return m ? m[1] : iso;
+  };
+  const formatSince = (iso: string): string => {
+    const now = new Date('2026-04-28T23:59:00+08:00');
+    const t = new Date(iso.replace(' ', 'T'));
+    const diffMin = Math.round((now.getTime() - t.getTime()) / 60000);
+    if (diffMin < 60) return `${diffMin}分钟前`;
+    const diffH = Math.round(diffMin / 60);
+    if (diffH < 24) return `${diffH}小时前`;
+    return `${Math.round(diffH / 24)}天前`;
+  };
+  const formatObjectRef = (ref: any): string => {
+    if (!ref) return '';
+    const entries = Object.entries(ref);
+    const [kind, id] = entries[0] as [string, string];
+    const label = kind === 'WorkItem' ? 'WI' : kind === 'Session' ? 'SES' : kind === 'Handoff' ? 'HO' : kind === 'Artifact' ? 'AR' : kind === 'Seat' ? 'SEAT' : kind.toUpperCase();
+    return `${label}-${id.replace(/^(wi|ses|ho|ar|seat)-/, '')}`;
+  };
+  const formatActorRef = (actorRef: any): string => {
+    if (actorRef === 'Automation') return 'Automation';
+    if (typeof actorRef === 'object' && actorRef.Seat) return getSeatName(actorRef.Seat);
+    return String(actorRef);
+  };
+  const getEventHeadline = (ev: any): string => {
+    if (ev.payload?.title) return ev.payload.title;
+    if (ev.payload?.summary) return ev.payload.summary;
+    return ev.event_type;
+  };
+
+  // ── Event color ──
+  const eventColor = (type: string): string => {
+    if (['WorkItemStatusChanged', 'ReconcileCompleted', 'CheckpointCreated'].includes(type)) return 'var(--sl-green)';
+    if (['ArtifactCreated', 'HandoffSent', 'HandoffAccepted', 'HandoffReturned', 'HandoffCompleted'].includes(type)) return 'var(--sl-blue)';
+    return 'var(--sl-amber)';
+  };
+
+  // ── Type guards ──
+  const isBlockedWI = (s: any): s is any => s.status === 'Blocked';
+  const isInputRequired = (s: any): s is any => s.status === 'InputRequired';
+  const isActiveHandoff = (s: any): s is any => ['Returned', 'Sent', 'Received'].includes(s.status);
+
+  // ═══════════════════════════════════════════════════════
+  // A. Blockers projection
+  // ═══════════════════════════════════════════════════════
+  const projectedBlockers: any[] = (() => {
+    if (!truthData) return [];
+    const blockers: any[] = [];
+    // 1. sessions with InputRequired
+    const sessionBlockers = truthData.sessions
+      .filter(isInputRequired)
+      .map(s => ({
+        sourceKind: 'Session' as const,
+        sourceId: s.id,
+        text: s.prompt_state ? `Prompt blocked: ${getSeatName(s.seat_id)} requires ${s.prompt_state.classification}` : `Session requires input: ${getSeatName(s.seat_id)}`,
+        owner: getSeatName(s.seat_id),
+        since: formatSince(s.created_at),
+        detail: s.prompt_state?.preview,
+      }));
+    blockers.push(...sessionBlockers);
+    // 2. workItems with Blocked
+    const wiBlockers = truthData.workItems
+      .filter(isBlockedWI)
+      .map(w => ({
+        sourceKind: 'WorkItem' as const,
+        sourceId: w.id,
+        text: w.title,
+        owner: getSeatName(w.owner_seat_id),
+        since: formatSince(w.updated_at),
+      }));
+    blockers.push(...wiBlockers);
+    // 3. handoffs with Returned/Sent/Received
+    const hoBlockers = truthData.handoffs
+      .filter(isActiveHandoff)
+      .map(h => {
+        const toSeat = typeof h.to_ref === 'object' && 'Seat' in h.to_ref ? getSeatName((h.to_ref as any).Seat) : getSeatName((h.to_ref as any).Seat);
+        const owner = toSeat !== 'Unknown' ? toSeat : getSeatName((h.from_ref as any).Seat);
+        return {
+          sourceKind: 'Handoff' as const,
+          sourceId: h.id,
+          text: `Handoff awaiting action: ${h.purpose}`,
+          owner,
+          since: formatSince(h.created_at),
+        };
+      });
+    blockers.push(...hoBlockers);
+    // Sort: sessions first, workitems second, handoffs third; then newest first
+    const kindOrder: Record<string, number> = { Session: 0, WorkItem: 1, Handoff: 2 };
+    blockers.sort((a, b) => {
+      const kd = kindOrder[a.sourceKind] - kindOrder[b.sourceKind];
+      if (kd !== 0) return kd;
+      return b.sourceId.localeCompare(a.sourceId);
+    });
+    return blockers.slice(0, 5);
+  })();
+
+  // ═══════════════════════════════════════════════════════
+  // B. Active-items projection
+  // ═══════════════════════════════════════════════════════
+  const projectedActiveItems: any[] = (() => {
+    if (!truthData) return [];
+    const items: any[] = [];
+    // Active/InReview/Reopened workItems
+    const activeWIs = truthData.workItems
+      .filter(w => ['Active', 'InReview', 'Reopened'].includes(w.status))
+      .map(w => ({
+        sourceKind: 'WorkItem' as const,
+        sourceId: w.id,
+        title: `${getSeatName(w.owner_seat_id)}: ${w.title}`,
+        owner: getSeatName(w.owner_seat_id),
+        ownerAvatar: mockSeatOverrides[w.owner_seat_id || '']?.charAt(0).toUpperCase(),
+        ownerColor: w.owner_seat_id === 'seat-1' ? 'var(--sl-purple)' : w.owner_seat_id === 'seat-2' ? 'var(--sl-blue)' : w.owner_seat_id === 'seat-4' ? 'var(--sl-green)' : 'var(--sl-amber)',
+        statusLabel: w.status === 'Active' ? '推进中' : w.status === 'InReview' ? '审阅中' : '已重开',
+        refLabel: w.id,
+        description: w.goal,
+        reviewTier: w.change_tier_record?.tier as 'L1' | 'L2' | 'L3' | undefined,
+      }));
+    items.push(...activeWIs);
+    // Running/Launching sessions
+    const liveSessions = truthData.sessions
+      .filter(s => s.status === 'Running' || s.status === 'Launching')
+      .map(s => ({
+        sourceKind: 'Session' as const,
+        sourceId: s.id,
+        title: `${getSeatName(s.seat_id)}: ${s.runtime} session`,
+        owner: getSeatName(s.seat_id),
+        ownerAvatar: mockSeatOverrides[s.seat_id]?.charAt(0).toUpperCase(),
+        ownerColor: s.seat_id === 'seat-1' ? 'var(--sl-purple)' : s.seat_id === 'seat-2' ? 'var(--sl-blue)' : s.seat_id === 'seat-4' ? 'var(--sl-green)' : 'var(--sl-amber)',
+        statusLabel: s.status === 'Running' ? '运行中' : '启动中',
+        refLabel: s.id,
+        promptBadge: s.prompt_state?.classification,
+      }));
+    items.push(...liveSessions);
+    // Sort: active workitems first, then live sessions, then newest
+    items.sort((a, b) => {
+      if (a.sourceKind !== b.sourceKind) return a.sourceKind === 'WorkItem' ? -1 : 1;
+      return b.sourceId.localeCompare(a.sourceId);
+    });
+    return items.slice(0, 6);
+  })();
+
+  // ═══════════════════════════════════════════════════════
+  // C. Next-step projection (top inbox item)
+  // ═══════════════════════════════════════════════════════
+  const nextStepSource = (() => {
+    if (truthData?.inboxItems?.length) {
+      const sorted = [...truthData.inboxItems].sort((a, b) => {
+        const p = { Critical: 0, Normal: 1, Low: 2 };
+        const pd = p[a.priority] - p[b.priority];
+        if (pd !== 0) return pd;
+        return b.timestamp.localeCompare(a.timestamp);
+      });
+      return sorted[0];
+    }
+    return null;
+  })();
+
+  // ═══════════════════════════════════════════════════════
+  // D. Activity log projection
+  // ═══════════════════════════════════════════════════════
+  const projectedEvents = (() => {
+    if (!truthData?.events?.length) return [];
+    return [...truthData.events]
+      .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
+      .slice(0, 6)
+      .map(ev => ({
+        eventId: ev.event_id,
+        eventType: ev.event_type,
+        time: formatClock(ev.occurred_at),
+        headline: getEventHeadline(ev),
+        actor: formatActorRef(ev.actor_ref),
+        objectRefs: ev.object_refs.map(formatObjectRef),
+        evidenceRefs: ev.evidence_refs,
+        rawTimestamp: ev.occurred_at,
+      }));
+  })();
+
+  // ═══════════════════════════════════════════════════════
+  // E. Chip helper
+  // ═══════════════════════════════════════════════════════
+  const Chip: React.FC<{ label: string; title?: string; color?: string }> = ({ label, title, color = 'var(--sl-brand)' }) => (
+    <span
+      title={title || label}
+      style={{
+        display: 'inline-block', fontSize: 10, fontWeight: 600, padding: '2px 6px',
+        borderRadius: 'var(--sl-radius-full)', background: `${color}15`, color, marginRight: 4, marginBottom: 2,
+      }}
+    >{label}</span>
+  );
+
+  // ═══════════════════════════════════════════════════════
+  // Enriched hover builders
+  // ═══════════════════════════════════════════════════════
+  const buildEventHover = (ev: any) => {
+    if (!truthData) return ev;
+    return {
+      ...ev,
+      event_id: ev.eventId,
+      event_type: ev.eventType,
+      occurred_at: ev.rawTimestamp,
+      actor_label: ev.actor,
+      object_refs_chips: ev.objectRefs,
+      evidence_refs_chips: ev.evidenceRefs.map((p: string) => ({ full: p, label: p.split('/').pop() || p })),
+    };
+  };
+  const buildBlockerHover = (b: any) => ({
+    sourceFamily: b.sourceKind,
+    sourceId: b.sourceId,
+    owner: b.owner,
+    since: b.since,
+    detail: b.detail,
+  });
+  const buildNodeHover = (node: any) => {
+    if (!truthData) return node;
+    const match = truthData.workItems.find(w => w.id === node.workItemRef || w.id === `wi-${node.workItemRef?.replace('WI-', '') || ''}`);
+    if (!match) return node;
+    const artifactCount = truthData.artifacts.filter(a => a.source_workitem_id === match.id).length;
+    return {
+      ...node,
+      workitem_id: match.id,
+      status: match.status,
+      priority: match.priority,
+      ownerSeat: getSeatName(match.owner_seat_id),
+      reviewTier: match.change_tier_record?.tier,
+      delegationScope: match.active_delegation?.scope,
+      artifactCount,
+    };
+  };
+  const buildNextHover = (item: any) => ({
+    priority: item.priority,
+    actor: item.actor,
+    objectRef: formatObjectRef(item.object_ref),
+    timestamp: item.timestamp,
+    linkedArtifactIds: item.linked_artifact_ids,
+  });
+
+  if (!data && !truthData) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-text-tertiary)', fontSize: 13 }}>暂无项目数据</div>;
+
+  const { goals, currentGoal, justNow, earlierToday, yesterday } = mockPlanData || { goals: [], currentGoal: { name: '', stages: [], currentStageIndex: 0 }, justNow: [], earlierToday: '', yesterday: '' };
+  const stages = currentGoal?.stages || [];
+  const ci = currentGoal?.currentStageIndex || 0;
+
+  const useTruth = truthData && (projectedBlockers.length > 0 || projectedActiveItems.length > 0 || projectedEvents.length > 0);
+
+  // ── currentStage: always derived from mock plan for DAG scaffolding ──
+  const currentStage = (() => {
+    const idx = currentGoal?.currentStageIndex || 0;
+    const stageList = currentGoal?.stages || [];
+    if (stageList[idx]) {
+      const s = stageList[idx];
+      // PlanPhase → enriched stage shape expected by downstream panels
+      return {
+        name: s.name,
+        workItemsDone: mockPlanData?.currentStage?.workItemsDone || 0,
+        workItemsTotal: mockPlanData?.currentStage?.workItemsTotal || 0,
+        workflow: mockPlanData?.currentStage?.workflow || { nodes: [], edges: [] },
+        blockers: mockPlanData?.currentStage?.blockers || [],
+        nextStep: mockPlanData?.currentStage?.nextStep || '',
+      } as any;
+    }
+    // Fallback: use mock data's currentStage directly
+    return mockPlanData?.currentStage as any || {
+      name: '', workItemsDone: 0, workItemsTotal: 0, workflow: { nodes: [], edges: [] }, blockers: [], nextStep: ''
+    } as any;
+  })();
+
+  const currentBlockers = useTruth ? projectedBlockers : (currentStage as any).blockers || [];
+  const currentActiveNodes = useTruth ? projectedActiveItems : ((currentStage as any).workflow?.nodes || []).filter((n: any) => n.status === 'active' || n.status === 'blocked');
 
   const handleMouseMove = (e: React.MouseEvent, type: string, itemData: any) => {
-    setHoveredItem({
-      type,
-      data: itemData,
-      x: e.clientX + 10,
-      y: e.clientY + 10
-    });
+    let enriched = itemData;
+    if (type === 'event' && truthData) enriched = buildEventHover(itemData);
+    else if (type === 'blocker') enriched = buildBlockerHover(itemData);
+    else if (type === 'node') enriched = buildNodeHover(itemData);
+    else if (type === 'next') enriched = buildNextHover(itemData);
+    setHoveredItem({ type, data: enriched, x: e.clientX + 10, y: e.clientY + 10 });
   };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
       {/* 1. ── Blockers (Unified Panel) ── */}
-      {currentStage.blockers.length > 0 && (
+      {currentBlockers.length > 0 && (
         <div style={{ 
           padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', 
           background: 'var(--sl-surface)', border: '1px solid var(--sl-red)' 
@@ -615,7 +897,7 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
             <AlertTriangle size={14} /> 目前阻塞 (BLOCKERS)
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {currentStage.blockers.map((b, i) => (
+            {currentBlockers.map((b: any, i: number) => (
               <div key={i} 
                 onMouseEnter={e => {
                   const btn = e.currentTarget.querySelector('button');
@@ -656,70 +938,67 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
       )}
 
       {/* 2. ── 正在发生 (Active Items) ── */}
-      {currentStage.workflow.nodes.filter(n => n.status === 'active' || n.status === 'blocked').length > 0 && (
+      {currentActiveNodes.length > 0 && (
         <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Activity size={14} /> 正在发生 (ACTIVE)
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {currentStage.workflow.nodes
-              .filter(n => n.status === 'active' || n.status === 'blocked')
-              .map(node => {
-                const upstreams = node.dependsOn
-                  .map(dId => currentStage.workflow.nodes.find(w => w.id === dId))
-                  .filter(Boolean) as WorkNode[];
-                const downstreams = currentStage.workflow.nodes
-                  .filter(w => w.dependsOn.includes(node.id));
-                const color = node.accentColor || (node.status === 'blocked' ? 'var(--sl-red)' : 'var(--sl-brand)');
-
-                return (
-                  <div key={node.id} 
-                    onMouseEnter={e => handleMouseMove(e, 'node', node)}
-                    onMouseMove={e => handleMouseMove(e, 'node', node)}
-                    onMouseLeave={() => setHoveredItem(null)}
-                    style={{
-                      padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
-                      border: `1px solid ${color}40`, background: 'var(--sl-bg)',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      {node.ownerAvatar && (
-                        <div style={{
-                          width: 20, height: 20, borderRadius: '50%',
-                          background: `${node.ownerColor || color}18`, color: node.ownerColor || color,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 10, fontWeight: 700, border: `1px solid ${node.ownerColor || color}40`,
-                        }}>{node.ownerAvatar}</div>
-                      )}
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)', flex: 1 }}>
-                        {node.owner}: {node.label}
-                      </span>
-                      <span style={{
-                        fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 'var(--sl-radius-full)',
-                        background: `${color}15`, color: color,
-                      }}>
-                        {node.status === 'blocked' ? '受阻塞' : '推进中'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, paddingLeft: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
-                      {node.waitingSince && (
-                        <div style={{ color: 'var(--sl-text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <Clock size={10} /> 等待 {node.waitingSince}
-                        </div>
-                      )}
-                      {node.workItemRef && (
-                        <div style={{ color: 'var(--sl-brand)', fontWeight: 600 }}>{node.workItemRef}</div>
-                      )}
-                      {upstreams.length > 0 && (
-                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
-                          ← {upstreams.length} 项依赖
-                        </div>
-                      )}
-                    </div>
+            {currentActiveNodes.map((item: any) => {
+              const color = item.ownerColor || (item.statusLabel === '受阻塞' ? 'var(--sl-red)' : 'var(--sl-brand)');
+              return (
+                <div key={item.sourceId} 
+                  onMouseEnter={e => handleMouseMove(e, 'node', item)}
+                  onMouseMove={e => handleMouseMove(e, 'node', item)}
+                  onMouseLeave={() => setHoveredItem(null)}
+                  style={{
+                    padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
+                    border: `1px solid ${color}40`, background: 'var(--sl-bg)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    {item.ownerAvatar && (
+                      <div style={{
+                        width: 20, height: 20, borderRadius: '50%',
+                        background: `${color}18`, color: color,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 10, fontWeight: 700, border: `1px solid ${color}40`,
+                      }}>{item.ownerAvatar}</div>
+                    )}
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)', flex: 1 }}>
+                      {item.title}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 'var(--sl-radius-full)',
+                      background: `${color}15`, color: color,
+                    }}>
+                      {item.statusLabel}
+                    </span>
                   </div>
-                );
-              })}
+                  <div style={{ fontSize: 11, paddingLeft: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {item.sourceKind === 'WorkItem' && (
+                      <>
+                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
+                          评审阶层: {item.reviewTier || 'N/A'}
+                        </div>
+                        <div style={{ color: 'var(--sl-brand)', fontWeight: 600 }}>{item.refLabel}</div>
+                      </>
+                    )}
+                    {item.sourceKind === 'Session' && (
+                      <>
+                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
+                          会话ID: {item.refLabel}
+                        </div>
+                        {item.promptBadge && (
+                          <Chip label={item.promptBadge} color="var(--sl-amber)" />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -756,16 +1035,16 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
           cursor: 'pointer', transition: 'all 150ms ease',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between'
         }}
-        onMouseEnter={e => handleMouseMove(e, 'next', currentStage.nextStep)}
-        onMouseMove={e => handleMouseMove(e, 'next', currentStage.nextStep)}
+        onMouseEnter={e => handleMouseMove(e, 'next', nextStepSource)}
+        onMouseMove={e => handleMouseMove(e, 'next', nextStepSource)}
         onMouseLeave={() => setHoveredItem(null)}
         >
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 4 }}>
-              {currentStage.nextStep}
+              {nextStepSource ? nextStepSource.summary : (mockPlanData?.currentStage?.nextStep || '暂无待办建议')}
             </div>
             <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
-              点击指派相关席位执行此建议，或转化为具体的工作项。
+              {nextStepSource ? `${nextStepSource.actor} · ${formatObjectRef(nextStepSource.object_ref)}` : '点击指派相关席位执行此建议，或转化为具体的工作项。'}
             </div>
           </div>
           <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--sl-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-brand)' }}>
@@ -774,21 +1053,21 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
         </div>
       </div>
 
-      {/* 5. ── Timeline (Activity Log, Unified) ── */}
+      {/* 5. ── Timeline (Activity Log, Canonical Events) ── */}
       <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Clock size={14} /> 活动日志 (ACTIVITY)
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {justNow.map((e, i) => (
-            <div key={i} 
-              onMouseEnter={ev => {
-                ev.currentTarget.style.background = 'var(--sl-surface-hover)';
-                handleMouseMove(ev, 'event', e);
+          {projectedEvents.map((ev) => (
+            <div key={ev.eventId} 
+              onMouseEnter={evEnt => {
+                evEnt.currentTarget.style.background = 'var(--sl-surface-hover)';
+                handleMouseMove(evEnt, 'event', ev);
               }}
-              onMouseMove={ev => handleMouseMove(ev, 'event', e)}
-              onMouseLeave={ev => {
-                ev.currentTarget.style.background = 'var(--sl-bg)';
+              onMouseMove={evEnt => handleMouseMove(evEnt, 'event', ev)}
+              onMouseLeave={evEnt => {
+                evEnt.currentTarget.style.background = 'var(--sl-bg)';
                 setHoveredItem(null);
               }}
               style={{ 
@@ -798,12 +1077,16 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
-                <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{e.time}</span>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: e.type === 'decision' ? 'var(--sl-green)' : e.type === 'delivery' ? 'var(--sl-blue)' : 'var(--sl-amber)' }} />
+                <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{ev.time}</span>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColor(ev.eventType) }} />
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{e.text}</div>
-                <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginTop: 2 }}>点击查看关联证据与历史快照</div>
+                <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{ev.headline}</div>
+                <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>{ev.actor}</span>
+                  {ev.objectRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.objectRefs.length} refs</span>}
+                  {ev.evidenceRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.evidenceRefs.length} evidence</span>}
+                </div>
               </div>
             </div>
           ))}
@@ -1382,7 +1665,7 @@ const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
             {activeContact.type === 'project-channel' ? (
               /* ════ Project Channel: Workflow Dashboard ════ */
-              <ProjectDashboard channelId={activeContact.id} />
+              <ProjectDashboard channelId={activeContact.id} projectId={activeContact.projectId} />
             ) : (
               /* ════ Seat / Supervisor: IM Chat ════ */
               <>
