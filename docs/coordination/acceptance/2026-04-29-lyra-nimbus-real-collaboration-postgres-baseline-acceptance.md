@@ -8,33 +8,41 @@
 | status | issued |
 | author | lyra |
 | date | 2026-04-29 |
-| version | v1 |
+| version | v2 |
 | target | `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-delivery-v1.md` |
-| verdict | HOLD |
+| verdict | PASS |
 | tags | acceptance, nimbus, postgres, persistence, infrastructure, seed-data, verification |
 
 ## Verdict
 
-**HOLD**
+**PASS**
 
-Nimbus completed the bounded infrastructure implementation packet with strong structural evidence:
+Lyra accepts the real-collaboration PostgreSQL baseline as scope-complete and verified.
 
-- PostgreSQL-backed schema, seed data, repositories, provenance, and verification script all exist;
-- Rust compile / test / fmt / clippy gates pass;
-- Flux confirmed the implementation is structurally correct and remained infrastructure-only.
+The earlier `HOLD` was environment-only. That hold is now resolved by Flux's commit-pinned remote re-verification on the sponsor workspace:
 
-However, Lyra is not closing this packet as `PASS` yet because the required end-to-end proof path is still environment-blocked:
+- exact verified branch: `track/infra-foundation`
+- exact verified commit: `a658086b54323259fda2ad2a958d097701f1fbbd`
+- PostgreSQL execution path: `A (Docker)`
+- PG16 blocker status: **closed**
+- live DB integration result: **9 / 9 PASS**
 
-- `bash scripts/verify-postgres-baseline.sh` cannot run on the available verification seats because Docker is unavailable.
-
-This is an **environment-only hold**, not an implementation rejection.
+Nimbus's bounded PG16 fix (`de3aefc33f1905aea27b0078be6bb0e2324604fd`) preserved semantics and removed the only concrete blocker (`ARRAY[]` -> `ARRAY[]::text[]` in the seed). No new blocker was introduced.
 
 ## Scope Reviewed
 
 - `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-v1.md`
 - `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-delivery-v1.md`
+- `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-commit-pinned-infra-baseline-v1.md`
+- `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-commit-pinned-infra-baseline-delivery-v1.md`
+- `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-postgres-seed-pg16-compat-fix-v1.md`
+- `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-postgres-seed-pg16-compat-fix-delivery-v1.md`
 - `docs/coordination/tasks/flux/FLUX-2026-04-29-postgres-baseline-verification-v1.md`
 - `docs/coordination/tasks/flux/FLUX-2026-04-29-postgres-baseline-verification-delivery-v1.md`
+- `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-verification-v2.md`
+- `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-verification-delivery-v1.md`
+- `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-reverification-v1.md`
+- `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-reverification-delivery-v1.md`
 - `docs/coordination/tasks/lyra/LYRA-2026-04-29-infra-method-review-gate-v1.md`
 - `infra/postgres/docker-compose.yml`
 - `infra/postgres/schema/001_seatloom_core.sql`
@@ -46,68 +54,57 @@ This is an **environment-only hold**, not an implementation rejection.
 - `crates/seatloom-core/src/db/models.rs`
 - `crates/seatloom-core/src/db/repositories.rs`
 - `crates/seatloom-core/tests/db_baseline_integration.rs`
-- `$HOME/.cargo/bin/cargo check`
-- `$HOME/.cargo/bin/cargo test -p seatloom-core`
-- `$HOME/.cargo/bin/cargo fmt --all --check`
-- `$HOME/.cargo/bin/cargo clippy -p seatloom-core --all-targets -- -D warnings`
-- `bash scripts/verify-postgres-baseline.sh`
+- `docs/infra/ssh-tunnel-workspace.md`
 
 ## Coverage Matrix
 
 | Requirement slice | Evidence paths | Result | Notes |
 |---|---|---|---|
-| Structured collaboration truth is moved into a real database, not file-only authority | Nimbus delivery §1-§4; `infra/postgres/schema/001_seatloom_core.sql`; `crates/seatloom-core/src/db/repositories.rs` | PASS | PostgreSQL is the authoritative structured truth layer. |
-| Real collaboration data is seeded, not fake demo content | `infra/postgres/seed/001_real_collaboration_baseline.sql`; `.seatloom/bootstrap/source-map.yaml`; Nimbus delivery §4-§6 | PASS | Seed coverage includes real seats, workitems, handoffs, delegation, artifacts, and 70+ events. |
-| Artifact metadata uses `template + subtype` and keeps payloads on disk | schema `artifacts` table; source map; Nimbus delivery §5, §7 | PASS | Dual-layer design is explicit and bounded. |
-| Rust-side DB repositories exist for later consumption | `crates/seatloom-core/src/db/repositories.rs`; Nimbus delivery §7 | PASS | List/get behavior exists for the required families. |
-| Packet remains infrastructure-only | Nimbus delivery §1, §9; Flux verification §5-§6 | PASS | No UI, route-engine, or prompt/runtime widening. |
-| Rust compile/test hygiene passes | Nimbus delivery §8; Flux verification §3.2 | PASS | `cargo check`, `cargo test -p seatloom-core`, `fmt`, `clippy` all pass. |
-| Repo-managed PostgreSQL bootstrap path is proven end to end | `scripts/verify-postgres-baseline.sh`; Flux verification §3.3 | HOLD | Script exists and looks correct, but cannot be executed on current seats because `docker` is unavailable. |
-| Ignored DB integration tests are proven on a live PostgreSQL instance | `crates/seatloom-core/tests/db_baseline_integration.rs`; Flux verification §4.5-§6 | HOLD | Tests are correctly structured but still unproven in a live DB environment. |
-| Seeded coverage materially matches Nimbus's delivery claim | seed SQL; source map; Flux verification §4.3-§4.6 | PASS | Flux confirmed the claimed object-family coverage by deterministic file-backed evidence. |
+| Structured collaboration truth is persisted in PostgreSQL, not file-only state | schema, repositories, Nimbus baseline delivery | PASS | Authority is now a real DB-backed structured layer. |
+| Seed data reflects real collaboration rather than demo-only content | seed SQL, source map, Flux remote re-verification | PASS | Remote seed committed successfully with 41 inserted rows. |
+| Artifact metadata preserves `template + subtype` dual-key classification | schema `artifacts`, source map, DB tests | PASS | Typed artifact taxonomy is present in seeded truth. |
+| Commit-pinned verification can reproduce the exact infra baseline remotely | Flux remote verification + re-verification deliveries | PASS | Exact commit `a658086...` was fetched, checked out, and verified on sponsor workspace. |
+| Repository-managed PostgreSQL bootstrap path works end to end | `scripts/verify-postgres-baseline.sh`, Flux remote re-verification | PASS | Docker-backed bootstrap, schema, seed, and live tests all passed. |
+| Ignored DB integration tests succeed on a live PostgreSQL instance | Flux re-verification delivery | PASS | `9 / 9` live DB tests passed. |
+| Five real seats, delegation, artifacts T1-T7, and contract artifacts exist in the seeded truth | Flux SQL spot-checks and DB tests | PASS | Coverage confirmed with live data, not file-only inspection. |
+| Packet remains infrastructure-only | Nimbus deliveries, Flux verification | PASS | No UI or product-scope widening occurred. |
 
 ## Findings
 
-### Blocking finding
+### Resolved blocker
 
-1. **Environment-only verification blocker**
-   - `docker --version` and `docker compose version` both fail with `command not found` on the available verification seats.
-   - `bash scripts/verify-postgres-baseline.sh` fails at Step 1 with exit `127` for the same reason.
-   - This blocks final `PASS`, but it does **not** indicate a defect in Nimbus's implementation.
+1. **PG16 seed compatibility issue is closed**
+   - Prior blocker: PostgreSQL 16 rejected an untyped empty array in `infra/postgres/seed/001_real_collaboration_baseline.sql`.
+   - Fix: Nimbus cast the empty array to `text[]` in commit `de3aefc33f1905aea27b0078be6bb0e2324604fd`.
+   - Verification: Flux re-ran the live Docker-backed PostgreSQL path on the sponsor workspace and confirmed `PASS` at exact commit `a658086b54323259fda2ad2a958d097701f1fbbd`.
 
 ### Non-blocking notes
 
-1. The chosen local orchestration method for this packet is `docker compose`.
-2. If the team will not provide any docker-capable seat, a separate sponsor-reviewed infra packet will be needed to add a second PostgreSQL bootstrap/verification path.
-3. That follow-up, if opened, must keep PostgreSQL as the storage authority and remain infrastructure-only.
+1. The sponsor workspace now serves as the approved docker-capable verification seat for this baseline.
+2. `docs/infra/ssh-tunnel-workspace.md` is now the durable operator note for connecting to that workspace over SSH tunnel for PostgreSQL or frontend inspection.
+3. Full workspace GUI dependency verification remains separate from this packet; this acceptance closes the PostgreSQL baseline only.
 
 ## Required Fixes for Nimbus
 
-None in this packet yet.
-
-Nimbus does **not** receive a rework order from this acceptance review because no concrete implementation flaw has been proven.
+None.
 
 ## Go / No-Go Recommendation
 
 - **Implementation quality:** **GO**
-- **Close packet as final PASS now:** **NO-GO**
-- **Keep packet in HOLD pending end-to-end PostgreSQL verification:** **GO**
-- **Open business/backend expansion from this packet:** **NO-GO**
-
-## Follow-up Action
-
-1. Preferred path: run `bash scripts/verify-postgres-baseline.sh` on a docker-capable seat and then re-evaluate for `PASS`.
-2. If no docker-capable seat will be available, do **not** silently switch methods. Open one separate sponsor-reviewed infra packet for an alternate local PostgreSQL bootstrap/verification path.
+- **Close packet as final PASS now:** **GO**
+- **Resume file-only persistence as authority:** **NO-GO**
+- **Open business/backend expansion from this packet automatically:** **NO-GO**
 
 ## Evidence Paths
 
-- Nimbus packet: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-v1.md`
-- Nimbus delivery: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-delivery-v1.md`
-- Flux verification packet: `docs/coordination/tasks/flux/FLUX-2026-04-29-postgres-baseline-verification-v1.md`
-- Flux verification delivery: `docs/coordination/tasks/flux/FLUX-2026-04-29-postgres-baseline-verification-delivery-v1.md`
-- Method review gate: `docs/coordination/tasks/lyra/LYRA-2026-04-29-infra-method-review-gate-v1.md`
-- Compose file: `infra/postgres/docker-compose.yml`
+- Nimbus baseline packet: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-v1.md`
+- Nimbus baseline delivery: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-delivery-v1.md`
+- Nimbus PG16 fix packet: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-postgres-seed-pg16-compat-fix-v1.md`
+- Nimbus PG16 fix delivery: `docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-postgres-seed-pg16-compat-fix-delivery-v1.md`
+- Initial Flux verification (environment path established): `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-verification-delivery-v1.md`
+- Final Flux re-verification (PASS): `docs/coordination/tasks/flux/FLUX-2026-04-29-remote-workspace-postgres-reverification-delivery-v1.md`
+- SSH tunnel operator note: `docs/infra/ssh-tunnel-workspace.md`
+- Verification script: `scripts/verify-postgres-baseline.sh`
 - Schema: `infra/postgres/schema/001_seatloom_core.sql`
 - Seed: `infra/postgres/seed/001_real_collaboration_baseline.sql`
-- Verification script: `scripts/verify-postgres-baseline.sh`
 - Provenance: `.seatloom/bootstrap/source-map.yaml`

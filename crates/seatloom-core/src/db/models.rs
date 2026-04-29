@@ -165,3 +165,54 @@ pub struct DocumentAssociationRow {
     pub is_primary: bool,
     pub created_at: DateTime<Utc>,
 }
+
+// =============================================================================
+// Schema 003: Write/ingest/reconcile bookkeeping
+// Mirrors infra/postgres/schema/003_write_ingest_reconcile.sql
+// =============================================================================
+
+/// Aggregate record for one reconcile run.
+#[derive(Debug, Clone)]
+pub struct ReconcileRunRow {
+    pub id: String,
+    pub trigger: String, // 'startup' | 'pre_pipeline' | 'manual'
+    pub status: String,  // 'running' | 'completed' | 'failed'
+    pub scanned: i32,
+    pub inserted: i32,
+    pub updated: i32,
+    pub unchanged: i32,
+    pub failed: i32,
+    pub conflicted: i32,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Per-file outcome within a reconcile run.
+#[derive(Debug, Clone)]
+pub struct ReconcileItemRow {
+    pub id: String,
+    pub run_id: String,
+    pub file_path: String,
+    pub document_id: Option<String>,
+    pub outcome: String, // 'inserted'|'updated'|'unchanged'|'failed'|'conflict'
+    pub digest_before: Option<String>,
+    pub digest_after: Option<String>,
+    pub revision_before: Option<i32>,
+    pub revision_after: Option<i32>,
+    pub parse_status: Option<String>,
+    pub failure_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Durable revision snapshot for a document after a content change.
+#[derive(Debug, Clone)]
+pub struct DocumentVersionRow {
+    pub id: String,
+    pub document_id: String,
+    pub revision: i32,
+    pub body_digest: String,
+    pub body_text: Option<String>,
+    pub header_snapshot: Option<serde_json::Value>,
+    pub run_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}

@@ -7,7 +7,8 @@ use tokio_postgres::Row;
 
 use crate::db::models::{
     ArtifactRow, CanonicalEventRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    HandoffRow, ProjectRoleBindingRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    DocumentVersionRow, HandoffRow, ProjectRoleBindingRow, ReconcileItemRow, ReconcileRunRow,
+    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 
 pub struct SeatloomDb {
@@ -395,6 +396,78 @@ impl SeatloomDb {
             .await?;
         Ok(rows.iter().map(row_to_document_assoc).collect())
     }
+
+    // =========================================================================
+    // Reconcile bookkeeping (schema 003) — sort: started_at descending
+    // =========================================================================
+
+    /// List reconcile runs sorted by started_at descending.
+    pub async fn list_reconcile_runs(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ReconcileRunRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, trigger, status, scanned, inserted, updated, unchanged, \
+                 failed, conflicted, started_at, completed_at \
+                 FROM reconcile_runs ORDER BY started_at DESC LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_reconcile_run).collect())
+    }
+
+    pub async fn get_reconcile_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<ReconcileRunRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, trigger, status, scanned, inserted, updated, unchanged, \
+                 failed, conflicted, started_at, completed_at \
+                 FROM reconcile_runs WHERE id = $1",
+                &[&run_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_reconcile_run))
+    }
+
+    /// List all items for a reconcile run sorted by file_path.
+    pub async fn list_reconcile_items(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<ReconcileItemRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, run_id, file_path, document_id, outcome, \
+                 digest_before, digest_after, revision_before, revision_after, \
+                 parse_status, failure_reason, created_at \
+                 FROM reconcile_items WHERE run_id = $1 ORDER BY file_path ASC",
+                &[&run_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_reconcile_item).collect())
+    }
+
+    /// List version history for a document sorted by revision ascending.
+    pub async fn list_document_versions(
+        &self,
+        document_id: &str,
+    ) -> Result<Vec<DocumentVersionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, document_id, revision, body_digest, body_text, \
+                 header_snapshot, run_id, created_at \
+                 FROM document_versions WHERE document_id = $1 ORDER BY revision ASC",
+                &[&document_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_document_version).collect())
+    }
 }
 
 // =============================================================================
@@ -561,6 +634,52 @@ fn row_to_document_assoc(r: &Row) -> DocumentAssociationRow {
         assoc_id: r.get(3),
         is_primary: r.get(4),
         created_at: r.get(5),
+    }
+}
+
+fn row_to_reconcile_run(r: &Row) -> ReconcileRunRow {
+    ReconcileRunRow {
+        id: r.get(0),
+        trigger: r.get(1),
+        status: r.get(2),
+        scanned: r.get(3),
+        inserted: r.get(4),
+        updated: r.get(5),
+        unchanged: r.get(6),
+        failed: r.get(7),
+        conflicted: r.get(8),
+        started_at: r.get(9),
+        completed_at: r.get(10),
+    }
+}
+
+fn row_to_reconcile_item(r: &Row) -> ReconcileItemRow {
+    ReconcileItemRow {
+        id: r.get(0),
+        run_id: r.get(1),
+        file_path: r.get(2),
+        document_id: r.get(3),
+        outcome: r.get(4),
+        digest_before: r.get(5),
+        digest_after: r.get(6),
+        revision_before: r.get(7),
+        revision_after: r.get(8),
+        parse_status: r.get(9),
+        failure_reason: r.get(10),
+        created_at: r.get(11),
+    }
+}
+
+fn row_to_document_version(r: &Row) -> DocumentVersionRow {
+    DocumentVersionRow {
+        id: r.get(0),
+        document_id: r.get(1),
+        revision: r.get(2),
+        body_digest: r.get(3),
+        body_text: r.get(4),
+        header_snapshot: r.get(5),
+        run_id: r.get(6),
+        created_at: r.get(7),
     }
 }
 

@@ -1,74 +1,59 @@
-export type ThemePreset = 'paper-ledger' | 'harbor-blueprint' | 'sage-archive';
+/**
+ * SeatLoom Design Tokens
+ *
+ * Single light theme. Colors defined as CSS custom properties in globals.css,
+ * re-exported here as constants for programmatic use (charts, SVG, etc.)
+ */
 
-export interface ThemePresetMetadata {
-  id: ThemePreset;
-  label: string;
-}
+export const colors = {
+  canvas: '#FFFFFF',
+  panel: '#F8F9FA',
+  surface: '#FFFFFF',
+  border: '#E5E7EB',
+  borderSubtle: '#F3F4F6',
 
-export const THEME_PRESETS: ThemePresetMetadata[] = [
-  { id: 'paper-ledger', label: '纸账本' },
-  { id: 'harbor-blueprint', label: '港湾蓝图' },
-  { id: 'sage-archive', label: '鼠尾档案' },
-];
+  ink: '#1A1A2E',
+  inkSecondary: '#6B7280',
+  inkMuted: '#9CA3AF',
 
-export const theme = {
-  presets: {
-    'paper-ledger': {
-      canvas: '#F6F1E8',
-      surface: '#FFFDF8',
-      surfaceSubtle: '#F0E8DC',
-      border: '#DDD2C2',
-      ink: '#1F2A37',
-      inkSoft: '#5E6A75',
-      inkFaint: '#8C97A3',
-      primary: '#1F6B75',
-      success: '#2E8B57',
-      warning: '#C77B18',
-      error: '#C3513A',
-      done: '#6C7A89',
-      drifted: '#5F78B9',
-      // Structural
-      radius: '0.75rem',
-      fontHeading: "'Noto Sans SC', sans-serif",
-      borderStyle: 'solid',
-    },
-    'harbor-blueprint': {
-      canvas: '#EEF3F6',
-      surface: '#FCFEFF',
-      surfaceSubtle: '#E2EBF0',
-      border: '#C8D4DC',
-      ink: '#1B2C3A',
-      inkSoft: '#556776',
-      inkFaint: '#7C8B98',
-      primary: '#245A7A',
-      success: '#2F7D5A',
-      warning: '#B7791F',
-      error: '#C0543F',
-      done: '#667788',
-      drifted: '#4F6FA8',
-      // Structural
-      radius: '0px',
-      fontHeading: "'JetBrains Mono', monospace",
-      borderStyle: 'solid',
-    },
-    'sage-archive': {
-      canvas: '#F1F3EC',
-      surface: '#FCFDF9',
-      surfaceSubtle: '#E6EBDD',
-      border: '#CFD7C5',
-      ink: '#243128',
-      inkSoft: '#5D6A60',
-      inkFaint: '#879187',
-      primary: '#4C6B4E',
-      success: '#3E7C59',
-      warning: '#B9852A',
-      error: '#B85A46',
-      done: '#6F7A70',
-      drifted: '#6076A6',
-      // Structural
-      radius: '0.25rem',
-      fontHeading: "'Noto Serif SC', serif",
-      borderStyle: 'solid',
-    }
-  }
-};
+  primary: '#3B82F6',
+  primaryHover: '#2563EB',
+  primaryLight: '#EFF6FF',
+
+  success: '#22C55E',
+  successLight: '#F0FDF4',
+  warning: '#F59E0B',
+  warningLight: '#FFFBEB',
+  error: '#EF4444',
+  errorLight: '#FEF2F2',
+  done: '#94A3B8',
+  doneLight: '#F8FAFC',
+  review: '#14B8A6',
+  reviewLight: '#F0FDFA',
+  drift: '#8B5CF6',
+  driftLight: '#F5F3FF',
+} as const;
+
+/** Chart color series (4 colors) */
+export const chartColors = [
+  colors.primary,   // blue
+  colors.drift,     // violet
+  colors.review,    // teal
+  colors.warning,   // amber
+] as const;
+
+/** Breakpoints in px */
+export const breakpoints = {
+  mobile: 768,
+  tablet: 1024,
+  compact: 1280,
+} as const;
+
+/** Nav rail widths */
+export const navWidth = {
+  collapsed: 48,
+  expanded: 180,
+} as const;
+
+/** Master-detail list width when collapsed */
+export const listCollapsedWidth = 280;

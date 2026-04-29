@@ -1,10 +1,10 @@
-# SeatLoom Coordination Rules v1.0
+# SeatLoom Coordination Rules v1.1
 
 | 项目 | 内容 |
 |------|------|
-| 文档 | Coordination Rules v1.0 |
+| 文档 | Coordination Rules v1.1 |
 | 状态 | Active |
-| 更新时间 | 2026-04-28 |
+| 更新时间 | 2026-04-29 |
 | Owner | Lyra (PO) |
 
 ---
@@ -218,5 +218,85 @@ Rules:
 - Ask the human for a decision only when product truth is still unresolved or when an explicit override is required.
 
 ---
+
+
+## 13. Git branch classes
+
+To avoid mixed-state verification and accidental cross-stream interference, SeatLoom uses four branch classes:
+
+1. `main`
+   - protected integration baseline;
+   - contains only accepted work;
+   - must stay buildable / testable at the agreed gate level.
+2. `track/<domain>`
+   - medium-lived branch for one active stream such as `track/infra-foundation` or `track/frontend-redesign`;
+   - used when multiple seats work in parallel but the stream still needs one shared integration line.
+3. `packet/<seat>/<packet-id>`
+   - short-lived delivery branch for one bounded worker packet;
+   - starts from its declared `track/*` branch or from `main` if no track branch exists.
+4. `hotfix/<seat>/<topic>`
+   - emergency or bounded repair branch;
+   - must stay narrowly scoped and merge back immediately after acceptance.
+
+Branch rules:
+
+- No acceptance may target an unnamed floating workspace state.
+- Every code-changing task packet must declare its base branch and expected delivery branch.
+- `main` is never the default scratch branch for in-progress multi-seat work.
+- Frontend and infrastructure should use separate `track/*` branches whenever they are both active.
+- If a stream is not yet committed anywhere, it is still considered exploratory and cannot close a formal acceptance gate.
+
+## 14. Commit-pinned verification rule
+
+Flux verifies exact commits, not verbal delivery claims.
+
+Required behavior:
+
+1. Every verification packet must name:
+   - target branch;
+   - target commit SHA;
+   - compare base commit if a delta review is intended.
+2. Before verification starts, Flux must capture and report:
+   - `git rev-parse --abbrev-ref HEAD`
+   - `git rev-parse HEAD`
+   - `git status --short`
+3. If the checked-out commit does not match the packet's target commit, Flux must stop and return `HOLD`.
+4. If the workspace is dirty and the packet does not explicitly authorize that state, Flux must stop and return `HOLD`.
+5. Every verification delivery and every acceptance file must repeat the exact verified commit SHA.
+6. Snapshot-only checks (for example, `scp` of an uncommitted workspace) may be used for diagnosis, but they do not close acceptance and must be labeled `PROVISIONAL` or `HOLD`.
+
+Minimum fields for code-changing delivery artifacts:
+
+- base branch
+- base commit
+- delivery branch
+- delivery commit
+- validation commands run
+- artifact paths for evidence
+
+## 15. Verifier bounded-fix exception
+
+Default rule remains: Flux is a verifier, not a product implementation owner.
+
+A narrow exception is allowed only when all conditions below are true:
+
+1. Lyra issues an explicit `T3/fix` packet to Flux.
+2. The fix is low-risk and bounded, such as:
+   - build harness wiring;
+   - missing asset/import;
+   - verification script defect;
+   - evidence-command typo;
+   - non-behavioral configuration or warning cleanup.
+3. The fix does not widen product scope, alter product logic, redesign UX, or mutate schema semantics.
+
+If Flux performs such a fix:
+
+- Flux must commit the change back to the current target branch immediately; no silent local edits are allowed.
+- The commit message must start with `fix(flux):`.
+- Flux must report `pre_fix_commit`, `fix_commit`, exact files touched, exact commands rerun, and the post-fix verification result.
+- Lyra must treat the fix commit as a new verification target and cite that exact SHA in the acceptance artifact.
+
+If the issue is larger than the bounded-fix exception, Flux must not patch it and must instead return findings for a Nimbus or Mira rework packet.
+
 
 *This file is the collaboration operating contract for AI-native delivery in SeatLoom.*

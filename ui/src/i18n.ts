@@ -5,7 +5,10 @@ export const translations = {
       timeline: '活动日志',
       workitems: '工作项',
       seats: '团队席位',
-      sessions: '工作会话'
+      sessions: '工作会话',
+      dashboard: '监督概览',
+      artifacts: '产出物',
+      playbook: 'Playbook'
     },
     inbox: {
       title: '需要处理',
@@ -67,7 +70,10 @@ export const translations = {
       timeline: '活动日志',
       workitems: '工作项',
       seats: '团队席位',
-      sessions: '工作会话'
+      sessions: '工作会话',
+      dashboard: '监督概览',
+      artifacts: '产出物',
+      playbook: 'Playbook'
     },
     inbox: {
       title: '需要处理',

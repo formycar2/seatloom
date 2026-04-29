@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target } from 'lucide-react';
+import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target, Info, ChevronRight } from 'lucide-react';
 import './styles/tokens.css';
 import { WorkNode, StageWorkflow } from './dag-model';
 import DagWorkflow from './DagWorkflow';
@@ -267,9 +267,9 @@ const MOCK_CHANNEL_DATA: Record<string, ProjectChannelData> = {
       workItemsDone: 3,
       workItemsTotal: 8,
       workflow: { nodes: [
-        { id: 'w1', type: 'task', label: '签发工程包', owner: 'Lyra', ownerAvatar: 'L', ownerColor: 'var(--sl-purple)', status: 'done', dependsOn: [], description: '已签发 3 个工程包' },
-        { id: 'w2', type: 'task', label: 'ENV-001 图标修复', owner: 'Nimbus', ownerAvatar: 'N', ownerColor: 'var(--sl-blue)', status: 'active', dependsOn: ['w1'], description: '补充 Tauri 图标文件', workItemRef: 'WI-411', waitingSince: '2h' },
-        { id: 'w3', type: 'task', label: 'UI 重构 (设计先行)', owner: 'Mira', ownerAvatar: 'M', ownerColor: 'var(--sl-amber)', status: 'active', dependsOn: ['w1'], description: 'v2 App Shell + Supervisor IM 模式', badge: '设计' },
+        { id: 'w1', type: 'task', label: '签发工程包', owner: 'Lyra', ownerAvatar: 'L', ownerColor: 'var(--sl-purple)', status: 'done', dependsOn: [], description: '已签发 3 个工程包：包括存储基础、席位注册和 UI 框架重构。' },
+        { id: 'w2', type: 'task', label: 'ENV-001 图标修复', owner: 'Nimbus', ownerAvatar: 'N', ownerColor: 'var(--sl-blue)', status: 'active', dependsOn: ['w1'], description: '补充缺失的 src-tauri/icons 资源，修复构建脚本中的静态路径引用。', workItemRef: 'WI-411', waitingSince: '2h' },
+        { id: 'w3', type: 'task', label: 'UI 重构 (设计先行)', owner: 'Mira', ownerAvatar: 'M', ownerColor: 'var(--sl-amber)', status: 'active', dependsOn: ['w1'], description: '实现 v2 版本全新的 App Shell，包括 NavRail 和 Supervisor IM 模式。', workItemRef: 'WI-392' },
         { id: 'w4', type: 'task', label: '编译验证', owner: 'Flux', ownerAvatar: 'F', ownerColor: 'var(--sl-green)', status: 'waiting', dependsOn: ['w2'], description: '等待 Nimbus 修复后重新验证 cargo check' },
         { id: 'w5', type: 'task', label: 'UI 视觉复核', owner: 'Flux', ownerAvatar: 'F', ownerColor: 'var(--sl-green)', status: 'waiting', dependsOn: ['w3'], description: '等待 Mira 重构后验证视觉质量' },
         { id: 'w6', type: 'gate', label: 'Gate: 实现完整性', owner: 'Lyra', ownerAvatar: 'L', ownerColor: 'var(--sl-purple)', status: 'waiting', dependsOn: ['w4', 'w5'], description: '确认所有实现包和验证通过', icon: '⬧' },
@@ -580,6 +580,7 @@ const MessageBubble: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
 const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
   const data = MOCK_CHANNEL_DATA[channelId];
   const [showEarlier, setShowEarlier] = useState(false);
+  const [hoveredItem, setHoveredItem] = useState<{ type: string; data: any; x: number; y: number } | null>(null);
 
   if (!data) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-text-tertiary)', fontSize: 13 }}>暂无项目数据</div>;
 
@@ -587,6 +588,15 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
 
   const stages = currentGoal.stages;
   const ci = currentGoal.currentStageIndex;
+
+  const handleMouseMove = (e: React.MouseEvent, type: string, itemData: any) => {
+    setHoveredItem({
+      type,
+      data: itemData,
+      x: e.clientX + 10,
+      y: e.clientY + 10
+    });
+  };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -610,10 +620,13 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
                 onMouseEnter={e => {
                   const btn = e.currentTarget.querySelector('button');
                   if (btn) btn.style.opacity = '1';
+                  handleMouseMove(e, 'blocker', b);
                 }}
+                onMouseMove={e => handleMouseMove(e, 'blocker', b)}
                 onMouseLeave={e => {
                   const btn = e.currentTarget.querySelector('button');
                   if (btn) btn.style.opacity = '0';
+                  setHoveredItem(null);
                 }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 12,
@@ -660,10 +673,16 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
                 const color = node.accentColor || (node.status === 'blocked' ? 'var(--sl-red)' : 'var(--sl-brand)');
 
                 return (
-                  <div key={node.id} style={{
-                    padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
-                    border: `1px solid ${color}40`, background: 'var(--sl-bg)',
-                  }}>
+                  <div key={node.id} 
+                    onMouseEnter={e => handleMouseMove(e, 'node', node)}
+                    onMouseMove={e => handleMouseMove(e, 'node', node)}
+                    onMouseLeave={() => setHoveredItem(null)}
+                    style={{
+                      padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
+                      border: `1px solid ${color}40`, background: 'var(--sl-bg)',
+                      cursor: 'pointer'
+                    }}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       {node.ownerAvatar && (
                         <div style={{
@@ -683,35 +702,18 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
                         {node.status === 'blocked' ? '受阻塞' : '推进中'}
                       </span>
                     </div>
-                    {node.description && (
-                      <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', marginBottom: 8, paddingLeft: 28, lineHeight: 1.5 }}>
-                        {node.description}
-                      </div>
-                    )}
-                    <div style={{ fontSize: 11, paddingLeft: 28, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {upstreams.length > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--sl-text-tertiary)' }}>
-                          <span style={{ opacity: 0.5 }}>← 依赖于:</span>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            {upstreams.map(u => (
-                              <span key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <span style={{ color: u.status === 'done' ? 'var(--sl-green)' : 'var(--sl-text-secondary)', fontWeight: 500 }}>{u.owner || u.label}</span>
-                                {u.status === 'done' ? '✓' : '⏳'}
-                              </span>
-                            ))}
-                          </div>
+                    <div style={{ fontSize: 11, paddingLeft: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
+                      {node.waitingSince && (
+                        <div style={{ color: 'var(--sl-text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Clock size={10} /> 等待 {node.waitingSince}
                         </div>
                       )}
-                      {downstreams.length > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--sl-text-tertiary)' }}>
-                          <span style={{ opacity: 0.5 }}>→ 正阻塞:</span>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            {downstreams.map(d => (
-                              <span key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <span style={{ fontWeight: 500, color: 'var(--sl-text-secondary)' }}>{d.owner || d.label}</span> ⏳
-                              </span>
-                            ))}
-                          </div>
+                      {node.workItemRef && (
+                        <div style={{ color: 'var(--sl-brand)', fontWeight: 600 }}>{node.workItemRef}</div>
+                      )}
+                      {upstreams.length > 0 && (
+                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
+                          ← {upstreams.length} 项依赖
                         </div>
                       )}
                     </div>
@@ -746,11 +748,18 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
           <Zap size={14} className="text-[var(--sl-brand)]" />
           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-brand)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>系统建议下一步 (NEXT STEP)</span>
         </div>
+        
+        {/* Interactive Action Card */}
         <div style={{ 
           background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-md)', padding: '12px 16px',
           border: '1px solid var(--sl-border-light)', boxShadow: 'var(--sl-shadow-sm)',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-        }}>
+          cursor: 'pointer', transition: 'all 150ms ease',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+        }}
+        onMouseEnter={e => handleMouseMove(e, 'next', currentStage.nextStep)}
+        onMouseMove={e => handleMouseMove(e, 'next', currentStage.nextStep)}
+        onMouseLeave={() => setHoveredItem(null)}
+        >
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 4 }}>
               {currentStage.nextStep}
@@ -772,11 +781,22 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {justNow.map((e, i) => (
-            <div key={i} style={{ 
-              display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
-              borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-              cursor: 'pointer'
-            }}>
+            <div key={i} 
+              onMouseEnter={ev => {
+                ev.currentTarget.style.background = 'var(--sl-surface-hover)';
+                handleMouseMove(ev, 'event', e);
+              }}
+              onMouseMove={ev => handleMouseMove(ev, 'event', e)}
+              onMouseLeave={ev => {
+                ev.currentTarget.style.background = 'var(--sl-bg)';
+                setHoveredItem(null);
+              }}
+              style={{ 
+                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
+                borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+                cursor: 'pointer', transition: 'background 150ms ease'
+              }}
+            >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
                 <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{e.time}</span>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: e.type === 'decision' ? 'var(--sl-green)' : e.type === 'delivery' ? 'var(--sl-blue)' : 'var(--sl-amber)' }} />
@@ -879,6 +899,62 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
           )}
         </div>
       </div>
+
+      {/* ─── Global Hover Popup ─── */}
+      {hoveredItem && (
+        <div style={{
+          position: 'fixed', left: hoveredItem.x, top: hoveredItem.y,
+          width: 320, background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-lg)',
+          border: '1px solid var(--sl-border)', boxShadow: 'var(--sl-shadow-lg)',
+          padding: '16px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 12,
+          pointerEvents: 'none'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--sl-brand-subtle)', color: 'var(--sl-brand)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Info size={14} />
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-tertiary)', textTransform: 'uppercase' }}>
+              {hoveredItem.type === 'node' ? '工作项详情' : hoveredItem.type === 'blocker' ? '阻塞深度分析' : hoveredItem.type === 'event' ? '活动记录详情' : '建议操作详情'}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--sl-text-primary)', lineHeight: 1.4 }}>
+              {hoveredItem.type === 'node' ? hoveredItem.data.label : hoveredItem.type === 'blocker' ? hoveredItem.data.text : hoveredItem.data.text || hoveredItem.data}
+            </div>
+            {hoveredItem.data.description && (
+              <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', marginTop: 8, lineHeight: 1.6 }}>
+                {hoveredItem.data.description}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid var(--sl-bg)' }}>
+             {hoveredItem.type === 'node' && (
+               <>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                   <span style={{ color: 'var(--sl-text-tertiary)' }}>当前负责人</span>
+                   <span style={{ fontWeight: 600, color: 'var(--sl-text-secondary)' }}>{hoveredItem.data.owner}</span>
+                 </div>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                   <span style={{ color: 'var(--sl-text-tertiary)' }}>关联 ID</span>
+                   <span style={{ fontWeight: 600, color: 'var(--sl-brand)' }}>{hoveredItem.data.workItemRef || 'N/A'}</span>
+                 </div>
+               </>
+             )}
+             {hoveredItem.type === 'blocker' && (
+               <div style={{ fontSize: 11, color: 'var(--sl-red)', background: 'var(--sl-red-subtle)', padding: '8px', borderRadius: 4 }}>
+                 <strong>影响范围：</strong> 该阻塞正在阻碍多个下游节点的推进。
+               </div>
+             )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--sl-brand)', fontSize: 11, fontWeight: 600, marginTop: 4 }}>
+            <span>点击进入详细透视图</span>
+            <ChevronRight size={12} />
+          </div>
+        </div>
+      )}
 
     </div>
   );

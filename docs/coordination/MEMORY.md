@@ -111,6 +111,9 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 | 2026-04-29 | Mira S7C scoped delegation overlay conditionally accepted | Delegation visibility is accepted across WorkItem, Seat, and Timeline surfaces; only explicit issuer capture and routable-owner gating remain for bounded close-out. | Lyra |
 | 2026-04-29 | Mira SG-01 UI close-out packet issued | The last SG-01 UI hold is constrained to four fixes only: command-bar recents, keyboard confirm, delegation issuer capture, and owner-safe delegation gating. | Lyra |
 | 2026-04-29 | Nimbus seat registry + delegation storage packet issued | The next engineering slice is limited to durable seat identity, project role binding, and scoped delegation persistence on top of the accepted storage foundation. | Lyra |
+| 2026-04-29 | Baseline commit frozen before frontend refactor | Commit `1bf60be` (`chore: baseline commit before frontend refactoring`) preserves the accepted pre-refactor product baseline before the new UI direction is implemented. | Lyra |
+| 2026-04-29 | Frontend refactor ownership transferred to Aegis + Mr. Zhang; Mira paused | Lyra no longer drives frontend reimplementation packets during the refactor phase; Mira remains on hold for later polish/alignment after the new baseline lands. | Lyra / Aegis / Mr. Zhang |
+| 2026-04-29 | Nimbus engineering lane re-scoped to infrastructure-only | Until the team finishes the next value/usability pass on the redesign, Nimbus should strengthen toolchain, verification, CI, and other foundation concerns only; artifact read-model feature work is paused. | Lyra |
 | 2026-04-29 | Mira S7C scoped delegation overlay accepted | The close-out recheck confirms explicit issuer capture, owner-safe overlay gating, and green build status, fully closing the delegation slice. | Lyra |
 | 2026-04-29 | Mira SG-01 close-out recheck reduced the hold to one keyboard gap | Recent intents, explicit issuer capture, and owner-safe delegation gating are now accepted; only proposal-surface `Enter` confirm remains unresolved in the Supervisor Command Bar. | Lyra |
 | 2026-04-29 | Mira S7B enter-confirm hotfix packet issued | The final SG-01 UI task is narrowed to a single-file keyboard fix in `SupervisorCommandBar.tsx`, with no other surface reopen allowed. | Lyra |
@@ -127,6 +130,13 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 | 2026-04-29 | ENV-001 compile verification executed and conditionally accepted | Aegis executed the Flux verification packet on a Rust-capable fallback seat: `seatloom-core` compiles clean and all 9 tests pass; `seatloom-tauri` fails due to missing `src-tauri/icons/icon.png` (build-time Tauri asset, not code error). `ENV-001` is `RE-SCOPED` to the icon-asset gap only. | Aegis |
 | 2026-04-29 | Nimbus ENV-001 Tauri icon fix packet issued | Bounded fix packet to provide the missing icon asset so workspace-level `cargo check` passes and `ENV-001` can be fully closed. | Aegis |
 | 2026-04-29 | Flux P1 theme + hover verification packet issued | Flux is reactivated in read-only mode to verify that Mira's accepted `P1` repair packet truly closes the hover/theme defects without direct regressions. | Lyra / Flux |
+
+| 2026-04-29 | Flux Rust foundation hardening verification accepted | Lyra accepted Flux's independent read-only verification after matching local reruns of the full 5-command Rust gate. The packet now serves as valid evidence for Nimbus hardening closure. | Lyra / Flux |
+| 2026-04-29 | Nimbus Rust foundation hardening accepted | The exact `1.95.0` toolchain freeze, portable local verification script, CI parity, fmt/clippy closure, and clean warning-free foundation gate are now accepted; the earlier `foundation-quality-automation` conditional hold is resolved without resuming business-facing backend work. | Lyra / Nimbus |
+
+| 2026-04-29 | Commit-pinned infrastructure verification rule activated | Infrastructure acceptance must verify an exact Git commit on a capable seat; Flux verification and any bounded fix follow-ups must stay commit-traceable on-branch | Lyra |
+| 2026-04-29 | Real collaboration PostgreSQL baseline accepted | Remote Docker-backed verification on the sponsor workspace passed at exact commit `a658086b54323259fda2ad2a958d097701f1fbbd`; the PG16 seed blocker is closed and all 9 DB tests pass | Lyra / Nimbus / Flux |
+| 2026-04-29 | Sponsor workspace SSH tunnel note promoted to durable infra ops doc | `docs/infra/ssh-tunnel-workspace.md` records the tmux tunnel, ports, and host details for PostgreSQL/frontend inspection against the sponsor workspace | Flux / Lyra |
 
 ## Milestone Status
 
@@ -225,7 +235,18 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 - [x] Flux Packet A Affordance Verification Issued + Dispatched (2026-04-29, Lyra / Flux)
 - [x] Nimbus Read-Model Repositories Accepted - PASS (2026-04-29, Lyra / Nimbus)
 - [x] Nimbus Artifact Read Models + Dual-Key Filters Packet Issued + Dispatched (2026-04-29, Lyra / Nimbus)
+- [x] Baseline Commit Before Frontend Refactor (`1bf60be`) (2026-04-29, Lyra)
+- [x] Frontend Refactor Ownership Transfer to Aegis + Mr. Zhang; Mira Paused (2026-04-29, Lyra / Aegis / Mr. Zhang)
+- [x] Nimbus Infrastructure-Only Lane Reset + Foundation Quality Automation Packet Issued (2026-04-29, Lyra / Nimbus)
+- [x] Nimbus Foundation Quality Automation Acceptance Issued - CONDITIONAL PASS (2026-04-29, Lyra / Nimbus)
+- [x] Nimbus Rust Foundation Hardening Packet Issued + Dispatched (2026-04-29, Lyra / Nimbus)
+- [x] Flux Rust Foundation Hardening Verification Packet Issued + Dispatched (2026-04-29, Lyra / Flux)
+- [x] Aegis Frontend Refactor Phase 1 Progress Logged (2026-04-29, Lyra / Aegis)
+- [x] Flux Rust Foundation Hardening Verification Accepted - PASS (2026-04-29, Lyra / Flux)
+- [x] Nimbus Rust Foundation Hardening Accepted - PASS (2026-04-29, Lyra / Nimbus)
+- [x] Commit-Pinned Infrastructure Baseline Published (`track/infra-foundation` @ `d007721`, advanced to `a658086`) (2026-04-29, Lyra / Nimbus)
+- [x] Nimbus Real Collaboration PostgreSQL Baseline Accepted - PASS (2026-04-29, Lyra / Nimbus / Flux)
 - [ ] MVP Implementation Start
 
 ---
-*Last Updated: 2026-04-29*
+*Last Updated: 2026-04-29 (PostgreSQL baseline accepted; remote DB verification passed)*

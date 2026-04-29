@@ -1,144 +1,204 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@400;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  :root, [data-theme='paper-ledger'] {
-    /* paper-ledger (default) */
-    --canvas: 37 32% 94%;           /* #F6F1E8 */
-    --surface: 47 100% 98%;          /* #FFFDF8 */
-    --surface-subtle: 35 27% 90%;    /* #F0E8DC */
-    --border: 36 25% 82%;            /* #DDD2C2 */
-    --ink: 214 28% 17%;              /* #1F2A37 */
-    --ink-soft: 208 11% 41%;         /* #5E6A75 */
-    --ink-faint: 209 14% 58%;        /* #8C97A3 */
-    --primary: 187 58% 29%;          /* #1F6B75 */
-    --primary-hover: 189 61% 23%;    /* #175560 */
-    --primary-tint: 189 33% 90%;     /* #DCECEF */
-    --success: 147 50% 36%;          /* #2E8B57 */
-    --warning: 34 78% 44%;           /* #C77B18 */
-    --error: 11 55% 49%;             /* #C3513A */
-    --done: 211 12% 48%;             /* #6C7A89 */
-    --drifted: 224 37% 55%;          /* #5F78B9 */
-    --focus-ring: 188 32% 65%;       /* #8DB9C0 */
-    
-    --radius: 0.75rem;
-    --font-heading: 'Noto Sans SC', sans-serif;
-    --canvas-pattern: none;
-    --terminal-preview: #20262E;
-  }
-
-  [data-theme='harbor-blueprint'] {
-    --canvas: 201 24% 95%;           /* #EEF3F6 */
-    --surface: 200 100% 99%;         /* #FCFEFF */
-    --surface-subtle: 201 25% 91%;   /* #E2EBF0 */
-    --border: 202 21% 82%;           /* #C8D4DC */
-    --ink: 207 36% 17%;              /* #1B2C3A */
-    --ink-soft: 209 16% 40%;         /* #556776 */
-    --ink-faint: 207 12% 54%;        /* #7C8B98 */
-    --primary: 202 54% 31%;          /* #245A7A */
-    --primary-hover: 202 54% 25%;    /* #1D4760 */
-    --primary-tint: 203 44% 90%;     /* #D9E8F2 */
-    --success: 154 45% 34%;          /* #2F7D5A */
-    --warning: 35 71% 42%;           /* #B7791F */
-    --error: 10 50% 50%;             /* #C0543F */
-    --done: 210 14% 47%;             /* #667788 */
-    --drifted: 218 36% 48%;          /* #4F6FA8 */
-    --focus-ring: 201 36% 65%;       /* #89AFC5 */
-    
-    --radius: 0px;
-    --font-heading: 'JetBrains Mono', monospace;
-    --canvas-pattern: radial-gradient(circle, #C8D4DC 1px, transparent 1px);
-    --terminal-preview: #20262E;
-  }
-
-  [data-theme='sage-archive'] {
-    --canvas: 77 18% 94%;            /* #F1F3EC */
-    --surface: 72 40% 98%;           /* #FCFDF9 */
-    --surface-subtle: 76 21% 89%;    /* #E6EBDD */
-    --border: 82 17% 81%;            /* #CFD7C5 */
-    --ink: 137 16% 17%;              /* #243128 */
-    --ink-soft: 133 7% 38%;          /* #5D6A60 */
-    --ink-faint: 120 2% 52%;         /* #879187 */
-    --primary: 124 16% 36%;          /* #4C6B4E */
-    --primary-hover: 124 14% 29%;    /* #3D5540 */
-    --primary-tint: 108 26% 91%;     /* #DDE7DA */
-    --success: 146 33% 36%;          /* #3E7C59 */
-    --warning: 38 63% 45%;           /* #B9852A */
-    --error: 9 45% 50%;              /* #B85A46 */
-    --done: 126 5% 44%;              /* #6F7A70 */
-    --drifted: 221 28% 52%;          /* #6076A6 */
-    --focus-ring: 128 17% 66%;       /* #9CB7A0 */
-    
-    --radius: 0.25rem;
-    --font-heading: 'Noto Serif SC', serif;
-    --canvas-pattern: none;
-    --terminal-preview: #20262E;
-  }
-
   :root {
-    --background: var(--canvas);
-    --foreground: var(--ink);
-    --card: var(--surface);
-    --card-foreground: var(--ink);
-    --border: var(--border);
-    --primary: var(--primary);
-    --primary-foreground: var(--surface);
-    --secondary: var(--surface-subtle);
-    --secondary-foreground: var(--ink);
-    --muted: var(--surface-subtle);
-    --muted-foreground: var(--ink-soft);
-    --accent: var(--primary-tint);
-    --accent-foreground: var(--ink);
-    --ring: var(--focus-ring);
+    /* ─── New design tokens (hex, for direct CSS usage) ─── */
+    --sl-canvas: #FFFFFF;
+    --sl-panel: #F8F9FA;
+    --sl-surface: #FFFFFF;
+    --sl-border: #E5E7EB;
+    --sl-border-subtle: #F3F4F6;
+    --sl-ink: #1A1A2E;
+    --sl-ink-secondary: #6B7280;
+    --sl-ink-muted: #9CA3AF;
+    --sl-primary: #3B82F6;
+    --sl-primary-hover: #2563EB;
+    --sl-primary-light: #EFF6FF;
+    --sl-success: #22C55E;
+    --sl-success-light: #F0FDF4;
+    --sl-warning: #F59E0B;
+    --sl-warning-light: #FFFBEB;
+    --sl-error: #EF4444;
+    --sl-error-light: #FEF2F2;
+    --sl-done: #94A3B8;
+    --sl-done-light: #F8FAFC;
+    --sl-review: #14B8A6;
+    --sl-review-light: #F0FDFA;
+    --sl-drift: #8B5CF6;
+    --sl-drift-light: #F5F3FF;
+    --sl-ring: #3B82F6;
+    --sl-radius: 6px;
+    --sl-radius-lg: 8px;
+    --sl-radius-full: 9999px;
+    --sl-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --sl-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+    --sl-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --sl-nav-collapsed: 48px;
+    --sl-nav-expanded: 180px;
+    --sl-list-collapsed: 280px;
+    --sl-terminal-bg: #1E1E2E;
 
-    --status-active: var(--success);
-    --status-warning: var(--warning);
-    --status-error: var(--error);
-    --status-done: var(--done);
-    --status-drifted: var(--drifted);
+    /* ─── Backward-compatible HSL tokens (for existing Tailwind opacity modifiers) ─── */
+    --canvas: 0 0% 100%;
+    --surface: 0 0% 100%;
+    --surface-subtle: 210 20% 98%;
+    --border: 220 13% 91%;
+    --ink: 235 29% 14%;
+    --ink-soft: 220 6% 47%;
+    --ink-faint: 218 11% 65%;
+    --primary: 217 91% 60%;
+    --primary-hover: 224 76% 48%;
+    --primary-tint: 214 100% 97%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --error: 0 84% 60%;
+    --done: 215 17% 63%;
+    --drifted: 263 67% 67%;
+    --focus-ring: 217 91% 60%;
+    --radius: 6px;
+    --font-heading: 'Inter', sans-serif;
+    --canvas-pattern: none;
+    --terminal-preview: #1E1E2E;
   }
-}
 
-@layer base {
-  * { @apply border-border; }
+  * {
+    border-color: var(--sl-border);
+  }
+
   body {
-    @apply bg-background text-foreground antialiased transition-colors duration-500;
-    font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
-    line-height: 1.6;
-    letter-spacing: 0.01em;
-    background-image: var(--canvas-pattern);
-    background-size: 24px 24px;
+    background-color: var(--sl-panel);
+    color: var(--sl-ink);
+    font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.571; /* 22px */
+    letter-spacing: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-heading);
+    font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+    font-weight: 600;
     letter-spacing: -0.01em;
-    font-weight: 900;
+    color: var(--sl-ink);
   }
+
+  h1 { font-size: 20px; line-height: 28px; }
+  h2 { font-size: 18px; line-height: 26px; }
+  h3 { font-size: 16px; line-height: 24px; }
 }
+
+/* ─── Utility classes ─── */
 
 .sl-clickable {
-  @apply transition-all cursor-pointer rounded-md;
+  @apply transition-all duration-150 cursor-pointer;
+  border-radius: var(--sl-radius);
 }
 .sl-clickable:hover {
-  @apply bg-primary/5 text-primary;
+  background-color: var(--sl-primary-light);
+  color: var(--sl-primary);
+}
+
+.sl-card {
+  background: var(--sl-surface);
+  border: 1px solid var(--sl-border);
+  border-radius: var(--sl-radius-lg);
+  box-shadow: var(--sl-shadow-sm);
+}
+
+.sl-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--sl-radius-full);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  gap: 4px;
+}
+
+.sl-metric {
+  font-family: 'Inter', sans-serif;
+  font-size: 28px;
+  line-height: 32px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sl-dense {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.sl-caption {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--sl-ink-secondary);
 }
 
 .monospace {
   font-family: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 20px;
 }
 
+/* ─── Status chip variants ─── */
+
+.sl-status-success {
+  background: var(--sl-success-light);
+  color: var(--sl-success);
+}
+.sl-status-warning {
+  background: var(--sl-warning-light);
+  color: var(--sl-warning);
+}
+.sl-status-error {
+  background: var(--sl-error-light);
+  color: var(--sl-error);
+}
+.sl-status-done {
+  background: var(--sl-done-light);
+  color: var(--sl-done);
+}
+.sl-status-review {
+  background: var(--sl-review-light);
+  color: var(--sl-review);
+}
+.sl-status-drift {
+  background: var(--sl-drift-light);
+  color: var(--sl-drift);
+}
+
+/* ─── Meta header (artifact detail) ─── */
+
 .meta-header {
-  @apply bg-secondary/80 border border-border rounded-lg p-3 grid grid-cols-2 gap-3;
+  background: var(--sl-panel);
+  border: 1px solid var(--sl-border);
+  border-radius: var(--sl-radius-lg);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
 }
 .meta-label {
-  @apply text-[11px] font-semibold tracking-wide text-muted-foreground;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--sl-ink-muted);
 }
 .meta-value {
-  @apply text-sm text-foreground leading-5;
+  font-size: 14px;
+  color: var(--sl-ink);
+  line-height: 20px;
 }
+
+/* ─── Animations ─── */
 
 @keyframes spin-slow {
   from { transform: rotate(0deg); }
@@ -146,4 +206,31 @@
 }
 .animate-spin-slow {
   animation: spin-slow 8s linear infinite;
+}
+
+/* ─── Master-Detail transition ─── */
+
+.sl-master-detail-list {
+  transition: width 200ms ease, min-width 200ms ease, opacity 150ms ease;
+}
+
+.sl-master-detail-content {
+  transition: opacity 150ms ease 50ms;
+}
+
+/* ─── Scrollbar (subtle) ─── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--sl-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sl-ink-muted);
 }

@@ -1,30 +1,28 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ProjectUIState } from '../types';
-import { ThemePreset, THEME_PRESETS } from '../styles/theme';
 
 interface AppState {
   projectUIStates: Record<string, ProjectUIState>;
-  themePreset: ThemePreset;
-  
+  navCollapsed: boolean;
+
   // Actions
   updateProjectUIState: (projectId: string, updates: Partial<ProjectUIState>) => void;
-  setThemePreset: (preset: ThemePreset) => void;
+  setNavCollapsed: (collapsed: boolean) => void;
+  toggleNav: () => void;
 }
 
 const DEFAULT_UI_STATE: ProjectUIState = {
-  activeTab: 'inbox',
+  activeTab: 'dashboard',
   selectedObjectId: null,
   filters: {},
 };
-
-const VALID_PRESETS = THEME_PRESETS.map(p => p.id);
 
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
       projectUIStates: {},
-      themePreset: 'paper-ledger',
+      navCollapsed: false,
 
       updateProjectUIState: (projectId, updates) => set((state) => ({
         projectUIStates: {
@@ -36,22 +34,11 @@ export const useAppStore = create<AppState>()(
         },
       })),
 
-      setThemePreset: (preset) => {
-        set({ themePreset: preset });
-        document.body.setAttribute('data-theme', preset);
-      },
+      setNavCollapsed: (collapsed) => set({ navCollapsed: collapsed }),
+      toggleNav: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
     }),
     {
       name: 'seatloom-app-store',
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          // Normalize invalid preset to default
-          if (!state.themePreset || !VALID_PRESETS.includes(state.themePreset)) {
-            state.themePreset = 'paper-ledger';
-          }
-          document.body.setAttribute('data-theme', state.themePreset);
-        }
-      },
     }
   )
 );

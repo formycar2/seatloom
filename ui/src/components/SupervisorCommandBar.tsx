@@ -15,7 +15,6 @@ import {
   Clock,
 } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
-import { THEME_PRESETS } from '../styles/theme';
 
 interface SupervisorCommandBarProps {
   isOpen: boolean;

@@ -4,7 +4,6 @@ import { useLocaleStore } from '../stores/useLocaleStore';
 import { useDataStore } from '../stores/useDataStore';
 import { getPriorityLabel, getRuntimeLabel, getSeatRoleLabel, getSessionStatusLabel, getWorkItemStatusLabel } from '../utils/display';
 import { useAppStore } from '../stores/useAppStore';
-import { ThemePreset, THEME_PRESETS } from '../styles/theme';
 
 interface SidebarProps {
   activeObjectId: string | null;
@@ -14,7 +13,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ activeObjectId, onSelectObject }) => {
   const { t } = useLocaleStore();
   const { activeProjectId, projectData } = useDataStore();
-  const { themePreset, setThemePreset } = useAppStore();
+  const {} = useAppStore();
   
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
 

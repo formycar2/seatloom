@@ -251,7 +251,7 @@ Do not re-do work that is already completed.
 
 ---
 
-## AD-007: Reconciliation — 三触发点，无文件监听
+## AD-007: Reconciliation — 三触发点，无文件监听（已扩展：PostgreSQL 写入路径合同）
 
 **决定**：MVP Reconciliation 在三个时机触发：
 
@@ -260,6 +260,32 @@ Do not re-do work that is already completed.
 3. **用户手动触发**：GUI 按钮或 `seatloom reconcile`
 
 MVP 不做文件监听（无 daemon），依赖启动时 + 手动 + Pipeline 前的三个触发点覆盖。
+
+**PostgreSQL 写入路径合同（新增）**：
+
+Reconcile 是 Repo markdown → PostgreSQL 权威存储的唯一有界导入操作。稳态写入路径定义如下：
+
+| 层 | 角色 |
+|----|------|
+| Repo markdown 文件 | 外部创作输入面和可选导出面（不是权威存储） |
+| `seatloom reconcile` | 有界导入/更新操作：扫描 → 解析 → upsert → 变更检测 |
+| PostgreSQL `documents` 表 | 结构化权威存储：文档正文、全局头字段、sections、associations、version history |
+
+**Reconcile 行为合同（MVP）**：
+
+- 扫描范围：仅 `docs/*.md` 和 `docs/coordination/**/*.md`，且需能解析为已知 `template+subtype` 对
+- 幂等性：相同文件内容不创建重复行/版本快照（通过 `body_digest` 比较）
+- 变更检测：内容变更则增加 `revision`，记录 `document_versions` 快照
+- 冲突处理：同一 `doc_id` 映射到不同 `file_path` 时记录为 conflict，不静默覆盖
+- 解析失败：记录为 failed item，不静默丢弃
+- 可观测性：每次运行写入 `reconcile_runs` + `reconcile_items`，扫描/插入/更新/未变更/失败/冲突计数均可查
+
+**不做的事（MVP）**：
+
+- 无文件监听 daemon
+- 无后台同步
+- 无 API 端点触发
+- 无语义检索嵌入（P1）
 
 ---
 

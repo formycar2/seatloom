@@ -321,4 +321,99 @@ mod db_baseline {
             );
         }
     }
+
+    // =========================================================================
+    // Reconcile bookkeeping (schema 003)
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 003 schema + a completed reconcile run"]
+    async fn reconcile_run_recorded_after_run() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let runs = db
+            .list_reconcile_runs(10)
+            .await
+            .expect("reconcile run list must succeed");
+        // After at least one reconcile run, this should be non-empty
+        assert!(
+            !runs.is_empty(),
+            "expected ≥1 reconcile run after seatloom reconcile was executed"
+        );
+        let run = &runs[0];
+        assert!(
+            matches!(run.status.as_str(), "completed" | "failed"),
+            "run status must be terminal"
+        );
+        assert!(run.scanned > 0, "reconcile must scan at least one file");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 003 schema + a completed reconcile run"]
+    async fn reconcile_items_reference_docs_folder() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let runs = db
+            .list_reconcile_runs(1)
+            .await
+            .expect("reconcile run list must succeed");
+        if runs.is_empty() {
+            return; // No runs yet — skip
+        }
+        let items = db
+            .list_reconcile_items(&runs[0].id)
+            .await
+            .expect("reconcile items must succeed");
+        for item in &items {
+            assert!(
+                item.file_path.starts_with("docs/"),
+                "reconcile items must only reference docs/ files, got: {}",
+                item.file_path
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 003 schema; run reconcile twice to verify"]
+    async fn second_reconcile_run_unchanged_for_unmodified_docs() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let runs = db
+            .list_reconcile_runs(10)
+            .await
+            .expect("reconcile run list must succeed");
+        if runs.len() < 2 {
+            return; // Need at least 2 runs
+        }
+        // Latest run (index 0) should show mostly unchanged items if docs didn't change
+        let latest_run = &runs[0];
+        assert_eq!(
+            latest_run.inserted, 0,
+            "second run should insert nothing if docs haven't changed"
+        );
+        assert!(
+            latest_run.unchanged > 0,
+            "second run should show unchanged items"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 003 schema + reconcile having run"]
+    async fn document_versions_created_on_first_reconcile() {
+        let db = try_connect().await.expect("DB must be reachable");
+        // Any T1 document that was inserted by reconcile should have revision ≥ 1
+        let docs = db
+            .list_documents("seatloom", Some("T1AuthorityDoc"), None)
+            .await
+            .expect("document list must succeed");
+        for doc in &docs {
+            assert!(doc.revision >= 1, "every document must have revision ≥ 1");
+            let versions = db
+                .list_document_versions(&doc.id)
+                .await
+                .expect("version list must succeed");
+            assert!(
+                !versions.is_empty(),
+                "document {} must have at least one version snapshot",
+                doc.id
+            );
+        }
+    }
 }

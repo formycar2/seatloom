@@ -1,69 +1,84 @@
 import React from 'react';
-import Sidebar from './Sidebar';
+import NavRail from '../components/NavRail';
+import MobileTabBar from '../components/MobileTabBar';
 import StatusBar from './StatusBar';
-import TopNav from './TopNav';
+import { useResponsive } from '../hooks/useResponsive';
+import type { NavTab } from '../components/NavRail';
+import type { MobileTab } from '../components/MobileTabBar';
+
+// Maps mobile tabs to desktop nav tabs
+const mobileToDesktop: Record<MobileTab, NavTab> = {
+  overview: 'dashboard',
+  actions: 'inbox',
+  activity: 'timeline',
+  artifacts: 'artifacts',
+};
+
+const desktopToMobile: Partial<Record<NavTab, MobileTab>> = {
+  dashboard: 'overview',
+  inbox: 'actions',
+  timeline: 'activity',
+  artifacts: 'artifacts',
+};
 
 interface AppShellProps {
   children: React.ReactNode;
-  detailPane?: React.ReactNode;
-  terminalPane?: React.ReactNode;
-  isTerminalOpen: boolean;
-  onTerminalToggle: () => void;
   activeTab: string;
   onTabChange: (tab: string) => void;
   onSelectProject: (id: string) => void;
-  activeObjectId: string | null;
-  onSelectObject: (type: string, data: any) => void;
   onInitProject: () => void;
   onShowHelp: () => void;
-  hideSidebar?: boolean;
+  isTerminalOpen: boolean;
+  onTerminalToggle: () => void;
 }
 
-const AppShell: React.FC<AppShellProps> = ({ 
-  children, 
-  detailPane,
-  terminalPane,
-  isTerminalOpen,
-  onTerminalToggle, 
-  activeTab, 
+const AppShell: React.FC<AppShellProps> = ({
+  children,
+  activeTab,
   onTabChange,
   onSelectProject,
-  activeObjectId,
-  onSelectObject,
   onInitProject,
   onShowHelp,
-  hideSidebar
+  isTerminalOpen,
+  onTerminalToggle,
 }) => {
+  const { isMobile } = useResponsive();
+
+  const activeMobileTab: MobileTab = desktopToMobile[activeTab as NavTab] || 'overview';
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground select-none transition-colors duration-500">
-      <TopNav 
-        activeTab={activeTab} 
-        onTabChange={onTabChange} 
-        onSelectProject={onSelectProject}
-      />
+    <div className="flex flex-col h-screen overflow-hidden bg-panel select-none">
+      <div className="flex flex-1 overflow-hidden">
+        {/* NavRail (hidden on mobile via component logic) */}
+        <NavRail
+          activeTab={activeTab as NavTab}
+          onTabChange={(tab) => onTabChange(tab)}
+          onSelectProject={onSelectProject}
+        />
 
-      <div className="flex flex-1 overflow-hidden bg-background">
-        {!hideSidebar && activeTab !== 'all-projects' && (
-          <Sidebar 
-            activeObjectId={activeObjectId} 
-            onSelectObject={onSelectObject} 
-          />
-        )}
-
-        <main className="flex-1 flex flex-col min-w-[400px] border-r border-border bg-background relative shadow-inner">
+        {/* Main content area */}
+        <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-panel">
           {children}
         </main>
-
-        {detailPane && (
-          <aside className="w-[380px] bg-card overflow-y-auto border-l border-border/40">
-            {detailPane}
-          </aside>
-        )}
       </div>
 
-      <StatusBar onInitProject={onInitProject} isTerminalOpen={isTerminalOpen} onTerminalToggle={onTerminalToggle} onShowHelp={onShowHelp} />
+      {/* Mobile bottom tab bar */}
+      {isMobile && (
+        <MobileTabBar
+          activeTab={activeMobileTab}
+          onTabChange={(mTab) => onTabChange(mobileToDesktop[mTab])}
+        />
+      )}
 
-      {isTerminalOpen && terminalPane}
+      {/* Status bar (hidden on mobile) */}
+      {!isMobile && (
+        <StatusBar
+          onInitProject={onInitProject}
+          isTerminalOpen={isTerminalOpen}
+          onTerminalToggle={onTerminalToggle}
+          onShowHelp={onShowHelp}
+        />
+      )}
     </div>
   );
 };

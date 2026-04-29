@@ -1,0 +1,85 @@
+/* ─── SeatLoom v2 Design Tokens ─── */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* Canvas */
+  --sl-bg: #FAFBFC;
+  --sl-surface: #FFFFFF;
+  --sl-surface-hover: #F6F8FA;
+  --sl-surface-active: #F0F4F8;
+  --sl-border: #E1E4E8;
+  --sl-border-light: #ECEEF1;
+  --sl-divider: #F0F0F3;
+
+  /* Text */
+  --sl-text-primary: #1B1F23;
+  --sl-text-secondary: #586069;
+  --sl-text-tertiary: #959DA5;
+  --sl-text-inverse: #FFFFFF;
+
+  /* Brand */
+  --sl-brand: #2F6FEB;
+  --sl-brand-hover: #1A5CD6;
+  --sl-brand-subtle: #EBF2FF;
+  --sl-brand-text: #1B4DB1;
+
+  /* Status */
+  --sl-green: #2DA44E;
+  --sl-green-subtle: #DAFBE1;
+  --sl-amber: #D4A72C;
+  --sl-amber-subtle: #FFF8C5;
+  --sl-red: #CF222E;
+  --sl-red-subtle: #FFEBE9;
+  --sl-blue: #0969DA;
+  --sl-blue-subtle: #DDF4FF;
+  --sl-purple: #8250DF;
+  --sl-purple-subtle: #FBEFFF;
+  --sl-teal: #0E8A6A;
+  --sl-teal-subtle: #DAFBE1;
+
+  /* Elevation */
+  --sl-shadow-sm: 0 1px 2px rgba(27,31,35,0.04);
+  --sl-shadow-md: 0 3px 6px rgba(27,31,35,0.06), 0 1px 2px rgba(27,31,35,0.04);
+  --sl-shadow-lg: 0 8px 24px rgba(27,31,35,0.12);
+  --sl-shadow-overlay: 0 16px 48px rgba(27,31,35,0.16);
+
+  /* Radius */
+  --sl-radius-sm: 4px;
+  --sl-radius-md: 6px;
+  --sl-radius-lg: 10px;
+  --sl-radius-xl: 16px;
+  --sl-radius-full: 9999px;
+
+  /* Motion */
+  --sl-duration-fast: 120ms;
+  --sl-duration-normal: 200ms;
+  --sl-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--sl-text-primary);
+  background: var(--sl-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--sl-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--sl-text-tertiary); }
+
+/* Selection */
+::selection { background: var(--sl-brand-subtle); color: var(--sl-brand-text); }
