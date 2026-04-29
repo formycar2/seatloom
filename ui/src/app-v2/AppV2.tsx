@@ -800,6 +800,8 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
   // Enriched hover builders
   // ═══════════════════════════════════════════════════════
   const buildEventHover = (ev: any) => {
+    // Guard: mock justNow rows (text/type) bypass truth-only enrichment
+    if (!ev.eventId && !ev.evidenceRefs) return ev;
     if (!truthData) return ev;
     return {
       ...ev,
@@ -808,7 +810,7 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
       occurred_at: ev.rawTimestamp,
       actor_label: ev.actor,
       object_refs_chips: ev.objectRefs,
-      evidence_refs_chips: ev.evidenceRefs.map((p: string) => ({ full: p, label: p.split('/').pop() || p })),
+      evidence_refs_chips: (ev.evidenceRefs || []).map((p: string) => ({ full: p, label: p.split('/').pop() || p })),
     };
   };
   const buildBlockerHover = (b: any) => ({
