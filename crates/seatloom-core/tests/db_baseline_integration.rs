@@ -187,4 +187,138 @@ mod db_baseline {
             bindings.len()
         );
     }
+
+    // =========================================================================
+    // Document authority layer (schema 002)
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn documents_seeded_for_project() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let docs = db
+            .list_documents("seatloom", None, None)
+            .await
+            .expect("document list must succeed");
+        assert!(
+            docs.len() >= 11,
+            "expected ≥11 seeded documents, got {}",
+            docs.len()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn documents_cover_t1_through_t7() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let all = db
+            .list_documents("seatloom", None, None)
+            .await
+            .expect("document list must succeed");
+        let templates: Vec<Option<&str>> = all.iter().map(|d| d.template.as_deref()).collect();
+        for expected in &[
+            "T1AuthorityDoc",
+            "T2RoleProfile",
+            "T3TaskPacket",
+            "T4Review",
+            "T5Acceptance",
+            "T6DailyMemory",
+            "T7GovernanceDoc",
+        ] {
+            assert!(
+                templates.contains(&Some(expected)),
+                "missing document family: {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn active_contract_set_documents_present() {
+        let db = try_connect().await.expect("DB must be reachable");
+        for doc_id in &[
+            "doc-prd-v05",
+            "doc-interaction-v11",
+            "doc-ux-v11",
+            "doc-acceptance-v11",
+            "doc-arch-decisions",
+            "doc-arch-design",
+            "doc-product-truth",
+        ] {
+            let doc = db.get_document(doc_id).await.expect("query must succeed");
+            assert!(doc.is_some(), "document {doc_id} must be seeded");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn document_sections_seeded_and_ordered() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let sections = db
+            .list_document_sections("doc-prd-v05")
+            .await
+            .expect("sections must succeed");
+        assert!(
+            sections.len() >= 2,
+            "expected ≥2 sections for PRD doc, got {}",
+            sections.len()
+        );
+        // Sections must be in ascending ordinal order
+        for pair in sections.windows(2) {
+            assert!(
+                pair[0].ordinal < pair[1].ordinal,
+                "sections not in ordinal order"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn document_associations_link_to_project_and_workitems() {
+        let db = try_connect().await.expect("DB must be reachable");
+        // PRD should be associated with the project
+        let assocs = db
+            .list_document_associations("doc-prd-v05")
+            .await
+            .expect("associations must succeed");
+        assert!(!assocs.is_empty(), "PRD must have at least one association");
+        let project_assoc = assocs.iter().find(|a| a.assoc_type == "project");
+        assert!(
+            project_assoc.is_some(),
+            "PRD must have project-scope association"
+        );
+
+        // Task packet should be associated with its workitem
+        let task_assocs = db
+            .list_document_associations("doc-task-hardening")
+            .await
+            .expect("task associations must succeed");
+        let wi_assoc = task_assocs.iter().find(|a| a.assoc_type == "workitem");
+        assert!(
+            wi_assoc.is_some(),
+            "task packet must have workitem association"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 002_document_seed.sql applied"]
+    async fn document_template_filter_works() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let t1_docs = db
+            .list_documents("seatloom", Some("T1AuthorityDoc"), None)
+            .await
+            .expect("T1 filter must succeed");
+        assert!(
+            t1_docs.len() >= 7,
+            "expected ≥7 T1 docs (active contract set), got {}",
+            t1_docs.len()
+        );
+        for doc in &t1_docs {
+            assert_eq!(
+                doc.template.as_deref(),
+                Some("T1AuthorityDoc"),
+                "filter must return only T1 docs"
+            );
+        }
+    }
 }

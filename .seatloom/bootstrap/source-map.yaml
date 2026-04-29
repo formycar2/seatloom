@@ -1,13 +1,20 @@
-source_map_version: "v1"
+source_map_version: "v2"
 generated: "2026-04-29"
-generated_by: "Nimbus (infrastructure packet NIMBUS-2026-04-29-real-collaboration-db-baseline-v1)"
+generated_by: "Nimbus (packets: real-collaboration-db-baseline-v1, postgres-authority-and-typed-documents-v1)"
 project: "seatloom"
 
 summary: >
   This source map documents the evidence basis and approximation notes for the
-  real collaboration truth baseline seeded into PostgreSQL. All objects are
-  derived from actual repository files, MEMORY.md, and the process-mapping review.
-  No content was fabricated.
+  real collaboration truth baseline seeded into PostgreSQL, including the
+  document authority layer added in the second infrastructure packet.
+  All objects are derived from actual repository files, MEMORY.md, and the
+  process-mapping review. No content was fabricated.
+
+authority_direction: >
+  PostgreSQL is the canonical structured truth store for all SeatLoom project data.
+  File-backed stores (.seatloom/) are cache/export artifacts, not peer authority.
+  Architecture docs architecture-decisions.md (AD-011) and architecture-design.md (§12.3, §6)
+  have been realigned to reflect this direction.
 
 # ---------------------------------------------------------------------------
 # Seats

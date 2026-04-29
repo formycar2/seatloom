@@ -695,7 +695,16 @@ pub struct RunningSession {
 
 ## 6. 存储层详细设计
 
-### 6.1 .seatloom/ 目录结构
+**存储权威方向（已更新为 PostgreSQL）**：
+
+| 层 | 用途 | 权威性 |
+|----|------|--------|
+| PostgreSQL | 结构化项目真相（seats, sessions, workitems, handoffs, artifacts, documents, events） | 权威存储 |
+| `.seatloom/` 文件目录 | 迁移输入、证据有效载荷、缓存和向后兼容层 | 非权威，仅供导出/缓存 |
+
+详见 `infra/postgres/schema/` 获取完整 schema 定义。
+
+### 6.1 .seatloom/ 目录结构（迁移/缓存参考）
 
 ```
 .seatloom/
@@ -1108,29 +1117,33 @@ Worker continuity packs are assembled from deterministic content tiers (AD-004):
 2. Tier 0–2 worker pack from structured Checkpoint + Ledger
 3. Minimal pack: WorkItem + AC + last Handoff only
 
-### 12.3 Retrieval Layer Contract (AD-011)
+### 12.3 Retrieval Layer Contract (AD-011, updated)
 
 Evidence lookup must always follow this fixed order. Each layer is entered only if the previous layer returns insufficient results:
 
 ```
-L1: Structured index (exact field match) — SQLite FTS5 virtual table
-    Fields: template, subtype, id, status, workitem_id, object_ref
+L1: Structured index (exact field match) — PostgreSQL table/index queries
+    Fields: template, subtype, id, status, workitem_id, object_ref, tags
     P0: Required for INT-13 compliance
         ↓
-L2: Full-text search — SQLite FTS5 (Artifact body + Ledger payload strings)
+L2: Full-text search — PostgreSQL tsvector / GIN index
+    (Document body + Ledger payload strings)
     P0: Required for INT-13 compliance
         ↓ (P1 only below)
 L3: Semantic retrieval
-    Embedding similarity search (backend TBD at P1)
+    PostgreSQL + pgvector embedding similarity (backend: P1 evaluation)
         ↓
 L4: LLM explanation
     Grounded in L1–L3 evidence only; no hallucination permitted
 ```
 
-**Storage architecture (BLOCKER-001 closed — Lyra decision 2026-04-28):**
-- L1 and L2 persist to **SQLite FTS5** embedded in the project's `.seatloom/` directory.
-- Any in-memory index is a warm cache rebuilt from SQLite on startup; it is not the authoritative persisted store.
-- PostgreSQL / pgvector is the candidate upgrade path for P1 multi-user or cloud-backed deployments; it is not a P0 requirement.
+**Storage authority (updated — PostgreSQL as P0 authority):**
+- PostgreSQL is the canonical structured truth store for all SeatLoom project data.
+- L1 and L2 persist to **PostgreSQL** (`documents`, `artifacts`, `canonical_events` tables with GIN indexes).
+- `.seatloom/` file stores are cache / export artifacts / backward-compatibility shims only — not peer authority.
+- The earlier SQLite FTS5 direction (BLOCKER-001) is superseded by this PostgreSQL-first decision.
+- Any in-memory index is a warm cache rebuilt from PostgreSQL on startup; it is not the authoritative persisted store.
+- L3 semantic retrieval: PostgreSQL + `pgvector` extension (P1 evaluation path).
 
 ### 12.4 Prompt Engine Architecture (AD-012)
 

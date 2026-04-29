@@ -354,17 +354,23 @@ MVP 不做文件监听（无 daemon），依赖启动时 + 手动 + Pipeline 前
 
 **P0 要求**：在不启用 L3/L4 的前提下，INT-13（精确证据搜索）必须能返回可用的结构化和全文检索命中（acceptance-spec E-02）。
 
-**P0 存储后端（已冻结，BLOCKER-001 已关闭）**：L1/L2 使用 **SQLite FTS5** 作为持久化存储。内存索引仅作为启动时的热缓存/投影，不是权威持久存储。PostgreSQL 或 pgvector 在 P1 语义检索阶段再评估。
+**P0 存储权威（已更新）**：L1/L2 使用 **PostgreSQL** 作为持久化权威存储。
+
+- PostgreSQL 是 SeatLoom 结构化项目真相的唯一权威存储引擎。
+- `.seatloom/` 文件目录作为迁移输入、证据有效载荷、缓存和兼容层，不再是权威存储。
+- 早期设计文件中提到的 SQLite FTS5 方向已被本更新正式取代。
+- PostgreSQL 内置的 `tsvector` / `GIN` 索引满足 L2 全文检索的 P0 要求。
+- L3 语义检索：PostgreSQL + `pgvector` 扩展（P1 时评估）。
 
 | 层 | 后端 | 角色 |
 |----|------|------|
-| L1 结构化索引 | SQLite FTS5（虚表，含 `template`, `subtype`, `id`, `status`, `workitem_id`, `object_refs` 字段） | 持久化权威存储 |
-| L2 全文检索 | SQLite FTS5（Artifact 正文 + Ledger payload 文本） | 持久化权威存储 |
-| 内存索引 | 启动时从 SQLite 重建的热投影 | 缓存加速，不写入 |
-| L3 语义检索 | P1，embedding store（TBD） | — |
+| L1 结构化索引 | PostgreSQL（`documents`, `artifacts`, `workitems` 等精确字段查询） | 持久化权威存储 |
+| L2 全文检索 | PostgreSQL `tsvector` / GIN 索引（文档正文 + Ledger payload） | 持久化权威存储 |
+| 内存缓存 | 启动时从 PostgreSQL 重建的热投影 | 缓存加速，不写入 |
+| L3 语义检索 | P1，PostgreSQL + pgvector（TBD） | — |
 | L4 LLM 解释 | P1，基于 L1-L3 证据 | — |
 
-**理由**：固定检索顺序是 SeatLoom 证据可信度的基础。SQLite FTS5 满足本地优先、无外部服务依赖、重启持久化三个 P0 要求（来自 US-P0-10 / INT-13 / acceptance-spec E-02）。升级路径保留：L3 不阻塞 L1/L2 冻结。
+**理由（更新）**：PostgreSQL 已作为 SeatLoom 的真实结构化存储实装并通过 commit-pinned 验证。它满足本地优先（Docker Compose 单机部署）、无外部服务依赖（嵌入式 Docker）、重启持久化三个 P0 要求，同时通过 `tsvector` 原生支持 L2 全文检索，并为 P1 语义检索提供 pgvector 升级路径。原 BLOCKER-001（检索存储后端决策）已由此更新关闭并重新对齐到 PostgreSQL 方向。
 
 ---
 

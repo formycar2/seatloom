@@ -1,6 +1,6 @@
 /// Flat DB row models for PostgreSQL queries (tokio-postgres).
-/// These mirror the schema in infra/postgres/schema/001_seatloom_core.sql.
-use chrono::{DateTime, Utc};
+/// Covers schema 001 (core objects) and 002 (document authority layer).
+use chrono::{DateTime, NaiveDate, Utc};
 
 #[derive(Debug, Clone)]
 pub struct SeatRow {
@@ -101,5 +101,67 @@ pub struct CanonicalEventRow {
     pub occurred_at: DateTime<Utc>,
     pub actor_ref: String,
     pub payload: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+// =============================================================================
+// Schema 002: Document authority layer
+// Mirrors infra/postgres/schema/002_document_authority.sql
+// =============================================================================
+
+/// Full typed coordination document with universal header fields and body.
+/// PostgreSQL is the canonical storage authority; disk files are evidence/export only.
+#[derive(Debug, Clone)]
+pub struct DocumentRow {
+    pub id: String,
+    pub project_id: String,
+    pub artifact_id: Option<String>,
+    // Universal header (DOCUMENT_TEMPLATES.md §2)
+    pub template: Option<String>,
+    pub subtype: Option<String>,
+    pub subtype_valid: Option<bool>,
+    pub doc_id: Option<String>,
+    pub title: String,
+    pub status: Option<String>,
+    pub author: Option<String>,
+    pub doc_date: Option<NaiveDate>,
+    pub version: Option<String>,
+    pub depends_on: Vec<String>,
+    pub supersedes: Option<String>,
+    pub tags: Vec<String>,
+    // Body storage
+    pub file_path: String,
+    pub body_text: Option<String>,
+    pub body_digest: Option<String>,
+    pub body_length: Option<i32>,
+    pub parse_status: String,
+    // Optimistic concurrency
+    pub revision: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Heading/anchor projection for a typed document.
+#[derive(Debug, Clone)]
+pub struct DocumentSectionRow {
+    pub id: String,
+    pub document_id: String,
+    pub ordinal: i32,
+    pub heading_text: String,
+    pub heading_level: i32,
+    pub anchor_slug: String,
+    pub body_excerpt: Option<String>,
+    pub search_text: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Many-to-many association between a document and a project object.
+#[derive(Debug, Clone)]
+pub struct DocumentAssociationRow {
+    pub id: String,
+    pub document_id: String,
+    pub assoc_type: String, // 'workitem' | 'session' | 'handoff' | 'project'
+    pub assoc_id: String,
+    pub is_primary: bool,
     pub created_at: DateTime<Utc>,
 }

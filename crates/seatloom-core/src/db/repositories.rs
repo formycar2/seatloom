@@ -6,8 +6,8 @@ use thiserror::Error;
 use tokio_postgres::Row;
 
 use crate::db::models::{
-    ArtifactRow, CanonicalEventRow, HandoffRow, ProjectRoleBindingRow, SeatDelegationRow, SeatRow,
-    SessionRow, WorkItemRow,
+    ArtifactRow, CanonicalEventRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
+    HandoffRow, ProjectRoleBindingRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 
 pub struct SeatloomDb {
@@ -285,6 +285,116 @@ impl SeatloomDb {
             .await?;
         Ok(rows.iter().map(row_to_event).collect())
     }
+
+    // =========================================================================
+    // Documents — schema 002 document authority layer
+    // Sort: updated_at descending
+    // =========================================================================
+
+    /// List all documents for a project; optional template and subtype filters.
+    pub async fn list_documents(
+        &self,
+        project_id: &str,
+        template_filter: Option<&str>,
+        subtype_filter: Option<&str>,
+    ) -> Result<Vec<DocumentRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match (template_filter, subtype_filter) {
+                (Some(t), Some(s)) => client
+                    .query(
+                        "SELECT id, project_id, artifact_id, template, subtype, subtype_valid, \
+                         doc_id, title, status, author, doc_date, version, depends_on, \
+                         supersedes, tags, file_path, body_text, body_digest, body_length, \
+                         parse_status, revision, created_at, updated_at \
+                         FROM documents WHERE project_id = $1 AND template = $2 AND subtype = $3 \
+                         ORDER BY updated_at DESC",
+                        &[&project_id, &t, &s],
+                    )
+                    .await?,
+                (Some(t), None) => client
+                    .query(
+                        "SELECT id, project_id, artifact_id, template, subtype, subtype_valid, \
+                         doc_id, title, status, author, doc_date, version, depends_on, \
+                         supersedes, tags, file_path, body_text, body_digest, body_length, \
+                         parse_status, revision, created_at, updated_at \
+                         FROM documents WHERE project_id = $1 AND template = $2 \
+                         ORDER BY updated_at DESC",
+                        &[&project_id, &t],
+                    )
+                    .await?,
+                (None, Some(s)) => client
+                    .query(
+                        "SELECT id, project_id, artifact_id, template, subtype, subtype_valid, \
+                         doc_id, title, status, author, doc_date, version, depends_on, \
+                         supersedes, tags, file_path, body_text, body_digest, body_length, \
+                         parse_status, revision, created_at, updated_at \
+                         FROM documents WHERE project_id = $1 AND subtype = $2 \
+                         ORDER BY updated_at DESC",
+                        &[&project_id, &s],
+                    )
+                    .await?,
+                (None, None) => client
+                    .query(
+                        "SELECT id, project_id, artifact_id, template, subtype, subtype_valid, \
+                         doc_id, title, status, author, doc_date, version, depends_on, \
+                         supersedes, tags, file_path, body_text, body_digest, body_length, \
+                         parse_status, revision, created_at, updated_at \
+                         FROM documents WHERE project_id = $1 ORDER BY updated_at DESC",
+                        &[&project_id],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_document).collect())
+    }
+
+    pub async fn get_document(&self, doc_id: &str) -> Result<Option<DocumentRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, artifact_id, template, subtype, subtype_valid, \
+                 doc_id, title, status, author, doc_date, version, depends_on, \
+                 supersedes, tags, file_path, body_text, body_digest, body_length, \
+                 parse_status, revision, created_at, updated_at \
+                 FROM documents WHERE id = $1",
+                &[&doc_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_document))
+    }
+
+    /// List all sections for a document; sorted by ordinal ascending.
+    pub async fn list_document_sections(
+        &self,
+        document_id: &str,
+    ) -> Result<Vec<DocumentSectionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, document_id, ordinal, heading_text, heading_level, anchor_slug, \
+                 body_excerpt, search_text, created_at \
+                 FROM document_sections WHERE document_id = $1 ORDER BY ordinal ASC",
+                &[&document_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_document_section).collect())
+    }
+
+    /// List all object associations for a document.
+    pub async fn list_document_associations(
+        &self,
+        document_id: &str,
+    ) -> Result<Vec<DocumentAssociationRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, document_id, assoc_type, assoc_id, is_primary, created_at \
+                 FROM document_associations WHERE document_id = $1",
+                &[&document_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_document_assoc).collect())
+    }
 }
 
 // =============================================================================
@@ -397,6 +507,59 @@ fn row_to_event(r: &Row) -> CanonicalEventRow {
         occurred_at: r.get(2),
         actor_ref: r.get(3),
         payload: r.get(4),
+        created_at: r.get(5),
+    }
+}
+
+fn row_to_document(r: &Row) -> DocumentRow {
+    DocumentRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        artifact_id: r.get(2),
+        template: r.get(3),
+        subtype: r.get(4),
+        subtype_valid: r.get(5),
+        doc_id: r.get(6),
+        title: r.get(7),
+        status: r.get(8),
+        author: r.get(9),
+        doc_date: r.get(10),
+        version: r.get(11),
+        depends_on: r.get(12),
+        supersedes: r.get(13),
+        tags: r.get(14),
+        file_path: r.get(15),
+        body_text: r.get(16),
+        body_digest: r.get(17),
+        body_length: r.get(18),
+        parse_status: r.get(19),
+        revision: r.get(20),
+        created_at: r.get(21),
+        updated_at: r.get(22),
+    }
+}
+
+fn row_to_document_section(r: &Row) -> DocumentSectionRow {
+    DocumentSectionRow {
+        id: r.get(0),
+        document_id: r.get(1),
+        ordinal: r.get(2),
+        heading_text: r.get(3),
+        heading_level: r.get(4),
+        anchor_slug: r.get(5),
+        body_excerpt: r.get(6),
+        search_text: r.get(7),
+        created_at: r.get(8),
+    }
+}
+
+fn row_to_document_assoc(r: &Row) -> DocumentAssociationRow {
+    DocumentAssociationRow {
+        id: r.get(0),
+        document_id: r.get(1),
+        assoc_type: r.get(2),
+        assoc_id: r.get(3),
+        is_primary: r.get(4),
         created_at: r.get(5),
     }
 }
