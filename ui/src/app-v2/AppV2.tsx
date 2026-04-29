@@ -952,19 +952,18 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {currentBlockers.map((b: any, i: number) => (
-              <div key={i} 
-                onMouseEnter={e => {
-                  const btn = e.currentTarget.querySelector('button');
-                  if (btn) btn.style.opacity = '1';
-                  handleMouseMove(e, 'blocker', b);
-                }}
-                onMouseMove={e => handleMouseMove(e, 'blocker', b)}
-                onMouseLeave={e => {
-                  const btn = e.currentTarget.querySelector('button');
-                  if (btn) btn.style.opacity = '0';
-                  setHoveredItem(null);
-                }}
-                style={{
+               <div key={i} 
+                 onMouseEnter={e => {
+                   const btn = e.currentTarget.querySelector('button');
+                   if (btn) btn.style.opacity = '1';
+                   handleMouseMove(e, 'blocker', b);
+                 }}
+                 onMouseLeave={e => {
+                   const btn = e.currentTarget.querySelector('button');
+                   if (btn) btn.style.opacity = '0';
+                   setHoveredItem(null);
+                 }}
+                 style={{
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
                   background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
@@ -1003,7 +1002,6 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
               return (
                 <div key={item.sourceId} 
                   onMouseEnter={e => handleMouseMove(e, 'node', item)}
-                  onMouseMove={e => handleMouseMove(e, 'node', item)}
                   onMouseLeave={() => setHoveredItem(null)}
                   style={{
                     padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
@@ -1083,15 +1081,15 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
         </div>
         
         {/* Interactive Action Card */}
-        <div style={{ 
-          background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-md)', padding: '12px 16px',
-          border: '1px solid var(--sl-border-light)', boxShadow: 'var(--sl-shadow-sm)',
-          cursor: 'pointer', transition: 'all 150ms ease',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-        }}
-        onMouseEnter={e => handleMouseMove(e, 'next', nextStepSource)}
-        onMouseMove={e => handleMouseMove(e, 'next', nextStepSource)}
-        onMouseLeave={() => setHoveredItem(null)}
+        <div 
+          style={{
+            background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-md)', padding: '12px 16px',
+            border: '1px solid var(--sl-border-light)', boxShadow: 'var(--sl-shadow-sm)',
+            cursor: 'pointer', transition: 'all 150ms ease',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+          }}
+          onMouseEnter={e => handleMouseMove(e, 'next', nextStepSource)}
+          onMouseLeave={() => setHoveredItem(null)}
         >
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 4 }}>
@@ -1156,17 +1154,16 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {projectedEvents.length > 0 ? (
             projectedEvents.map((ev) => (
-              <div key={ev.eventId} 
-                onMouseEnter={evEnt => {
-                  evEnt.currentTarget.style.background = 'var(--sl-surface-hover)';
-                  handleMouseMove(evEnt, 'event', ev);
-                }}
-                onMouseMove={evEnt => handleMouseMove(evEnt, 'event', ev)}
-                onMouseLeave={evEnt => {
-                  evEnt.currentTarget.style.background = 'var(--sl-bg)';
-                  setHoveredItem(null);
-                }}
-                style={{ 
+               <div key={ev.eventId} 
+                 onMouseEnter={evEnt => {
+                   evEnt.currentTarget.style.background = 'var(--sl-surface-hover)';
+                   handleMouseMove(evEnt, 'event', ev);
+                 }}
+                 onMouseLeave={evEnt => {
+                   evEnt.currentTarget.style.background = 'var(--sl-bg)';
+                   setHoveredItem(null);
+                 }}
+                 style={{ 
                   display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
                   borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
                   cursor: 'pointer', transition: 'background 150ms ease'
@@ -1187,18 +1184,17 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
               </div>
             ))
           ) : (
-            justNow.map((e, i) => (
-              <div key={i} 
-                onMouseEnter={ev => {
-                  ev.currentTarget.style.background = 'var(--sl-surface-hover)';
-                  handleMouseMove(ev, 'event', e);
-                }}
-                onMouseMove={ev => handleMouseMove(ev, 'event', e)}
-                onMouseLeave={ev => {
-                  ev.currentTarget.style.background = 'var(--sl-bg)';
-                  setHoveredItem(null);
-                }}
-                style={{ 
+             justNow.map((e, i) => (
+               <div key={i} 
+                 onMouseEnter={ev => {
+                   ev.currentTarget.style.background = 'var(--sl-surface-hover)';
+                   handleMouseMove(ev, 'event', e);
+                 }}
+                 onMouseLeave={ev => {
+                   ev.currentTarget.style.background = 'var(--sl-bg)';
+                   setHoveredItem(null);
+                 }}
+                 style={{ 
                   display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
                   borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
                   cursor: 'pointer', transition: 'background 150ms ease'
