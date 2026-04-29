@@ -1122,7 +1122,6 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
               {projectedArtifacts.map(art => (
                 <div key={art.id}
                   onMouseEnter={e => handleMouseMove(e, 'artifact', art)}
-                  onMouseMove={e => handleMouseMove(e, 'artifact', art)}
                   onMouseLeave={() => setHoveredItem(null)}
                   style={{
                     padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
