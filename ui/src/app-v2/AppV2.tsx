@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target, Info, ChevronRight } from 'lucide-react';
+import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target, Info, ChevronRight, FileText } from 'lucide-react';
 import './styles/tokens.css';
 import { WorkNode, StageWorkflow } from './dag-model';
 import DagWorkflow from './DagWorkflow';
@@ -764,6 +764,42 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
   })();
 
   // ═══════════════════════════════════════════════════════
+  // C-bis. Artifact projection (Slice B)
+  // ═══════════════════════════════════════════════════════
+  const getBasename = (path: string): string => {
+    const parts = path.split('/');
+    return parts[parts.length - 1] || path;
+  };
+  const formatArtifactSourceRefs = (a: any): string[] => {
+    const refs: string[] = [];
+    if (a.source_workitem_id) refs.push(a.source_workitem_id);
+    if (a.source_session_id) refs.push(a.source_session_id);
+    if (a.source_handoff_id) refs.push(a.source_handoff_id);
+    return refs;
+  };
+  const projectedArtifacts = (() => {
+    if (!truthData?.artifacts?.length) return [];
+    return [...truthData.artifacts]
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, 5)
+      .map(a => ({
+        id: a.id,
+        title: a.title,
+        template: a.template,
+        subtype: a.subtype,
+        status: a.status,
+        storageBasename: getBasename(a.storage_path),
+        author: a.author,
+        date: a.date,
+        sourceRefs: formatArtifactSourceRefs(a),
+        summary: a.summary,
+        summaryPoints: a.summary_points,
+        contentPreview: a.content_preview,
+        fullPath: a.storage_path,
+      }));
+  })();
+
+  // ═══════════════════════════════════════════════════════
   // D. Activity log projection
   // ═══════════════════════════════════════════════════════
   const projectedEvents = (() => {
@@ -799,6 +835,17 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
   // ═══════════════════════════════════════════════════════
   // Enriched hover builders
   // ═══════════════════════════════════════════════════════
+  const buildArtifactHover = (art: any) => ({
+    title: art.title,
+    template: art.template,
+    subtype: art.subtype,
+    status: art.status || '—',
+    fullPath: art.fullPath,
+    sourceRefs: art.sourceRefs,
+    summary: art.summary,
+    summaryPoints: (art.summaryPoints || []).slice(0, 3),
+    contentPreview: (art.contentPreview || []).slice(0, 3),
+  });
   const buildEventHover = (ev: any) => {
     // Guard: mock justNow rows (text/type) bypass truth-only enrichment
     if (!ev.eventId && !ev.evidenceRefs) return ev;
@@ -883,6 +930,7 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
     else if (type === 'blocker') enriched = buildBlockerHover(itemData);
     else if (type === 'node') enriched = buildNodeHover(itemData);
     else if (type === 'next') enriched = buildNextHover(itemData);
+    else if (type === 'artifact') enriched = buildArtifactHover(itemData);
     setHoveredItem({ type, data: enriched, x: e.clientX + 10, y: e.clientY + 10 });
   };
 
@@ -1059,6 +1107,48 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
         </div>
       </div>
 
+      {/* 4-bis. ── Artifacts & Documents (Truth-Backed) ── */}
+      {truthData && (
+        <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FileText size={14} /> 文档与证据 (ARTIFACTS)
+          </div>
+          {projectedArtifacts.length === 0 ? (
+            <div style={{ padding: '16px', textAlign: 'center', color: 'var(--sl-text-tertiary)', fontSize: 12 }}>
+              本项目已有结构化 truth，但当前无 artifact 对象
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {projectedArtifacts.map(art => (
+                <div key={art.id}
+                  onMouseEnter={e => handleMouseMove(e, 'artifact', art)}
+                  onMouseMove={e => handleMouseMove(e, 'artifact', art)}
+                  onMouseLeave={() => setHoveredItem(null)}
+                  style={{
+                    padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
+                    border: '1px solid var(--sl-border-light)', background: 'var(--sl-bg)',
+                    cursor: 'pointer', transition: 'all 150ms ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)', flex: 1 }}>{art.title}</span>
+                    <Chip label={art.template} color="var(--sl-brand)" />
+                    <Chip label={art.subtype} color="var(--sl-blue)" />
+                    {art.status && <Chip label={art.status} color="var(--sl-green)" />}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>{art.storageBasename}</span>
+                    {art.sourceRefs.length > 0 && (
+                      <span style={{ color: 'var(--sl-text-tertiary)', fontSize: 10 }}>{art.sourceRefs.join(' · ')}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 5. ── Timeline (Activity Log, Canonical Events) ── */}
       <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1233,39 +1323,77 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
               <Info size={14} />
             </div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-tertiary)', textTransform: 'uppercase' }}>
-              {hoveredItem.type === 'node' ? '工作项详情' : hoveredItem.type === 'blocker' ? '阻塞深度分析' : hoveredItem.type === 'event' ? '活动记录详情' : '建议操作详情'}
+              {hoveredItem.type === 'node' ? '工作项详情' : hoveredItem.type === 'blocker' ? '阻塞深度分析' : hoveredItem.type === 'artifact' ? '文档与证据详情' : hoveredItem.type === 'event' ? '活动记录详情' : '建议操作详情'}
             </div>
           </div>
 
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--sl-text-primary)', lineHeight: 1.4 }}>
-              {hoveredItem.type === 'node' ? hoveredItem.data.label : hoveredItem.type === 'blocker' ? hoveredItem.data.text : hoveredItem.data.text || hoveredItem.data}
+              {hoveredItem.type === 'node' ? hoveredItem.data.label : hoveredItem.type === 'artifact' ? hoveredItem.data.title : hoveredItem.type === 'blocker' ? hoveredItem.data.text : hoveredItem.data.text || hoveredItem.data}
             </div>
-            {hoveredItem.data.description && (
+            {(hoveredItem.type === 'artifact' ? hoveredItem.data.summary : hoveredItem.data.description) && (
               <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', marginTop: 8, lineHeight: 1.6 }}>
-                {hoveredItem.data.description}
+                {hoveredItem.type === 'artifact' ? hoveredItem.data.summary : hoveredItem.data.description}
               </div>
             )}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid var(--sl-bg)' }}>
              {hoveredItem.type === 'node' && (
-               <>
-                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                   <span style={{ color: 'var(--sl-text-tertiary)' }}>当前负责人</span>
-                   <span style={{ fontWeight: 600, color: 'var(--sl-text-secondary)' }}>{hoveredItem.data.owner}</span>
-                 </div>
-                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                   <span style={{ color: 'var(--sl-text-tertiary)' }}>关联 ID</span>
-                   <span style={{ fontWeight: 600, color: 'var(--sl-brand)' }}>{hoveredItem.data.workItemRef || 'N/A'}</span>
-                 </div>
-               </>
-             )}
-             {hoveredItem.type === 'blocker' && (
-               <div style={{ fontSize: 11, color: 'var(--sl-red)', background: 'var(--sl-red-subtle)', padding: '8px', borderRadius: 4 }}>
-                 <strong>影响范围：</strong> 该阻塞正在阻碍多个下游节点的推进。
-               </div>
-             )}
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)' }}>当前负责人</span>
+                  <span style={{ fontWeight: 600, color: 'var(--sl-text-secondary)' }}>{hoveredItem.data.owner}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)' }}>关联 ID</span>
+                  <span style={{ fontWeight: 600, color: 'var(--sl-brand)' }}>{hoveredItem.data.workItemRef || 'N/A'}</span>
+                </div>
+              </>
+            )}
+            {hoveredItem.type === 'artifact' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)' }}>模板 / 子类型</span>
+                  <span style={{ fontWeight: 600, color: 'var(--sl-text-secondary)' }}>{hoveredItem.data.template} · {hoveredItem.data.subtype}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)' }}>状态</span>
+                  <span style={{ fontWeight: 600, color: 'var(--sl-brand)' }}>{hoveredItem.data.status}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)' }}>存储路径</span>
+                  <span style={{ fontWeight: 600, color: 'var(--sl-text-secondary)', fontFamily: 'monospace', fontSize: 10 }}>{hoveredItem.data.fullPath}</span>
+                </div>
+                {hoveredItem.data.sourceRefs.length > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                    <span style={{ color: 'var(--sl-text-tertiary)' }}>来源引用</span>
+                    <span style={{ fontWeight: 600, color: 'var(--sl-brand)' }}>{hoveredItem.data.sourceRefs.join(', ')}</span>
+                  </div>
+                )}
+                {hoveredItem.data.summaryPoints.length > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)' }}>
+                    <span style={{ color: 'var(--sl-text-tertiary)', fontWeight: 600 }}>要点: </span>
+                    {hoveredItem.data.summaryPoints.join(' / ')}
+                  </div>
+                )}
+                {hoveredItem.data.contentPreview.length > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
+                    <span style={{ fontWeight: 600 }}>预览:</span>
+                    <ul style={{ margin: '4px 0 0 0', paddingLeft: 16 }}>
+                      {hoveredItem.data.contentPreview.map((c: string, i: number) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+            {hoveredItem.type === 'blocker' && (
+              <div style={{ fontSize: 11, color: 'var(--sl-red)', background: 'var(--sl-red-subtle)', padding: '8px', borderRadius: 4 }}>
+                <strong>影响范围：</strong> 该阻塞正在阻碍多个下游节点的推进。
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--sl-brand)', fontSize: 11, fontWeight: 600, marginTop: 4 }}>
