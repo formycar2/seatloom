@@ -1,6 +1,6 @@
+use crate::objects::id::{ArtifactId, HandoffId, SeatId, WorkItemId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{HandoffId, WorkItemId, ArtifactId, SeatId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handoff {
@@ -19,10 +19,15 @@ pub struct Handoff {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HandoffStatus {
-    Drafted, Sent, Received, Accepted,
+    Drafted,
+    Sent,
+    Received,
+    Accepted,
     /// P1 live activity overlay (US-P1-06). Does not replace Ledger replay truth.
     Working,
-    Returned, Completed, Expired,
+    Returned,
+    Completed,
+    Expired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

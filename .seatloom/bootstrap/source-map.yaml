@@ -1,0 +1,175 @@
+source_map_version: "v1"
+generated: "2026-04-29"
+generated_by: "Nimbus (infrastructure packet NIMBUS-2026-04-29-real-collaboration-db-baseline-v1)"
+project: "seatloom"
+
+summary: >
+  This source map documents the evidence basis and approximation notes for the
+  real collaboration truth baseline seeded into PostgreSQL. All objects are
+  derived from actual repository files, MEMORY.md, and the process-mapping review.
+  No content was fabricated.
+
+# ---------------------------------------------------------------------------
+# Seats
+# ---------------------------------------------------------------------------
+seats:
+  evidence_source: "docs/coordination/reviews/2026-04-28-process-mapping-review.md §1 Seat Registration"
+  note: "Five seats confirmed in the process mapping review: aegis (supervisor), lyra (PO), mira (designer), nimbus (architect), flux (verifier)."
+  approximation: "created_at set to 2026-04-24T00:00:00Z (team onboarding date per MEMORY.md); exact onboarding second is unavailable."
+
+# ---------------------------------------------------------------------------
+# Project Role Bindings
+# ---------------------------------------------------------------------------
+role_bindings:
+  evidence_source: "docs/coordination/reviews/2026-04-28-process-mapping-review.md §1, MEMORY.md role section"
+  approximation: "none; role assignments are unambiguous in the review and MEMORY.md"
+
+# ---------------------------------------------------------------------------
+# Seat Delegation
+# ---------------------------------------------------------------------------
+delegations:
+  - id: "del-flux-acting-mira-001"
+    evidence_source: "MEMORY.md 2026-04-28 entry: 'Flux temporarily reassigned as acting Mira seat — Mira is offline; Flux receives a constrained UI/UED contract-repair packet under Lyra supervision with no authority to redesign the product IA'"
+    workitem: "wi-009"
+    approximation: "issued_at set to 2026-04-28T09:00:00Z (morning of Apr 28, inferred from MEMORY.md entry order); expires_at set to 2026-04-28T23:59:00Z (end of day, when Mira returned)."
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+sessions:
+  evidence_source: "docs/coordination/reviews/2026-04-28-process-mapping-review.md §3 Session Timeline"
+  note: "One representative session per seat covering the Apr 27-29 collaboration window."
+  approximation: >
+    All session timestamps are approximate, derived from the first evidence timestamps
+    in MEMORY.md for each seat's known activity. Exact session start/end seconds are
+    not preserved in the coordination history.
+
+# ---------------------------------------------------------------------------
+# WorkItems
+# ---------------------------------------------------------------------------
+workitems:
+  evidence_source: "docs/coordination/reviews/2026-04-28-process-mapping-review.md §2 WorkItem Lifecycle"
+  included:
+    - id: "wi-001"
+      title: "Define product form and tech stack"
+      evidence: "Process mapping §2 Phase 1, MEMORY.md 2026-04-27 decisions (Tauri 2, tech stack, ADRs)"
+    - id: "wi-004"
+      title: "Deliver Phase 1 UX prototypes"
+      evidence: "Process mapping §2 Phase 1 WI-004, MEMORY.md SG-01 history, SG-01 GO closure 2026-04-29"
+    - id: "wi-009"
+      title: "Flux acting-Mira UI contract repair"
+      evidence: "Process mapping §2 Phase 2 WI-009, MEMORY.md 2026-04-28 delegation entry"
+    - id: "wi-scaffold"
+      title: "Nimbus Rust foundation scaffold"
+      evidence: "MEMORY.md 2026-04-28 'Nimbus foundation scaffold packet issued'"
+    - id: "wi-storage"
+      title: "Nimbus storage and ledger foundation"
+      evidence: "MEMORY.md 2026-04-29 'Nimbus storage + ledger foundation accepted'"
+    - id: "wi-hardening"
+      title: "Nimbus Rust foundation hardening"
+      evidence: "MEMORY.md 2026-04-29 'Nimbus Rust foundation hardening accepted — PASS'"
+  approximation: "created_at/updated_at timestamps inferred from MEMORY.md entry order and known event sequence; exact creation seconds unavailable."
+
+# ---------------------------------------------------------------------------
+# Handoffs
+# ---------------------------------------------------------------------------
+handoffs:
+  evidence_source: "docs/coordination/reviews/2026-04-28-process-mapping-review.md §4 Handoff Chain, MEMORY.md"
+  included:
+    - id: "ho-aegis-nimbus-arch"
+      evidence: "MEMORY.md 2026-04-28 'Nimbus foundation scaffold packet issued' implies architecture handoff from Aegis design work to Nimbus implementation start."
+      approximation: "sent_at inferred as early 2026-04-28 morning before Nimbus session start."
+    - id: "ho-nimbus-lyra-storage"
+      evidence: "MEMORY.md 2026-04-29 'Nimbus storage + ledger foundation accepted' implies a delivery handoff from Nimbus to Lyra."
+      approximation: "timing inferred from 2026-04-29 morning acceptance sequence."
+    - id: "ho-lyra-flux-sg01-verify"
+      evidence: "MEMORY.md 2026-04-29 'Flux final v0.5 UI evidence packet issued' and accepted."
+      approximation: "created_at/sent_at inferred from the afternoon evidence sequence on 2026-04-29."
+
+# ---------------------------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------------------------
+artifacts:
+  evidence_source: "Active contract set per docs/PRODUCT_TRUTH.md, docs/coordination/DOCUMENT_TEMPLATES.md §11.1"
+  included:
+    - id: "ar-product-truth"
+      file: "docs/PRODUCT_TRUTH.md"
+      template: "T1AuthorityDoc"
+      subtype: "prd"
+      note: "Canonical product entrypoint. Subtype 'prd' is the closest T1 match; this file serves as the meta-index for the product truth."
+    - id: "ar-prd-v05"
+      file: "docs/prd-v0.5.md"
+      template: "T1AuthorityDoc"
+      subtype: "prd"
+    - id: "ar-interaction-v11"
+      file: "docs/interaction-spec-v1.1.md"
+      template: "T1AuthorityDoc"
+      subtype: "interaction_spec"
+    - id: "ar-ux-v11"
+      file: "docs/ux-spec-v1.1.md"
+      template: "T1AuthorityDoc"
+      subtype: "ux_spec"
+    - id: "ar-acceptance-v11"
+      file: "docs/acceptance-spec-v1.1.md"
+      template: "T1AuthorityDoc"
+      subtype: "acceptance_spec"
+    - id: "ar-arch-decisions"
+      file: "docs/architecture-decisions.md"
+      template: "T1AuthorityDoc"
+      subtype: "architecture_decisions"
+    - id: "ar-arch-design"
+      file: "docs/architecture-design.md"
+      template: "T1AuthorityDoc"
+      subtype: "architecture_design"
+    - id: "ar-role-mira"
+      file: "docs/coordination/roles/MIRA.md"
+      template: "T2RoleProfile"
+      subtype: "seat_role"
+    - id: "ar-task-hardening"
+      file: "docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-foundation-hardening-v1.md"
+      template: "T3TaskPacket"
+      subtype: "task"
+    - id: "ar-task-storage"
+      file: "docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-storage-ledger-foundation-v1.md"
+      template: "T3TaskPacket"
+      subtype: "task"
+    - id: "ar-review-process-mapping"
+      file: "docs/coordination/reviews/2026-04-28-process-mapping-review.md"
+      template: "T4Review"
+      subtype: "process_mapping"
+    - id: "ar-acceptance-hardening"
+      file: "docs/coordination/acceptance/2026-04-29-lyra-nimbus-foundation-hardening-acceptance.md"
+      template: "T5Acceptance"
+      subtype: "acceptance_review"
+    - id: "ar-memory-2026-04-29"
+      file: "docs/coordination/memory/2026-04-29.md"
+      template: "T6DailyMemory"
+      subtype: "daily_log"
+    - id: "ar-governance-coordination-rules"
+      file: "docs/coordination/COORDINATION_RULES.md"
+      template: "T7GovernanceDoc"
+      subtype: "coordination_rules"
+
+# ---------------------------------------------------------------------------
+# Canonical Events
+# ---------------------------------------------------------------------------
+events:
+  evidence_source: "MEMORY.md durable decisions, process-mapping-review, milestone status"
+  approximation: >
+    All event timestamps are approximate derivations from MEMORY.md entry order and
+    known event sequences. The ledger is not a verbatim replay of exact real-time events;
+    it is a curated reconstruction that preserves the causal and chronological shape
+    of the real collaboration.
+
+# ---------------------------------------------------------------------------
+# Intentionally partial in v1
+# ---------------------------------------------------------------------------
+partial_families:
+  - family: "checkpoints"
+    reason: "Checkpoint objects require session transcript content; out of scope for this baseline packet."
+  - family: "pipeline_runs"
+    reason: "No pipeline execution has been triggered yet in the project; no real data to seed."
+  - family: "artifacts (system-generated)"
+    reason: "DiffSummary, TestReport etc. require real build/test outputs; not available in this baseline."
+  - family: "comments"
+    reason: "Review comment objects not yet in the accepted schema; deferred to a later packet."

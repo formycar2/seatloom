@@ -3,8 +3,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::objects::id::HandoffId;
 use crate::objects::handoff::Handoff;
+use crate::objects::id::HandoffId;
 use crate::storage::project::ProjectPaths;
 use crate::storage::yaml_io::{read_yaml, write_yaml, YamlIoError};
 
@@ -46,11 +46,7 @@ impl HandoffStore {
                 source,
             })?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "yaml")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -58,7 +54,7 @@ impl HandoffStore {
         for entry in entries {
             handoffs.push(read_yaml::<Handoff>(&entry.path())?);
         }
-        handoffs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        handoffs.sort_by_key(|h| std::cmp::Reverse(h.created_at));
         Ok(handoffs)
     }
 }
@@ -117,7 +113,9 @@ mod tests {
     fn missing_handoffs_dir_returns_empty_vec() {
         let dir = temp_dir("handoff-missing-dir");
         let store = HandoffStore::new(&dir);
-        let handoffs = store.list_handoffs().expect("missing dir should return empty");
+        let handoffs = store
+            .list_handoffs()
+            .expect("missing dir should return empty");
         assert!(handoffs.is_empty());
         fs::remove_dir_all(dir).expect("cleanup");
     }

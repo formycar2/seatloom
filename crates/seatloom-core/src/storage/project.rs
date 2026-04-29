@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::objects::id::{DelegationId, HandoffId, SessionId, WorkItemId};
+use crate::objects::id::{ArtifactId, DelegationId, HandoffId, SessionId, WorkItemId};
 
 /// Parsed from .seatloom/config/project.yaml
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,5 +167,13 @@ impl ProjectPaths {
 
     pub fn artifacts_dir(&self) -> PathBuf {
         self.seatloom_dir().join("artifacts")
+    }
+
+    pub fn artifact_dir(&self, artifact_id: &ArtifactId) -> PathBuf {
+        self.artifacts_dir().join(artifact_id.as_str())
+    }
+
+    pub fn artifact_meta_path(&self, artifact_id: &ArtifactId) -> PathBuf {
+        self.artifact_dir(artifact_id).join("meta.yaml")
     }
 }

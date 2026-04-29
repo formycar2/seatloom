@@ -4,6 +4,7 @@ use seatloom_core::storage::seat_registry::SeatRegistry;
 /// List all seats registered in the current project.
 /// Bounded assumption: project root is `std::env::current_dir()`.
 /// Sort: by `name` ascending.
+#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
 pub fn list_seats() -> Vec<SeatIdentity> {
     let root = match std::env::current_dir() {
         Ok(dir) => dir,

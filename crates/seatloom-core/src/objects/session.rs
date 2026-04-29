@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use crate::objects::id::{CheckpointId, SeatId, SessionId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{SessionId, SeatId, CheckpointId};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -22,7 +22,11 @@ pub struct Session {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Runtime {
-    ClaudeCode, Codex, CursorCli, GeminiCli, Custom(String),
+    ClaudeCode,
+    Codex,
+    CursorCli,
+    GeminiCli,
+    Custom(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

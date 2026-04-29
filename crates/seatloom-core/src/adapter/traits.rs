@@ -1,10 +1,10 @@
 // AgentAdapter trait and supporting types.
 // Defines the capability boundary between SeatLoom core and individual runtime adapters.
 
-use std::path::Path;
+use crate::objects::session::Runtime;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::objects::session::Runtime;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterCapabilities {

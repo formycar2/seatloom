@@ -1,7 +1,10 @@
 // Inbox view projection: priority bands, handoff items, drift signals.
 // Full implementation deferred to route-engine packet.
+#[derive(Default)]
 pub struct InboxView;
 
 impl InboxView {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }

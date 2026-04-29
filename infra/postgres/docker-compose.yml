@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: seatloom-postgres
+    environment:
+      POSTGRES_USER: seatloom
+      POSTGRES_PASSWORD: seatloom
+      POSTGRES_DB: seatloom
+    ports:
+      - "5432:5432"
+    volumes:
+      - seatloom-pgdata:/var/lib/postgresql/data
+      - ./schema:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seatloom -d seatloom"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  seatloom-pgdata:

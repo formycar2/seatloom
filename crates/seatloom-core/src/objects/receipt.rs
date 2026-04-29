@@ -1,6 +1,6 @@
+use crate::objects::id::{HandoffId, SeatId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{HandoffId, SeatId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffReceipt {

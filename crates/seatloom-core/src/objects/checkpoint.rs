@@ -1,6 +1,6 @@
+use crate::objects::id::{ArtifactId, CheckpointId, SessionId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{CheckpointId, SessionId, ArtifactId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -30,4 +30,7 @@ pub struct CheckpointSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SummaryQuality { Full, Minimal }
+pub enum SummaryQuality {
+    Full,
+    Minimal,
+}

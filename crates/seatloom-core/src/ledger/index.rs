@@ -116,7 +116,8 @@ mod tests {
         let first_event = CanonicalEvent {
             event_id: first_event_id.clone(),
             event_type: EventType::SessionStarted,
-            occurred_at: Utc.with_ymd_and_hms(2026, 4, 29, 0, 0, 0)
+            occurred_at: Utc
+                .with_ymd_and_hms(2026, 4, 29, 0, 0, 0)
                 .single()
                 .expect("valid timestamp"),
             actor_ref: ActorRef::Seat(seat_id.clone()),
@@ -127,7 +128,8 @@ mod tests {
         let second_event = CanonicalEvent {
             event_id: second_event_id.clone(),
             event_type: EventType::WorkItemCreated,
-            occurred_at: Utc.with_ymd_and_hms(2026, 4, 29, 0, 1, 0)
+            occurred_at: Utc
+                .with_ymd_and_hms(2026, 4, 29, 0, 1, 0)
                 .single()
                 .expect("valid timestamp"),
             actor_ref: ActorRef::Seat(seat_id),

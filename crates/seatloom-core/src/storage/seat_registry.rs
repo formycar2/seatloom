@@ -56,10 +56,7 @@ impl SeatRegistry {
         )?)
     }
 
-    pub fn save_delegation(
-        &self,
-        delegation: &SeatDelegation,
-    ) -> Result<(), SeatRegistryError> {
+    pub fn save_delegation(&self, delegation: &SeatDelegation) -> Result<(), SeatRegistryError> {
         validate_delegation(delegation)?;
         write_yaml(&self.paths.delegation_path(&delegation.id), delegation)?;
         Ok(())
@@ -115,11 +112,7 @@ impl SeatRegistry {
                 source,
             })?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "yaml")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -127,7 +120,7 @@ impl SeatRegistry {
         for entry in entries {
             delegations.push(read_yaml::<SeatDelegation>(&entry.path())?);
         }
-        delegations.sort_by(|a, b| b.issued_at.cmp(&a.issued_at));
+        delegations.sort_by_key(|d| std::cmp::Reverse(d.issued_at));
         Ok(delegations)
     }
 }
@@ -158,9 +151,7 @@ pub enum SeatRegistryValidationError {
     ActiveDelegationMissingExpiry { delegation_id: String },
 }
 
-pub fn validate_delegation(
-    delegation: &SeatDelegation,
-) -> Result<(), SeatRegistryValidationError> {
+pub fn validate_delegation(delegation: &SeatDelegation) -> Result<(), SeatRegistryValidationError> {
     let delegation_id = delegation.id.as_str().to_string();
 
     if delegation.scope_description.trim().is_empty() {
@@ -176,9 +167,7 @@ pub fn validate_delegation(
     }
 
     if matches!(delegation.status, DelegationStatus::Active) && delegation.expires_at.is_none() {
-        return Err(SeatRegistryValidationError::ActiveDelegationMissingExpiry {
-            delegation_id,
-        });
+        return Err(SeatRegistryValidationError::ActiveDelegationMissingExpiry { delegation_id });
     }
 
     Ok(())
@@ -259,7 +248,9 @@ mod tests {
             created_at: timestamp(),
         };
 
-        registry.save_identity(&identity).expect("identity should save");
+        registry
+            .save_identity(&identity)
+            .expect("identity should save");
         let loaded = registry
             .load_identity("nimbus")
             .expect("identity should load");
@@ -300,7 +291,10 @@ mod tests {
         assert!(matches!(loaded.role, SeatRole::Architect));
         assert_eq!(loaded.authority_doc_refs.len(), 1);
         assert_eq!(loaded.constraints, vec!["no-runtime-widening"]);
-        assert_eq!(loaded.collaboration_template_ref.as_deref(), Some("baseline-v1"));
+        assert_eq!(
+            loaded.collaboration_template_ref.as_deref(),
+            Some("baseline-v1")
+        );
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
     }
@@ -505,9 +499,7 @@ mod tests {
         registry.save_delegation(&d1).expect("save d1");
         registry.save_delegation(&d2).expect("save d2");
 
-        let delegations = registry
-            .list_delegations()
-            .expect("list should succeed");
+        let delegations = registry.list_delegations().expect("list should succeed");
         assert_eq!(delegations.len(), 2);
         // Sort: issued_at descending — d2 (newer) first
         assert_eq!(delegations[0].id.as_str(), d2.id.as_str());

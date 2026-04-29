@@ -4,6 +4,7 @@ use seatloom_core::storage::seat_registry::SeatRegistry;
 /// List SeatDelegations, optionally filtered by seat and active status (AD-009).
 /// Bounded assumption: project root is `std::env::current_dir()`.
 /// Sort: by `issued_at` descending.
+#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
 pub fn list_delegations(
     _seat_id: Option<String>,
     _active_only: Option<bool>,

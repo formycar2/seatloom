@@ -2,9 +2,9 @@
 // template+subtype drives Detail Pane layout, Route/Gate automation, and retrieval filters.
 // Missing/invalid template → generic markdown reader + visible warning in UI.
 
+use crate::objects::id::{ArtifactId, SessionId, WorkItemId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{ArtifactId, SessionId, WorkItemId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {

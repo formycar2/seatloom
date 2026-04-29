@@ -4,6 +4,7 @@ use seatloom_core::storage::workitem_store::WorkItemStore;
 /// List all WorkItems for the current project.
 /// Bounded assumption: project root is `std::env::current_dir()`.
 /// Sort: by `updated_at` descending.
+#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
 pub fn list_workitems() -> Vec<WorkItem> {
     let root = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -14,6 +15,7 @@ pub fn list_workitems() -> Vec<WorkItem> {
 }
 
 /// Create a new WorkItem.
+#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
 pub fn create_workitem(_title: String) -> Option<WorkItem> {
     // TODO: generate ID, write YAML, emit WorkItemCreated event
     None

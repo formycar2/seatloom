@@ -1,6 +1,6 @@
+use crate::objects::id::{PipelineId, PipelineRunId, WorkItemId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{PipelineId, PipelineRunId, WorkItemId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRun {
@@ -15,5 +15,8 @@ pub struct PipelineRun {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PipelineRunStatus {
-    Running, Completed, Failed, Aborted,
+    Running,
+    Completed,
+    Failed,
+    Aborted,
 }

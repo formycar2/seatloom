@@ -46,11 +46,7 @@ impl WorkItemStore {
                 source,
             })?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "yaml")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -58,7 +54,7 @@ impl WorkItemStore {
         for entry in entries {
             workitems.push(read_yaml::<WorkItem>(&entry.path())?);
         }
-        workitems.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        workitems.sort_by_key(|w| std::cmp::Reverse(w.updated_at));
         Ok(workitems)
     }
 }
@@ -122,7 +118,9 @@ mod tests {
     fn missing_workitems_dir_returns_empty_vec() {
         let dir = temp_dir("workitem-missing-dir");
         let store = WorkItemStore::new(&dir);
-        let items = store.list_workitems().expect("missing dir should return empty");
+        let items = store
+            .list_workitems()
+            .expect("missing dir should return empty");
         assert!(items.is_empty());
         fs::remove_dir_all(dir).expect("cleanup");
     }

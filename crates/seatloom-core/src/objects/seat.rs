@@ -3,10 +3,10 @@
 // Layer 2 (ProjectRoleBind) is per-project and stored separately.
 // Layer 3 (SeatDelegation) is a scoped overlay that does not rewrite identity.
 
+use crate::objects::id::{DelegationId, SeatId, WorkItemId};
+use crate::objects::session::Runtime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{SeatId, DelegationId, WorkItemId};
-use crate::objects::session::Runtime;
 
 /// Layer 1: Durable global seat identity. Stable across projects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,12 +48,24 @@ pub struct SeatDelegation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DelegationStatus { Active, Closed, Expired }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SeatRole {
-    ProductOwner, Architect, Verifier, Designer, Custom(String),
+pub enum DelegationStatus {
+    Active,
+    Closed,
+    Expired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SeatStatus { Active, Paused, Archived }
+pub enum SeatRole {
+    ProductOwner,
+    Architect,
+    Verifier,
+    Designer,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SeatStatus {
+    Active,
+    Paused,
+    Archived,
+}

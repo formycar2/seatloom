@@ -52,7 +52,7 @@ impl SessionStore {
                 sessions.push(read_yaml::<Session>(&meta_path)?);
             }
         }
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
         Ok(sessions)
     }
 }
@@ -92,7 +92,11 @@ mod tests {
         dir
     }
 
-    fn make_session(id: &SessionId, seat_id: &SeatId, created_at: chrono::DateTime<Utc>) -> Session {
+    fn make_session(
+        id: &SessionId,
+        seat_id: &SeatId,
+        created_at: chrono::DateTime<Utc>,
+    ) -> Session {
         Session {
             id: id.clone(),
             seat_id: seat_id.clone(),
@@ -113,7 +117,9 @@ mod tests {
     fn missing_sessions_dir_returns_empty_vec() {
         let dir = temp_dir("session-missing-dir");
         let store = SessionStore::new(&dir);
-        let sessions = store.list_sessions().expect("missing dir should return empty");
+        let sessions = store
+            .list_sessions()
+            .expect("missing dir should return empty");
         assert!(sessions.is_empty());
         fs::remove_dir_all(dir).expect("cleanup");
     }

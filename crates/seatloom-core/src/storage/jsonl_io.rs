@@ -80,10 +80,11 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), JsonlIoE
         path: path.to_path_buf(),
         source,
     })?;
-    file.write_all(b"\n").map_err(|source| JsonlIoError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    file.write_all(b"\n")
+        .map_err(|source| JsonlIoError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
     file.flush().map_err(|source| JsonlIoError::Flush {
         path: path.to_path_buf(),
         source,

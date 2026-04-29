@@ -1,6 +1,6 @@
+use crate::objects::id::{SeatId, WorkItemId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::objects::id::{WorkItemId, SeatId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
@@ -19,12 +19,23 @@ pub struct WorkItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkItemStatus {
-    Draft, Ready, Active, Blocked,
-    InReview, Verified, Done, Reopened, Drifted,
+    Draft,
+    Ready,
+    Active,
+    Blocked,
+    InReview,
+    Verified,
+    Done,
+    Reopened,
+    Drifted,
     // Event-first review/reissue path (AD-010, INT-05):
     // InReview → ReviewVerdictIssued event → Blocked → Ready → Active.
     // No durable Rejected/Rescoped states; verdict evidence lives in event payload.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Priority { Low, Medium, High }
+pub enum Priority {
+    Low,
+    Medium,
+    High,
+}

@@ -1,0 +1,190 @@
+//! Integration tests for the PostgreSQL real collaboration truth baseline.
+//!
+//! These tests require a running PostgreSQL instance seeded with the real collaboration data.
+//! They are marked `#[ignore]` so that `cargo test -p seatloom-core` passes without a DB.
+//!
+//! To run: ensure docker compose is up (cd infra/postgres && docker compose up -d),
+//! then run: cargo test -p seatloom-core -- --include-ignored
+//!
+//! Or use: scripts/verify-postgres-baseline.sh
+
+#[cfg(test)]
+mod db_baseline {
+    use seatloom_core::db::connection::{create_pool, DEFAULT_DATABASE_URL};
+    use seatloom_core::db::repositories::SeatloomDb;
+
+    async fn try_connect() -> Option<SeatloomDb> {
+        let pool = create_pool().ok()?;
+        let db = SeatloomDb::new(pool);
+        // Quick ping to see if the DB is available
+        if db.ping().await.is_ok() {
+            Some(db)
+        } else {
+            None
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run: cd infra/postgres && docker compose up -d"]
+    async fn db_ping_succeeds() {
+        let db = match try_connect().await {
+            Some(d) => d,
+            None => panic!("Cannot connect to {DEFAULT_DATABASE_URL}"),
+        };
+        db.ping().await.expect("postgres ping should succeed");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn seats_non_empty_and_contain_all_five() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let seats = db.list_seats().await.expect("seat list must succeed");
+        assert!(
+            seats.len() >= 5,
+            "expected ≥5 seeded seats, got {}",
+            seats.len()
+        );
+        let names: Vec<&str> = seats.iter().map(|s| s.name.as_str()).collect();
+        for expected in &["aegis", "lyra", "mira", "nimbus", "flux"] {
+            assert!(
+                names.contains(expected),
+                "missing expected seat: {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn flux_mira_delegation_persisted() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let del = db
+            .get_delegation("del-flux-acting-mira-001")
+            .await
+            .expect("delegation query must succeed");
+        let del = del.expect("delegation del-flux-acting-mira-001 must exist");
+        assert_eq!(del.from_seat_id, "seat-mira-001");
+        assert_eq!(del.to_seat_id, "seat-flux-001");
+        assert_eq!(del.status, "closed");
+        assert_eq!(del.workitem_id.as_deref(), Some("wi-009"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn all_six_workitems_seeded_as_done() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let items = db
+            .list_workitems()
+            .await
+            .expect("workitem list must succeed");
+        assert!(
+            items.len() >= 6,
+            "expected ≥6 seeded workitems, got {}",
+            items.len()
+        );
+        let done_ids: Vec<&str> = items
+            .iter()
+            .filter(|w| w.status == "done")
+            .map(|w| w.id.as_str())
+            .collect();
+        for wid in &["wi-001", "wi-scaffold", "wi-storage", "wi-hardening"] {
+            assert!(done_ids.contains(wid), "workitem {wid} should be done");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn artifacts_cover_t1_through_t7() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let all = db
+            .list_artifacts(None, None)
+            .await
+            .expect("artifact list must succeed");
+        assert!(!all.is_empty(), "artifact list must not be empty");
+        let templates: Vec<Option<&str>> = all.iter().map(|a| a.template.as_deref()).collect();
+        for expected in &[
+            "T1AuthorityDoc",
+            "T2RoleProfile",
+            "T3TaskPacket",
+            "T4Review",
+            "T5Acceptance",
+            "T6DailyMemory",
+            "T7GovernanceDoc",
+        ] {
+            assert!(
+                templates.contains(&Some(expected)),
+                "missing artifact family: {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn active_contract_set_present() {
+        let db = try_connect().await.expect("DB must be reachable");
+        for ar_id in &[
+            "ar-prd-v05",
+            "ar-interaction-v11",
+            "ar-ux-v11",
+            "ar-acceptance-v11",
+            "ar-arch-decisions",
+            "ar-arch-design",
+            "ar-product-truth",
+        ] {
+            let row = db.get_artifact(ar_id).await.expect("query must succeed");
+            assert!(row.is_some(), "artifact {ar_id} must be seeded");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn timeline_events_descending_order() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let events = db.list_events(50).await.expect("event list must succeed");
+        assert!(!events.is_empty(), "event list must not be empty");
+        for pair in events.windows(2) {
+            assert!(
+                pair[0].occurred_at >= pair[1].occurred_at,
+                "events not in descending order"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn handoffs_reference_valid_workitems() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let handoffs = db.list_handoffs().await.expect("handoff list must succeed");
+        assert!(
+            handoffs.len() >= 3,
+            "expected ≥3 seeded handoffs, got {}",
+            handoffs.len()
+        );
+        for handoff in &handoffs {
+            let wi = db
+                .get_workitem(&handoff.workitem_id)
+                .await
+                .expect("workitem query must succeed");
+            assert!(
+                wi.is_some(),
+                "handoff {} references missing workitem {}",
+                handoff.id,
+                handoff.workitem_id
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline"]
+    async fn role_bindings_cover_all_seats() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let bindings = db
+            .list_role_bindings_for_project("seatloom")
+            .await
+            .expect("role binding list must succeed");
+        assert!(
+            bindings.len() >= 5,
+            "expected ≥5 role bindings, got {}",
+            bindings.len()
+        );
+    }
+}
