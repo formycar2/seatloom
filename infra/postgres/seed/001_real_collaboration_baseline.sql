@@ -30,7 +30,7 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 INSERT INTO project_role_bindings (seat_id, project_id, role, authority_doc_refs, constraints, collaboration_template_ref, active_delegation_id)
 VALUES
-  ('seat-aegis-001',  'seatloom', 'supervisor',     ARRAY['docs/PRODUCT_TRUTH.md','docs/architecture-decisions.md'],  ARRAY[],                                          NULL, NULL),
+  ('seat-aegis-001',  'seatloom', 'supervisor',     ARRAY['docs/PRODUCT_TRUTH.md','docs/architecture-decisions.md'],  ARRAY[]::text[],                                          NULL, NULL),
   ('seat-lyra-001',   'seatloom', 'product_owner',  ARRAY['docs/PRODUCT_TRUTH.md','docs/prd-v0.5.md'],                ARRAY['file-first-coordination'],                 NULL, NULL),
   ('seat-mira-001',   'seatloom', 'designer',       ARRAY['docs/ux-spec-v1.1.md','docs/interaction-spec-v1.1.md'],    ARRAY['no-IA-redesign','ui-contract-only'],        NULL, NULL),
   ('seat-nimbus-001', 'seatloom', 'architect',      ARRAY['docs/architecture-design.md','docs/architecture-decisions.md'], ARRAY['no-runtime-widening','infrastructure-only'], NULL, NULL),
