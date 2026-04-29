@@ -4,7 +4,8 @@
 |------|------|
 | 文档 | Architecture Decisions v1.0 |
 | 状态 | Approved |
-| 更新时间 | 2026-04-27 |
+| 更新时间 | 2026-04-28 |
+| 对齐版本 | v0.5 contract set (AD-008–AD-012 added) |
 | 审批人 | 张小龙 |
 
 ---
@@ -98,7 +99,8 @@ SeatLoom 是开发者常驻工具，用户同时跑着 Codex、Claude Code、Cur
 │  ├── seatloom-core (library crate)                │
 │  │   ├── ledger: append-only event store          │
 │  │   ├── objects: Seat, Session, WorkItem, etc.   │
-│  │   ├── context: ContextPack compiler            │
+│  │   ├── data_engine: Data Engine (Pack Engine,   │
+│  │   │               Retrieval, Gate, Route)      │
 │  │   ├── adapter: wrapper_capture, native_attach  │
 │  │   ├── pipeline: runner + stage executor        │
 │  │   ├── reconcile: Git/FS ↔ Ledger sync          │
@@ -122,23 +124,31 @@ SeatLoom 是开发者常驻工具，用户同时跑着 Codex、Claude Code、Cur
 
 ---
 
-## AD-004: ContextPack — MVP 纯规则，不调 LLM
+## AD-004: Pack Engine — Worker/Supervisor Pack Types, Tiered Context, Deterministic Assembly
 
-**决定**：MVP 阶段 ContextPack Compiler 完全使用确定性规则，不调用任何 LLM。
+**决定**：MVP 阶段 Pack Engine（Data Engine 的核心子系统，原名 ContextPack Compiler）完全使用确定性规则，不调用任何 LLM。Pack Engine 负责为每次 session 启动或恢复组装结构化 Continuity Pack 文件。
 
-**流程**：Selector → Budgeter → Assembler → Verifier，每一步确定性。
+### Worker Pack vs Supervisor Pack
+
+| 维度 | Worker Continuity Pack (P0) | Supervisor Continuity Pack (P1) |
+|------|-----------------------------|----------------------------------|
+| 目标 | 执行任务的 agent seat | 跨任务协调的 seat（Lyra 等） |
+| 内容范围 | 当前 WorkItem + Tier 0/1/2 | 所有活跃 WorkItem + 跨工作面板 |
+| 默认预算 | 8192 tokens（可配置） | 32768 tokens（P1，可配置） |
+| 落地文件 | `launch_pack.md` | `supervisor_pack.md`（P1） |
+
+### Context Tiers（Worker Pack）
+
+| Tier | 内容 | 是否必放 |
+|------|------|---------|
+| Tier 0 | SeatIdentity + ProjectRoleBind + 协作模式 | 是 |
+| Tier 1 | 当前 WorkItem + AC、当前 branch + 最近 3 条 commit、最近 Checkpoint summary | 是 |
+| Tier 2 | 最近 Handoff purpose/outcome、最近失败 test（≤3 条） | 是 |
+| Optional | 最近 Artifact 摘要（≤5）、上一 session transcript 尾部（最后 3 轮）、文件引用列表 | 受预算裁剪 |
 
 ### Selector（选什么进包）
 
-必放项（硬编码优先级）：
-
-| 内容 | 来源 | 估算 token |
-|------|------|-----------|
-| WorkItem title + goal + AC | workitems/wi_xxx.yaml | ~200-500 |
-| 当前 branch + 最近 3 条 commit message | git log | ~100 |
-| 最近 Handoff 的 purpose + expected_outcome | handoffs/ho_xxx.yaml | ~200 |
-| 最近 Checkpoint 的 summary | sessions/ses_xxx/checkpoints/ | ~500 |
-| 最近失败的 test（最多 3 条） | 最近 test_report artifact | ~300 |
+Tier 0–2 必放项来源：Seat identity.yaml + workitems/wi_xxx.yaml + git log + sessions/checkpoints + artifact meta.yaml。
 
 选放项（按优先级排列，受预算裁剪）：
 
@@ -150,10 +160,10 @@ SeatLoom 是开发者常驻工具，用户同时跑着 Codex、Claude Code、Cur
 
 ### Budgeter（裁剪到预算内）
 
-- 默认预算：8192 tokens（可配置）
+- Worker 默认预算：8192 tokens（可配置，per-project）
 - 计算：1 token ≈ 4 字符英文 / 2 字符中文
-- 裁剪顺序：先砍选放（低优先级先移除），再压必放（截断 transcript → 截断 summary → 截断 artifact 摘要）
-- 极端情况：只保留 WorkItem + branch + 最近 Handoff
+- 裁剪顺序：先砍 Optional（低优先级先移除），再压 Tier 2，极端情况仅保留 Tier 0 + Tier 1
+- 超预算时 Verifier 记录 truncation 警告，不阻断输出
 
 ### Assembler（组装成 Markdown）
 
@@ -199,10 +209,17 @@ Do not re-do work that is already completed.
 | WorkItem 存在且有 AC | 无 AC 则标记警告 |
 | 引用文件路径存在 | 不存在则移除并标记 |
 | 总 token 在预算内 | 超预算则继续裁剪 |
+| Seat identity.yaml 存在（Tier 0） | 缺失则标记 tier0_missing，仅用 name fallback |
 
 **LaunchPack 永远是落地的 `.md` 文件**，即使自动注入也先写文件再注入，保证可审计可回溯。
 
-**P1 扩展**：引入 LLM 对超预算内容做有损压缩。
+### 降级顺序
+
+1. 原生 session resume（工具自带，如 Codex `--resume`）
+2. Tier 0–2 Worker Pack from structured Checkpoint + Ledger
+3. 最小恢复：仅 WorkItem + AC + 最近 Handoff
+
+**P1 扩展**：引入 LLM 对超预算内容做有损压缩；Supervisor Pack 组装；定时 Checkpoint（每 15 分钟）。
 
 ---
 
@@ -243,6 +260,170 @@ Do not re-do work that is already completed.
 3. **用户手动触发**：GUI 按钮或 `seatloom reconcile`
 
 MVP 不做文件监听（无 daemon），依赖启动时 + 手动 + Pipeline 前的三个触发点覆盖。
+
+---
+
+*本文档记录所有已确认的架构决定。后续决定追加到本文件。*
+
+---
+
+## AD-008: Dual-Key Artifact Typing — template + subtype
+
+**决定**：Artifact 的分类模型从平坦的 `ArtifactKind` 枚举改为双键模型（`template` + `subtype`），与协调文档系统的 T1-T7 分类法对齐（DOCUMENT_TEMPLATES.md §11.1）。
+
+**双键模型**：
+- `template: Option<ArtifactTemplate>` — 文件族（T1-T7），从 markdown header 字段提取
+- `subtype: Option<String>` — 具体子类型，经 DOCUMENT_TEMPLATES.md §11.1 allow-list 验证
+- `subtype_valid: Option<bool>` — `None`=待验证；`true`=有效；`false`=降级模式
+- `system_kind: Option<SystemArtifactKind>` — 系统生成类型（DiffSummary, TestReport 等），不携带协调文档结构
+
+**Template 枚举**：
+
+| 枚举值 | 文件族 |
+|--------|--------|
+| T1AuthorityDoc | 权威文档（产品文档、ADR） |
+| T2RoleProfile | 角色档案 |
+| T3TaskPacket | 任务包（WorkItem packet, handoff） |
+| T4Review | 评审文档 |
+| T5Acceptance | 验收文档 |
+| T6DailyMemory | 日常记忆、session summary |
+| T7GovernanceDoc | 治理文档 |
+
+**降级行为**：`template` 或 `subtype` 缺失/无效时，使用通用 markdown reader + UI 显示可见警告（不阻断展示）。
+
+**理由**：v0.5 引入了丰富的协调文档系统（Inbox routing、Detail Pane layout、Gate automation），需要统一的类型键来驱动渲染逻辑和路由规则。系统生成 artifact（DiffSummary 等）不携带文档结构，用 `system_kind` 单独表达。
+
+---
+
+## AD-009: Seat Three-Layer Model and Delegation Overlay
+
+**决定**：Seat 对象从平坦结构改为三层模型，分离全局身份、项目角色绑定和协作模板引用。委托操作通过 `SeatDelegation` overlay 实现，不修改原始所有权历史。
+
+**三层模型**：
+
+| 层 | 结构 | 作用域 | 存储路径 |
+|----|------|--------|---------|
+| Layer 1 | `SeatIdentity` | 全局 | `seats/<name>/identity.yaml` |
+| Layer 2 | `ProjectRoleBind` | 每项目 | `seats/<name>/role-bindings/<project>.yaml` |
+| Layer 3 | CollaborationTemplate 引用 | 每项目（引用） | `seats/<name>/role-bindings/<project>.yaml` 内的 `collaboration_template_ref` 字段 |
+
+**SeatDelegation**：
+- 字段：`id`, `issuer_seat_id`, `from_seat_id`（原始所有者）, `to_seat_id`（代理执行者）, `workitem_id?`, `scope_description`, `issued_at`, `expires_at?`, `status`
+- 状态机：`Active → Closed | Expired`
+- 不修改 `from_seat` 的历史记录；Timeline 展示格式：`{to_seat} acting for {from_seat} on {workitem_id}`
+- Ledger 事件：`SeatDelegationIssued`, `SeatDelegationClosed`
+- 存储：`delegations/del_xxxxxxxx.yaml`
+
+**理由**：三层分离使 Seat 身份在项目间可复用（全局 identity）。委托是高频协作需求（US-P0-04），overlay 模式比修改所有权字段更能保证可审计性，原始 from_seat 的 Ledger 历史不受污染。
+
+---
+
+## AD-010: WorkItem Review Failure — Event-First Contract
+
+**决定**：评审失败和范围重定义通过 Ledger 事件链记录，不新增持久 WorkItem 状态。WorkItem 经评审后通过现有生命周期重新入队。
+
+**事件链（INT-05）**：
+
+| 事件 | Payload | 触发时机 |
+|------|---------|---------|
+| `ReviewVerdictIssued` | `verdict`（reject/pass）、`reason`、`linked_evidence_artifact_id` | 评审人选择 Reject delivery / Return |
+| `WorkItemRescoped` | `scope_change_summary`、`new_ac_refs` | 负责人修订 AC / 范围后重新发起 |
+
+**生命周期重入路径**：
+- `InReview → (ReviewVerdictIssued: reject) → Blocked`（工作项重新进入 Blocked 状态，等待修订）
+- 负责人修订 AC → `WorkItemRescoped` 事件 → `Blocked → Ready → Active`（通过标准重发/再分配路径）
+
+**不新增**：`Rejected` 和 `Rescoped` 不作为持久 `WorkItemStatus` 变体。评审决定的可溯源性通过 `ReviewVerdictIssued` 事件 payload 和 `linked_evidence_artifact_id` 保证。
+
+**理由**：INT-05 明确要求 WorkItem 通过现有生命周期规则和新的 Handoff/分配重新进入活跃路径，而非停留在孤立的拒绝状态。事件优先模型保证了责任链可审计，同时不扩展 WorkItem 状态机的合约表面。
+
+---
+
+## AD-011: Data Engine Retrieval Order — Fixed Layer Sequence
+
+**决定**：所有 SeatLoom 内的证据检索必须严格按固定顺序执行，每一层未满足时才进入下一层。
+
+**层次顺序（不可逆乱）**：
+
+| Layer | 方式 | P0/P1 |
+|-------|------|-------|
+| L1 | 结构化索引（template, subtype, id, status, workitem_id, object refs 精确匹配） | P0 |
+| L2 | 全文检索（Artifact 正文 + Ledger payload 文本） | P0 |
+| L3 | 语义检索（embedding 相似度） | P1 |
+| L4 | LLM 解释（基于前三层已检索证据做总结） | P1 |
+
+**P0 要求**：在不启用 L3/L4 的前提下，INT-13（精确证据搜索）必须能返回可用的结构化和全文检索命中（acceptance-spec E-02）。
+
+**P0 存储后端（已冻结，BLOCKER-001 已关闭）**：L1/L2 使用 **SQLite FTS5** 作为持久化存储。内存索引仅作为启动时的热缓存/投影，不是权威持久存储。PostgreSQL 或 pgvector 在 P1 语义检索阶段再评估。
+
+| 层 | 后端 | 角色 |
+|----|------|------|
+| L1 结构化索引 | SQLite FTS5（虚表，含 `template`, `subtype`, `id`, `status`, `workitem_id`, `object_refs` 字段） | 持久化权威存储 |
+| L2 全文检索 | SQLite FTS5（Artifact 正文 + Ledger payload 文本） | 持久化权威存储 |
+| 内存索引 | 启动时从 SQLite 重建的热投影 | 缓存加速，不写入 |
+| L3 语义检索 | P1，embedding store（TBD） | — |
+| L4 LLM 解释 | P1，基于 L1-L3 证据 | — |
+
+**理由**：固定检索顺序是 SeatLoom 证据可信度的基础。SQLite FTS5 满足本地优先、无外部服务依赖、重启持久化三个 P0 要求（来自 US-P0-10 / INT-13 / acceptance-spec E-02）。升级路径保留：L3 不阻塞 L1/L2 冻结。
+
+---
+
+## AD-012: Interactive Prompt Architecture — Classification, Policy, Bounded Evidence, Audit
+
+**决定**：包裹会话（wrapped session）中的交互式 prompt 作为一等架构状态建模，覆盖分类、策略、有界证据窗口、辅助预算和审计事件链。
+
+### Prompt 状态扩展（SessionStatus）
+
+`SessionStatus` 新增 `PromptBlocked` 变体，表示会话因等待交互式输入而暂停。与 `InputRequired`（SeatLoom 系统级请求）区分：`PromptBlocked` 特指 wrapped runtime 自身发出的 stdin 阻塞。
+
+### Prompt 分类模型（PromptKind）
+
+| 分类 | 语义 | 示例 |
+|------|------|------|
+| `Deterministic` | 固定选项，可确定性注入 | y/n、数字选项 |
+| `WizardMenu` | 多步骤向导或菜单 | 安装选项序列 |
+| `Freeform` | 任意文本输入 | 文件路径、名称 |
+| `Sensitive` | 凭证、密钥、OTP、sudo | 密码、token |
+
+### Prompt 策略模型（PromptPolicy）
+
+| 策略 | 语义 | 处理路径 |
+|------|------|---------|
+| `AutoAllowed` | SeatLoom 可直接注入，无需确认 | 仅限 `Deterministic` 且策略配置允许 |
+| `NeedsApproval` | 注入前需用户确认 | `WizardMenu` / `Freeform` |
+| `HumanRequired` | 必须人工直接输入 | `Sensitive`（Supervisor assist 禁用） |
+
+### 有界证据窗口（BoundedPromptWindow）
+
+Prompt 检测和 Supervisor assist 必须基于有界窗口（最后 10-20 行终端输出 + Tier 0-2 结构化上下文），不得重读完整终端历史。
+
+### 用户动作
+
+| 动作 | 适用场景 | 语义 |
+|------|---------|------|
+| `Approve` | `AutoAllowed` / `NeedsApproval` | 确认并注入 |
+| `HumanTakeover` | 任意场景 | 用户直接接管终端输入 |
+| `SupervisorAssist` | 非 `Sensitive`，预算内 | Supervisor 基于有界窗口提议输入，用户确认 |
+| `Stop` | 任意场景 | 停止会话，记录 prompt 事件 |
+
+### Assist 预算约束
+
+| 约束 | 值（默认，可配） | 超限处理 |
+|------|-----------------|---------|
+| `max_assist_steps` | 5 步 | 超限强制 HumanTakeover |
+| `max_assist_tokens` | 2048 tokens | 超限强制 HumanTakeover |
+| Sensitive prompt | 禁用 SupervisorAssist | 永远 HumanRequired |
+
+下一步提议（expected_next_prompt）不匹配时，强制 HumanTakeover 并记录偏差事件。
+
+### 审计事件
+
+| 事件 | Payload 关键字段 |
+|------|----------------|
+| `PromptDetected` | `kind`, `policy`, `bounded_window_ref`（指向有界快照路径）, `risk` |
+| `PromptInputInjected` | `operator`（`user` / `supervisor`）, `scope`（`once` / `session` / `project`）, `result`, `assist_steps_used?`, `assist_tokens_used?` |
+
+**理由**：INT-16 / US-P0-11 / UX-12 将交互式 prompt 处理定义为 P0 功能。无架构建模会导致：实现时将 prompt 处理散落在 adapter 层、无审计事件、Supervisor assist 无预算约束、sensitive prompt 保护缺失。
 
 ---
 

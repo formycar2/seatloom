@@ -32,7 +32,7 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 | 2026-04-27 | Multi-project switching promoted to P0 | Project switcher/recent projects/state memory/switch protection/all-projects summary are required in first delivery | Aegis / Mr. Zhang |
 | 2026-04-27 | File-first coordination adopted | All substantial outputs require durable writeback under `docs/coordination/`; terminal output is summary-only with artifact paths | Lyra |
 | 2026-04-27 | File-first coordination protocol adopted | Durable writeback required for all key outputs. Terminal messages become summaries + artifact paths | Aegis / Lyra / Mr. Zhang |
-| 2026-04-27 | Active product contract frozen for current cycle | Execution contract = `docs/prd-v0.4.md` + `docs/interaction-spec-v1.0.md` + `docs/acceptance-spec-v1.0.md`; approved constraints = `docs/mvp-scenarios.md` + `docs/architecture-decisions.md` | Lyra |
+| 2026-04-27 | Active product contract frozen for current cycle | Execution contract = `docs/archive/product-history/prd-v0.4.md` + `docs/archive/product-history/interaction-spec-v1.0.md` + `docs/archive/product-history/acceptance-spec-v1.0.md`; approved constraints = `docs/archive/product-history/mvp-scenarios.md` + `docs/architecture-decisions.md` | Lyra |
 | 2026-04-27 | Team precedence rule frozen | Approved `docs/` -> latest accepted coordination artifacts -> draft artifacts -> terminal/chat never alone | Lyra |
 | 2026-04-27 | Mira redesign rejected for SG-01 baseline | Acceptance verdict = `FAIL`; shell, Inbox, Timeline, Handoff, and keyboard contract gaps block Nimbus full handoff | Lyra |
 | 2026-04-27 | SG-01 UI Contract Baseline placed on Hold | Four P0 contract conflicts and Mira P0 UI gaps remain unresolved in files | Lyra / Aegis |
@@ -43,6 +43,90 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 | 2026-04-27 | Mira seat migration requires checkpoint-first handoff | Before replacing a saturated seat/runtime, freeze the current seat and create one durable-source checkpoint commit that excludes generated artifacts | Lyra |
 | 2026-04-28 | Flux temporarily reassigned as acting Mira seat | Mira is offline; Flux receives a constrained UI/UED contract-repair packet under Lyra supervision with no authority to redesign the product IA | Lyra |
 | 2026-04-28 | Frontend demo refreshed to a Chinese high-density baseline | Core demo content now follows the real `2026-04-28` coordination narrative; `ui/src/stores/useDataStore.ts` is authoritative, `ui/src/mockData.ts` is compatibility-only, and locale fallback no longer reintroduces English | Lyra |
+| 2026-04-28 | Multica benchmark selected as a product-pattern reference | SeatLoom should borrow runtime capability truth, runtime observability, execution-history evidence, visible automation, and mixed-script typography discipline, but should not adopt an issue-board center or notification-driven inbox semantics | Lyra |
+| 2026-04-28 | Aegis accepted Lyra's Multica adaptation guardrails | The team is aligned on five key constraints: `claimed` as event-first, blocker reporting through existing Inbox rules, Timeline live as optional, bounded seat autonomy, and layered runtime-health delivery | Lyra / Aegis |
+| 2026-04-28 | Collaboration Protocol v1.0 conditionally accepted | The operating model is approved, but full adoption is gated on alignment edits for packet filename convention, gate-decision storage path, and explicit language/channel rules | Lyra |
+| 2026-04-28 | Implementation remains frozen until cross-priority product clarity is documented | P0, P1, and P2 must be explicit in user value, data flow, and scenario coverage before implementation begins, to avoid contract churn and post-start reinterpretation | Lyra |
+| 2026-04-28 | Cross-priority pre-implementation baseline issued | Lyra published the P0/P1/P2 value map, dataflow map, and scenario matrix as the planning baseline for Mira/Nimbus/Flux before any implementation start | Lyra |
+| 2026-04-28 | Interaction Design comprehensive review completed | 4 Critical / 6 High / 6 Medium issues identified; review filed at `docs/coordination/reviews/2026-04-28-interaction-design-review.md`; pending Lyra accept/dispute | Aegis |
+| 2026-04-28 | Collaboration Protocol v1.0 drafted | Role collaboration graph, trigger-action table, 5 message contract schemas (Task/Delivery/Verification/Gate/Blocker), prohibited paths, escalation rules. Filed at `docs/coordination/COLLABORATION_PROTOCOL.md` | Aegis |
+| 2026-04-28 | Process mapping review completed | Full 2-day workflow mapped to SeatLoom object model (5 seats, 11 WIs, 6 sessions, 7 handoffs, 27 artifacts). 3 product gaps found: seat delegation, supervisor rehydration, WorkItem rejection flow. Filed at `docs/coordination/reviews/2026-04-28-process-mapping-review.md` | Aegis |
+| 2026-04-28 | PRD v0.5 draft issued as the next contract candidate | The new PRD integrates the five core-value modules - Data Engine, Seat three-layer architecture, Playbook system, Supervisor Layer, and Artifact review - and enforces the rule that every P0/P1/P2 feature must exist in story, interaction, and UX form before implementation | Lyra |
+| 2026-04-28 | Interaction Spec v1.1 draft issued for the v0.5 contract | The interaction spec now covers supervisor-driven creation, seat identity and delegation, deterministic projection, review fail/reissue, runtime continuity, playbooks, and bounded automation proposals | Lyra |
+| 2026-04-28 | UX Specification v1.1 draft issued for the v0.5 contract | The UX spec now defines the shell, Supervisor Command Bar, seat surfaces, work loop, continuity views, artifact review workspace, playbook library, and proposal tray aligned to the new v0.5 stories | Lyra |
+| 2026-04-28 | PRD feature-value hard gate adopted | Every in-scope feature must now explicitly answer the user pain solved, the cost of omission, and the user-behavior change after delivery; any feature that fails this test is removed from delivery scope and blocked from implementation | Lyra / Mr. Zhang |
+| 2026-04-28 | Ecosystem and retrieval inputs integrated into the v0.5 contract set | The PRD, interaction spec, and UX spec now absorb Seat Skill vs Playbook separation, Seat Card capability truth, tiered context packs, structured checkpoints, layered retrieval, budget enforcement, live progress, and execution transparency, while explicitly deferring MCP-server exposure and editable execution-template forking until separate value proof exists | Lyra |
+| 2026-04-28 | Product Truth Index activated as the canonical entrypoint | All new product work must start from `docs/PRODUCT_TRUTH.md`; the active contract set is now PRD v0.5 + Interaction Spec v1.1 + UX Spec v1.1 + Acceptance Spec v1.1 + architecture support docs | Lyra |
+| 2026-04-28 | Acceptance Spec v1.1 issued as the active verification contract | Acceptance is now aligned to the v0.5 contract set with gate model, story coverage, deterministic-first verification, and evidence-package requirements | Lyra |
+| 2026-04-28 | Legacy product docs moved into one archive directory | Superseded PRDs, scenarios, UX/interaction baselines, positioning, validation, and Acceptance Spec v1.0 now live under `docs/archive/product-history/` to prevent parallel-source drift | Lyra |
+| 2026-04-28 | Document Templates v1.0 conditionally adopted and integrated into the product contract | The seven coordination template classes now serve as first-class Artifact types in the active PRD/spec set, while repo-wide file migration remains staged | Lyra |
+| 2026-04-28 | Artifact template+subtype dual-key contract adopted | The active v0.5 PRD/spec set now uses `template+subtype` as the canonical artifact classification key for Detail Pane rendering, Route/Gate automation, and evidence-search filters, with subtype allow-lists sourced from `docs/coordination/DOCUMENT_TEMPLATES.md` Section 11.1 | Lyra |
+| 2026-04-28 | Artifact objectization baseline accepted | The prototype now treats seeded coordination documents as typed Artifact objects across Timeline, Inbox, and Detail, exposes dual-key metadata in detail, enforces the allow-list in code, and provides Timeline `template` / `subtype` filters; this closes the scoped baseline without lifting the broader implementation freeze | Lyra |
+| 2026-04-28 | Nimbus architecture baseline alignment packet issued | Nimbus must align `docs/architecture-design.md` and `docs/architecture-decisions.md` upward to the active v0.5 contract set before broad implementation starts, using `docs/PRODUCT_TRUTH.md` as the single entrypoint and the new task packet as the only execution scope | Lyra |
+| 2026-04-28 | Nimbus architecture baseline alignment delivered | All 8 known drift areas resolved across `docs/architecture-design.md` (Seat three-layer, Artifact dual-key, WorkItem Rejected/Rescoped, Data Engine module, Retrieval order, Delegation overlay) and `docs/architecture-decisions.md` (AD-004 rewritten, AD-008–AD-011 added). BLOCKER-001 (retrieval storage backend) surfaced for Lyra/Aegis decision. | Nimbus |
+| 2026-04-28 | Nimbus architecture baseline alignment conditionally accepted | Lyra accepted the repaired subset but kept architecture freeze on hold because `US-P0-11` / `INT-16` / `UX-12` prompt-state architecture is still missing and durable `Rejected` / `Rescoped` WorkItem states drift from the active event-first review/reissue contract. | Lyra |
+| 2026-04-28 | BLOCKER-001 resolved: SQLite FTS5 is the P0 retrieval backend | Local-first deterministic evidence search needs a persistent embedded store; PostgreSQL remains a future option and any in-memory index is cache-only. | Lyra |
+| 2026-04-28 | Operator summary + direct dispatch contract frozen | Human-facing terminal updates must keep `Decision` / `Actions` / `Blockers` / `Artifact paths` in that order, and Lyra must notify the next seat directly with artifact references once the owner is known. | Lyra |
+| 2026-04-28 | Module-topology follow-up synchronized into INT/UX | `US-P3-01` is now paired with `INT-P3-01` and `UX-P3-01`, making module session groups, scoped delegation overlays, and evidence-based replication review visible in the active contract set. | Lyra |
+| 2026-04-29 | Nimbus prompt+retrieval delta delivered | All ABA-01–ABA-04 findings closed: AD-012 prompt architecture added, Rejected/Rescoped states removed (event-first restored), AD-011 SQLite FTS5 frozen, dual-key metadata applied. Architecture freeze lifted pending Lyra ACCEPT verdict. | Nimbus |
+| 2026-04-28 | Nimbus prompt+retrieval delta accepted; Architecture Design Baseline Freeze passed | Lyra confirmed the architecture delta closes prompt-state modeling, event-first review/reissue, SQLite FTS5 retrieval freeze, and typed-delivery governance. Broad implementation remains blocked by Product Baseline Freeze and SG-01 UI hold. | Lyra |
+| 2026-04-28 | Nimbus architecture doc hygiene closure accepted | The remaining low-severity architecture documentation issues are closed: `§12.4` heading restored, duplicate footer removed, and the decisions header now reflects `AD-008–AD-012`. No residual architecture-baseline follow-up remains. | Lyra |
+| 2026-04-28 | Review change tier contract synchronized into INT/UX/Acceptance | The active interaction, UX, and acceptance specs now make `L1/L2/L3` review follow-up routing, the structured `change_tier_record`, and the `L2` compact-ack rule visible and testable. | Lyra |
+| 2026-04-28 | SG-01 verification paused pending UI contract realignment | The active v0.5 product/interaction/UX contract has moved ahead of the current prototype; Flux is rerouted from verifier sequencing to acting-Mira UI realignment review before any new SG-01 baseline verdict or evidence run. | Lyra |
+| 2026-04-28 | Nimbus foundation scaffold packet issued | With the architecture baseline already accepted, Nimbus may begin non-user-facing foundation scaffolding in code (workspace, core types, enums, event families, minimal compile-safe stubs) without waiting for SG-01 UI realignment to finish. | Lyra |
+| 2026-04-28 | Mira resumed as primary UI owner; v0.5 UI realignment packet issued | Mira is back online and retakes UI ownership from Flux's temporary acting-Mira role. The next UI step is active-contract realignment and code implementation against the v0.5 truth set, not SG-01 re-verification. | Lyra |
+| 2026-04-28 | Mira restart moved into staged UI code-gap scanning | After `S1`-`S3` re-established the active truth set, Lyra requires small read-only gap scans before any new v0.5 implementation slice resumes, with bounded parallelism only when explicitly authorized. | Lyra |
+| 2026-04-28 | Mira shell/artifact gap scan accepted; workloop/continuity scan opened | The first read-only UI inspection slice found shell, Inbox, Timeline, and typed Artifact surfaces broadly aligned, so Lyra advanced the restart into a second scan focused on review tiers, continuity tiers, prompt-state visibility, and seat capability truth. | Lyra |
+| 2026-04-28 | Mira gap scan completed; implementation resumes as micro-slices | The second scan confirmed the shared type spine is ready while Handoff, WorkItem review, Session prompt-state, and Seat capability surfaces still need UI work. Lyra restarted implementation from the smallest visible slice: the Handoff state strip. | Lyra |
+
+| 2026-04-28 | Mira S5A handoff slice accepted | Lyra accepted Mira's first post-scan UI micro-slice: Handoff detail now shows the canonical state strip, and the latent `Working` handoff label build fix in `ui/src/utils/display.ts` is accepted as a safe exception. | Lyra |
+| 2026-04-28 | Mira S5 implementation queue issued with max-3 concurrency | Lyra converted the remaining v0.5 UI realignment into queued micro-slices (`S5B`-`S5F`) with explicit file ownership, dependency order, and a hard cap of three active packets to balance throughput and Gemini stability. | Lyra |
+| 2026-04-28 | Mira S5B-S5D UI slices accepted; S5E unlocked | Lyra accepted the WorkItem review tier strip, the Session prompt-blocked surfaces, and the Seat capability-truth card after local build re-verification. `S5E` is now unlocked, while `S5F` remains blocked behind the continuity preview slice. | Lyra |
+| 2026-04-28 | Mira S5E continuity preview accepted; S5F unlocked | Lyra accepted the continuity-pack preview slice in `SessionDetail`, confirmed local build success, and released the final seeded-visibility patch so the repaired surfaces can be proven with realistic in-app data. | Lyra |
+| 2026-04-28 | Mira S5F seeded-visibility patch conditionally accepted; light-theme rebase issued | The proof-state seeding is sufficient and the build passes, but a small Chinese-copy cleanup remains and is now folded into the next visual packet before theme acceptance can close. | Lyra |
+| 2026-04-28 | Prototype theming switched to preset-system mode | Lyra rejected one-off component recoloring as the implementation method and replaced the single-palette rebase with a tokenized 3-preset theme system plus persisted in-app selection. | Lyra |
+| 2026-04-28 | Mobile companion support promoted into the active v0.5 contract | PRD/Interaction/UX now treat mobile as a required companion channel for monitoring, approval/takeover, interrupt triage, and auditable short-feedback return loops, while explicitly rejecting full mobile workbench scope and keeping the requirement out of Data Engine rules. | Lyra |
+| 2026-04-28 | Mira theme preset system conditionally accepted; close-out packet issued | The preset-system direction is accepted as the active visual baseline, S5F copy-hygiene is closed, and only selector naming plus persisted-value fallback remain before full closure. | Lyra |
+| 2026-04-28 | Mira theme preset system fully accepted and closed | The close-out packet resolved visible preset naming and persisted-value fallback, so the preset-system baseline is now fully accepted for the prototype shell. | Lyra |
+
+| 2026-04-28 | Mira S6 interaction-baseline closure queue issued | After theme acceptance, Lyra restarted the smallest remaining v0.5 UI closure work on default Project Overview, running-session terminal reveal, shortcut discoverability, and deterministic Inbox/WorkItems search under a max-3 concurrency rule. | Lyra |
+| 2026-04-28 | Mira S6C deterministic list search accepted; S6A and S6B returned | The list-search slice is fully acceptable, but shell truth and shortcut truth still need one bounded rework before the S6 queue can close. | Lyra |
+| 2026-04-28 | Mira S6AB shell truth-fix packet issued | Lyra returned fabricated Project Overview values, the missing Inbox session terminal auto-open path, and the unsupported shortcut-help entry as one serial micro-fix packet. | Lyra |
+| 2026-04-28 | Acceptance Spec v1.1 synchronized to prompt and mobile P0 stories | The active acceptance contract now explicitly covers interactive prompt handling plus the mobile monitor, approval, feedback, and interrupt loops so new implementation slices can be reviewed against the same v0.5 truth set. | Lyra |
+| 2026-04-28 | Mira S6AB accepted; S6 interaction-baseline queue closed | Lyra verified the truth-fix delivery, re-ran the UI build, and closed the remaining shell and shortcut gaps from the S6 queue. | Lyra |
+| 2026-04-28 | Nimbus foundation scaffold delivered | Full Rust/Tauri workspace scaffold complete: 62 files, 9 seatloom-core subsystems, all AD-008–AD-012 types, AgentAdapter trait, 10 Tauri command stubs, CLI binary. Compile verification deferred (ENV-001: cargo not on Nimbus seat). | Nimbus |
+| 2026-04-28 | Mira S7A mobile truth recheck failed; queue/count fix packet issued | The mobile shell direction is accepted, but `pending approvals / gates` still under-counts seed-backed action items and the urgent mobile queue still admits FYI rows. `S7B` remains blocked until the serial queue/count patch is accepted. | Lyra |
+| 2026-04-28 | Nimbus foundation scaffold conditionally accepted; bounded fix packet issued | The scaffold structure is materially aligned, but `src-tauri/src/main.rs` lacks a minimal binary entrypoint and the delivery artifact uses an invalid `T3` subtype (`delivery`). Nimbus must close those two bounded items before scaffold closure. | Lyra |
+| 2026-04-29 | Nimbus scaffold recheck closed the entrypoint blocker; metadata hold remains | Lyra rechecked `src-tauri/src/main.rs` and confirmed the minimal Tauri `main()` now exists. The scaffold packet stays `CONDITIONAL` because the delivery artifact still uses an invalid `T3` subtype and the required bounded-fix delivery artifact is still missing. | Lyra |
+| 2026-04-29 | Mira S7A mobile queue/count alignment accepted under Lyra takeover | Mira went offline before closing the final mobile truth hold, so Lyra completed the bounded deterministic queue/count patch directly, re-ran the UI build, and closed the remaining `S7A` mobile companion gap. | Lyra |
+| 2026-04-29 | Nimbus foundation scaffold close-out accepted | Nimbus normalized the scaffold delivery metadata to valid `T3/task`, published the bounded-fix delivery artifact, and fully closed the scaffold packet; `ENV-001` remains a non-blocking compile-environment note only. | Lyra / Nimbus |
+
+| 2026-04-29 | Nimbus storage + ledger foundation packet issued | With the scaffold packet closed, Nimbus moves into deterministic project IO and Ledger primitives without widening into runtime wiring or UI work. | Lyra |
+| 2026-04-29 | Flux SG-01 post-S7A verification conditionally accepted with corrected findings | Lyra accepted the build-backed verification sweep, disputed the already-closed continuity-preview and prompt-action holds, and narrowed the live SG-01 blockers to delegation overlay plus Supervisor Command Bar wiring. | Lyra / Flux |
+| 2026-04-29 | Mira re-entry delta scan packet issued | Mira is back online; Lyra issued a read-only context recovery packet so the next UI slice starts from the corrected SG-01 truth instead of reopening closed surfaces. | Lyra |
+| 2026-04-29 | Nimbus storage + ledger foundation accepted | Deterministic YAML/JSONL project IO and Ledger primitives are accepted as scope-complete; real Rust compile verification remains a separate `ENV-001` follow-up. | Lyra |
+| 2026-04-29 | Mira re-entry delta scan accepted; SG-01 closure narrowed to two UI packets | Accepted shell, continuity, prompt, theme, and mobile surfaces stay closed; only Supervisor Command Bar and scoped delegation overlay remain for `SG-01` UI closure. | Lyra |
+| 2026-04-29 | Mira SG-01 closure packets issued | `S7B` Supervisor Command Bar and `S7C` scoped delegation overlay were issued with disjoint write sets and a max-2 active-packet rule. | Lyra |
+| 2026-04-29 | Mira S7B Supervisor Command Bar conditionally accepted | Core command-bar behavior is accepted and the build is green; only recent-command focus disclosure and `Enter`-to-confirm remain for bounded close-out. | Lyra |
+| 2026-04-29 | Mira S7C scoped delegation overlay conditionally accepted | Delegation visibility is accepted across WorkItem, Seat, and Timeline surfaces; only explicit issuer capture and routable-owner gating remain for bounded close-out. | Lyra |
+| 2026-04-29 | Mira SG-01 UI close-out packet issued | The last SG-01 UI hold is constrained to four fixes only: command-bar recents, keyboard confirm, delegation issuer capture, and owner-safe delegation gating. | Lyra |
+| 2026-04-29 | Nimbus seat registry + delegation storage packet issued | The next engineering slice is limited to durable seat identity, project role binding, and scoped delegation persistence on top of the accepted storage foundation. | Lyra |
+| 2026-04-29 | Mira S7C scoped delegation overlay accepted | The close-out recheck confirms explicit issuer capture, owner-safe overlay gating, and green build status, fully closing the delegation slice. | Lyra |
+| 2026-04-29 | Mira SG-01 close-out recheck reduced the hold to one keyboard gap | Recent intents, explicit issuer capture, and owner-safe delegation gating are now accepted; only proposal-surface `Enter` confirm remains unresolved in the Supervisor Command Bar. | Lyra |
+| 2026-04-29 | Mira S7B enter-confirm hotfix packet issued | The final SG-01 UI task is narrowed to a single-file keyboard fix in `SupervisorCommandBar.tsx`, with no other surface reopen allowed. | Lyra |
+| 2026-04-29 | Mira S7B enter-confirm hotfix accepted | Lyra rechecked the bounded keyboard fix, confirmed `Enter` now truthfully confirms the live Supervisor proposal surface, and reran `cd ui && pnpm build` successfully. | Lyra |
+| 2026-04-29 | SG-01 UI Contract Baseline passed | The accepted S7B hotfix closes the last UI hold; SG-01 is now `GO` and no longer blocks the shared prototype baseline. Product Baseline Freeze and later stage-gate review remain separate governance items. | Lyra |
+| 2026-04-29 | Flux final v0.5 UI evidence packet issued | With `SG-01` now closed, Flux is reactivated in read-only mode to publish the clean evidence pack for the accepted UI baseline without reopening any accepted surface. | Lyra |
+| 2026-04-29 | Flux final v0.5 UI evidence packet accepted | Flux published a clean 10/10 PASS evidence pack against the accepted `SG-01` baseline; Lyra re-ran `cd ui && pnpm build` plus `cd ui && npx tsc --noEmit`, and no accepted UI surface was reopened. | Lyra / Flux |
+| 2026-04-29 | Nimbus seat registry + delegation storage accepted | Deterministic seat identity, project role binding, and scoped delegation persistence are accepted as scope-complete; `ENV-001` remains a separate compile-environment follow-up only. | Lyra / Nimbus |
+| 2026-04-29 | Product Baseline Freeze stage-review request issued to Aegis | With UI and bounded storage baselines accepted, Lyra has triggered the next Aegis stage review to decide `Product Baseline Freeze`, `Nimbus Implementation Handoff`, and `ENV-001` routing. | Lyra / Aegis |
+| 2026-04-29 | Flux UI visual theme + hover audit accepted | Flux delivered a fix-ready visual QA packet covering all three theme presets with five `P1` defects and eleven `P2` follow-ups; Lyra accepts it as the active evidence base for the next bounded UI styling repair cycle. | Lyra / Flux |
+| 2026-04-29 | Product Baseline Freeze closed at GO | Aegis's stage review confirmed the active truth set, accepted UI baseline, and accepted storage slices are sufficient for freeze closure; `ENV-001` remains a separate compile-verification track. | Lyra / Aegis |
+| 2026-04-29 | Mira P1 theme + hover fixes packet issued | The next UI cycle is bounded to Flux's five accepted `P1` defects only, with no broad palette redesign, no `P2` polish, and no repo-wide token migration. | Lyra / Mira |
+| 2026-04-29 | Mira P1 theme + hover fixes accepted | Lyra confirmed the five bounded `P1` visual defects are closed in the declared files, the shared UI build remains green, and the deferred `P2` list stays untouched. | Lyra / Mira |
+| 2026-04-29 | ENV-001 compile verification executed and conditionally accepted | Aegis executed the Flux verification packet on a Rust-capable fallback seat: `seatloom-core` compiles clean and all 9 tests pass; `seatloom-tauri` fails due to missing `src-tauri/icons/icon.png` (build-time Tauri asset, not code error). `ENV-001` is `RE-SCOPED` to the icon-asset gap only. | Aegis |
+| 2026-04-29 | Nimbus ENV-001 Tauri icon fix packet issued | Bounded fix packet to provide the missing icon asset so workspace-level `cargo check` passes and `ENV-001` can be fully closed. | Aegis |
+| 2026-04-29 | Flux P1 theme + hover verification packet issued | Flux is reactivated in read-only mode to verify that Mira's accepted `P1` repair packet truly closes the hover/theme defects without direct regressions. | Lyra / Flux |
 
 ## Milestone Status
 
@@ -59,12 +143,89 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 - [x] SG-01 Role Task Packets Reissued - AI-native v2 (2026-04-27, Lyra)
 - [x] Flux Acting-Mira Contract Repair Packet Issued (2026-04-28, Lyra)
 - [x] Frontend Demo Chinese High-Density Refresh (2026-04-28, Lyra)
-- [ ] Architecture Design Baseline (pending review)
-- [ ] Product Baseline Freeze (pending P0 conflict resolution)
-- [ ] SG-01 UI Contract Baseline (HOLD pending Mira recovery and re-review)
-- [ ] Nimbus Implementation Handoff (blocked by SG-01 Hold)
-- [ ] Flux Evidence Pack Ready
+- [x] Multica Product Benchmark Issued (2026-04-28, Lyra)
+- [x] Multica Benchmark Alignment Accepted by Aegis (2026-04-28, Lyra / Aegis)
+- [x] Collaboration Protocol v1.0 Review Issued - Conditional Adopt (2026-04-28, Lyra)
+- [x] Pre-Implementation Design Freeze Decision Issued (2026-04-28, Lyra)
+- [x] Cross-Priority Value/Dataflow/Scenario Baseline (2026-04-28, Lyra)
+- [x] PRD v0.5 Draft - Core Value Expansion (2026-04-28, Lyra)
+- [x] PRD v0.5 Value-Gate Reinforcement (2026-04-28, Lyra)
+- [x] PRD v0.5 Ecosystem + Retrieval Integration (2026-04-28, Lyra)
+- [x] Interaction Spec v1.1 Draft (2026-04-28, Lyra)
+- [x] UX Specification v1.1 Draft (2026-04-28, Lyra)
+- [x] Product Truth Index Activated (2026-04-28, Lyra)
+- [x] Acceptance Spec v1.1 Draft - Active Verification Contract (2026-04-28, Lyra)
+- [x] Legacy Product Docs Unified Archive (2026-04-28, Lyra)
+- [x] Typed Coordination Artifact Contract Integration (2026-04-28, Lyra)
+- [x] Artifact Template+Subtype Dual-Key Contract Alignment (2026-04-28, Lyra)
+- [x] Artifact Objectization Baseline Accepted (2026-04-28, Lyra)
+- [x] Nimbus Architecture Baseline Alignment Packet Issued (2026-04-28, Lyra)
+- [x] BLOCKER-001 Retrieval Backend Decision - SQLite FTS5 (2026-04-28, Lyra)
+- [x] Operator Summary + Direct Dispatch Contract Frozen (2026-04-28, Lyra)
+- [x] Module Topology INT/UX Contract Sync (2026-04-28, Lyra)
+- [x] Architecture Design Baseline Freeze (2026-04-28, Lyra)
+- [x] Review Change Tier RCT Contract Sync (2026-04-28, Lyra)
+- [x] Nimbus Foundation Scaffold Packet Issued (2026-04-28, Lyra)
+- [x] Mira v0.5 UI Realignment Packet Issued (2026-04-28, Lyra)
+- [x] Mira S5A Handoff State Strip Accepted (2026-04-28, Lyra / Mira)
+- [x] Mira S5 Queue Issued - Max 3 Active Micro-Slices (2026-04-28, Lyra)
+- [x] Mira S5F Seeded Visibility Patch Close-out (2026-04-28, closed inside Theme Preset System packet)
+- [x] Mira Theme Preset System Rebase (2026-04-28, accepted after close-out)
+- [x] Mobile Companion Contract Alignment in PRD / INT / UX (2026-04-28, Lyra)
+- [x] Acceptance Spec v1.1 Prompt + Mobile Coverage Sync (2026-04-28, Lyra)
+- [x] Mira S6 Interaction Baseline Closure Queue Issued (2026-04-28, Lyra)
+- [x] Mira S6C Deterministic List Search Accepted (2026-04-28, Lyra / Mira)
+- [x] Mira S6AB Shell Truth Fixes (2026-04-28, Lyra / Mira)
+- [x] Mira S7A Mobile Overview + Inbox Companion Packet Issued (2026-04-28, Lyra)
+- [x] Nimbus Foundation Scaffold Delivered (2026-04-28, Nimbus)
+- [x] Mira S7A Monitor Truth Recheck - FAIL / HOLD (2026-04-28, Lyra)
+- [x] Mira S7A Mobile Queue + Count Alignment Packet Issued (2026-04-28, Lyra)
+- [x] Nimbus Foundation Scaffold Acceptance Issued - CONDITIONAL (2026-04-28, Lyra)
+- [x] Nimbus Foundation Scaffold Entrypoint + Metadata Fix Packet Issued (2026-04-28, Lyra)
+- [x] Nimbus Foundation Scaffold Entrypoint Recheck - Binary Gap Closed (2026-04-29, Lyra / Nimbus)
+- [x] Nimbus Foundation Scaffold Metadata Close-out (2026-04-29, Lyra / Nimbus)
+- [x] Mira S7A Mobile Queue + Count Recheck (2026-04-29, Lyra takeover / Mira packet close-out)
+- [x] Nimbus Storage + Ledger Foundation Packet Issued (2026-04-29, Lyra)
+- [x] Flux SG-01 Post-S7A Verification Reviewed - CONDITIONAL PASS / HOLD (2026-04-29, Lyra / Flux)
+- [x] Mira Re-entry Delta Scan Packet Issued (2026-04-29, Lyra)
+- [x] Nimbus Storage + Ledger Foundation Accepted (2026-04-29, Lyra / Nimbus)
+- [x] Mira Re-entry Delta Scan Accepted (2026-04-29, Lyra / Mira)
+- [x] Mira S7B Supervisor Command Bar Packet Issued (2026-04-29, Lyra)
+- [x] Mira S7C Scoped Delegation Overlay Packet Issued (2026-04-29, Lyra)
+- [x] Nimbus Seat Registry + Delegation Storage Packet Issued (2026-04-29, Lyra)
+- [x] Mira S7B Supervisor Command Bar Acceptance Issued - CONDITIONAL (2026-04-29, Lyra / Mira)
+- [x] Mira S7C Scoped Delegation Overlay Acceptance Issued - CONDITIONAL (2026-04-29, Lyra / Mira)
+- [x] Mira SG-01 UI Close-out Packet Issued (2026-04-29, Lyra)
+- [x] Mira S7C Scoped Delegation Overlay Accepted - PASS (2026-04-29, Lyra / Mira)
+- [x] Mira SG-01 UI Close-out Re-reviewed - CONDITIONAL / one remaining keyboard hold (2026-04-29, Lyra / Mira)
+- [x] Mira S7B Enter Confirm Hotfix Packet Issued (2026-04-29, Lyra)
+- [x] Mira S7B Enter Confirm Hotfix Accepted - PASS (2026-04-29, Lyra / Mira)
+- [x] SG-01 UI Contract Baseline (2026-04-29, Lyra)
+- [x] Product Baseline Freeze Closed - GO (2026-04-29, Lyra / Aegis)
+- [x] Nimbus Implementation Handoff Opened (2026-04-29, Lyra / Nimbus)
+- [x] Flux Final v0.5 UI Evidence Packet Issued (2026-04-29, Lyra)
+- [x] Flux Final v0.5 UI Evidence Packet Accepted (2026-04-29, Lyra / Flux)
+- [x] Nimbus Seat Registry + Delegation Storage Accepted (2026-04-29, Lyra / Nimbus)
+- [x] Aegis Product Baseline Freeze Stage Review Requested (2026-04-29, Lyra)
+- [x] Flux Evidence Pack Ready (2026-04-29, Lyra / Flux)
+- [x] Flux UI Visual Theme + Hover Audit Accepted (2026-04-29, Lyra / Flux)
+- [x] Mira P1 Theme + Hover Fix Packet Issued (2026-04-29, Lyra)
+- [x] Mira P1 Theme + Hover Fixes Accepted (2026-04-29, Lyra / Mira)
+- [x] ENV-001 Compile Verification Executed - RE-SCOPED (2026-04-29, Aegis)
+- [x] ENV-001 Full Closure (2026-04-29, Lyra / Nimbus)
+- [x] Flux P1 Theme + Hover Verification Packet Issued (2026-04-29, Lyra / Flux)
+- [x] Flux P1 Theme + Hover Verification Packet Dispatched (2026-04-29, Lyra / Flux)
+- [x] Mira UI/UED/UX Design Brief Packet Issued + Dispatched (2026-04-29, Lyra / Mira)
+- [x] Nimbus Read-Model Repositories Packet Issued + Dispatched (2026-04-29, Lyra / Nimbus)
+- [x] Flux P1 Theme + Hover Verification Accepted - PASS (2026-04-29, Lyra / Flux)
+- [x] Mira UI/UED/UX Design Brief Accepted - CONDITIONAL PASS (2026-04-29, Lyra / Mira)
+- [x] Mira Packet A Interaction Affordance + Disabled-State Semantics Issued + Dispatched (2026-04-29, Lyra / Mira)
+- [x] Mira Packet B Token Discipline + Typography + Truthful Budget UI Queued (2026-04-29, Lyra / Mira)
+- [x] Mira Packet A Interaction Affordance + Disabled-State Semantics Accepted - PASS (2026-04-29, Lyra / Mira)
+- [x] Flux Packet A Affordance Verification Issued + Dispatched (2026-04-29, Lyra / Flux)
+- [x] Nimbus Read-Model Repositories Accepted - PASS (2026-04-29, Lyra / Nimbus)
+- [x] Nimbus Artifact Read Models + Dual-Key Filters Packet Issued + Dispatched (2026-04-29, Lyra / Nimbus)
 - [ ] MVP Implementation Start
 
 ---
-*Last Updated: 2026-04-28*
+*Last Updated: 2026-04-29*

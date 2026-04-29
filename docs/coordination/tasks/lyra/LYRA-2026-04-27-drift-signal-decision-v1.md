@@ -15,14 +15,14 @@
 ## 2. Decisions made
 
 1. **Do not use a standalone floating `Project drift detected` alert as the primary or persistent surface.**
-2. **Inbox is the canonical action surface for drifted WorkItems.** This follows `docs/prd-v0.4.md` Inbox rules.
+2. **Inbox is the canonical action surface for drifted WorkItems.** This follows `docs/archive/product-history/prd-v0.4.md` Inbox rules.
 3. **A transient reconcile-result notification is allowed only as a short-lived summary after an explicit reconcile flow**, not as a per-item drift alert.
 4. **Startup auto-reconcile should use Morning Digest + Inbox only.** No extra floating drift toast on launch.
 
 ## 3. Rationale
 
-- `docs/prd-v0.4.md` places `drifted` WorkItems into Inbox as low-priority actionable items.
-- `docs/mvp-scenarios.md` shows drift in Inbox and Morning Digest, and only defines a brief reconcile-result notification with `View in Inbox` / `Dismiss`.
+- `docs/archive/product-history/prd-v0.4.md` places `drifted` WorkItems into Inbox as low-priority actionable items.
+- `docs/archive/product-history/mvp-scenarios.md` shows drift in Inbox and Morning Digest, and only defines a brief reconcile-result notification with `View in Inbox` / `Dismiss`.
 - A dedicated floating drift card duplicates the same signal, increases noise, and weakens Inbox as the single action queue.
 
 ## 4. UI contract implication

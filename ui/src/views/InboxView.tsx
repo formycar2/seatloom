@@ -1,74 +1,105 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
+import { Inbox, Search, X } from 'lucide-react';
 import MorningDigest from '../components/MorningDigest';
 import InboxItem from '../components/InboxItem';
 import { useDataStore } from '../stores/useDataStore';
 import { useLocaleStore } from '../stores/useLocaleStore';
-import { InboxItem as InboxItemType } from '../types';
 
 interface InboxViewProps {
-  onSelectObject: (item: InboxItemType) => void;
+  onSelectObject: (item: any) => void;
+  selectedObjectId?: string | null;
 }
 
-const InboxView: React.FC<InboxViewProps> = ({ onSelectObject }) => {
+const InboxView: React.FC<InboxViewProps> = ({ onSelectObject, selectedObjectId }) => {
   const { t } = useLocaleStore();
-  const { activeProjectId, projectData, removeInboxItem } = useDataStore();
+  const { activeProjectId, projectData } = useDataStore();
+  const [searchTerm, setSearchTerm] = useState('');
 
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
   const inboxItems = currentData?.inboxItems || [];
 
-  const handleAction = (id: string, action: string) => {
-    console.log(`Action: ${action} on ${id}`);
-    removeInboxItem(id);
-  };
-
-  const sortedItems = [...inboxItems].sort((a, b) => {
-    const priorityMap: Record<string, number> = { Critical: 3, Normal: 2, Low: 1 };
-    return (priorityMap[b.priority] || 0) - (priorityMap[a.priority] || 0);
-  });
-
-  const criticalCount = sortedItems.filter((item) => item.priority === 'Critical').length;
-  const normalCount = sortedItems.filter((item) => item.priority === 'Normal').length;
-  const lowCount = sortedItems.filter((item) => item.priority === 'Low').length;
+  const filteredItems = useMemo(() => {
+    if (!searchTerm.trim()) return inboxItems;
+    const term = searchTerm.toLowerCase();
+    return inboxItems.filter(item => 
+      item.summary.toLowerCase().includes(term) ||
+      item.object_ref.toLowerCase().includes(term) ||
+      item.actor.toLowerCase().includes(term) ||
+      item.type.toLowerCase().includes(term) ||
+      item.priority.toLowerCase().includes(term)
+    );
+  }, [inboxItems, searchTerm]);
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6 animate-in fade-in duration-500">
-      <MorningDigest />
+    <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-8 space-y-8">
+        <MorningDigest />
 
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="text-base font-bold flex items-center gap-2 text-foreground">
-            {t.inbox.title}
-            <span className="text-primary bg-primary/10 px-2 py-0.5 rounded-full text-xs font-semibold">共 {sortedItems.length} 项待处理</span>
-          </h2>
-          <div className="flex items-center gap-2 flex-wrap text-[11px]">
-            <span className="px-2 py-1 rounded-full border border-status-error/20 bg-status-error/10 text-status-error">紧急 {criticalCount}</span>
-            <span className="px-2 py-1 rounded-full border border-border bg-card text-muted-foreground">常规 {normalCount}</span>
-            <span className="px-2 py-1 rounded-full border border-border bg-card text-muted-foreground">低优先级 {lowCount}</span>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-2">
+            <div className="flex items-center gap-4">
+              <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">INBOX</h2>
+              <div className="relative group">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary group-focus-within:text-primary transition-colors" />
+                <input
+                  type="text"
+                  placeholder="过滤收件箱..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-9 pr-8 py-1.5 bg-secondary/60 border border-border/40 rounded-xl text-xs font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all w-48 shadow-sm"
+                />
+                {searchTerm && (
+                  <button 
+                    onClick={() => setSearchTerm('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 hover:bg-secondary/80 hover:text-primary rounded-full text-text-secondary transition-colors"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black text-text-secondary uppercase tracking-widest bg-secondary px-2 py-0.5 rounded border border-border/40">
+                {searchTerm ? `${filteredItems.length} / ${inboxItems.length}` : inboxItems.length} ITEMS
+              </span>
+            </div>
           </div>
+
+          {filteredItems.length > 0 ? (
+            <div className="divide-y divide-border/60 bg-card rounded-2xl border border-border/60 shadow-sm overflow-hidden">
+              {filteredItems.map((item) => (
+                <div key={item.id} className="outline-none">
+                  <InboxItem
+                    item={item}
+                    onSelectObject={onSelectObject}
+                    onAction={(type, id) => console.log(`Inbox action: ${type} on ${id}`)}
+                    isActive={!!(selectedObjectId === item.id || (item.object_ref && selectedObjectId === item.object_ref.toLowerCase()))}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-20 bg-secondary/30 rounded-2xl border border-dashed border-border/60">
+              <div className="p-4 bg-background rounded-full border border-border/40 text-text-secondary mb-4">
+                <Inbox className="w-8 h-8 opacity-20" />
+              </div>
+              <p className="text-sm font-bold text-text-secondary">
+                {searchTerm ? '未找到匹配项' : t.inbox.clear}
+              </p>
+              <p className="text-xs text-text-secondary uppercase tracking-widest mt-1 opacity-60">
+                {searchTerm ? '请尝试更换关键词' : t.inbox.clearSub}
+              </p>
+              {searchTerm && (
+                <button 
+                  onClick={() => setSearchTerm('')}
+                  className="mt-4 text-[10px] font-black text-primary uppercase tracking-widest hover:underline"
+                >
+                  清除过滤条件
+                </button>
+              )}
+            </div>
+          )}
         </div>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          这里汇总了今日日志归一化后的交接、验收、会话输入请求与漂移回收结果。请按优先级处理，不要再依赖零散终端窗口去回忆待办。
-        </p>
-      </div>
-
-      <div className="border border-border rounded-xl overflow-hidden divide-y divide-border bg-card shadow-sm">
-        {sortedItems.length > 0 ? (
-          sortedItems.map((item) => (
-            <div key={item.id} className="sl-clickable focus-within:bg-black/5 outline-none" onClick={() => onSelectObject(item)}>
-              <InboxItem item={item} onAction={handleAction} />
-            </div>
-          ))
-        ) : (
-          <div className="p-12 text-center text-muted-foreground flex flex-col items-center space-y-2">
-            <div className="w-12 h-12 bg-status-active/10 text-status-active rounded-full flex items-center justify-center">
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <p className="text-sm font-bold">{t.inbox.clear}</p>
-            <p className="text-xs text-muted-foreground">{t.inbox.clearSub}</p>
-          </div>
-        )}
       </div>
     </div>
   );

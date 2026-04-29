@@ -59,6 +59,7 @@ const handoffStatusLabels: Record<HandoffStatus, string> = {
   Sent: '已发送',
   Received: '已接收',
   Accepted: '已接单',
+  Working: '处理中',
   Returned: '已退回',
   Completed: '已完成',
   Expired: '已过期',
@@ -97,6 +98,7 @@ const eventTypeLabels: Record<string, string> = {
   CheckpointCreated: '检查点生成',
   ReconcileCompleted: '对账完成',
   DriftDetected: '检测到漂移',
+  WorkItemDelegated: '工作项委派',
 };
 
 const eventCategoryLabels: Record<string, string> = {
@@ -117,6 +119,7 @@ const objectTypeLabels: Record<string, string> = {
   Seat: '席位',
   Session: '会话',
   WorkItem: '工作项',
+  Artifact: '产物',
   Handoff: '交接单',
   Status: '状态',
   Create: '新建',

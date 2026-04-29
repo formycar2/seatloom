@@ -17,9 +17,9 @@ Prepare the SG-01 verification runbook and evidence checklist so acceptance can 
 
 Required sources:
 
-1. `docs/acceptance-spec-v1.0.md`
-2. `docs/interaction-spec-v1.0.md`
-3. `docs/prd-v0.4.md`
+1. `docs/archive/product-history/acceptance-spec-v1.0.md`
+2. `docs/archive/product-history/interaction-spec-v1.0.md`
+3. `docs/archive/product-history/prd-v0.4.md`
 4. `docs/coordination/acceptance/2026-04-27-mira-ui-acceptance.md`
 5. `docs/coordination/acceptance/2026-04-27-sg-01-ui-contract-baseline-decision.md`
 6. `docs/coordination/reviews/2026-04-27-product-alignment-review.md`

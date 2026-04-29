@@ -17,10 +17,10 @@ Prepare the engineering alignment memo needed for SG-01 recovery without startin
 
 Required sources:
 
-1. `docs/prd-v0.4.md`
-2. `docs/interaction-spec-v1.0.md`
-3. `docs/acceptance-spec-v1.0.md`
-4. `docs/mvp-scenarios.md`
+1. `docs/archive/product-history/prd-v0.4.md`
+2. `docs/archive/product-history/interaction-spec-v1.0.md`
+3. `docs/archive/product-history/acceptance-spec-v1.0.md`
+4. `docs/archive/product-history/mvp-scenarios.md`
 5. `docs/architecture-decisions.md`
 6. `docs/architecture-design.md`
 7. `docs/coordination/reviews/2026-04-27-product-alignment-review.md`

@@ -22,9 +22,9 @@ Do **not** change product meaning or flow structure in this packet. This is a ty
 ## 2. Active contract references
 
 Required references for this pass:
-- `docs/prd-v0.4.md`
-- `docs/interaction-spec-v1.0.md`
-- `docs/acceptance-spec-v1.0.md`
+- `docs/archive/product-history/prd-v0.4.md`
+- `docs/archive/product-history/interaction-spec-v1.0.md`
+- `docs/archive/product-history/acceptance-spec-v1.0.md`
 - `docs/coordination/AI_NATIVE_WORKFLOW_PRINCIPLES.md`
 - `docs/coordination/tasks/lyra/LYRA-2026-04-27-drift-signal-decision-v1.md`
 - `docs/coordination/acceptance/2026-04-27-mira-v52-drift-signal-verification.md`

@@ -5,10 +5,13 @@
 | 文档 | Architecture Design v1.0 |
 | 状态 | Draft |
 | 作者 | Aegis (for Nimbus) |
-| 更新时间 | 2026-04-27 |
-| 依赖文档 | PRD v0.3、Architecture Decisions v1.0、MVP Scenarios v2.0 |
+| 更新时间 | 2026-04-28 |
+| 对齐版本 | v0.5 contract set (NIMBUS-2026-04-28) |
+| 依赖文档 | `docs/PRODUCT_TRUTH.md`、`docs/architecture-decisions.md` |
 
 ---
+
+Transitional note: this is an active support document during v0.5 consolidation. Product meaning comes from `docs/PRODUCT_TRUTH.md` and the active contract set; this document constrains implementation and system shape only.
 
 ## 1. 系统总览
 
@@ -38,7 +41,7 @@
 │  ├── ledger/      append-only event store                 │
 │  ├── objects/     Seat, Session, WorkItem, Artifact, ...  │
 │  ├── adapter/     wrapper_capture, native_attach          │
-│  ├── context/     ContextPack compiler                    │
+│  ├── data_engine/  Data Engine (Pack Engine, Retrieval, Gate, Route)  │
 │  ├── pipeline/    Pipeline runner                         │
 │  ├── reconcile/   Git/FS ↔ Ledger reconciliation          │
 │  └── git/         Git 操作封装                             │
@@ -89,12 +92,20 @@ seatloom/
 │           │   ├── codex.rs      # Codex CLI 深适配
 │           │   ├── claude.rs     # Claude Code 深适配
 │           │   └── generic.rs    # 通用 CLI 浅适配
-│           ├── context/          # ContextPack 编译器
+│           ├── data_engine/      # Data Engine (AD-008–AD-011)
 │           │   ├── mod.rs
-│           │   ├── selector.rs
-│           │   ├── budgeter.rs
-│           │   ├── assembler.rs
-│           │   └── verifier.rs
+│           │   ├── pack_engine/       # Worker + Supervisor continuity packs
+│           │   │   ├── mod.rs
+│           │   │   ├── selector.rs    # Tier 0/1/2 + optional content selection
+│           │   │   ├── budgeter.rs    # Token budget enforcement per tier
+│           │   │   ├── assembler.rs   # LaunchPack + SupervisorPack assembly
+│           │   │   └── verifier.rs    # Completeness + path validity checks
+│           │   ├── retrieval.rs       # Fixed L1→L2→L3→explain order (AD-011)
+│           │   ├── gate_engine.rs     # Transition + field + budget gates
+│           │   ├── route_engine.rs    # Inbox projection, priority bands
+│           │   ├── budget_enforcer.rs # Hard token limits, graceful stop
+│           │   ├── isolation.rs       # Need-to-know access enforcement
+│           │   └── audit.rs           # Ledger event binding
 │           ├── pipeline/         # Pipeline 执行器
 │           │   ├── mod.rs
 │           │   ├── runner.rs
@@ -227,6 +238,7 @@ define_id!(HandoffId, "ho");
 define_id!(PipelineId, "pl");
 define_id!(PipelineRunId, "plrun");
 define_id!(CheckpointId, "cp");
+define_id!(DelegationId, "del");
 define_id!(EventId, "ev");
 ```
 
@@ -234,23 +246,53 @@ define_id!(EventId, "ev");
 
 ```rust
 // crates/seatloom-core/src/objects/seat.rs
+// Three-layer model: AD-009. Global identity separated from per-project role binding.
 
+/// Layer 1: Durable global seat identity. Stable across projects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Seat {
+pub struct SeatIdentity {
     pub id: SeatId,
     pub name: String,
-    pub role: SeatRole,
+    pub default_runtime: Option<Runtime>,
+    pub capability_tags: Vec<String>,
     pub status: SeatStatus,
     pub created_at: DateTime<Utc>,
 }
 
+/// Layer 2: Per-project role binding. Encodes role, authority docs, constraints,
+/// and active delegation for one project. Stored separately from global identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRoleBind {
+    pub seat_id: SeatId,
+    pub project_id: String,
+    pub role: SeatRole,
+    pub authority_doc_refs: Vec<String>,
+    pub constraints: Vec<String>,
+    pub collaboration_template_ref: Option<String>,
+    pub active_delegation_id: Option<DelegationId>,
+}
+
+/// Scoped delegation overlay (AD-009). Does not rewrite original seat identity.
+/// Timeline shows: "{to_seat} acting for {from_seat} on {workitem_id}".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeatDelegation {
+    pub id: DelegationId,
+    pub issuer_seat_id: SeatId,
+    pub from_seat_id: SeatId,    // original owner seat
+    pub to_seat_id: SeatId,      // acting seat
+    pub workitem_id: Option<WorkItemId>,
+    pub scope_description: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub status: DelegationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DelegationStatus { Active, Closed, Expired }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SeatRole {
-    ProductOwner,
-    Architect,
-    Verifier,
-    Designer,
-    Custom(String),
+    ProductOwner, Architect, Verifier, Designer, Custom(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,8 +329,55 @@ pub enum Runtime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionStatus {
-    Launching, Running, InputRequired,
+    Launching, Running,
+    // PromptBlocked: wrapped runtime is blocked on interactive stdin (AD-012).
+    // Distinct from InputRequired (SeatLoom-level request); this is the runtime's own blocking.
+    PromptBlocked,
+    InputRequired,
     Suspended, Completed, Failed, Interrupted,
+}
+
+/// Represents the current interactive prompt state when SessionStatus == PromptBlocked.
+/// Evidence window is bounded to last 10-20 terminal lines; never expands into full log (AD-012).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptState {
+    pub kind: PromptKind,
+    pub policy: PromptPolicy,
+    pub bounded_window: Vec<String>,      // last 10-20 terminal lines
+    pub available_actions: Vec<PromptAction>,
+    pub assist_budget: Option<AssistBudget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PromptKind {
+    Deterministic,  // y/n, numeric choice — safe for auto-inject
+    WizardMenu,     // multi-step wizard or menu
+    Freeform,       // arbitrary text — requires confirmation
+    Sensitive,      // password / OTP / sudo / secret — SupervisorAssist prohibited
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PromptPolicy {
+    AutoAllowed,    // SeatLoom may inject without asking (Deterministic + config permit)
+    NeedsApproval,  // requires explicit user confirmation before inject
+    HumanRequired,  // human must type directly; no automation
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PromptAction {
+    Approve,
+    HumanTakeover,
+    SupervisorAssist,  // disabled when kind == Sensitive
+    Stop,
+}
+
+/// Hard caps on Supervisor assist loops (AD-012). Exceed either limit → force HumanTakeover.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistBudget {
+    pub max_steps: u32,   // default 5
+    pub max_tokens: u32,  // default 2048
+    pub steps_used: u32,
+    pub tokens_used: u32,
 }
 ```
 
@@ -314,6 +403,9 @@ pub struct WorkItem {
 pub enum WorkItemStatus {
     Draft, Ready, Active, Blocked,
     InReview, Verified, Done, Reopened, Drifted,
+    // Review failure uses event-first path (AD-010):
+    // InReview → (ReviewVerdictIssued event) → Blocked → Ready → Active on reissue.
+    // No durable Rejected/Rescoped states; verdict evidence lives in event payload.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,11 +414,18 @@ pub enum Priority { Low, Medium, High }
 
 ```rust
 // crates/seatloom-core/src/objects/artifact.rs
+// Dual-key typing model: AD-008.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: ArtifactId,
-    pub kind: ArtifactKind,
+    // Coordination artifact dual-key (AD-008). Both fields extracted from markdown header.
+    // None for system-generated artifacts (diffs, test reports, packs).
+    pub template: Option<ArtifactTemplate>,
+    pub subtype: Option<String>,       // validated against DOCUMENT_TEMPLATES §11.1
+    pub subtype_valid: Option<bool>,   // None = not yet validated; false = degraded mode
+    // System-generated artifacts that carry no coordination document structure.
+    pub system_kind: Option<SystemArtifactKind>,
     pub title: String,
     pub summary: Option<String>,
     pub source_session_id: Option<SessionId>,
@@ -335,12 +434,22 @@ pub struct Artifact {
     pub created_at: DateTime<Utc>,
 }
 
+/// Template family matching DOCUMENT_TEMPLATES.md T1-T7 taxonomy (AD-008).
+/// Drives Detail Pane layout, Route/Gate automation, and retrieval filters.
+/// Missing/invalid template → generic markdown reader + visible warning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ArtifactKind {
-    Brief, AcceptanceCriteria, DesignNote,
+pub enum ArtifactTemplate {
+    T1AuthorityDoc, T2RoleProfile, T3TaskPacket,
+    T4Review, T5Acceptance, T6DailyMemory, T7GovernanceDoc,
+}
+
+/// System-generated artifact kinds with no coordination document structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SystemArtifactKind {
     DiffSummary, TestReport, BugReport,
-    ReviewNote, DecisionRecord, ContextPack,
     CheckpointSummary,
+    WorkerContinuityPack,      // assembled LaunchPack file
+    SupervisorContinuityPack,  // P1: assembled SupervisorPack file
 }
 ```
 
@@ -365,6 +474,8 @@ pub struct Handoff {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HandoffStatus {
     Drafted, Sent, Received, Accepted,
+    // Working is P1 (US-P1-06). Live activity overlay; does not replace Ledger replay truth.
+    Working,
     Returned, Completed, Expired,
 }
 
@@ -427,12 +538,21 @@ pub struct CanonicalEvent {
 pub enum EventType {
     // Session lifecycle
     SessionStarted, SessionCompleted, SessionFailed, SessionInterrupted,
+    // Interactive prompt lifecycle (AD-012)
+    PromptDetected,      // payload: kind, policy, bounded_window_ref, risk
+    PromptInputInjected, // payload: operator (user/supervisor), scope, result, assist budget stats
     // Artifact lifecycle
     ArtifactCreated,
     // Handoff lifecycle
     HandoffDrafted, HandoffSent, HandoffAccepted, HandoffReturned, HandoffCompleted,
+    HandoffWorking,       // P1 live activity state (US-P1-06)
     // WorkItem lifecycle
     WorkItemCreated, WorkItemStatusChanged,
+    // Review/reissue evidence chain (AD-010, INT-05): event-first, no durable Rejected/Rescoped states
+    ReviewVerdictIssued,  // payload: verdict, reason, linked_evidence_artifact_id
+    WorkItemRescoped,     // payload: scope_change_summary, new_ac_refs
+    // Seat delegation lifecycle (AD-009)
+    SeatDelegationIssued, SeatDelegationClosed,
     // Pipeline lifecycle
     PipelineStarted, PipelineStageCompleted, PipelineCompleted, PipelineFailed,
     // Checkpoint
@@ -448,6 +568,7 @@ pub enum ObjectRef {
     WorkItem(WorkItemId),
     Artifact(ArtifactId),
     Handoff(HandoffId),
+    Delegation(DelegationId),  // AD-009
     Pipeline(PipelineId),
     PipelineRun(PipelineRunId),
     Checkpoint(CheckpointId),
@@ -537,8 +658,17 @@ pub struct RunningSession {
 | | `send_handoff(id)` → `Handoff` | F→B |
 | | `accept_handoff(id)` → `Handoff` | F→B |
 | | `return_handoff(id, reason)` → `Handoff` | F→B |
-| **Artifact** | `list_artifacts(filter?)` → `Vec<Artifact>` | F→B |
+| **Artifact** | `list_artifacts(template?, subtype?, workitem_id?)` → `Vec<Artifact>` | F→B |
 | | `get_artifact(id)` → `Artifact` | F→B |
+| | `validate_artifact_subtype(id)` → `SubtypeValidationResult` | F→B |
+| **Delegation** | `create_delegation(from_seat, to_seat, workitem_id?, scope)` → `SeatDelegation` | F→B |
+| | `close_delegation(id)` → `SeatDelegation` | F→B |
+| | `list_delegations(seat_id?, active_only?)` → `Vec<SeatDelegation>` | F→B |
+| **Prompt** | `get_prompt_state(session_id)` → `PromptState` | F→B |
+| | `approve_prompt(session_id)` → `PromptResult` | F→B |
+| | `takeover_prompt(session_id)` → `()` | F→B |
+| | `supervisor_assist_prompt(session_id, budget)` → `PromptResult` | F→B |
+| | `stop_on_prompt(session_id)` → `Session` | F→B |
 | **Timeline** | `query_timeline(filters)` → `Vec<CanonicalEvent>` | F→B |
 | **Inbox** | `get_inbox()` → `Vec<InboxItem>` | F→B |
 | | `dismiss_inbox_item(id)` → `()` | F→B |
@@ -575,11 +705,19 @@ pub struct RunningSession {
 │   └── events.jsonl              # append-only 事件流
 ├── seats/
 │   ├── lyra/
-│   │   └── profile.yaml
+│   │   ├── identity.yaml            # Layer 1: global seat identity (AD-009)
+│   │   └── role-bindings/
+│   │       └── seatloom.yaml        # Layer 2: per-project role binding
 │   ├── nimbus/
-│   │   └── profile.yaml
+│   │   ├── identity.yaml
+│   │   └── role-bindings/
+│   │       └── seatloom.yaml
 │   └── flux/
-│       └── profile.yaml
+│       ├── identity.yaml
+│       └── role-bindings/
+│           └── seatloom.yaml
+├── delegations/
+│   └── del_xxxxxxxx.yaml            # SeatDelegation records (AD-009)
 ├── sessions/
 │   └── ses_xxxxxxxx/
 │       ├── meta.yaml             # Session 元数据
@@ -590,7 +728,8 @@ pub struct RunningSession {
 │       ├── checkpoints/
 │       │   └── cp_xxxxxxxx.yaml
 │       └── context/
-│           └── launch_pack.md
+│           ├── launch_pack.md        # Worker continuity pack (P0)
+│           └── supervisor_pack.md    # P1: Supervisor continuity pack
 ├── workitems/
 │   └── wi_xxxxxxxx.yaml
 ├── artifacts/
@@ -617,8 +756,9 @@ version: "0.1"
 project_name: "seatloom"
 created_at: "2026-04-27T15:00:00+08:00"
 
-context_pack:
-  default_budget_tokens: 8192
+pack_engine:
+  worker_budget_tokens: 8192
+  supervisor_budget_tokens: 32768    # P1
 
 pipeline:
   stage_timeout_seconds: 300
@@ -626,14 +766,29 @@ pipeline:
   max_retry: 2
 ```
 
-### 6.3 Seat profile.yaml
+### 6.3 Seat Files (Three-Layer Model, AD-009)
 
+**Layer 1 — `seats/nimbus/identity.yaml`** (global, project-agnostic):
 ```yaml
 id: "seat-a1b2c3d4"
 name: "nimbus"
-role: "architect"
+default_runtime: "copilot"
+capability_tags: ["architecture", "rust", "typescript"]
 status: "active"
 created_at: "2026-04-27T15:00:00+08:00"
+```
+
+**Layer 2 — `seats/nimbus/role-bindings/seatloom.yaml`** (per-project):
+```yaml
+seat_id: "seat-a1b2c3d4"
+project_id: "seatloom"
+role: "architect"
+authority_doc_refs:
+  - "docs/architecture-design.md"
+  - "docs/architecture-decisions.md"
+constraints: []
+collaboration_template_ref: null
+active_delegation_id: null
 ```
 
 ### 6.4 Session meta.yaml
@@ -886,7 +1041,7 @@ Phase 1 (Week 3-4): 核心对象 + 观察面 + 应用 shell
 └── 产出: 可运行的桌面应用，能看 Timeline/Inbox
 
 Phase 2 (Week 5-6): Rehydrate + 中断恢复
-├── 实现 seatloom-core/context/ (ContextPack compiler)
+├── 实现 seatloom-core/data_engine/pack_engine/ (Worker Continuity Pack, Tier 0/1/2)
 ├── 实现 checkpoint 自动创建 (session end + artifact)
 ├── 实现 session launch with rehydrate
 ├── 实现 session resume (三级降级)
@@ -910,4 +1065,104 @@ Phase 4 (Week 9-10): 验收 + 打磨
 
 ---
 
-*本文档是 Nimbus 实现的工程依据。所有实现应对齐 PRD v0.3 和 MVP Scenarios v2.0。*
+## 12. Data Engine Architecture
+
+### 12.1 Module Structure
+
+The `data_engine/` subsystem (replacing the prior `context/` module) is organized as:
+
+```
+seatloom-core/src/data_engine/
+├── mod.rs
+├── pack_engine/           # Worker + Supervisor continuity pack assembly (AD-004)
+│   ├── mod.rs
+│   ├── selector.rs        # Tier 0/1/2 + optional content selection
+│   ├── budgeter.rs        # Per-tier token budget enforcement
+│   ├── assembler.rs       # Markdown template assembly (LaunchPack, SupervisorPack)
+│   └── verifier.rs        # Completeness checks, path validation, truncation warnings
+├── retrieval.rs           # Fixed L1→L2→L3→LLM-explain retrieval order (AD-011)
+├── gate_engine.rs         # WorkItem transition gates, field gates, budget gates
+├── route_engine.rs        # Inbox projection, seat routing, priority band assignment
+├── budget_enforcer.rs     # Hard token limits and graceful truncation
+├── isolation.rs           # Need-to-know access enforcement per seat
+└── audit.rs               # Binds all data engine outputs to Ledger events
+```
+
+### 12.2 Continuity Pack Tiers
+
+Worker continuity packs are assembled from deterministic content tiers (AD-004):
+
+| Tier | Content | Always Included |
+|------|---------|----------------|
+| Tier 0 | `SeatIdentity` + `ProjectRoleBind` + collaboration mode | Yes |
+| Tier 1 | Current WorkItem + AC, current branch + last 3 commits, last Checkpoint summary | Yes |
+| Tier 2 | Last Handoff purpose/outcome, recent failed tests (≤ 3) | Yes |
+| Optional | Recent Artifact summaries (≤ 5), transcript tail (last 3 turns), file refs | Budget-gated |
+
+**Worker pack default budget**: 8 192 tokens (configurable via `pack_engine.worker_budget_tokens` in project.yaml).
+
+**Supervisor pack budget (P1)**: 32 768 tokens. Assembles `MEMORY.md` + all active WorkItems + unresolved blockers + pending Handoffs + last Gate decision (US-P1-04).
+
+**Fallback order** when continuity source is unavailable:
+1. Native session resume (tool-native, e.g. `codex --resume`)
+2. Tier 0–2 worker pack from structured Checkpoint + Ledger
+3. Minimal pack: WorkItem + AC + last Handoff only
+
+### 12.3 Retrieval Layer Contract (AD-011)
+
+Evidence lookup must always follow this fixed order. Each layer is entered only if the previous layer returns insufficient results:
+
+```
+L1: Structured index (exact field match) — SQLite FTS5 virtual table
+    Fields: template, subtype, id, status, workitem_id, object_ref
+    P0: Required for INT-13 compliance
+        ↓
+L2: Full-text search — SQLite FTS5 (Artifact body + Ledger payload strings)
+    P0: Required for INT-13 compliance
+        ↓ (P1 only below)
+L3: Semantic retrieval
+    Embedding similarity search (backend TBD at P1)
+        ↓
+L4: LLM explanation
+    Grounded in L1–L3 evidence only; no hallucination permitted
+```
+
+**Storage architecture (BLOCKER-001 closed — Lyra decision 2026-04-28):**
+- L1 and L2 persist to **SQLite FTS5** embedded in the project's `.seatloom/` directory.
+- Any in-memory index is a warm cache rebuilt from SQLite on startup; it is not the authoritative persisted store.
+- PostgreSQL / pgvector is the candidate upgrade path for P1 multi-user or cloud-backed deployments; it is not a P0 requirement.
+
+### 12.4 Prompt Engine Architecture (AD-012)
+
+When a wrapped session enters `SessionStatus::PromptBlocked`, the Data Engine activates the Prompt Engine sub-path:
+
+```
+wrapped runtime stdin blocked
+        ↓
+adapter detects stdin-required signal (explicit frame or PTY heuristic)
+        ↓
+PromptClassifier
+  input: bounded_window (last 10-20 terminal lines) + Tier 0-2 structured context
+  output: PromptKind + PromptPolicy
+        ↓
+Ledger: emit PromptDetected { kind, policy, bounded_window_ref, risk }
+        ↓
+Frontend: Session Panel shows "Prompt blocked" banner + classification/policy chips
+        ↓
+User chooses action:
+  Approve          → inject deterministic response → PromptInputInjected { operator: user }
+  HumanTakeover    → PTY handed to user directly  → PromptInputInjected { operator: user }
+  SupervisorAssist → AssistLoop (bounded, non-Sensitive only):
+                       step budget: max 5 steps
+                       token budget: max 2048 tokens
+                       confirmation card shown before any injection
+                       if expected_next_prompt not matched → force HumanTakeover
+                     → PromptInputInjected { operator: supervisor, assist_steps_used, assist_tokens_used }
+  Stop             → session stop + PromptInputInjected { result: stopped }
+```
+
+**Sensitive prompt rule**: `PromptPolicy::HumanRequired` is always set for `PromptKind::Sensitive`; `SupervisorAssist` is disabled at the architecture level, not just the UI level.
+
+---
+
+*This document is an engineering support document for Nimbus. All implementation should align to `docs/PRODUCT_TRUTH.md` and the active contract set, not legacy PRDs or scenario docs.*

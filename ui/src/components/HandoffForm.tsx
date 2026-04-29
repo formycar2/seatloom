@@ -1,164 +1,113 @@
 import React, { useState } from 'react';
-import { Forward, Paperclip, CheckCircle } from 'lucide-react';
-import { useLocaleStore } from '../stores/useLocaleStore';
+import { Plus, X } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
-import { getSeatRoleLabel, getWorkItemStatusLabel } from '../utils/display';
+import { useLocaleStore } from '../stores/useLocaleStore';
 
 interface HandoffFormProps {
   onClose: () => void;
   workItemId?: string;
 }
 
-const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId }) => {
+const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialWorkItemId }) => {
   const { t } = useLocaleStore();
-  const { activeProjectId, projectData, addHandoff } = useDataStore();
+  const { activeProjectId, projectData } = useDataStore();
+  
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
   const seats = currentData?.seats || [];
-  const workItems = currentData?.workItems || [];
+  const workItems = (currentData?.workItems || []).filter(wi => wi.status !== 'Done');
 
-  const currentWi = workItems.find((wi) => wi.id === workItemId) || workItems[0] || null;
-  const senderSeatId = currentWi?.owner_seat_id || seats[0]?.id || 'seat-unassigned';
-
-  const [recipient, setRecipient] = useState(seats[1]?.id || 'Human');
+  const [toSeatId, setToSeatId] = useState('');
+  const [workItemId, setWorkItemId] = useState(initialWorkItemId || '');
   const [purpose, setPurpose] = useState('');
-  const [expected, setExpected] = useState('');
-  const [receipt, setReceipt] = useState(true);
+  const [expectedOutcome, setExpectedOutcome] = useState('');
 
-  const handleSubmit = () => {
-    if (!purpose.trim() || !expected.trim() || !currentWi) return;
-
-    addHandoff({
-      id: `ho-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
-      from_ref: { Seat: senderSeatId },
-      to_ref: recipient === 'Human' ? 'Human' : { Seat: recipient },
-      workitem_id: currentWi.id,
-      purpose: purpose.trim(),
-      expected_outcome: expected.trim(),
-      artifact_ids: [],
-      required_receipt: receipt,
-      status: 'Sent',
-      created_at: new Date().toISOString(),
-      sent_at: new Date().toISOString(),
-    });
-
-    onClose();
-  };
+  if (!currentData) return null;
 
   return (
-    <div className="flex flex-col h-full bg-background animate-in fade-in slide-in-from-right-4 duration-300">
-      <div className="flex items-center justify-between p-4 border-b border-border bg-card">
-        <div className="space-y-1">
-          <h2 className="text-lg font-bold flex items-center gap-2 text-status-active">
-            <Forward size={20} />
-            {t.forms.createHandoff}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            只有把目标、边界、回传条件写清楚，交接才不会退化成“把问题扔给下一个席位”。
-          </p>
+    <div className="flex flex-col h-full bg-background animate-in slide-in-from-right duration-300">
+      <div className="p-6 border-b border-border/40 bg-card flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-primary/10 text-primary rounded-xl border border-primary/20">
+            <Plus size={20} />
+          </div>
+          <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">发起交接 (NEW HANDOFF)</h2>
         </div>
+        <button onClick={onClose} className="p-1 hover:bg-accent text-text-secondary rounded-lg transition-colors">
+          <X size={20} />
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        {currentWi ? (
-          <div className="rounded-xl border border-border bg-secondary/40 p-4 space-y-2">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <div className="text-[11px] text-muted-foreground">当前交接关联工作项</div>
-                <div className="text-sm font-semibold text-foreground">{currentWi.id} · {currentWi.title}</div>
-              </div>
-              <span className="text-[11px] px-2 py-1 rounded-full bg-background border border-border text-foreground">
-                {getWorkItemStatusLabel(currentWi.status)}
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              {currentWi.goal || '当前工作项尚未补充目标说明，建议在交接前先完善目标和验收口径。'}
-            </p>
+      <div className="flex-1 overflow-y-auto p-8 space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">接收席位</label>
+            <select
+              value={toSeatId}
+              onChange={(e) => setToSeatId(e.target.value)}
+              className="w-full bg-secondary/40 border border-border/60 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all shadow-sm"
+            >
+              <option value="">请选择接收方...</option>
+              {seats.map((seat) => (
+                <option key={seat.id} value={seat.id}>{seat.name}</option>
+              ))}
+            </select>
           </div>
-        ) : (
-          <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-4 text-sm text-status-warning">
-            当前没有可关联的工作项。请先创建工作项，再发起交接。
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">关联工作项</label>
+            <select
+              value={workItemId}
+              onChange={(e) => setWorkItemId(e.target.value)}
+              className="w-full bg-secondary/40 border border-border/60 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all shadow-sm"
+            >
+              <option value="">请选择工作项...</option>
+              {workItems.map((wi) => (
+                <option key={wi.id} value={wi.id}>{wi.id.toUpperCase()} - {wi.title}</option>
+              ))}
+            </select>
           </div>
-        )}
-
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.recipient}</label>
-          <select
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary font-medium"
-          >
-            <option value="Human">人工介入（直接交给人处理）</option>
-            {seats.map((seat) => (
-              <option key={seat.id} value={seat.id}>
-                {seat.name}（{typeof seat.role === 'string' ? getSeatRoleLabel(seat.role) : seat.role.Custom}）
-              </option>
-            ))}
-          </select>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-            {t.forms.purpose} <span className="text-status-error">*</span>
-          </label>
+        <div className="space-y-2">
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">交接目的</label>
           <textarea
-            rows={3}
             value={purpose}
             onChange={(e) => setPurpose(e.target.value)}
-            placeholder="请说明为什么现在要交接：例如“需要 Flux 代 Mira 完成字体/字号统一，且不能改动 Sidebar/Main 信息架构”。"
-            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary resize-none font-medium"
-            autoFocus
-          />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-            {t.forms.expected} <span className="text-status-error">*</span>
-          </label>
-          <textarea
-            rows={3}
-            value={expected}
-            onChange={(e) => setExpected(e.target.value)}
-            placeholder="请写清楚什么算交接完成：例如“回传前后差异说明、构建通过、并在 `docs/coordination/` 写入产物路径”。"
-            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+            placeholder="说明为什么要进行这次交接，以及接收方需要关注的重点。"
+            className="w-full h-32 bg-secondary/40 border border-border/60 rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all shadow-sm resize-none"
           />
         </div>
 
         <div className="space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.attachArtifacts}</label>
-            <span className="text-[11px] text-muted-foreground">当前演示态以文档路径与证据编号为主</span>
-          </div>
-          <div className="border-2 border-dashed border-border rounded-lg p-6 flex flex-col items-center justify-center gap-2 hover:border-primary/40 hover:bg-black/5 cursor-pointer transition-all group">
-            <Paperclip size={24} className="text-muted-foreground group-hover:text-primary transition-colors" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-              从台账拖入产物，或在交接说明中写入证据路径
-            </span>
-            <span className="text-[11px] text-muted-foreground text-center leading-relaxed">
-              例如：`docs/coordination/reviews/...`、`.local/evidence/...`、`ui/src/...`
-            </span>
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">预期交付产物</label>
+          <textarea
+            value={expectedOutcome}
+            onChange={(e) => setExpectedOutcome(e.target.value)}
+            placeholder="明确定义交接完成后的交付标准，例如：'一套通过验证的 UI 组件'。"
+            className="w-full h-24 bg-secondary/40 border border-border/60 rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all shadow-sm resize-none"
+          />
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">附加证据</label>
+          <div className="border-2 border-dashed border-border/60 rounded-2xl p-6 flex flex-col items-center justify-center gap-2 hover:border-primary/40 hover:bg-accent cursor-pointer transition-all group shadow-inner">
+            <div className="p-3 bg-secondary rounded-full text-text-secondary group-hover:bg-card group-hover:text-primary transition-colors">
+              <Plus size={24} />
+            </div>
+            <div className="text-[10px] font-black text-text-secondary uppercase tracking-widest group-hover:text-primary transition-colors">附加文档证据 (ATTACH EVIDENCE)</div>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg border border-border">
-          <input type="checkbox" id="receipt" checked={receipt} onChange={(e) => setReceipt(e.target.checked)} className="rounded border-border text-primary focus:ring-primary" />
-          <label htmlFor="receipt" className="text-[11px] cursor-pointer select-none font-bold uppercase tracking-wider flex items-center gap-2 text-foreground">
-            <CheckCircle size={14} className={receipt ? 'text-status-active' : 'text-muted-foreground'} />
-            {t.forms.receiptRequired}
-          </label>
+        <div className="bg-secondary/30 px-8 py-6 border-t border-border/40 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors">
+            取消 (CANCEL)
+          </button>
+          <button
+            onClick={onClose}
+            className="px-6 py-2 text-[10px] font-black uppercase tracking-widest bg-status-active text-white rounded-xl hover:opacity-90 transition-all shadow-lg shadow-status-active/20 disabled:opacity-50 disabled:grayscale flex items-center gap-2"
+          >
+            发送交接单 (SEND HANDOFF)
+          </button>
         </div>
-      </div>
-
-      <div className="p-4 border-t border-border bg-card flex justify-end gap-3">
-        <button onClick={onClose} className="px-4 py-2 text-xs font-bold uppercase tracking-widest text-muted-foreground hover:bg-black/5 rounded-lg transition-colors">
-          {t.common.cancel}
-        </button>
-        <button
-          onClick={handleSubmit}
-          disabled={!purpose.trim() || !expected.trim() || !currentWi}
-          className="px-6 py-2 text-xs font-bold uppercase tracking-widest bg-status-active text-white rounded-lg hover:opacity-90 transition-colors shadow-lg shadow-status-active/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          发送交接 <Forward size={14} />
-        </button>
       </div>
     </div>
   );

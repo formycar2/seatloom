@@ -4,7 +4,7 @@
 |------|------|
 | 文档 | Coordination Rules v1.0 |
 | 状态 | Active |
-| 更新时间 | 2026-04-27 |
+| 更新时间 | 2026-04-28 |
 | Owner | Lyra (PO) |
 
 ---
@@ -42,11 +42,7 @@ For every substantial output (review, task packet, acceptance, decision), write:
 2. a one-line summary update in `docs/coordination/MEMORY.md`
 3. a daily log entry in `docs/coordination/memory/YYYY-MM-DD.md`
 
-Terminal message should only contain:
-
-- result summary (3-8 bullets)
-- path(s) to artifact file(s)
-- blockers and next owner
+Terminal/screen message must follow the fixed summary contract in Section 11.
 
 ---
 
@@ -188,6 +184,38 @@ To reduce ambiguity and improve cross-seat consistency:
 - Artifact filenames stay ASCII and role/date/version based.
 
 If an output violates this policy, Lyra should request rewrite before acceptance.
+
+---
+
+## 11. Stable terminal summary contract
+
+To keep operator-facing updates easy to scan and stable across turns, all terminal/screen summaries must use this exact section order unless the human explicitly asks for a different one:
+
+1. `Decision`
+2. `Actions`
+3. `Blockers`
+4. `Artifact paths`
+
+Rules:
+
+- Keep the terminal content in Chinese, but keep the section labels exactly as written above.
+- Under `Actions`, every bullet must include `owner / deadline / done-definition`.
+- Under `Blockers`, write `- None` when there is no active blocker instead of dropping the section.
+- Under `Artifact paths`, list every file that is needed to verify the update.
+- Do not restate long analysis in terminal output; the terminal is a routing surface, not the durable record.
+
+---
+
+## 12. Direct seat dispatch rule
+
+Lyra is responsible for driving the next owner directly when the owner is already known.
+
+Rules:
+
+- If the next action belongs to Mira, Nimbus, or Flux, Lyra should dispatch the packet or decision to that seat directly instead of asking the human to relay it.
+- Direct seat-to-seat messages in tmux / PTY / seat chat must be written in English and must reference the governing artifact path(s).
+- Human-facing terminal summaries should report the dispatch status after the seat has been notified.
+- Ask the human for a decision only when product truth is still unresolved or when an explicit override is required.
 
 ---
 

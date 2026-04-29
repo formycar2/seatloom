@@ -1,71 +1,103 @@
 import React from 'react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Clock,
+  MessageSquare,
+  Receipt,
+  RotateCcw,
+} from 'lucide-react';
 import { InboxItem as InboxItemType } from '../types';
-import { getInboxPriorityLabel } from '../utils/display';
 
 interface InboxItemProps {
   item: InboxItemType;
-  onAction: (id: string, action: string) => void;
+  onSelectObject: (item: InboxItemType) => void;
+  onAction: (type: string, id: string) => void;
+  isActive?: boolean;
 }
 
-const InboxItem: React.FC<InboxItemProps> = ({ item, onAction }) => {
-  const priorityStyles: Record<string, string> = {
-    Critical: 'bg-destructive/10 text-destructive border-destructive/20',
-    Normal: 'bg-status-warning/10 text-status-warning border-status-warning/20',
-    Low: 'bg-secondary text-muted-foreground border-border',
+const InboxItem: React.FC<InboxItemProps> = ({ item, onSelectObject, onAction, isActive }) => {
+  const getIcon = () => {
+    switch (item.type) {
+      case '待处理交接': return <Receipt size={18} />;
+      case '验收待决策': return <AlertCircle size={18} />;
+      case '输入请求': return <MessageSquare size={18} />;
+      case '背景记录': return <Clock size={18} />;
+      case '会话恢复': return <RotateCcw size={18} />;
+      default: return <AlertTriangle size={18} />;
+    }
   };
 
-  const isHandoff = item.type.includes('交接');
+  const priorityColor =
+    (item.priority as string) === 'Critical'
+      ? isActive ? 'bg-surface/20 text-surface border-surface/30' : 'bg-status-error/10 text-status-error border-status-error/20'
+      : (item.priority as string) === 'High'
+        ? isActive ? 'bg-surface/20 text-surface border-surface/30' : 'bg-status-warning/10 text-status-warning border-status-warning/20'
+        : isActive ? 'bg-surface/10 text-surface/70 border-surface/20' : 'bg-secondary text-text-secondary border-border/40';
+
+  const icon = getIcon();
 
   return (
-    <div className="p-4 hover:bg-black/5 cursor-pointer group flex items-start gap-4 transition-colors focus:outline-none focus:bg-black/5" tabIndex={0}>
-      <div className={`mt-0.5 px-2 py-1 rounded-full border text-[10px] font-bold whitespace-nowrap ${priorityStyles[item.priority] || priorityStyles.Low}`}>
-        {getInboxPriorityLabel(item.priority)}
+    <div 
+      className={`p-4 cursor-pointer group flex items-start gap-4 transition-all focus:outline-none ${isActive ? 'bg-primary text-surface shadow-lg' : 'hover:bg-primary/5'}`} 
+      tabIndex={0} 
+      onClick={() => onSelectObject(item)}
+    >
+      <div className={`mt-1 p-2 rounded-lg shadow-sm transition-colors border ${isActive ? 'bg-surface/10 text-surface border-surface/20' : 'bg-secondary text-text-secondary border-transparent group-hover:bg-card group-hover:border-primary/10 group-hover:text-primary'}`}>
+        {icon}
       </div>
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-semibold text-primary">{item.type}</span>
-          <span className="text-[11px] text-muted-foreground font-medium">{item.actor}</span>
-          <span className="monospace text-[11px] bg-secondary px-1.5 py-0.5 rounded border border-border text-muted-foreground ml-auto">
-            {item.object_ref}
-          </span>
+      <div className="flex-1 min-w-0 space-y-1">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${priorityColor}`}>
+              {item.priority}
+            </span>
+            <span className={`text-[10px] font-bold uppercase tracking-tighter px-1.5 py-0.5 rounded border ${isActive ? 'bg-surface/10 text-surface/90 border-surface/20' : 'bg-secondary/60 text-text-secondary border-border/40'}`}>
+              {item.type}
+            </span>
+          </div>
+          <span className={`text-[10px] font-bold whitespace-nowrap ${isActive ? 'text-surface/60' : 'text-text-muted opacity-60'}`}>{item.timestamp}</span>
         </div>
-        <div className="text-sm font-semibold text-foreground leading-6 whitespace-pre-wrap">{item.summary}</div>
-      </div>
-      <div className="flex flex-col items-end gap-2">
-        <div className="text-xs text-muted-foreground whitespace-nowrap monospace">{item.timestamp}</div>
-        <div className="flex items-center gap-1 transition-opacity">
-          {isHandoff ? (
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-bold opacity-60 uppercase tracking-tighter monospace ${isActive ? 'text-surface' : 'text-text-secondary'}`}>{item.actor}</span>
+          <span className={`text-xs ${isActive ? 'text-surface/40' : 'text-text-muted opacity-40'}`}>·</span>
+          <span className={`text-xs font-black uppercase tracking-tighter monospace ${isActive ? 'text-surface' : 'text-primary'}`}>{item.object_ref}</span>
+        </div>
+        <p className={`text-sm font-bold leading-relaxed transition-colors ${isActive ? 'text-surface' : 'text-text-primary group-hover:text-primary'}`}>{item.summary}</p>
+        
+        {item.linked_artifact_ids && item.linked_artifact_ids.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            {item.linked_artifact_ids.map(id => (
+              <span key={id} className={`text-[9px] font-black uppercase tracking-widest border px-2 py-0.5 rounded shadow-sm transition-all ${isActive ? 'bg-surface/10 border-surface/20 text-surface hover:bg-surface/20' : 'bg-card border-border/60 text-text-secondary hover:border-primary/40 hover:text-primary'}`}>
+                {id}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className={`flex items-center gap-2 mt-4 transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+          {item.type === '待处理交接' && (
             <>
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onAction(item.id, 'accept');
-                }}
-                className="px-2 py-1 text-[11px] bg-status-active/10 text-status-active hover:bg-status-active hover:text-white rounded border border-status-active/20 font-semibold transition-colors focus:outline-none focus:ring-1 focus:ring-status-active"
+              <button 
+                onClick={(e) => { e.stopPropagation(); onAction('Accept', item.id); }}
+                className={`px-2 py-1 text-[10px] rounded border font-black tracking-widest transition-colors focus:outline-none focus:ring-1 shadow-sm ${isActive ? 'bg-surface text-primary border-surface/20 hover:bg-surface/90' : 'bg-status-active/10 text-status-active hover:bg-status-active hover:text-white border-status-active/20 focus:ring-status-active'}`}
               >
-                接收
+                确认收件
               </button>
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onAction(item.id, 'return');
-                }}
-                className="px-2 py-1 text-[11px] bg-destructive/10 text-destructive hover:bg-destructive hover:text-white rounded border border-destructive/20 font-semibold transition-colors focus:outline-none focus:ring-1 focus:ring-destructive"
+              <button 
+                onClick={(e) => { e.stopPropagation(); onAction('Reject', item.id); }}
+                className={`px-2 py-1 text-[10px] rounded border font-black tracking-widest transition-colors focus:outline-none focus:ring-1 shadow-sm ${isActive ? 'bg-primary-hover text-surface border-surface/20 hover:bg-primary-hover/80' : 'bg-status-error/10 text-status-error hover:bg-status-error hover:text-white border-status-error/20 focus:ring-status-error'}`}
               >
-                退回
+                退回修正
               </button>
             </>
-          ) : (
-            <button
-              onClick={(event) => {
-                event.stopPropagation();
-                onAction(item.id, 'resolve');
-              }}
-              className="px-2 py-1 text-[11px] bg-secondary border border-border hover:bg-black/10 text-foreground rounded font-semibold transition-colors focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              标记已读
-            </button>
           )}
+          <button 
+            onClick={(e) => { e.stopPropagation(); onAction('Details', item.id); }}
+            className={`px-2 py-1 text-[10px] rounded font-black tracking-widest transition-colors focus:outline-none focus:ring-1 shadow-sm border ${isActive ? 'bg-surface/10 border-surface/20 text-surface hover:bg-surface/20' : 'bg-secondary border-border/60 hover:bg-card text-text-secondary hover:text-primary focus:ring-primary'}`}
+          >
+            打开详情
+          </button>
         </div>
       </div>
     </div>

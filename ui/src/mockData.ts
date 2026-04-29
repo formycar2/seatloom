@@ -4,7 +4,20 @@ import { Seat, Session, WorkItem, Artifact, Handoff, CanonicalEvent, InboxItem }
 
 export const mockSeats: Seat[] = [
   { id: 'seat-1', name: 'lyra', role: 'ProductOwner', status: 'Active', created_at: '2026-04-20T10:00:00+08:00' },
-  { id: 'seat-2', name: 'nimbus', role: 'Architect', status: 'Active', created_at: '2026-04-20T10:00:00+08:00' },
+  { 
+    id: 'seat-2', 
+    name: 'nimbus', 
+    role: 'Architect', 
+    status: 'Active', 
+    created_at: '2026-04-20T10:00:00+08:00',
+    capabilities: ['架构对齐 (Architecture Alignment)', '工程设计', '差异分析'],
+    accepted_input_types: ['PRD v0.5', '交互规格书', '验收标准'],
+    output_types: ['架构设计文档', 'ADR (决策记录)', '构建清单'],
+    input_budget: 500000,
+    output_budget: 200000,
+    constraints: ['必须使用文件优先的证据链', '严禁在未授权情况下进行重构'],
+    attached_skills: ['基线巩固 (Baseline Consolidation)', '跨席位依赖拆解'],
+  },
   { id: 'seat-3', name: 'mira', role: 'Designer', status: 'Paused', created_at: '2026-04-20T10:00:00+08:00' },
   { id: 'seat-4', name: 'flux', role: 'Verifier', status: 'Active', created_at: '2026-04-20T10:00:00+08:00' },
   { id: 'seat-5', name: 'aegis', role: { Custom: '阶段闸门复核' }, status: 'Paused', created_at: '2026-04-24T09:00:00+08:00' },
@@ -51,6 +64,53 @@ export const mockSessions: Session[] = [
     pid: 61345,
     created_at: '2026-04-28T20:12:00+08:00',
   },
+  {
+    id: 'ses-407',
+    seat_id: 'seat-2',
+    runtime: 'ClaudeCode',
+    workspace_path: '~/Documents/GitHub/seatloom',
+    branch: 'arch/v0.5-sync',
+    status: 'InputRequired',
+    created_at: '2026-04-28T21:15:00+08:00',
+    prompt_state: {
+      classification: 'deterministic',
+      policy: 'needs_approval',
+      preview: '检测到 docs/architecture-design.md 中存在未提交的更改。\n是否要在继续之前暂存这些更改？\n1. 是，全部暂存\n2. 否，跳过暂存\n3. 中止',
+      expected_next: '正在生成用于 v0.5 对齐的更新版 ADR...',
+      step_count: 12,
+      token_budget: 15000,
+    }
+  },
+  {
+    id: 'ses-408',
+    seat_id: 'seat-1',
+    runtime: 'Codex',
+    workspace_path: '~/Documents/GitHub/seatloom',
+    branch: 'main',
+    status: 'Running',
+    created_at: '2026-04-28T22:05:00+08:00',
+    continuity_pack: {
+      tier_0_identity: {
+        seat_id: 'seat-1',
+        runtime: 'Codex',
+        workItem_id: 'wi-410',
+        branch: 'main'
+      },
+      tier_1_state: {
+        ac_progress: ['AC-01 通过', 'AC-02 通过', 'AC-03 通过'],
+        latest_commit: '7a2b9d1',
+        current_blocker: '无'
+      },
+      tier_2_decisions: {
+        summary: '统一使用 template+subtype 双键作为所有协调产物的真值索引，禁止路径裸传。',
+        evidence_refs: ['docs/coordination/DOCUMENT_TEMPLATES.md']
+      },
+      seat_skills: ['产品完整性控制', '评审环路管理'],
+      playbook_matches: ['冷启动 R0 序列'],
+      budget_estimate: 250000,
+      fallback_path: 'docs/PRODUCT_TRUTH.md'
+    }
+  }
 ];
 
 export const mockWorkItems: WorkItem[] = [
@@ -118,27 +178,74 @@ export const mockWorkItems: WorkItem[] = [
     created_at: '2026-04-28T18:34:00+08:00',
     updated_at: '2026-04-28T18:34:00+08:00',
   },
+  {
+    id: 'wi-411',
+    title: 'v0.5 UI 核心表面对齐校验',
+    goal: '根据 S5A-S5E 的实现反馈，对已修复的表面进行最终语义对齐校验。',
+    acceptance_criteria: [
+      'Handoff 状态条显示准确',
+      'WorkItem 评审阶层记录可见',
+      'Session 提示阻塞与启动包预览正常'
+    ],
+    owner_seat_id: 'seat-1',
+    status: 'Active',
+    priority: 'High',
+    depends_on: ['wi-410'],
+    created_at: '2026-04-28T22:15:00+08:00',
+    updated_at: '2026-04-28T22:20:00+08:00',
+    change_tier_record: {
+      tier: 'L2',
+      reason: '根据 S5A-S5E 实现反馈，需要对部分交互细节做二次语义对齐。',
+      changed_clauses: ['UX-06', 'UX-12', 'INT-16'],
+      impact_level: 'Medium',
+      executor: { Seat: 'seat-3' },
+      reviewer: { Seat: 'seat-1' },
+      ack_mode: 'CompactAck',
+      evidence_refs: ['docs/coordination/tasks/mira/MIRA-2026-04-28-serial-restart-s5-queue-control-v1.md']
+    }
+  }
 ];
 
 export const mockArtifacts: Artifact[] = [
   {
     id: 'ar-401',
-    kind: 'DesignNote',
     title: 'SG-01 代 Mira 修补交付说明',
+    template: 'T3',
+    subtype: 'verification',
+    status: 'delivered',
+    author: 'flux',
+    date: '2026-04-28',
+    version: 'v1',
+    tags: ['sg-01', 'repair', 'delivery'],
+    summary: '说明代 Mira 修补包的交付范围、变更文件和构建验证结论。',
     storage_path: 'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
     created_at: '2026-04-28T17:38:00+08:00',
   },
   {
     id: 'ar-402',
-    kind: 'CheckpointSummary',
     title: 'Flux 反馈恢复记录',
+    template: 'T4',
+    subtype: 'gap_review',
+    status: 'recovered',
+    author: 'lyra',
+    date: '2026-04-28',
+    version: 'v1',
+    tags: ['feedback', 'recovery', 'review'],
+    summary: '把 Flux 的即时反馈恢复为可追溯评审文件，供后续验收与追责使用。',
     storage_path: 'docs/coordination/reviews/2026-04-28-flux-feedback-recovery.md',
     created_at: '2026-04-28T18:02:00+08:00',
   },
   {
     id: 'ar-403',
-    kind: 'DecisionRecord',
     title: '前端中文高密度数据刷新方案',
+    template: 'T3',
+    subtype: 'integration',
+    status: 'in_progress',
+    author: 'lyra',
+    date: '2026-04-28',
+    version: 'v2',
+    tags: ['frontend', 'demo-data', 'zh'],
+    summary: '定义前端中文高密度数据与真实量级刷新方案，作为当前演示叙事的内容基线。',
     storage_path: 'docs/coordination/tasks/lyra/LYRA-2026-04-28-frontend-demo-data-v2.md',
     created_at: '2026-04-28T20:28:00+08:00',
   },

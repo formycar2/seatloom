@@ -16,8 +16,8 @@
 
 ## 2. Decisions made
 
-1. Active working product contract = `docs/prd-v0.4.md` + `docs/interaction-spec-v1.0.md` + `docs/acceptance-spec-v1.0.md`.
-2. Approved constraints = `docs/mvp-scenarios.md` + `docs/architecture-decisions.md`.
+1. Active working product contract = `docs/archive/product-history/prd-v0.4.md` + `docs/archive/product-history/interaction-spec-v1.0.md` + `docs/archive/product-history/acceptance-spec-v1.0.md`.
+2. Approved constraints = `docs/archive/product-history/mvp-scenarios.md` + `docs/architecture-decisions.md`.
 3. `docs/architecture-design.md` is draft reference only.
 4. `SG-01 UI Contract Baseline` stays on Hold until Mira clears the P0 acceptance gaps.
 

@@ -1,21 +1,39 @@
 import { useEffect } from 'react';
 
-export const useGlobalShortcuts = (onEscape: () => void, onProjectSwitch: () => void, onTerminalToggle?: () => void) => {
+export const useGlobalShortcuts = (
+  onCloseDetail: () => void,
+  onToggleTab: () => void,
+  onToggleTerminal: () => void,
+  onShowHelp: () => void,
+  onOpenCommandBar: () => void,
+) => {
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onEscape();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Help: ? (Shift + /) or F1
+      if ((event.key === '?' && event.shiftKey) || event.key === 'F1') {
+        event.preventDefault();
+        onShowHelp();
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault();
-        onProjectSwitch();
+
+      if (event.key === 'Escape') {
+        onCloseDetail();
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
-        e.preventDefault();
-        onTerminalToggle?.();
+
+      // Cmd/Ctrl + K: Supervisor Command Bar
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        onOpenCommandBar();
+      }
+
+      // Cmd/Ctrl + ` : Toggle Operator Console
+      if ((event.metaKey || event.ctrlKey) && event.key === '`') {
+        event.preventDefault();
+        onToggleTerminal();
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onEscape, onProjectSwitch, onTerminalToggle]);
+  }, [onCloseDetail, onToggleTab, onToggleTerminal, onShowHelp, onOpenCommandBar]);
 };

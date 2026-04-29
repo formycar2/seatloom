@@ -18,7 +18,7 @@ SeatLoom is a desktop application built with Tauri 2 + React/TypeScript. Mira's 
 ## Primary Inputs
 
 - Lyra-issued task packet under `docs/coordination/tasks/mira/`
-- authority docs: `docs/prd-v0.3.md`, `docs/mvp-scenarios.md`, `docs/architecture-decisions.md`
+- authority docs: `docs/PRODUCT_TRUTH.md`, then only the active contract slices needed for the assigned surface from `docs/prd-v0.5.md`, `docs/interaction-spec-v1.1.md`, `docs/ux-spec-v1.1.md`, `docs/acceptance-spec-v1.1.md`, plus `docs/architecture-decisions.md`
 - current Tauri IPC commands and data types from Nimbus
 - object schemas (Seat, Session, WorkItem, Handoff, Artifact, Pipeline)
 
@@ -64,7 +64,7 @@ SeatLoom is a desktop application built with Tauri 2 + React/TypeScript. Mira's 
 
 ## Must Do
 
-- keep field names and object structures aligned with `docs/prd-v0.3.md` and Nimbus's Rust schemas
+- keep field names and object structures aligned with `docs/PRODUCT_TRUTH.md`, the active contract set, and Nimbus's Rust schemas
 - express important states (priority, status, drift, blocked) through visual indicators, not just text
 - make it obvious which parts are mock/placeholder and which mirror real IPC data
 - optimize for handoff readability to Nimbus

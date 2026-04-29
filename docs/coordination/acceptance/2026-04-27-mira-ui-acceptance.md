@@ -5,7 +5,7 @@
 | Owner | Lyra |
 | Review target | Mira redesign prototype |
 | Review scope | `ui/src/App.tsx`, `ui/src/layouts/*`, `ui/src/views/*`, `ui/src/components/*`, `ui/src/mockData.ts`, `ui/src/styles/*` |
-| Acceptance basis | `docs/prd-v0.4.md`, `docs/interaction-spec-v1.0.md`, `docs/acceptance-spec-v1.0.md` |
+| Acceptance basis | `docs/archive/product-history/prd-v0.4.md`, `docs/archive/product-history/interaction-spec-v1.0.md`, `docs/archive/product-history/acceptance-spec-v1.0.md` |
 | Build evidence | `cd ui && pnpm build` -> pass on 2026-04-27 |
 
 ## 1. Acceptance verdict
@@ -45,7 +45,7 @@ Reason: the prototype builds, but it does not meet the current product contract 
 
 1. **Keyboard contract is largely absent.** Required shortcuts for tab switching, terminal toggle, create work item, create handoff, and reconcile are not wired. File: `ui/src/hooks/useGlobalShortcuts.ts:5`.
 2. **Continuity fallback UX is incomplete across attach, wrap, switch, and recovery.** Current dialogs show happy-path mocks without `pending/success/error`, retry, or next-step fallback behavior. Files: `ui/src/components/AttachSessionDialog.tsx:20`, `ui/src/components/WrapLaunchDialog.tsx:24`, `ui/src/components/SwitchRuntimeDialog.tsx:29`, `ui/src/components/SessionDetail.tsx:58`.
-3. **Forbidden MVP copy is still present.** The terminal hardcodes `seatloom run "Fix the project switching logic"`, which reintroduces an out-of-scope mode explicitly excluded by scenarios. File: `ui/src/components/TerminalPanel.tsx:84`; contract ref: `docs/mvp-scenarios.md:154`.
+3. **Forbidden MVP copy is still present.** The terminal hardcodes `seatloom run "Fix the project switching logic"`, which reintroduces an out-of-scope mode explicitly excluded by scenarios. File: `ui/src/components/TerminalPanel.tsx:84`; contract ref: `docs/archive/product-history/mvp-scenarios.md:154`.
 4. **Schema and mock-state drift remains.** UI types add unsupported values such as `Received` in `HandoffStatus`, `Critical` in `Priority`, and `Developer` in `SeatRole`, which weakens contract alignment. Files: `ui/src/types/index.ts:14`, `ui/src/types/index.ts:21`, `ui/src/types/index.ts:29`, `ui/src/mockData.ts`, `ui/src/stores/useDataStore.ts`.
 
 ### Medium

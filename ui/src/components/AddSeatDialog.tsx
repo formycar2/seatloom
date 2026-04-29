@@ -2,113 +2,95 @@ import React, { useMemo, useState } from 'react';
 import { UserPlus } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import { getSeatRoleLabel } from '../utils/display';
+import { SeatRole } from '../types';
 
 interface AddSeatDialogProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-const roleOptions = ['ProductOwner', 'Architect', 'Verifier', 'Designer', 'Developer'] as const;
-
-const buildSeatId = (input: string) => {
-  const slug = input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  return `seat-${slug || Date.now()}`;
-};
+const ROLES: SeatRole[] = ['ProductOwner', 'Architect', 'Designer', 'Verifier'];
 
 const AddSeatDialog: React.FC<AddSeatDialogProps> = ({ isOpen, onClose }) => {
   const { addSeat } = useDataStore();
   const [name, setName] = useState('');
-  const [role, setRole] = useState<(typeof roleOptions)[number]>('Architect');
+  const [role, setRole] = useState<SeatRole>('Verifier');
 
-  const previewId = useMemo(() => buildSeatId(name), [name]);
-
-  if (!isOpen) return null;
-
-  const handleAdd = () => {
-    if (!name.trim()) return;
+  const handleCreate = () => {
+    if (!name) return;
     addSeat({
-      id: previewId,
-      name: name.trim(),
+      id: `seat-${Math.random().toString(36).substr(2, 4)}`,
+      name,
       role,
       status: 'Active',
       created_at: new Date().toISOString(),
     });
+    setName('');
     onClose();
   };
 
+  if (!isOpen) return null;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-card w-[440px] rounded-xl shadow-2xl border border-border overflow-hidden animate-in fade-in duration-200">
-        <div className="p-6 space-y-5">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold flex items-center gap-2 text-primary">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-secondary/40 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className="bg-card w-full max-w-lg rounded-3xl border border-border/60 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+        <div className="bg-primary/5 px-8 py-6 border-b border-border/40 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-primary/10 text-primary rounded-xl border border-primary/20">
               <UserPlus size={20} />
-              新增协作席位
-            </h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              把新的执行角色登记到当前项目，后续它就可以被分配工作项、挂接会话、接收交接，避免临时协作只存在于终端上下文里。
-            </p>
+            </div>
+            <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">新建席位 (NEW SEAT)</h2>
           </div>
+        </div>
 
-          <div className="rounded-xl border border-border bg-secondary/40 p-4 space-y-2 text-xs text-muted-foreground leading-relaxed">
-            <div className="font-semibold text-foreground">创建规则</div>
-            <div>1. 席位名称用于界面展示，可填写中文或团队常用代号。</div>
-            <div>2. 系统会自动生成可追踪 ID：<span className="font-mono text-foreground">{previewId}</span></div>
-            <div>3. 角色决定该席位在摘要、交接与验收视图里的默认职责标签。</div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-              席位名称 <span className="text-status-error">*</span>
-            </label>
+        <div className="p-8 space-y-6">
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">席位名称</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="例如：前端补位、交付复核、ops-review"
-              className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-medium"
-              autoFocus
+              placeholder="例如: nexus-architect"
+              className="w-full bg-secondary/40 border border-border/60 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all shadow-sm"
             />
-            <p className="text-[11px] text-muted-foreground">
-              若你希望后续命令行、tmux 或交接单更稳定追踪，建议名称保持简短且可辨识。
-            </p>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">职责角色</label>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as (typeof roleOptions)[number])}
-              className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-            >
-              {roleOptions.map((option) => (
-                <option key={option} value={option}>
-                  {getSeatRoleLabel(option)}
-                </option>
-              ))}
-            </select>
-            <p className="text-[11px] text-muted-foreground">
-              当前选择：该席位会默认以“{getSeatRoleLabel(role)}”身份出现在团队视图与任务归属里。
-            </p>
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">职责角色</label>
+            <div className="grid grid-cols-2 gap-2">
+              {ROLES.map((r) => {
+                const roleKey = typeof r === 'string' ? r : `custom-${r.Custom}`;
+                return (
+                  <button
+                    key={roleKey}
+                    onClick={() => setRole(r)}
+                    className={`px-4 py-2.5 rounded-xl border text-[10px] font-black tracking-widest transition-all ${
+                      role === r ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-card border-border/60 text-text-secondary hover:bg-accent'
+                    }`}
+                  >
+                    {getSeatRoleLabel(r)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          <p className="text-[11px] text-text-secondary leading-relaxed bg-accent/30 p-4 rounded-xl border border-primary/10 italic">
+            建立席位后，您将能够为其分配特定的 WorkItem 或通过它启动新的运行时会话。席位身份在项目账本中具有持久性。
+          </p>
         </div>
 
-        <div className="p-4 bg-secondary/50 border-t border-border flex justify-end gap-3">
+        <div className="bg-secondary/30 px-8 py-6 border-t border-border/40 flex justify-end gap-3">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-bold uppercase tracking-widest text-muted-foreground hover:bg-black/5 rounded-lg transition-colors"
+            className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors"
           >
             取消
           </button>
           <button
-            onClick={handleAdd}
-            disabled={!name.trim()}
-            className="px-6 py-2 text-xs font-bold uppercase tracking-widest bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
+            onClick={handleCreate}
+            disabled={!name}
+            className="px-6 py-2 text-[10px] font-black uppercase tracking-widest bg-primary text-white rounded-xl hover:bg-primary-hover transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:grayscale disabled:shadow-none"
           >
             创建席位
           </button>

@@ -23,9 +23,9 @@
 
 Mandatory reads, in this order:
 
-1. `docs/prd-v0.4.md`
-2. `docs/interaction-spec-v1.0.md`
-3. `docs/acceptance-spec-v1.0.md`
+1. `docs/archive/product-history/prd-v0.4.md`
+2. `docs/archive/product-history/interaction-spec-v1.0.md`
+3. `docs/archive/product-history/acceptance-spec-v1.0.md`
 4. `docs/coordination/AI_NATIVE_WORKFLOW_PRINCIPLES.md`
 5. `docs/coordination/COORDINATION_RULES.md`
 6. `docs/coordination/acceptance/2026-04-27-mira-ui-acceptance.md`

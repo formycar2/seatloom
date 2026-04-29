@@ -5,7 +5,7 @@
 | Owner | Lyra |
 | Date | 2026-04-27 |
 | Source reviewed | Last 100 lines from `Flux-Quality&Ops-seatloom` tmux seat |
-| Basis | `docs/prd-v0.4.md`, `docs/interaction-spec-v1.0.md`, `docs/acceptance-spec-v1.0.md`, `docs/mvp-scenarios.md`, current UI code |
+| Basis | `docs/archive/product-history/prd-v0.4.md`, `docs/archive/product-history/interaction-spec-v1.0.md`, `docs/archive/product-history/acceptance-spec-v1.0.md`, `docs/archive/product-history/mvp-scenarios.md`, current UI code |
 
 ## Executive verdict
 
@@ -22,19 +22,19 @@ Flux shows good contract-reading instincts and useful QA judgment, but this samp
 
 1. **Suggestion #1 conflicts with the active product contract and should not be adopted.**  
    Flux proposed removing the Sidebar's broader navigation role and turning it into a Seat monitor only. The active contract explicitly requires Sidebar to expose Inbox count, Seats, Sessions, and WorkItems while Main Panel keeps Inbox/Timeline/WorkItems views. Reworking this now would create new contract drift, not reduce it.  
-   References: `docs/prd-v0.4.md:83`, `docs/ux-spec.md:124`, `docs/ux-spec.md:176`, `docs/mvp-scenarios.md:63`
+   References: `docs/archive/product-history/prd-v0.4.md:83`, `docs/archive/product-history/ux-spec.md:124`, `docs/archive/product-history/ux-spec.md:176`, `docs/archive/product-history/mvp-scenarios.md:63`
 
 2. **Suggestion #2 is correct and should be adopted as a P0 contract repair.**  
    Flux is right that Terminal should not be modeled as a fourth full-page tab. The active contract requires a persistent bottom Terminal Panel that can be toggled independently and preserve session state. Current code still treats Terminal as a main-panel view.  
-   References: `docs/prd-v0.4.md:103`, `docs/ux-spec.md:127`, `docs/mvp-scenarios.md:66`, `ui/src/layouts/TopNav.tsx:15`, `ui/src/App.tsx:124`, `ui/src/layouts/AppShell.tsx:35`
+   References: `docs/archive/product-history/prd-v0.4.md:103`, `docs/archive/product-history/ux-spec.md:127`, `docs/archive/product-history/mvp-scenarios.md:66`, `ui/src/layouts/TopNav.tsx:15`, `ui/src/App.tsx:124`, `ui/src/layouts/AppShell.tsx:35`
 
 3. **Suggestion #5 identifies a real gap, but the diagnosis is imprecise. Adopt the underlying issue, not the wording.**  
    Timeline filtering is incomplete against the contract. Current code supports one type selector and free-text search, but it does not satisfy the required Seat / WorkItem / type / time filtering contract, nor the Sidebar-to-Timeline filter linkage.  
-   References: `docs/prd-v0.4.md:236`, `docs/interaction-spec-v1.0.md:145`, `docs/acceptance-spec-v1.0.md:44`, `ui/src/views/TimelineView.tsx:12`, `ui/src/layouts/Sidebar.tsx:42`, `ui/src/layouts/Sidebar.tsx:107`
+   References: `docs/archive/product-history/prd-v0.4.md:236`, `docs/archive/product-history/interaction-spec-v1.0.md:145`, `docs/archive/product-history/acceptance-spec-v1.0.md:44`, `ui/src/views/TimelineView.tsx:12`, `ui/src/layouts/Sidebar.tsx:42`, `ui/src/layouts/Sidebar.tsx:107`
 
 4. **Suggestion #7 is correct and should be adopted, at least as a truthfulness cleanup.**  
    `MorningDigest` still contains hard-coded claims that are not derived from current project data. Even in prototype mode, truth-like copy should not claim facts that the system does not compute.  
-   References: `docs/mvp-scenarios.md:565`, `docs/acceptance-spec-v1.0.md:47`, `ui/src/components/MorningDigest.tsx:29`, `ui/src/components/MorningDigest.tsx:45`
+   References: `docs/archive/product-history/mvp-scenarios.md:565`, `docs/archive/product-history/acceptance-spec-v1.0.md:47`, `ui/src/components/MorningDigest.tsx:29`, `ui/src/components/MorningDigest.tsx:45`
 
 ### Medium
 
@@ -44,11 +44,11 @@ Flux shows good contract-reading instincts and useful QA judgment, but this samp
 
 6. **Suggestion #4 is directionally useful, but it is a P1 UX refinement rather than an immediate blocker.**  
    Inbox actions are currently hover-hidden, which hurts scanability. However, the more important contract gap is that Inbox rows are not wired to open Detail on selection, which Flux did not call out. We should adopt the visibility improvement after the selection/detail behavior is corrected.  
-   References: `docs/interaction-spec-v1.0.md:133`, `docs/prd-v0.4.md:237`, `ui/src/components/InboxItem.tsx:37`, `ui/src/views/InboxView.tsx:37`
+   References: `docs/archive/product-history/interaction-spec-v1.0.md:133`, `docs/archive/product-history/prd-v0.4.md:237`, `ui/src/components/InboxItem.tsx:37`, `ui/src/views/InboxView.tsx:37`
 
 7. **Suggestion #6 is partially inaccurate and should not be adopted as stated.**  
    Escape handling does exist globally, so the claim that there is no implementation is incorrect. That said, keyboard coverage is still incomplete overall, especially for the documented `Ctrl+1/2/3` and `Ctrl+\`` paths, and not every dialog state is clearly covered. The right follow-up is a broader shortcut audit, not this narrow claim.  
-   References: `docs/interaction-spec-v1.0.md:22`, `docs/mvp-scenarios.md:72`, `ui/src/hooks/useGlobalShortcuts.ts:3`
+   References: `docs/archive/product-history/interaction-spec-v1.0.md:22`, `docs/archive/product-history/mvp-scenarios.md:72`, `ui/src/hooks/useGlobalShortcuts.ts:3`
 
 ### Low
 

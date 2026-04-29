@@ -15,6 +15,8 @@ interface AppShellProps {
   activeObjectId: string | null;
   onSelectObject: (type: string, data: any) => void;
   onInitProject: () => void;
+  onShowHelp: () => void;
+  hideSidebar?: boolean;
 }
 
 const AppShell: React.FC<AppShellProps> = ({ 
@@ -28,36 +30,38 @@ const AppShell: React.FC<AppShellProps> = ({
   onSelectProject,
   activeObjectId,
   onSelectObject,
-  onInitProject
+  onInitProject,
+  onShowHelp,
+  hideSidebar
 }) => {
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground select-none">
+    <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground select-none transition-colors duration-500">
       <TopNav 
         activeTab={activeTab} 
         onTabChange={onTabChange} 
         onSelectProject={onSelectProject}
       />
 
-      <div className="flex flex-1 overflow-hidden">
-        {activeTab !== 'all-projects' && (
+      <div className="flex flex-1 overflow-hidden bg-background">
+        {!hideSidebar && activeTab !== 'all-projects' && (
           <Sidebar 
             activeObjectId={activeObjectId} 
             onSelectObject={onSelectObject} 
           />
         )}
 
-        <main className="flex-1 flex flex-col min-w-[400px] border-r border-border bg-background relative">
+        <main className="flex-1 flex flex-col min-w-[400px] border-r border-border bg-background relative shadow-inner">
           {children}
         </main>
 
         {detailPane && (
-          <aside className="w-[380px] bg-card overflow-y-auto">
+          <aside className="w-[380px] bg-card overflow-y-auto border-l border-border/40">
             {detailPane}
           </aside>
         )}
       </div>
 
-      <StatusBar onInitProject={onInitProject} isTerminalOpen={isTerminalOpen} onTerminalToggle={onTerminalToggle} />
+      <StatusBar onInitProject={onInitProject} isTerminalOpen={isTerminalOpen} onTerminalToggle={onTerminalToggle} onShowHelp={onShowHelp} />
 
       {isTerminalOpen && terminalPane}
     </div>

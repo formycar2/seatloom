@@ -7,52 +7,53 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: 'hsl(var(--background))',
-        foreground: 'hsl(var(--foreground))',
+        background: 'hsl(var(--canvas) / <alpha-value>)',
+        foreground: 'hsl(var(--ink) / <alpha-value>)',
         card: {
-          DEFAULT: 'hsl(var(--card))',
-          foreground: 'hsl(var(--card-foreground))',
+          DEFAULT: 'hsl(var(--surface) / <alpha-value>)',
+          foreground: 'hsl(var(--ink) / <alpha-value>)',
         },
         primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))',
+          DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
+          hover: 'hsl(var(--primary-hover) / <alpha-value>)',
+          foreground: 'hsl(var(--surface) / <alpha-value>)',
         },
         secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
-          foreground: 'hsl(var(--secondary-foreground))',
+          DEFAULT: 'hsl(var(--surface-subtle) / <alpha-value>)',
+          foreground: 'hsl(var(--ink) / <alpha-value>)',
         },
         muted: {
-          DEFAULT: 'hsl(var(--muted))',
-          foreground: 'hsl(var(--muted-foreground))',
+          DEFAULT: 'hsl(var(--surface-subtle) / <alpha-value>)',
+          foreground: 'hsl(var(--ink-soft) / <alpha-value>)',
         },
         accent: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))',
+          DEFAULT: 'hsl(var(--primary-tint) / <alpha-value>)',
+          foreground: 'hsl(var(--ink) / <alpha-value>)',
         },
         destructive: {
-          DEFAULT: 'hsl(var(--destructive))',
-          foreground: 'hsl(var(--destructive-foreground))',
+          DEFAULT: 'hsl(var(--error) / <alpha-value>)',
+          foreground: 'hsl(var(--surface) / <alpha-value>)',
         },
-        border: 'hsl(var(--border))',
-        input: 'hsl(var(--input))',
-        ring: 'hsl(var(--ring))',
+        border: 'hsl(var(--border) / <alpha-value>)',
+        input: 'hsl(var(--border) / <alpha-value>)',
+        ring: 'hsl(var(--focus-ring) / <alpha-value>)',
         status: {
-          active: 'var(--status-active)',
-          warning: 'var(--status-warning)',
-          error: 'var(--status-error)',
-          done: 'var(--status-done)',
-          drifted: 'var(--status-drifted)',
-        },
-        bg: {
-          primary: 'hsl(var(--background))',
-          secondary: 'hsl(var(--muted))',
-          elevated: 'hsl(var(--card))',
+          active: 'hsl(var(--success) / <alpha-value>)',
+          warning: 'hsl(var(--warning) / <alpha-value>)',
+          error: 'hsl(var(--error) / <alpha-value>)',
+          done: 'hsl(var(--done) / <alpha-value>)',
+          drifted: 'hsl(var(--drifted) / <alpha-value>)',
         },
         text: {
-          primary: 'hsl(var(--foreground))',
-          secondary: 'hsl(var(--muted-foreground))',
-          muted: 'hsl(var(--muted-foreground))',
+          primary: 'hsl(var(--ink) / <alpha-value>)',
+          secondary: 'hsl(var(--ink-soft) / <alpha-value>)',
+          muted: 'hsl(var(--ink-faint) / <alpha-value>)',
         },
+        ink: {
+          DEFAULT: 'hsl(var(--ink) / <alpha-value>)',
+          soft: 'hsl(var(--ink-soft) / <alpha-value>)',
+          faint: 'hsl(var(--ink-faint) / <alpha-value>)',
+        }
       },
       borderRadius: {
         lg: 'var(--radius)',

@@ -1,58 +1,121 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@400;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  :root {
-    --background: 40 33% 98%; 
-    --foreground: 240 10% 15%;
-    --primary: 216 100% 40%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 5% 96%;
-    --secondary-foreground: 240 10% 15%;
-    --muted: 240 5% 90%;
-    --muted-foreground: 240 5% 45%;
-    --accent: 216 100% 97%;
-    --border: 240 6% 88%;
-    --radius: 0.5rem;
-
-    --status-active: #22C55E;
-    --status-warning: #F59E0B;
-    --status-error: #EF4444;
-    --status-done: #6B7280;
-    --status-drifted: #A855F7;
+  :root, [data-theme='paper-ledger'] {
+    /* paper-ledger (default) */
+    --canvas: 37 32% 94%;           /* #F6F1E8 */
+    --surface: 47 100% 98%;          /* #FFFDF8 */
+    --surface-subtle: 35 27% 90%;    /* #F0E8DC */
+    --border: 36 25% 82%;            /* #DDD2C2 */
+    --ink: 214 28% 17%;              /* #1F2A37 */
+    --ink-soft: 208 11% 41%;         /* #5E6A75 */
+    --ink-faint: 209 14% 58%;        /* #8C97A3 */
+    --primary: 187 58% 29%;          /* #1F6B75 */
+    --primary-hover: 189 61% 23%;    /* #175560 */
+    --primary-tint: 189 33% 90%;     /* #DCECEF */
+    --success: 147 50% 36%;          /* #2E8B57 */
+    --warning: 34 78% 44%;           /* #C77B18 */
+    --error: 11 55% 49%;             /* #C3513A */
+    --done: 211 12% 48%;             /* #6C7A89 */
+    --drifted: 224 37% 55%;          /* #5F78B9 */
+    --focus-ring: 188 32% 65%;       /* #8DB9C0 */
+    
+    --radius: 0.75rem;
+    --font-heading: 'Noto Sans SC', sans-serif;
+    --canvas-pattern: none;
+    --terminal-preview: #20262E;
   }
 
-  [data-theme='dark'] {
-    --background: 240 10% 4%;
-    --foreground: 0 0% 98%;
-    --primary: 216 100% 50%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 4% 16%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 4% 14%;
-    --muted-foreground: 240 5% 60%;
-    --accent: 216 100% 15%;
-    --border: 240 4% 18%;
-    --radius: 0.5rem;
+  [data-theme='harbor-blueprint'] {
+    --canvas: 201 24% 95%;           /* #EEF3F6 */
+    --surface: 200 100% 99%;         /* #FCFEFF */
+    --surface-subtle: 201 25% 91%;   /* #E2EBF0 */
+    --border: 202 21% 82%;           /* #C8D4DC */
+    --ink: 207 36% 17%;              /* #1B2C3A */
+    --ink-soft: 209 16% 40%;         /* #556776 */
+    --ink-faint: 207 12% 54%;        /* #7C8B98 */
+    --primary: 202 54% 31%;          /* #245A7A */
+    --primary-hover: 202 54% 25%;    /* #1D4760 */
+    --primary-tint: 203 44% 90%;     /* #D9E8F2 */
+    --success: 154 45% 34%;          /* #2F7D5A */
+    --warning: 35 71% 42%;           /* #B7791F */
+    --error: 10 50% 50%;             /* #C0543F */
+    --done: 210 14% 47%;             /* #667788 */
+    --drifted: 218 36% 48%;          /* #4F6FA8 */
+    --focus-ring: 201 36% 65%;       /* #89AFC5 */
+    
+    --radius: 0px;
+    --font-heading: 'JetBrains Mono', monospace;
+    --canvas-pattern: radial-gradient(circle, #C8D4DC 1px, transparent 1px);
+    --terminal-preview: #20262E;
+  }
 
-    --status-active: #4ADE80;
-    --status-warning: #FBBF24;
-    --status-error: #F87171;
-    --status-done: #9CA3AF;
-    --status-drifted: #C084FC;
+  [data-theme='sage-archive'] {
+    --canvas: 77 18% 94%;            /* #F1F3EC */
+    --surface: 72 40% 98%;           /* #FCFDF9 */
+    --surface-subtle: 76 21% 89%;    /* #E6EBDD */
+    --border: 82 17% 81%;            /* #CFD7C5 */
+    --ink: 137 16% 17%;              /* #243128 */
+    --ink-soft: 133 7% 38%;          /* #5D6A60 */
+    --ink-faint: 120 2% 52%;         /* #879187 */
+    --primary: 124 16% 36%;          /* #4C6B4E */
+    --primary-hover: 124 14% 29%;    /* #3D5540 */
+    --primary-tint: 108 26% 91%;     /* #DDE7DA */
+    --success: 146 33% 36%;          /* #3E7C59 */
+    --warning: 38 63% 45%;           /* #B9852A */
+    --error: 9 45% 50%;              /* #B85A46 */
+    --done: 126 5% 44%;              /* #6F7A70 */
+    --drifted: 221 28% 52%;          /* #6076A6 */
+    --focus-ring: 128 17% 66%;       /* #9CB7A0 */
+    
+    --radius: 0.25rem;
+    --font-heading: 'Noto Serif SC', serif;
+    --canvas-pattern: none;
+    --terminal-preview: #20262E;
+  }
+
+  :root {
+    --background: var(--canvas);
+    --foreground: var(--ink);
+    --card: var(--surface);
+    --card-foreground: var(--ink);
+    --border: var(--border);
+    --primary: var(--primary);
+    --primary-foreground: var(--surface);
+    --secondary: var(--surface-subtle);
+    --secondary-foreground: var(--ink);
+    --muted: var(--surface-subtle);
+    --muted-foreground: var(--ink-soft);
+    --accent: var(--primary-tint);
+    --accent-foreground: var(--ink);
+    --ring: var(--focus-ring);
+
+    --status-active: var(--success);
+    --status-warning: var(--warning);
+    --status-error: var(--error);
+    --status-done: var(--done);
+    --status-drifted: var(--drifted);
   }
 }
 
 @layer base {
   * { @apply border-border; }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground antialiased transition-colors duration-500;
     font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
     line-height: 1.6;
     letter-spacing: 0.01em;
+    background-image: var(--canvas-pattern);
+    background-size: 24px 24px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.01em;
+    font-weight: 900;
   }
 }
 
@@ -60,20 +123,12 @@
   @apply transition-all cursor-pointer rounded-md;
 }
 .sl-clickable:hover {
-  @apply bg-black/5 !text-foreground;
-}
-.sl-clickable:hover * {
-  @apply !text-foreground;
+  @apply bg-primary/5 text-primary;
 }
 
 .monospace {
   font-family: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', ui-monospace, monospace;
 }
-
-.tag-user { @apply bg-blue-500/10 text-blue-600 border border-blue-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
-.tag-ai { @apply bg-green-500/10 text-green-600 border border-green-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
-.tag-rule { @apply bg-amber-500/10 text-amber-600 border border-amber-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
-.tag-note { @apply bg-slate-500/10 text-slate-600 border border-slate-500/20 px-1.5 py-0.5 rounded text-[11px] font-semibold; }
 
 .meta-header {
   @apply bg-secondary/80 border border-border rounded-lg p-3 grid grid-cols-2 gap-3;

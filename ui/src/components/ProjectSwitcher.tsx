@@ -37,7 +37,7 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
 
       {isOpen && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/5" onClick={() => setIsOpen(false)} />
+          <div className="fixed inset-0 z-40 bg-accent/20" onClick={() => setIsOpen(false)} />
           <div className="absolute top-full left-0 mt-2 w-[360px] bg-card border border-border rounded-xl shadow-2xl z-50 overflow-hidden animate-in slide-in-from-top-2 duration-200 backdrop-blur-xl">
             <div className="p-3 border-b border-border bg-secondary/80">
               <div className="relative">
@@ -108,7 +108,7 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
                         className={`p-1.5 rounded-md transition-all ${
                           project.isPinned
                             ? 'text-primary bg-primary/10'
-                            : 'text-muted-foreground hover:bg-black/5 opacity-0 group-hover:opacity-100'
+                            : 'text-muted-foreground hover:bg-accent opacity-0 group-hover:opacity-100'
                         }`}
                         title={project.isPinned ? '取消置顶' : '置顶项目'}
                       >

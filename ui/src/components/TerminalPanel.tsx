@@ -1,90 +1,70 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Terminal, ChevronRight, Circle, Play, Plus, Link, X } from 'lucide-react';
-import { useLocaleStore } from '../stores/useLocaleStore';
+import React, { useState } from 'react';
+import {
+  ChevronRight,
+  Circle,
+  Link,
+  Play,
+  Plus,
+  Terminal,
+  X,
+} from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
+import { useLocaleStore } from '../stores/useLocaleStore';
+import { getRuntimeLabel, getSessionStatusLabel, formatTimeZh } from '../utils/display';
 import WrapLaunchDialog from './WrapLaunchDialog';
 import AttachSessionDialog from './AttachSessionDialog';
-import { formatTimeZh, getRuntimeLabel, getSessionStatusLabel } from '../utils/display';
 
 interface TerminalPanelProps {
   onClose: () => void;
 }
 
-const terminalFeeds: Record<string, string[]> = {
-  'ses-401': [
-    '[09:10] 已载入今日协调上下文：PRD v0.4、交互规格与验收规格。',
-    '[09:18] 已确认 Lyra 接管日常产品驱动，Aegis 仅保留阶段闸门与风险复核。',
-    '[10:42] 已完成 SG-01 复核框架整理，等待代 Mira 修补交付回传。',
-    '[18:42] 进入中文演示数据与真实量级刷新任务，开始替换英文占位与轻量样例。',
-    '[20:36] 主视图已切换为中文高密度叙事，继续清理详情与弹窗残留英文。',
-  ],
-  'ses-403': [
-    '[15:40] Flux 以代 Mira 身份接手 SG-01 临时修补包。',
-    '[16:48] 已回收设计建议并形成恢复说明，等待 Lyra 决定采纳范围。',
-    '[17:38] 已写回合同修补交付说明，包含收件箱、活动时间线与终端面板修复结果。',
-    '[18:55] 已接收字体字号统一修整任务，后续需补前后差异说明。',
-  ],
-  'ses-406': [
-    '[20:12] Lyra 启动中文高密度刷新会话，目标是让示例更像今天真实协作日。',
-    '[20:18] 已把收件箱、工作项与活动时间线主叙事对齐到 2026-04-28 协调日志。',
-    '[20:28] 已生成中文数据刷新方案产物，准备继续执行文件优先写回。',
-    '[20:44] 内容对账完成，剩余重点收敛到字体协调、详情密度与弹窗中文化。',
-  ],
-};
-
 const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
   const { t } = useLocaleStore();
   const { activeProjectId, projectData } = useDataStore();
-
-  const currentData = activeProjectId ? projectData[activeProjectId] : null;
-  const sessions = currentData?.sessions || [];
-
-  const activeSessions = sessions.filter((session) => session.status === 'Running' || session.status === 'InputRequired');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-
   const [showWrapLaunch, setShowWrapLaunch] = useState(false);
   const [showAttach, setShowAttach] = useState(false);
 
-  useEffect(() => {
-    if (activeSessions.length > 0 && !activeSessionId) {
-      setActiveSessionId(activeSessions[0].id);
-    }
-    if (activeSessions.length === 0) {
-      setActiveSessionId(null);
-    }
-  }, [activeSessions, activeSessionId]);
+  const currentData = activeProjectId ? projectData[activeProjectId] : null;
+  const activeSessions = (currentData?.sessions || []).filter(
+    (s) => s.status === 'Running' || s.status === 'InputRequired'
+  );
 
-  const activeSession = activeSessions.find((session) => session.id === activeSessionId) || activeSessions[0] || null;
-  const activeSeat = activeSession ? currentData?.seats.find((seat) => seat.id === activeSession.seat_id) : null;
+  const activeSession =
+    activeSessions.find((s) => s.id === activeSessionId) || activeSessions[0] || null;
+  const activeSeat = activeSession
+    ? currentData?.seats.find((s) => s.id === activeSession.seat_id)
+    : null;
 
-  const relatedWorkItems = useMemo(() => {
-    if (!currentData || !activeSession) return [];
-    const linkedIds = new Set<string>();
+  const relatedWorkItems = activeSession
+    ? (currentData?.workItems || []).filter((wi) => wi.owner_seat_id === activeSession.seat_id)
+    : [];
 
-    currentData.events.forEach((event) => {
-      const hitSession = event.object_refs.some((ref) => 'Session' in ref && ref.Session === activeSession.id);
-      if (!hitSession) return;
-      event.object_refs.forEach((ref) => {
-        if ('WorkItem' in ref) linkedIds.add(ref.WorkItem);
-      });
-    });
-
-    if (linkedIds.size === 0 && activeSeat) {
-      currentData.workItems
-        .filter((workItem) => workItem.owner_seat_id === activeSeat.id)
-        .forEach((workItem) => linkedIds.add(workItem.id));
-    }
-
-    return currentData.workItems.filter((workItem) => linkedIds.has(workItem.id));
-  }, [currentData, activeSession, activeSeat]);
+  const terminalFeeds: Record<string, string[]> = {
+    'ses-401': [
+      '[Codex] Indexed 124 files in seatloom...',
+      '[Codex] Found 3 coordination drift points.',
+      '[Codex] Waiting for next instruction.',
+    ],
+    'ses-403': [
+      '[OpenCode] Running cd ui && pnpm build...',
+      '[OpenCode] Build PASS (1.5s)',
+      '[OpenCode] Syncing MIRA-2026-04-28-serial-restart-s5a-handoff-state-strip-v1.md',
+    ],
+    'ses-406': [
+      '[Codex] Updating mockData.ts with high-density ZH content...',
+      '[Codex] Rewriting TimelineView.tsx filtering logic...',
+      '[Codex] 4 files modified, pending verification.',
+    ],
+  };
 
   const feed = activeSession ? terminalFeeds[activeSession.id] || ['[实时面板] 当前会话暂无额外日志，等待新的协调事件写入。'] : [];
 
   return (
-    <div className="flex-1 flex flex-col bg-black text-gray-300 font-mono text-xs overflow-hidden animate-in fade-in duration-700 border-t border-white/10">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+    <div className="flex-1 flex flex-col bg-[var(--terminal-preview)] text-gray-300 font-mono text-xs overflow-hidden animate-in fade-in duration-700 border-t border-white/5">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-black/20">
         <div className="flex items-center gap-6 min-w-0 flex-1">
-          <h2 className="text-sm font-black tracking-[0.24em] text-white flex items-center gap-2 whitespace-nowrap">
+          <h2 className="text-sm font-black tracking-[0.24em] text-white/90 flex items-center gap-2 whitespace-nowrap">
             <Terminal size={18} className="text-primary" />
             {t.terminal.title}
           </h2>
@@ -141,13 +121,13 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-              <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+              <div className="rounded-xl border border-white/5 bg-white/5 p-4 space-y-2">
                 <div className="text-gray-500">当前会话概览</div>
                 <div className="text-white font-semibold">{getSessionStatusLabel(activeSession.status)} · {getRuntimeLabel(activeSession.runtime)}</div>
                 <div className="text-gray-400">分支：{activeSession.branch || '未记录分支'}</div>
                 <div className="text-gray-400">启动时间：{formatTimeZh(activeSession.created_at)}{activeSession.pid ? ` · PID ${activeSession.pid}` : ''}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+              <div className="rounded-xl border border-white/5 bg-white/5 p-4 space-y-2">
                 <div className="text-gray-500">当前聚焦工作项</div>
                 {relatedWorkItems.length > 0 ? (
                   relatedWorkItems.slice(0, 2).map((workItem) => (
@@ -204,7 +184,7 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
         )}
       </div>
 
-      <div className="px-6 py-2 border-t border-white/5 bg-white/5 flex justify-between text-[10px] font-semibold text-gray-500 tracking-wide">
+      <div className="px-6 py-2 border-t border-white/5 bg-black/20 flex justify-between text-[10px] font-semibold text-gray-500 tracking-wide">
         <div className="flex gap-4">
           <span>终端行数 42</span>
           <span>终端列数 120</span>

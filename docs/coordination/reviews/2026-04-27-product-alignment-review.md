@@ -5,7 +5,7 @@
 | Owner | Lyra |
 | Status | Active |
 | Scope | Product contract alignment for SeatLoom baseline work |
-| Evidence | `docs/prd-v0.4.md`, `docs/interaction-spec-v1.0.md`, `docs/acceptance-spec-v1.0.md`, `docs/mvp-scenarios.md`, `docs/architecture-decisions.md`, `docs/architecture-design.md`, `docs/coordination/MEMORY.md` |
+| Evidence | `docs/archive/product-history/prd-v0.4.md`, `docs/archive/product-history/interaction-spec-v1.0.md`, `docs/archive/product-history/acceptance-spec-v1.0.md`, `docs/archive/product-history/mvp-scenarios.md`, `docs/architecture-decisions.md`, `docs/architecture-design.md`, `docs/coordination/MEMORY.md` |
 
 ## 1. Active product contract
 
@@ -13,15 +13,15 @@
 
 The active working product contract for this cycle is:
 
-1. `docs/prd-v0.4.md`
-2. `docs/interaction-spec-v1.0.md`
-3. `docs/acceptance-spec-v1.0.md`
+1. `docs/archive/product-history/prd-v0.4.md`
+2. `docs/archive/product-history/interaction-spec-v1.0.md`
+3. `docs/archive/product-history/acceptance-spec-v1.0.md`
 
 These are draft documents, but they are the current execution contract for Mira, Nimbus, and Flux until replaced by a newer accepted baseline.
 
 ### Higher-authority constraints
 
-- `docs/mvp-scenarios.md` is `Approved` and remains the user-behavior guardrail.
+- `docs/archive/product-history/mvp-scenarios.md` is `Approved` and remains the user-behavior guardrail.
 - `docs/architecture-decisions.md` is `Approved` and remains the architecture guardrail.
 - `docs/architecture-design.md` is `Draft` implementation reference only; it does not override product truth.
 
@@ -29,10 +29,10 @@ These are draft documents, but they are the current execution contract for Mira,
 
 | Document | Doc status | Lyra usage | Current stance |
 |---|---|---|---|
-| `docs/prd-v0.4.md` | Draft | Primary product contract | Active draft |
-| `docs/interaction-spec-v1.0.md` | Draft | Primary interaction contract | Active draft |
-| `docs/acceptance-spec-v1.0.md` | Draft | Primary acceptance contract | Active draft |
-| `docs/mvp-scenarios.md` | Approved | User-flow constraint and tie-breaker | Approved |
+| `docs/archive/product-history/prd-v0.4.md` | Draft | Primary product contract | Active draft |
+| `docs/archive/product-history/interaction-spec-v1.0.md` | Draft | Primary interaction contract | Active draft |
+| `docs/archive/product-history/acceptance-spec-v1.0.md` | Draft | Primary acceptance contract | Active draft |
+| `docs/archive/product-history/mvp-scenarios.md` | Approved | User-flow constraint and tie-breaker | Approved |
 | `docs/architecture-decisions.md` | Approved | Architecture constraint and tie-breaker | Approved |
 | `docs/architecture-design.md` | Draft | Implementation reference | Draft reference only |
 | `docs/coordination/MEMORY.md` | Active log | Governance memory and milestone state | Active |
@@ -52,11 +52,11 @@ Use this order whenever two materials disagree:
 
 | Priority | Topic | Conflict | Source refs | Lyra direction |
 |---|---|---|---|---|
-| P0 | LaunchPack fallback | PRD removes clipboard full-pack fallback, but scenarios still define L2/L3 clipboard paths | `docs/prd-v0.4.md:223`, `docs/mvp-scenarios.md:468` | Freeze one canonical fallback policy before Nimbus implementation |
-| P0 | Handoff status enum | PRD contract is `drafted -> sent -> accepted -> completed`; architecture adds `Received` | `docs/prd-v0.4.md:140`, `docs/architecture-design.md:366` | Choose one canonical enum and update UI/types/docs together |
-| P0 | Review event semantics | Inbox rules and scenarios use `review.requested`, but architecture event enum has no explicit review event | `docs/prd-v0.4.md:163`, `docs/mvp-scenarios.md:40`, `docs/architecture-design.md:427` | Add or explicitly map a review event before ledger/view wiring |
-| P0 | Terminal and focus contract | Scenarios define Terminal as a bottom toggle panel; interaction spec includes Terminal in focus loop; current UI moved Terminal into main tabs | `docs/mvp-scenarios.md:53`, `docs/mvp-scenarios.md:73`, `docs/interaction-spec-v1.0.md:22` | Freeze the shell model around a one-screen work surface with bottom terminal panel |
-| P1 | Header dependency drift | Scenarios and architecture design headers still point to PRD v0.3 even though v0.4 is the active contract | `docs/mvp-scenarios.md:8`, `docs/architecture-design.md:9` | Clean document headers after P0 conflicts are resolved |
+| P0 | LaunchPack fallback | PRD removes clipboard full-pack fallback, but scenarios still define L2/L3 clipboard paths | `docs/archive/product-history/prd-v0.4.md:223`, `docs/archive/product-history/mvp-scenarios.md:468` | Freeze one canonical fallback policy before Nimbus implementation |
+| P0 | Handoff status enum | PRD contract is `drafted -> sent -> accepted -> completed`; architecture adds `Received` | `docs/archive/product-history/prd-v0.4.md:140`, `docs/architecture-design.md:366` | Choose one canonical enum and update UI/types/docs together |
+| P0 | Review event semantics | Inbox rules and scenarios use `review.requested`, but architecture event enum has no explicit review event | `docs/archive/product-history/prd-v0.4.md:163`, `docs/archive/product-history/mvp-scenarios.md:40`, `docs/architecture-design.md:427` | Add or explicitly map a review event before ledger/view wiring |
+| P0 | Terminal and focus contract | Scenarios define Terminal as a bottom toggle panel; interaction spec includes Terminal in focus loop; current UI moved Terminal into main tabs | `docs/archive/product-history/mvp-scenarios.md:53`, `docs/archive/product-history/mvp-scenarios.md:73`, `docs/archive/product-history/interaction-spec-v1.0.md:22` | Freeze the shell model around a one-screen work surface with bottom terminal panel |
+| P1 | Header dependency drift | Scenarios and architecture design headers still point to PRD v0.3 even though v0.4 is the active contract | `docs/archive/product-history/mvp-scenarios.md:8`, `docs/architecture-design.md:9` | Clean document headers after P0 conflicts are resolved |
 
 ## 5. Prioritized decision list
 

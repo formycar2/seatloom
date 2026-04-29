@@ -1,128 +1,126 @@
 import React, { useMemo, useState } from 'react';
-import { ChevronRight, Circle, Plus, Search } from 'lucide-react';
-import { useDataStore } from '../stores/useDataStore';
-import { useLocaleStore } from '../stores/useLocaleStore';
+import { CheckCircle2, ChevronRight, Clock, Search, X } from 'lucide-react';
 import { WorkItem } from '../types';
-import { getPriorityLabel, getWorkItemStatusLabel } from '../utils/display';
+import { useDataStore } from '../stores/useDataStore';
+import { formatDateTimeZh, getPriorityLabel, getWorkItemStatusLabel } from '../utils/display';
 
 interface WorkItemsViewProps {
-  onSelectWI: (wi: WorkItem) => void;
+  onSelectWI: (object: any) => void;
 }
 
 const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
-  const { t } = useLocaleStore();
   const { activeProjectId, projectData } = useDataStore();
   const [searchTerm, setSearchTerm] = useState('');
 
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
   const workItems = currentData?.workItems || [];
-  const seats = currentData?.seats || [];
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Active':
-        return 'text-status-active';
-      case 'Blocked':
-        return 'text-status-error';
-      case 'Done':
-        return 'text-status-done';
-      case 'Drifted':
-        return 'text-status-drifted';
-      case 'InReview':
-        return 'text-primary';
-      default:
-        return 'text-muted-foreground';
-    }
-  };
-
-  const filteredItems = useMemo(
-    () =>
-      workItems.filter(
-        (workItem) =>
-          workItem.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          workItem.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          (workItem.goal || '').toLowerCase().includes(searchTerm.toLowerCase()),
-      ),
-    [workItems, searchTerm],
-  );
-
-  const criticalCount = filteredItems.filter((workItem) => workItem.priority === 'Critical' || workItem.priority === 'High').length;
+  const filteredItems = useMemo(() => {
+    if (!searchTerm.trim()) return workItems;
+    const term = searchTerm.toLowerCase();
+    return workItems.filter(item => 
+      item.id.toLowerCase().includes(term) ||
+      item.title.toLowerCase().includes(term) ||
+      (item.goal && item.goal.toLowerCase().includes(term))
+    );
+  }, [workItems, searchTerm]);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-background animate-in fade-in duration-500">
-      <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-card/50">
-        <div>
-          <h2 className="text-base font-bold text-foreground">{t.sidebar.workitems}</h2>
-          <p className="text-xs text-muted-foreground mt-1">当前视图聚合了负责席位、优先级、验收标准密度和依赖压力。</p>
-        </div>
-        <button onClick={() => onSelectWI('Action:AddWorkItem' as any)} className="flex items-center gap-2 px-3 py-1.5 bg-primary text-primary-foreground text-xs font-semibold rounded-lg hover:opacity-90 transition-all shadow-lg shadow-primary/20">
-          <Plus size={14} />
-          {t.forms.createWorkItem}
-        </button>
-      </div>
-
-      <div className="px-4 py-2 border-b border-border bg-secondary/30 flex items-center gap-4 flex-wrap">
-        <div className="relative flex-1 min-w-[240px] max-w-sm">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="按工作项 ID、标题或目标描述搜索"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
-          />
-        </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="px-2 py-1 rounded-full bg-background border border-border">共 {filteredItems.length} 项</span>
-          <span className="px-2 py-1 rounded-full bg-background border border-border">高优先级 {criticalCount} 项</span>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="space-y-6">
-          <div>
-            <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-muted-foreground tracking-wide">
-              <ChevronRight size={14} />
-              当前工作面（{filteredItems.length}）
+    <div className="flex-1 overflow-y-auto p-10 bg-background">
+      <div className="max-w-5xl mx-auto space-y-10">
+        <header className="space-y-4 border-b border-border/40 pb-8">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <h1 className="text-3xl font-black tracking-tight text-text-primary uppercase">WORK ITEMS</h1>
+              <p className="text-text-secondary font-bold opacity-60 uppercase tracking-widest text-xs">Active Task Ledger · 活跃工作项账本</p>
             </div>
-            <div className="grid grid-cols-1 gap-3">
-              {filteredItems.map((workItem) => {
-                const owner = seats.find((seat) => seat.id === workItem.owner_seat_id);
-
-                return (
-                  <div
-                    key={workItem.id}
-                    onClick={() => onSelectWI(workItem)}
-                    className="sl-clickable p-4 border border-border bg-card flex items-start justify-between group shadow-sm"
-                    tabIndex={0}
-                  >
-                    <div className="flex-1 min-w-0 pr-4">
-                      <div className="flex items-center gap-3 mb-2 flex-wrap">
-                        <Circle size={8} className={`fill-current ${getStatusColor(workItem.status)}`} />
-                        <span className="monospace text-[11px] font-semibold text-muted-foreground bg-secondary px-1.5 rounded">{workItem.id}</span>
-                        <span className={`text-[11px] font-semibold ${workItem.priority === 'High' || workItem.priority === 'Critical' ? 'text-status-error' : 'text-status-warning'}`}>
-                          {getPriorityLabel(workItem.priority)}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">{getWorkItemStatusLabel(workItem.status)}</span>
-                      </div>
-                      <div className="text-sm font-bold leading-snug group-hover:text-primary transition-colors text-foreground">{workItem.title}</div>
-                      {workItem.goal && <div className="text-[12px] text-muted-foreground mt-2 leading-6 whitespace-pre-wrap">{workItem.goal}</div>}
-                      <div className="mt-3 flex items-center gap-3 flex-wrap text-[11px] text-muted-foreground">
-                        <span>负责人：{owner?.name || '未指定'}</span>
-                        <span>验收项：{workItem.acceptance_criteria.length}</span>
-                        <span>依赖：{workItem.depends_on.length}</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2 text-right min-w-[120px]">
-                      <div className="text-xs font-medium text-muted-foreground opacity-80">更新于 {new Date(workItem.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
-                      <div className="text-[11px] text-primary font-semibold">查看详情</div>
-                    </div>
-                  </div>
-                );
-              })}
+            
+            <div className="relative group">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary group-focus-within:text-primary transition-colors" />
+              <input
+                type="text"
+                placeholder="搜索 ID 或 任务标题..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 pr-10 py-2.5 bg-secondary/60 border border-border/40 rounded-2xl text-xs font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all w-64 shadow-sm"
+              />
+              {searchTerm && (
+                <button 
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-accent rounded-full text-text-secondary"
+                >
+                  <X size={14} />
+                </button>
+              )}
             </div>
           </div>
-        </div>
+          
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-black text-text-muted uppercase tracking-widest bg-secondary px-2 py-0.5 rounded border border-border/40">
+              {searchTerm ? `${filteredItems.length} / ${workItems.length}` : workItems.length} ACTIVE ITEMS
+            </span>
+          </div>
+        </header>
+
+        {filteredItems.length > 0 ? (
+          <div className="grid grid-cols-1 gap-6">
+            {filteredItems.map((item) => (
+              <div
+                key={item.id}
+                onClick={() => onSelectWI(item)}
+                className="group bg-card border border-border/60 p-6 rounded-2xl cursor-pointer hover:border-primary/40 hover:shadow-xl hover:shadow-primary/5 transition-all flex flex-col md:flex-row md:items-center gap-6"
+              >
+                <div className="flex-1 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <span className="monospace text-xs font-black text-primary bg-accent px-2 py-0.5 rounded border border-primary/10 shadow-sm">{item.id.toUpperCase()}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${
+                        item.priority === 'Critical' ? 'bg-status-error/10 text-status-error border-status-error/20' :
+                        item.priority === 'High' ? 'bg-status-warning/10 text-status-warning border-status-warning/20' :
+                        'bg-secondary text-text-secondary border-border/40'
+                      }`}>
+                        {item.priority}
+                      </span>
+                      <span className="text-[10px] font-bold text-text-secondary uppercase tracking-tighter bg-secondary/60 px-2 py-0.5 rounded border border-border/40">
+                        {getWorkItemStatusLabel(item.status)}
+                      </span>
+                    </div>
+                  </div>
+                  <h3 className="text-xl font-bold text-text-primary leading-tight group-hover:text-primary transition-colors">{item.title}</h3>
+                  <p className="text-sm text-text-secondary leading-relaxed line-clamp-2 opacity-80">{item.goal}</p>
+                </div>
+
+                <div className="flex flex-row md:flex-col items-center md:items-end gap-4 md:gap-2 text-[10px] font-bold text-text-secondary opacity-60 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5 uppercase tracking-tighter">
+                    <Clock size={12} />
+                    更新: {formatDateTimeZh(item.updated_at)}
+                  </div>
+                  <div className="flex items-center gap-1.5 uppercase tracking-tighter">
+                    <CheckCircle2 size={12} />
+                    验收标准: {item.acceptance_criteria.length} 项
+                  </div>
+                  <div className="mt-auto hidden md:block">
+                    <ChevronRight size={16} className="text-primary opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-32 text-center bg-secondary/20 rounded-3xl border border-dashed border-border/60">
+            <div className="p-5 bg-background rounded-full border border-border/40 text-text-secondary mb-6 opacity-20">
+              <Search className="w-10 h-10" />
+            </div>
+            <p className="text-lg font-bold text-text-secondary">未找到匹配的工作项</p>
+            <p className="text-sm text-text-secondary opacity-60 mt-1">请尝试更换搜索词，或清除过滤条件以查看全部。</p>
+            <button 
+              onClick={() => setSearchTerm('')}
+              className="mt-6 px-6 py-2 bg-primary text-white rounded-xl text-xs font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-primary/20"
+            >
+              显示全部工作项
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

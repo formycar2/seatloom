@@ -182,7 +182,7 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
       </div>
 
       <div className="p-4 border-t border-border bg-card flex justify-end gap-3">
-        <button onClick={onClose} className="px-4 py-2 text-xs font-bold uppercase tracking-widest text-muted-foreground hover:bg-black/5 rounded-lg transition-colors">
+        <button onClick={onClose} className="px-4 py-2 text-xs font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors">
           {t.common.cancel}
         </button>
         <button
