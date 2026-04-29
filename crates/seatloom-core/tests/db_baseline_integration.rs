@@ -416,4 +416,130 @@ mod db_baseline {
             );
         }
     }
+
+    // =========================================================================
+    // Operational review + continuity layer (schema 004)
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 003_operational_review_and_continuity_seed.sql applied"]
+    async fn checkpoints_seeded_and_session_backlinks_updated() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let checkpoints = db
+            .list_checkpoints(10)
+            .await
+            .expect("checkpoint list must succeed");
+        assert!(
+            checkpoints.len() >= 3,
+            "expected ≥3 seeded checkpoints, got {}",
+            checkpoints.len()
+        );
+
+        let nimbus = db
+            .get_checkpoint("cp-nimbus-infra-001")
+            .await
+            .expect("checkpoint query must succeed")
+            .expect("seeded Nimbus checkpoint must exist");
+        assert_eq!(nimbus.session_id, "ses-nimbus-infra-001");
+        assert_eq!(nimbus.trigger, "session_ended");
+        assert_eq!(nimbus.summary_quality, "full");
+
+        let sessions = db
+            .list_sessions_for_seat("seat-nimbus-001")
+            .await
+            .expect("session list must succeed");
+        let active = sessions
+            .iter()
+            .find(|session| session.id == "ses-nimbus-infra-001")
+            .expect("seeded Nimbus session must exist");
+        assert_eq!(
+            active.last_checkpoint_id.as_deref(),
+            Some("cp-nimbus-infra-001")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 003_operational_review_and_continuity_seed.sql applied"]
+    async fn handoff_receipts_seeded_for_real_handoffs() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let receipts = db
+            .list_handoff_receipts_for_handoff("ho-nimbus-lyra-storage")
+            .await
+            .expect("receipt list must succeed");
+        assert_eq!(
+            receipts.len(),
+            1,
+            "expected one receipt for storage handoff"
+        );
+        let receipt = &receipts[0];
+        assert_eq!(receipt.id, "hr-ho-nimbus-lyra-storage-001");
+        assert_eq!(receipt.acknowledged_by, "seat-lyra-001");
+        assert_eq!(receipt.source_channel, "desktop");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 003_operational_review_and_continuity_seed.sql applied"]
+    async fn pipeline_run_seeded_for_foundation_gate() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let run = db
+            .get_pipeline_run("plrun-rust-foundation-gate-001")
+            .await
+            .expect("pipeline run query must succeed")
+            .expect("seeded pipeline run must exist");
+        assert_eq!(run.pipeline_id, "pl-rust-foundation-gate");
+        assert_eq!(run.workitem_id.as_deref(), Some("wi-hardening"));
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.trigger, "gate");
+        assert!(
+            run.evidence_refs
+                .iter()
+                .any(|e| e.contains("foundation-hardening-verification")),
+            "pipeline run must retain verification evidence refs"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 003_operational_review_and_continuity_seed.sql applied"]
+    async fn review_thread_seeded_with_l3_change_tier_record() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let threads = db
+            .list_review_threads_for_workitem("wi-004")
+            .await
+            .expect("review thread list must succeed");
+        assert_eq!(
+            threads.len(),
+            1,
+            "expected one seeded review thread for wi-004"
+        );
+        let thread = &threads[0];
+        assert_eq!(thread.id, "rt-wi004-sg01-gap-001");
+        assert_eq!(thread.status, "resolved");
+        assert_eq!(thread.review_tier.as_deref(), Some("L3"));
+        let record = thread
+            .change_tier_record
+            .as_ref()
+            .expect("L3 change tier record must be present");
+        assert_eq!(record["ack_mode"], "full_gate");
+        assert!(record["changed_clauses"].is_array());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires seeded PostgreSQL baseline with 003_operational_review_and_continuity_seed.sql applied"]
+    async fn review_comments_seeded_and_ordered() {
+        let db = try_connect().await.expect("DB must be reachable");
+        let comments = db
+            .list_review_comments("rt-wi004-sg01-gap-001")
+            .await
+            .expect("review comment list must succeed");
+        assert_eq!(comments.len(), 2, "expected two seeded review comments");
+        assert_eq!(comments[0].id, "rc-wi004-sg01-gap-001");
+        assert_eq!(
+            comments[1].parent_comment_id.as_deref(),
+            Some("rc-wi004-sg01-gap-001")
+        );
+        assert!(
+            comments[0].created_at <= comments[1].created_at,
+            "comments must be returned in chronological order"
+        );
+    }
 }

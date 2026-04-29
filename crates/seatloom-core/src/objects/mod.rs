@@ -4,6 +4,7 @@ pub mod handoff;
 pub mod id;
 pub mod pipeline;
 pub mod receipt;
+pub mod review;
 pub mod seat;
 pub mod session;
 pub mod workitem;

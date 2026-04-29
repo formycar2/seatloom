@@ -1,6 +1,7 @@
 use crate::objects::id::{ArtifactId, CheckpointId, SessionId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -12,6 +13,11 @@ pub struct Checkpoint {
     pub branch: Option<String>,
     pub last_commit: Option<String>,
     pub transcript_tail_ref: Option<String>,
+    pub continuity_tier0: Option<Value>,
+    pub continuity_tier1: Option<Value>,
+    pub continuity_tier2: Option<Value>,
+    pub continuity_budget_tokens: Option<i32>,
+    pub delta_context: Option<Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -19,6 +25,7 @@ pub struct Checkpoint {
 pub enum CheckpointTrigger {
     SessionEnded,
     ArtifactProduced,
+    Manual,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

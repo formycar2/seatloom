@@ -34,15 +34,28 @@ echo "PostgreSQL ready."
 echo ""
 
 echo "--- Step 2: Apply schema ---"
-docker exec seatloom-postgres psql -U seatloom -d seatloom \
-  -f /docker-entrypoint-initdb.d/001_seatloom_core.sql 2>&1 || \
-  echo "(schema already applied — continuing)"
+for schema_file in \
+  001_seatloom_core.sql \
+  002_document_authority.sql \
+  003_write_ingest_reconcile.sql \
+  004_operational_review_and_continuity.sql
+do
+  echo "Applying schema/$schema_file"
+  docker exec seatloom-postgres psql -U seatloom -d seatloom \
+    -f "/docker-entrypoint-initdb.d/$schema_file"
+done
 echo ""
 
 echo "--- Step 3: Seed real collaboration baseline ---"
-docker cp "$INFRA_DIR/seed/001_real_collaboration_baseline.sql" \
-  seatloom-postgres:/tmp/seed.sql
-docker exec seatloom-postgres psql -U seatloom -d seatloom -f /tmp/seed.sql
+for seed_file in \
+  001_real_collaboration_baseline.sql \
+  002_document_seed.sql \
+  003_operational_review_and_continuity_seed.sql
+do
+  echo "Applying seed/$seed_file"
+  docker cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"
+  docker exec seatloom-postgres psql -U seatloom -d seatloom -f "/tmp/$seed_file"
+done
 echo "Seed complete."
 echo ""
 

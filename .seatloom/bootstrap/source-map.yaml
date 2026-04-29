@@ -1,12 +1,13 @@
-source_map_version: "v2"
-generated: "2026-04-29"
-generated_by: "Nimbus (packets: real-collaboration-db-baseline-v1, postgres-authority-and-typed-documents-v1)"
+source_map_version: "v3"
+generated: "2026-04-30"
+generated_by: "Nimbus + Lyra (packets: real-collaboration-db-baseline-v1, postgres-authority-and-typed-documents-v1, operational-review-and-continuity-v1)"
 project: "seatloom"
 
 summary: >
   This source map documents the evidence basis and approximation notes for the
   real collaboration truth baseline seeded into PostgreSQL, including the
-  document authority layer added in the second infrastructure packet.
+  document authority layer plus operational continuity, receipt, pipeline-run,
+  and review/comment objects added in the later infrastructure packets.
   All objects are derived from actual repository files, MEMORY.md, and the
   process-mapping review. No content was fabricated.
 
@@ -94,6 +95,84 @@ handoffs:
       approximation: "created_at/sent_at inferred from the afternoon evidence sequence on 2026-04-29."
 
 # ---------------------------------------------------------------------------
+# Handoff Receipts
+# ---------------------------------------------------------------------------
+handoff_receipts:
+  evidence_source: "Explicit acceptance/acknowledgment moments captured in MEMORY.md and reflected by handoff outcomes."
+  note: >
+    Receipt rows are canonical audit objects derived from concrete handoff acceptance
+    moments. They are not verbatim runtime protocol packets; timestamps are curated
+    to preserve causal ordering across the Apr 28-29 collaboration window.
+  included:
+    - id: "hr-ho-aegis-nimbus-arch-001"
+      handoff_id: "ho-aegis-nimbus-arch"
+      evidence: "Nimbus scaffold start confirms receipt of the architecture handoff."
+    - id: "hr-ho-nimbus-lyra-storage-001"
+      handoff_id: "ho-nimbus-lyra-storage"
+      evidence: "Lyra acceptance sequence for storage+ledger delivery on 2026-04-29."
+    - id: "hr-ho-lyra-flux-sg01-verify-001"
+      handoff_id: "ho-lyra-flux-sg01-verify"
+      evidence: "Flux verification packet acknowledgment before SG-01 closeout."
+
+# ---------------------------------------------------------------------------
+# Checkpoints
+# ---------------------------------------------------------------------------
+checkpoints:
+  evidence_source: "Accepted delivery packets, PRODUCT_TRUTH baseline closure, and 2026-04-29 verification outcomes."
+  note: >
+    Checkpoint summaries are structured reconstructions of real continuity state.
+    They preserve what was done, current state, open questions, and tier snapshots,
+    but they are not verbatim transcript excerpts.
+  included:
+    - id: "cp-nimbus-infra-001"
+      session_id: "ses-nimbus-infra-001"
+      evidence: "Nimbus foundation/storage/document-authority/hardening packet chain."
+    - id: "cp-lyra-coord-001"
+      session_id: "ses-lyra-coord-001"
+      evidence: "Lyra baseline freeze, SG-01 closeout, and contract consolidation."
+    - id: "cp-flux-verify-001"
+      session_id: "ses-flux-verify-001"
+      evidence: "Flux commit-pinned verification closures and acceptance evidence."
+
+# ---------------------------------------------------------------------------
+# Pipeline Runs
+# ---------------------------------------------------------------------------
+pipeline_runs:
+  evidence_source: "Accepted Rust foundation verification gate on 2026-04-29."
+  note: >
+    The seeded pipeline run is a deterministic reconstruction of the real
+    cargo check/test/fmt/clippy gate, represented as one canonical run so later
+    UI and retrieval layers can consume stable execution history.
+  included:
+    - id: "plrun-rust-foundation-gate-001"
+      workitem_id: "wi-hardening"
+      evidence: "Nimbus hardening delivery + Flux verification + Lyra acceptance trail."
+
+# ---------------------------------------------------------------------------
+# Review Threads / Comments
+# ---------------------------------------------------------------------------
+review_threads:
+  evidence_source: "SG-01 reject -> repair -> pass chain captured in acceptance and verification artifacts."
+  note: >
+    Review threads are canonical containers for desktop review, supervisor-assisted
+    review, and future mobile feedback. The initial seeded thread is grounded in the
+    actual SG-01 gap closure loop.
+  included:
+    - id: "rt-wi004-sg01-gap-001"
+      target: "workitem:wi-004"
+      evidence: "2026-04-27 Mira UI acceptance rejection plus 2026-04-29 PASS evidence pack."
+
+review_comments:
+  evidence_source: "Same SG-01 acceptance chain as the parent review thread."
+  included:
+    - id: "rc-wi004-sg01-gap-001"
+      thread_id: "rt-wi004-sg01-gap-001"
+      evidence: "Initial reject/gap enumeration."
+    - id: "rc-wi004-sg01-gap-002"
+      thread_id: "rt-wi004-sg01-gap-001"
+      evidence: "Closure note after 10/10 PASS evidence pack."
+
+# ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------
 artifacts:
@@ -172,11 +251,5 @@ events:
 # Intentionally partial in v1
 # ---------------------------------------------------------------------------
 partial_families:
-  - family: "checkpoints"
-    reason: "Checkpoint objects require session transcript content; out of scope for this baseline packet."
-  - family: "pipeline_runs"
-    reason: "No pipeline execution has been triggered yet in the project; no real data to seed."
   - family: "artifacts (system-generated)"
     reason: "DiffSummary, TestReport etc. require real build/test outputs; not available in this baseline."
-  - family: "comments"
-    reason: "Review comment objects not yet in the accepted schema; deferred to a later packet."

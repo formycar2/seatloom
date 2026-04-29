@@ -1,5 +1,6 @@
 /// Flat DB row models for PostgreSQL queries (tokio-postgres).
-/// Covers schema 001 (core objects) and 002 (document authority layer).
+/// Covers schema 001-004: core objects, document authority, reconcile bookkeeping,
+/// and operational review/continuity objects.
 use chrono::{DateTime, NaiveDate, Utc};
 
 #[derive(Debug, Clone)]
@@ -215,4 +216,111 @@ pub struct DocumentVersionRow {
     pub header_snapshot: Option<serde_json::Value>,
     pub run_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+// =============================================================================
+// Schema 004: Operational review + continuity authority
+// Mirrors infra/postgres/schema/004_operational_review_and_continuity.sql
+// =============================================================================
+
+/// Structured continuity snapshot for a session.
+#[derive(Debug, Clone)]
+pub struct CheckpointRow {
+    pub id: String,
+    pub session_id: String,
+    pub trigger: String,
+    pub summary_what_was_done: String,
+    pub summary_current_state: String,
+    pub summary_open_questions: Vec<String>,
+    pub summary_quality: String,
+    pub artifact_ids_at_checkpoint: Vec<String>,
+    pub branch: Option<String>,
+    pub last_commit: Option<String>,
+    pub transcript_tail_ref: Option<String>,
+    pub continuity_tier0: Option<serde_json::Value>,
+    pub continuity_tier1: Option<serde_json::Value>,
+    pub continuity_tier2: Option<serde_json::Value>,
+    pub continuity_budget_tokens: Option<i32>,
+    pub delta_context: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Explicit receipt/audit object for a handoff acknowledgment.
+#[derive(Debug, Clone)]
+pub struct HandoffReceiptRow {
+    pub id: String,
+    pub handoff_id: String,
+    pub acknowledged_by: String,
+    pub acknowledged_at: DateTime<Utc>,
+    pub note: Option<String>,
+    pub source_channel: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Deterministic execution/verification run history.
+#[derive(Debug, Clone)]
+pub struct PipelineRunRow {
+    pub id: String,
+    pub pipeline_id: String,
+    pub workitem_id: Option<String>,
+    pub status: String,
+    pub current_stage: Option<String>,
+    pub stage_index: Option<i32>,
+    pub trigger: String,
+    pub initiated_by: Option<String>,
+    pub result_summary: Option<String>,
+    pub artifact_ids: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub run_metadata: Option<serde_json::Value>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Shared thread object for desktop review, supervisor assist, and mobile feedback.
+#[derive(Debug, Clone)]
+pub struct ReviewThreadRow {
+    pub id: String,
+    pub project_id: String,
+    pub source_channel: String,
+    pub mode: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub document_id: Option<String>,
+    pub artifact_id: Option<String>,
+    pub workitem_id: Option<String>,
+    pub handoff_id: Option<String>,
+    pub session_id: Option<String>,
+    pub anchor_kind: String,
+    pub anchor_ref: Option<String>,
+    pub anchor_label: Option<String>,
+    pub title: Option<String>,
+    pub status: String,
+    pub requires_followup: bool,
+    pub review_tier: Option<String>,
+    pub change_tier_record: Option<serde_json::Value>,
+    pub evidence_refs: Vec<String>,
+    pub created_by: String,
+    pub assigned_to: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub resolved_by: Option<String>,
+}
+
+/// Ordered comment rows for a review thread.
+#[derive(Debug, Clone)]
+pub struct ReviewCommentRow {
+    pub id: String,
+    pub thread_id: String,
+    pub parent_comment_id: Option<String>,
+    pub author_ref: String,
+    pub body_text: String,
+    pub mode: String,
+    pub source_channel: String,
+    pub state: String,
+    pub evidence_refs: Vec<String>,
+    pub comment_metadata: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

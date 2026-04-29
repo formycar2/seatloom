@@ -6,8 +6,9 @@ use thiserror::Error;
 use tokio_postgres::Row;
 
 use crate::db::models::{
-    ArtifactRow, CanonicalEventRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffRow, ProjectRoleBindingRow, ReconcileItemRow, ReconcileRunRow,
+    ArtifactRow, CanonicalEventRow, CheckpointRow, DocumentAssociationRow, DocumentRow,
+    DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow,
+    ProjectRoleBindingRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
     SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 
@@ -402,10 +403,7 @@ impl SeatloomDb {
     // =========================================================================
 
     /// List reconcile runs sorted by started_at descending.
-    pub async fn list_reconcile_runs(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<ReconcileRunRow>, DbError> {
+    pub async fn list_reconcile_runs(&self, limit: i64) -> Result<Vec<ReconcileRunRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
@@ -467,6 +465,354 @@ impl SeatloomDb {
             )
             .await?;
         Ok(rows.iter().map(row_to_document_version).collect())
+    }
+
+    // =========================================================================
+    // Operational review + continuity (schema 004)
+    // =========================================================================
+
+    /// List checkpoints sorted by created_at descending.
+    pub async fn list_checkpoints(&self, limit: i64) -> Result<Vec<CheckpointRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, session_id, trigger, summary_what_was_done, summary_current_state, \
+                 summary_open_questions, summary_quality, artifact_ids_at_checkpoint, branch, \
+                 last_commit, transcript_tail_ref, continuity_tier0, continuity_tier1, \
+                 continuity_tier2, continuity_budget_tokens, delta_context, created_at \
+                 FROM checkpoints ORDER BY created_at DESC, id ASC LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_checkpoint).collect())
+    }
+
+    /// List checkpoints for one session sorted by created_at descending.
+    pub async fn list_checkpoints_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<CheckpointRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, session_id, trigger, summary_what_was_done, summary_current_state, \
+                 summary_open_questions, summary_quality, artifact_ids_at_checkpoint, branch, \
+                 last_commit, transcript_tail_ref, continuity_tier0, continuity_tier1, \
+                 continuity_tier2, continuity_budget_tokens, delta_context, created_at \
+                 FROM checkpoints WHERE session_id = $1 ORDER BY created_at DESC, id ASC",
+                &[&session_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_checkpoint).collect())
+    }
+
+    pub async fn get_checkpoint(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Option<CheckpointRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, session_id, trigger, summary_what_was_done, summary_current_state, \
+                 summary_open_questions, summary_quality, artifact_ids_at_checkpoint, branch, \
+                 last_commit, transcript_tail_ref, continuity_tier0, continuity_tier1, \
+                 continuity_tier2, continuity_budget_tokens, delta_context, created_at \
+                 FROM checkpoints WHERE id = $1",
+                &[&checkpoint_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_checkpoint))
+    }
+
+    /// List all handoff receipts sorted by acknowledged_at descending.
+    pub async fn list_handoff_receipts(&self) -> Result<Vec<HandoffReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, handoff_id, acknowledged_by, acknowledged_at, note, \
+                 source_channel, created_at \
+                 FROM handoff_receipts ORDER BY acknowledged_at DESC, id ASC",
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_handoff_receipt).collect())
+    }
+
+    /// List all receipts for a handoff sorted by acknowledged_at descending.
+    pub async fn list_handoff_receipts_for_handoff(
+        &self,
+        handoff_id: &str,
+    ) -> Result<Vec<HandoffReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, handoff_id, acknowledged_by, acknowledged_at, note, \
+                 source_channel, created_at \
+                 FROM handoff_receipts WHERE handoff_id = $1 \
+                 ORDER BY acknowledged_at DESC, id ASC",
+                &[&handoff_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_handoff_receipt).collect())
+    }
+
+    pub async fn get_handoff_receipt(
+        &self,
+        receipt_id: &str,
+    ) -> Result<Option<HandoffReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, handoff_id, acknowledged_by, acknowledged_at, note, \
+                 source_channel, created_at \
+                 FROM handoff_receipts WHERE id = $1",
+                &[&receipt_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_handoff_receipt))
+    }
+
+    /// List pipeline runs sorted by started_at descending.
+    pub async fn list_pipeline_runs(&self, limit: i64) -> Result<Vec<PipelineRunRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, pipeline_id, workitem_id, status, current_stage, stage_index, \
+                 trigger, initiated_by, result_summary, artifact_ids, evidence_refs, \
+                 run_metadata, started_at, finished_at, created_at \
+                 FROM pipeline_runs ORDER BY started_at DESC, id ASC LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_pipeline_run).collect())
+    }
+
+    /// List pipeline runs for a workitem sorted by started_at descending.
+    pub async fn list_pipeline_runs_for_workitem(
+        &self,
+        workitem_id: &str,
+    ) -> Result<Vec<PipelineRunRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, pipeline_id, workitem_id, status, current_stage, stage_index, \
+                 trigger, initiated_by, result_summary, artifact_ids, evidence_refs, \
+                 run_metadata, started_at, finished_at, created_at \
+                 FROM pipeline_runs WHERE workitem_id = $1 \
+                 ORDER BY started_at DESC, id ASC",
+                &[&workitem_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_pipeline_run).collect())
+    }
+
+    pub async fn get_pipeline_run(&self, run_id: &str) -> Result<Option<PipelineRunRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, pipeline_id, workitem_id, status, current_stage, stage_index, \
+                 trigger, initiated_by, result_summary, artifact_ids, evidence_refs, \
+                 run_metadata, started_at, finished_at, created_at \
+                 FROM pipeline_runs WHERE id = $1",
+                &[&run_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_pipeline_run))
+    }
+
+    /// List all review threads for a project sorted by updated_at descending.
+    pub async fn list_review_threads_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE project_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    /// List review threads by canonical target tuple.
+    pub async fn list_review_threads_by_target(
+        &self,
+        target_kind: &str,
+        target_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE target_kind = $1 AND target_id = $2 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&target_kind, &target_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn list_review_threads_for_document(
+        &self,
+        document_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE document_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&document_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn list_review_threads_for_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE artifact_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&artifact_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn list_review_threads_for_workitem(
+        &self,
+        workitem_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE workitem_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&workitem_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn list_review_threads_for_handoff(
+        &self,
+        handoff_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE handoff_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&handoff_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn list_review_threads_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE session_id = $1 \
+                 ORDER BY updated_at DESC, id ASC",
+                &[&session_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_thread).collect())
+    }
+
+    pub async fn get_review_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ReviewThreadRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, source_channel, mode, target_kind, target_id, \
+                 document_id, artifact_id, workitem_id, handoff_id, session_id, anchor_kind, \
+                 anchor_ref, anchor_label, title, status, requires_followup, review_tier, \
+                 change_tier_record, evidence_refs, created_by, assigned_to, created_at, \
+                 updated_at, resolved_at, resolved_by \
+                 FROM review_threads WHERE id = $1",
+                &[&thread_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_review_thread))
+    }
+
+    /// List review comments for a thread sorted by created_at ascending.
+    pub async fn list_review_comments(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<ReviewCommentRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, thread_id, parent_comment_id, author_ref, body_text, mode, \
+                 source_channel, state, evidence_refs, comment_metadata, created_at, updated_at \
+                 FROM review_comments WHERE thread_id = $1 ORDER BY created_at ASC, id ASC",
+                &[&thread_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_review_comment).collect())
+    }
+
+    pub async fn get_review_comment(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<ReviewCommentRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, thread_id, parent_comment_id, author_ref, body_text, mode, \
+                 source_channel, state, evidence_refs, comment_metadata, created_at, updated_at \
+                 FROM review_comments WHERE id = $1",
+                &[&comment_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_review_comment))
     }
 }
 
@@ -680,6 +1026,108 @@ fn row_to_document_version(r: &Row) -> DocumentVersionRow {
         header_snapshot: r.get(5),
         run_id: r.get(6),
         created_at: r.get(7),
+    }
+}
+
+fn row_to_checkpoint(r: &Row) -> CheckpointRow {
+    CheckpointRow {
+        id: r.get(0),
+        session_id: r.get(1),
+        trigger: r.get(2),
+        summary_what_was_done: r.get(3),
+        summary_current_state: r.get(4),
+        summary_open_questions: r.get(5),
+        summary_quality: r.get(6),
+        artifact_ids_at_checkpoint: r.get(7),
+        branch: r.get(8),
+        last_commit: r.get(9),
+        transcript_tail_ref: r.get(10),
+        continuity_tier0: r.get(11),
+        continuity_tier1: r.get(12),
+        continuity_tier2: r.get(13),
+        continuity_budget_tokens: r.get(14),
+        delta_context: r.get(15),
+        created_at: r.get(16),
+    }
+}
+
+fn row_to_handoff_receipt(r: &Row) -> HandoffReceiptRow {
+    HandoffReceiptRow {
+        id: r.get(0),
+        handoff_id: r.get(1),
+        acknowledged_by: r.get(2),
+        acknowledged_at: r.get(3),
+        note: r.get(4),
+        source_channel: r.get(5),
+        created_at: r.get(6),
+    }
+}
+
+fn row_to_pipeline_run(r: &Row) -> PipelineRunRow {
+    PipelineRunRow {
+        id: r.get(0),
+        pipeline_id: r.get(1),
+        workitem_id: r.get(2),
+        status: r.get(3),
+        current_stage: r.get(4),
+        stage_index: r.get(5),
+        trigger: r.get(6),
+        initiated_by: r.get(7),
+        result_summary: r.get(8),
+        artifact_ids: r.get(9),
+        evidence_refs: r.get(10),
+        run_metadata: r.get(11),
+        started_at: r.get(12),
+        finished_at: r.get(13),
+        created_at: r.get(14),
+    }
+}
+
+fn row_to_review_thread(r: &Row) -> ReviewThreadRow {
+    ReviewThreadRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        source_channel: r.get(2),
+        mode: r.get(3),
+        target_kind: r.get(4),
+        target_id: r.get(5),
+        document_id: r.get(6),
+        artifact_id: r.get(7),
+        workitem_id: r.get(8),
+        handoff_id: r.get(9),
+        session_id: r.get(10),
+        anchor_kind: r.get(11),
+        anchor_ref: r.get(12),
+        anchor_label: r.get(13),
+        title: r.get(14),
+        status: r.get(15),
+        requires_followup: r.get(16),
+        review_tier: r.get(17),
+        change_tier_record: r.get(18),
+        evidence_refs: r.get(19),
+        created_by: r.get(20),
+        assigned_to: r.get(21),
+        created_at: r.get(22),
+        updated_at: r.get(23),
+        resolved_at: r.get(24),
+        resolved_by: r.get(25),
+    }
+}
+
+fn row_to_review_comment(r: &Row) -> ReviewCommentRow {
+    ReviewCommentRow {
+        id: r.get(0),
+        thread_id: r.get(1),
+        parent_comment_id: r.get(2),
+        author_ref: r.get(3),
+        body_text: r.get(4),
+        mode: r.get(5),
+        source_channel: r.get(6),
+        state: r.get(7),
+        evidence_refs: r.get(8),
+        comment_metadata: r.get(9),
+        created_at: r.get(10),
+        updated_at: r.get(11),
     }
 }
 

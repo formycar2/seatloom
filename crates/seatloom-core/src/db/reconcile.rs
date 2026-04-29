@@ -15,11 +15,9 @@
 /// - **changed**: update doc body/header, bump revision, insert document_version
 /// - **conflict**: same `doc_id` already exists at a different `file_path` → record conflict
 /// - **parse failure**: record reconcile_item(failed); document stored with parse_status='partial'
-
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use chrono::Utc as _;
 use deadpool_postgres::Pool;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -107,6 +105,18 @@ pub struct ReconcileItemResult {
     pub revision_after: Option<i32>,
     pub digest_before: Option<String>,
     pub digest_after: Option<String>,
+}
+
+struct ReconcileItemInsert<'a> {
+    run_id: &'a str,
+    file_path: &'a str,
+    doc_id: Option<&'a str>,
+    outcome: ItemOutcome,
+    digest_before: Option<&'a str>,
+    digest_after: Option<&'a str>,
+    revision_before: Option<i32>,
+    revision_after: Option<i32>,
+    parse_status: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,15 +242,17 @@ async fn process_one_file(
             let reason = format!("read error: {e}");
             let _ = insert_reconcile_item(
                 client,
-                run_id,
-                repo_relative,
-                None,
-                &ItemOutcome::Failed(reason.clone()),
-                None,
-                None,
-                None,
-                None,
-                Some("failed"),
+                ReconcileItemInsert {
+                    run_id,
+                    file_path: repo_relative,
+                    doc_id: None,
+                    outcome: ItemOutcome::Failed(reason.clone()),
+                    digest_before: None,
+                    digest_after: None,
+                    revision_before: None,
+                    revision_after: None,
+                    parse_status: Some("failed"),
+                },
             )
             .await;
             return ReconcileItemResult {
@@ -279,15 +291,17 @@ async fn process_one_file(
         let reason = format!("doc_id '{computed_doc_id}' already mapped to '{conflict_path}'");
         let _ = insert_reconcile_item(
             client,
-            run_id,
-            repo_relative,
-            None,
-            &ItemOutcome::Conflict(reason.clone()),
-            None,
-            None,
-            None,
-            None,
-            None,
+            ReconcileItemInsert {
+                run_id,
+                file_path: repo_relative,
+                doc_id: None,
+                outcome: ItemOutcome::Conflict(reason.clone()),
+                digest_before: None,
+                digest_after: None,
+                revision_before: None,
+                revision_after: None,
+                parse_status: None,
+            },
         )
         .await;
         return ReconcileItemResult {
@@ -361,21 +375,34 @@ async fn process_one_file(
             if let Err(e) = insert_result {
                 let reason = format!("insert error: {e}");
                 let _ = insert_reconcile_item(
-                    client, run_id, repo_relative, None,
-                    &ItemOutcome::Failed(reason.clone()),
-                    None, Some(&new_digest), None, None, Some(parse_status),
-                ).await;
+                    client,
+                    ReconcileItemInsert {
+                        run_id,
+                        file_path: repo_relative,
+                        doc_id: None,
+                        outcome: ItemOutcome::Failed(reason.clone()),
+                        digest_before: None,
+                        digest_after: Some(&new_digest),
+                        revision_before: None,
+                        revision_after: None,
+                        parse_status: Some(parse_status),
+                    },
+                )
+                .await;
                 return ReconcileItemResult {
                     file_path: repo_relative.to_string(),
                     document_id: None,
                     outcome: ItemOutcome::Failed(reason),
-                    revision_before: None, revision_after: None,
-                    digest_before: None, digest_after: Some(new_digest),
+                    revision_before: None,
+                    revision_after: None,
+                    digest_before: None,
+                    digest_after: Some(new_digest),
                 };
             }
 
             // Insert initial version snapshot
-            let _ = insert_document_version(client, &doc_id_row, 1, &new_digest, &body, h, run_id).await;
+            let _ = insert_document_version(client, &doc_id_row, 1, &new_digest, &body, h, run_id)
+                .await;
 
             // Insert sections
             let sections = extract_sections(&body);
@@ -391,17 +418,29 @@ async fn process_one_file(
             }
 
             let _ = insert_reconcile_item(
-                client, run_id, repo_relative, Some(&doc_id_row),
-                &ItemOutcome::Inserted, None, Some(&new_digest),
-                None, Some(1), Some(parse_status),
-            ).await;
+                client,
+                ReconcileItemInsert {
+                    run_id,
+                    file_path: repo_relative,
+                    doc_id: Some(&doc_id_row),
+                    outcome: ItemOutcome::Inserted,
+                    digest_before: None,
+                    digest_after: Some(&new_digest),
+                    revision_before: None,
+                    revision_after: Some(1),
+                    parse_status: Some(parse_status),
+                },
+            )
+            .await;
 
             ReconcileItemResult {
                 file_path: repo_relative.to_string(),
                 document_id: Some(doc_id_row),
                 outcome: ItemOutcome::Inserted,
-                revision_before: None, revision_after: Some(1),
-                digest_before: None, digest_after: Some(new_digest),
+                revision_before: None,
+                revision_after: Some(1),
+                digest_before: None,
+                digest_after: Some(new_digest),
             }
         }
 
@@ -410,42 +449,77 @@ async fn process_one_file(
             if current_digest.as_deref() == Some(&new_digest) {
                 // Unchanged
                 let _ = insert_reconcile_item(
-                    client, run_id, repo_relative, Some(&doc_id_row),
-                    &ItemOutcome::Unchanged, current_digest.as_deref(), Some(&new_digest),
-                    Some(current_rev), Some(current_rev), Some(parse_status),
-                ).await;
+                    client,
+                    ReconcileItemInsert {
+                        run_id,
+                        file_path: repo_relative,
+                        doc_id: Some(&doc_id_row),
+                        outcome: ItemOutcome::Unchanged,
+                        digest_before: current_digest.as_deref(),
+                        digest_after: Some(&new_digest),
+                        revision_before: Some(current_rev),
+                        revision_after: Some(current_rev),
+                        parse_status: Some(parse_status),
+                    },
+                )
+                .await;
                 return ReconcileItemResult {
                     file_path: repo_relative.to_string(),
                     document_id: Some(doc_id_row),
                     outcome: ItemOutcome::Unchanged,
-                    revision_before: Some(current_rev), revision_after: Some(current_rev),
-                    digest_before: current_digest, digest_after: Some(new_digest),
+                    revision_before: Some(current_rev),
+                    revision_after: Some(current_rev),
+                    digest_before: current_digest,
+                    digest_after: Some(new_digest),
                 };
             }
 
             // Changed — update document, increment revision
             let new_rev = current_rev + 1;
-            let title = h.and_then(|h| h.title.as_deref()).unwrap_or("Untitled").to_string();
+            let title = h
+                .and_then(|h| h.title.as_deref())
+                .unwrap_or("Untitled")
+                .to_string();
 
-            let _ = client.execute(
-                "UPDATE documents SET body_text=$1, body_digest=$2, body_length=$3, \
+            let _ = client
+                .execute(
+                    "UPDATE documents SET body_text=$1, body_digest=$2, body_length=$3, \
                  parse_status=$4, revision=$5, title=$6, template=$7, subtype=$8, \
                  subtype_valid=$9, updated_at=NOW() WHERE id=$10",
-                &[
-                    &body, &new_digest, &(body.len() as i32), &parse_status,
-                    &new_rev, &title, &template, &subtype, &Some(parse_ok),
-                    &doc_id_row,
-                ],
-            ).await;
+                    &[
+                        &body,
+                        &new_digest,
+                        &(body.len() as i32),
+                        &parse_status,
+                        &new_rev,
+                        &title,
+                        &template,
+                        &subtype,
+                        &Some(parse_ok),
+                        &doc_id_row,
+                    ],
+                )
+                .await;
 
             // Insert version snapshot
-            let _ = insert_document_version(client, &doc_id_row, new_rev, &new_digest, &body, h, run_id).await;
+            let _ = insert_document_version(
+                client,
+                &doc_id_row,
+                new_rev,
+                &new_digest,
+                &body,
+                h,
+                run_id,
+            )
+            .await;
 
             // Refresh sections
-            let _ = client.execute(
-                "DELETE FROM document_sections WHERE document_id = $1",
-                &[&doc_id_row],
-            ).await;
+            let _ = client
+                .execute(
+                    "DELETE FROM document_sections WHERE document_id = $1",
+                    &[&doc_id_row],
+                )
+                .await;
             let sections = extract_sections(&body);
             for sec in &sections {
                 let sec_id = format!("sec-{}-{}", doc_id_row, sec.ordinal);
@@ -459,17 +533,29 @@ async fn process_one_file(
             }
 
             let _ = insert_reconcile_item(
-                client, run_id, repo_relative, Some(&doc_id_row),
-                &ItemOutcome::Updated, current_digest.as_deref(), Some(&new_digest),
-                Some(current_rev), Some(new_rev), Some(parse_status),
-            ).await;
+                client,
+                ReconcileItemInsert {
+                    run_id,
+                    file_path: repo_relative,
+                    doc_id: Some(&doc_id_row),
+                    outcome: ItemOutcome::Updated,
+                    digest_before: current_digest.as_deref(),
+                    digest_after: Some(&new_digest),
+                    revision_before: Some(current_rev),
+                    revision_after: Some(new_rev),
+                    parse_status: Some(parse_status),
+                },
+            )
+            .await;
 
             ReconcileItemResult {
                 file_path: repo_relative.to_string(),
                 document_id: Some(doc_id_row),
                 outcome: ItemOutcome::Updated,
-                revision_before: Some(current_rev), revision_after: Some(new_rev),
-                digest_before: current_digest, digest_after: Some(new_digest),
+                revision_before: Some(current_rev),
+                revision_after: Some(new_rev),
+                digest_before: current_digest,
+                digest_after: Some(new_digest),
             }
         }
     }
@@ -481,30 +567,30 @@ async fn process_one_file(
 
 async fn insert_reconcile_item(
     client: &deadpool_postgres::Object,
-    run_id: &str,
-    file_path: &str,
-    doc_id: Option<&str>,
-    outcome: &ItemOutcome,
-    digest_before: Option<&str>,
-    digest_after: Option<&str>,
-    rev_before: Option<i32>,
-    rev_after: Option<i32>,
-    parse_status: Option<&str>,
+    item: ReconcileItemInsert<'_>,
 ) -> Result<(), tokio_postgres::Error> {
     let item_id = format!("ri-{}", nanoid_8());
-    client.execute(
-        "INSERT INTO reconcile_items (id, run_id, file_path, document_id, outcome, \
+    client
+        .execute(
+            "INSERT INTO reconcile_items (id, run_id, file_path, document_id, outcome, \
          digest_before, digest_after, revision_before, revision_after, \
          parse_status, failure_reason, created_at) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())",
-        &[
-            &item_id, &run_id, &file_path, &doc_id,
-            &outcome.as_str(),
-            &digest_before, &digest_after,
-            &rev_before, &rev_after,
-            &parse_status, &outcome.failure_reason(),
-        ],
-    ).await?;
+            &[
+                &item_id,
+                &item.run_id,
+                &item.file_path,
+                &item.doc_id,
+                &item.outcome.as_str(),
+                &item.digest_before,
+                &item.digest_after,
+                &item.revision_before,
+                &item.revision_after,
+                &item.parse_status,
+                &item.outcome.failure_reason(),
+            ],
+        )
+        .await?;
     Ok(())
 }
 
@@ -705,10 +791,7 @@ mod tests {
 
     #[test]
     fn path_to_doc_id_slugifies_correctly() {
-        assert_eq!(
-            path_to_doc_id("docs/prd-v0.5.md"),
-            "docs-prd-v0.5"
-        );
+        assert_eq!(path_to_doc_id("docs/prd-v0.5.md"), "docs-prd-v0.5");
         assert_eq!(
             path_to_doc_id("docs/coordination/COORDINATION_RULES.md"),
             "docs-coordination-coordination_rules"

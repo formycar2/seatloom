@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::ledger::event::{CanonicalEvent, ObjectRef};
 
 /// In-memory index rebuilt from events.jsonl on startup.
-/// This is a cache/projection only — SQLite FTS5 remains the future persisted L1/L2 store.
+/// This is a cache/projection only — PostgreSQL remains the persisted retrieval authority.
 pub struct LedgerIndex {
     events: Vec<CanonicalEvent>,
     by_event_id: HashMap<String, usize>,
@@ -88,10 +88,13 @@ fn object_ref_key(object_ref: &ObjectRef) -> String {
         ObjectRef::WorkItem(id) => id.as_str().to_string(),
         ObjectRef::Artifact(id) => id.as_str().to_string(),
         ObjectRef::Handoff(id) => id.as_str().to_string(),
+        ObjectRef::HandoffReceipt(id) => id.as_str().to_string(),
         ObjectRef::Delegation(id) => id.as_str().to_string(),
         ObjectRef::Pipeline(id) => id.as_str().to_string(),
         ObjectRef::PipelineRun(id) => id.as_str().to_string(),
         ObjectRef::Checkpoint(id) => id.as_str().to_string(),
+        ObjectRef::ReviewThread(id) => id.as_str().to_string(),
+        ObjectRef::ReviewComment(id) => id.as_str().to_string(),
     }
 }
 

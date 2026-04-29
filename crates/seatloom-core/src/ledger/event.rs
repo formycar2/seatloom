@@ -1,7 +1,7 @@
 use crate::objects::handoff::ActorRef;
 use crate::objects::id::{
-    ArtifactId, CheckpointId, DelegationId, EventId, HandoffId, PipelineId, PipelineRunId, SeatId,
-    SessionId, WorkItemId,
+    ArtifactId, CheckpointId, DelegationId, EventId, HandoffId, HandoffReceiptId, PipelineId,
+    PipelineRunId, ReviewCommentId, ReviewThreadId, SeatId, SessionId, WorkItemId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -69,8 +69,11 @@ pub enum ObjectRef {
     WorkItem(WorkItemId),
     Artifact(ArtifactId),
     Handoff(HandoffId),
+    HandoffReceipt(HandoffReceiptId),
     Delegation(DelegationId),
     Pipeline(PipelineId),
     PipelineRun(PipelineRunId),
     Checkpoint(CheckpointId),
+    ReviewThread(ReviewThreadId),
+    ReviewComment(ReviewCommentId),
 }
