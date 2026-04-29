@@ -614,6 +614,10 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
     if (diffH < 24) return `${diffH}小时前`;
     return `${Math.round(diffH / 24)}天前`;
   };
+  const formatInboxObjectRef = (ref: string): string => {
+    if (!ref) return '';
+    return ref;
+  };
   const formatObjectRef = (ref: any): string => {
     if (!ref) return '';
     const entries = Object.entries(ref);
@@ -831,11 +835,11 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
     };
   };
   const buildNextHover = (item: any) => ({
-    priority: item.priority,
-    actor: item.actor,
-    objectRef: formatObjectRef(item.object_ref),
-    timestamp: item.timestamp,
-    linkedArtifactIds: item.linked_artifact_ids,
+    priority: item?.priority || 'Low',
+    actor: item?.actor || '—',
+    objectRef: item?.object_ref ? formatInboxObjectRef(item.object_ref) : '',
+    timestamp: item?.timestamp || '—',
+    linkedArtifactIds: item?.linked_artifact_ids || [],
   });
 
   if (!data && !truthData) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-text-tertiary)', fontSize: 13 }}>暂无项目数据</div>;
@@ -1044,7 +1048,7 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
               {nextStepSource ? nextStepSource.summary : (mockPlanData?.currentStage?.nextStep || '暂无待办建议')}
             </div>
             <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
-              {nextStepSource ? `${nextStepSource.actor} · ${formatObjectRef(nextStepSource.object_ref)}` : '点击指派相关席位执行此建议，或转化为具体的工作项。'}
+              {nextStepSource ? `${nextStepSource.actor} · ${formatInboxObjectRef(nextStepSource.object_ref)}` : '点击指派相关席位执行此建议，或转化为具体的工作项。'}
             </div>
           </div>
           <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--sl-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-brand)' }}>
@@ -1059,37 +1063,67 @@ const ProjectDashboard: React.FC<{ channelId: string; projectId?: string }> = ({
           <Clock size={14} /> 活动日志 (ACTIVITY)
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {projectedEvents.map((ev) => (
-            <div key={ev.eventId} 
-              onMouseEnter={evEnt => {
-                evEnt.currentTarget.style.background = 'var(--sl-surface-hover)';
-                handleMouseMove(evEnt, 'event', ev);
-              }}
-              onMouseMove={evEnt => handleMouseMove(evEnt, 'event', ev)}
-              onMouseLeave={evEnt => {
-                evEnt.currentTarget.style.background = 'var(--sl-bg)';
-                setHoveredItem(null);
-              }}
-              style={{ 
-                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
-                borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-                cursor: 'pointer', transition: 'background 150ms ease'
-              }}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
-                <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{ev.time}</span>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColor(ev.eventType) }} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{ev.headline}</div>
-                <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{ev.actor}</span>
-                  {ev.objectRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.objectRefs.length} refs</span>}
-                  {ev.evidenceRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.evidenceRefs.length} evidence</span>}
+          {projectedEvents.length > 0 ? (
+            projectedEvents.map((ev) => (
+              <div key={ev.eventId} 
+                onMouseEnter={evEnt => {
+                  evEnt.currentTarget.style.background = 'var(--sl-surface-hover)';
+                  handleMouseMove(evEnt, 'event', ev);
+                }}
+                onMouseMove={evEnt => handleMouseMove(evEnt, 'event', ev)}
+                onMouseLeave={evEnt => {
+                  evEnt.currentTarget.style.background = 'var(--sl-bg)';
+                  setHoveredItem(null);
+                }}
+                style={{ 
+                  display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
+                  borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+                  cursor: 'pointer', transition: 'background 150ms ease'
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{ev.time}</span>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColor(ev.eventType) }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{ev.headline}</div>
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>{ev.actor}</span>
+                    {ev.objectRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.objectRefs.length} refs</span>}
+                    {ev.evidenceRefs.length > 0 && <span style={{ color: 'var(--sl-text-tertiary)' }}>{ev.evidenceRefs.length} evidence</span>}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))
+          ) : (
+            justNow.map((e, i) => (
+              <div key={i} 
+                onMouseEnter={ev => {
+                  ev.currentTarget.style.background = 'var(--sl-surface-hover)';
+                  handleMouseMove(ev, 'event', e);
+                }}
+                onMouseMove={ev => handleMouseMove(ev, 'event', e)}
+                onMouseLeave={ev => {
+                  ev.currentTarget.style.background = 'var(--sl-bg)';
+                  setHoveredItem(null);
+                }}
+                style={{ 
+                  display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
+                  borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+                  cursor: 'pointer', transition: 'background 150ms ease'
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
+                  <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{e.time}</span>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: e.type === 'decision' ? 'var(--sl-green)' : e.type === 'delivery' ? 'var(--sl-blue)' : 'var(--sl-amber)' }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{e.text}</div>
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginTop: 2 }}>点击查看关联证据与历史快照</div>
+                </div>
+              </div>
+            ))
+          )}
         </div>
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--sl-border)' }}>
           <button
