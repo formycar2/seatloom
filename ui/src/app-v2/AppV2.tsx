@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Zap } from 'lucide-react';
+import { Zap, AlertTriangle, Clock, ArrowRight, Activity, Target } from 'lucide-react';
 import './styles/tokens.css';
 import { WorkNode, StageWorkflow } from './dag-model';
 import DagWorkflow from './DagWorkflow';
@@ -276,6 +276,7 @@ const MOCK_CHANNEL_DATA: Record<string, ProjectChannelData> = {
       ] },
       blockers: [
         { text: 'src-tauri/icons/icon.png 缺失，workspace cargo check 失败', owner: 'Nimbus', since: '2h' },
+        { text: 'v0.5 UI 基线验证在 Tablet 模式下存在布局错位', owner: 'Mira', since: '45min' },
       ],
       nextStep: 'Nimbus 补充图标 → Flux 重跑 cargo check → 关闭 ENV-001',
     },
@@ -579,54 +580,74 @@ const MessageBubble: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
 const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
   const data = MOCK_CHANNEL_DATA[channelId];
   const [showEarlier, setShowEarlier] = useState(false);
-  const [expandStages, setExpandStages] = useState(false);
-  const [showGoalsAndStages, setShowGoalsAndStages] = useState(false);
 
   if (!data) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-text-tertiary)', fontSize: 13 }}>暂无项目数据</div>;
 
   const { goals, currentGoal, currentStage, justNow, earlierToday, yesterday } = data;
 
-  // For stage display: show current ± 1, collapse the rest
   const stages = currentGoal.stages;
   const ci = currentGoal.currentStageIndex;
-  const visibleRange = { from: Math.max(0, ci - 1), to: Math.min(stages.length - 1, ci + 1) };
-  const beforeCount = visibleRange.from;
-  const afterCount = stages.length - 1 - visibleRange.to;
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* 1. ── Blockers (if any) ── */}
+      {/* 1. ── Blockers (Unified Panel) ── */}
       {currentStage.blockers.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-red)', padding: '0 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--sl-red)', display: 'inline-block' }} />
-            目前阻塞 (BLOCKERS)
+        <div style={{ 
+          padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', 
+          background: 'var(--sl-surface)', border: '1px solid var(--sl-red)' 
+        }}>
+          <div style={{ 
+            fontSize: 11, fontWeight: 700, color: 'var(--sl-red)', 
+            marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em',
+            display: 'flex', alignItems: 'center', gap: 6 
+          }}>
+            <AlertTriangle size={14} /> 目前阻塞 (BLOCKERS)
           </div>
-          {currentStage.blockers.map((b, i) => (
-            <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
-              border: '1px solid var(--sl-red)', background: 'var(--sl-red-subtle)',
-            }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: 'var(--sl-text-primary)', fontWeight: 600 }}>{b.text}</div>
-                <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginTop: 2 }}>{b.owner} · {b.since}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {currentStage.blockers.map((b, i) => (
+              <div key={i} 
+                onMouseEnter={e => {
+                  const btn = e.currentTarget.querySelector('button');
+                  if (btn) btn.style.opacity = '1';
+                }}
+                onMouseLeave={e => {
+                  const btn = e.currentTarget.querySelector('button');
+                  if (btn) btn.style.opacity = '0';
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
+                  background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+                  transition: 'all 150ms ease',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 600 }}>{b.text}</div>
+                  <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ fontWeight: 600 }}>{b.owner}</span>
+                    <span style={{ color: 'var(--sl-text-tertiary)' }}>· 阻塞已持续 {b.since}</span>
+                  </div>
+                </div>
+                <button 
+                  style={{
+                    opacity: 0, transition: 'opacity 200ms ease',
+                    fontSize: 11, fontWeight: 600, padding: '6px 12px', cursor: 'pointer',
+                    borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-red)', color: 'white', border: 'none',
+                  }}
+                >立即处理</button>
               </div>
-              <button style={{
-                fontSize: 10, fontWeight: 600, padding: '4px 10px',
-                borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-red)', color: 'white',
-                border: 'none', cursor: 'pointer'
-              }}>去处理</button>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
-      {/* 2. ── 正在发生: per-item dependency view ── */}
+      {/* 2. ── 正在发生 (Active Items) ── */}
       {currentStage.workflow.nodes.filter(n => n.status === 'active' || n.status === 'blocked').length > 0 && (
-        <div style={{ padding: '10px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ 正在发生</div>
+        <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Activity size={14} /> 正在发生 (ACTIVE)
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {currentStage.workflow.nodes
               .filter(n => n.status === 'active' || n.status === 'blocked')
@@ -640,260 +661,225 @@ const ProjectDashboard: React.FC<{ channelId: string }> = ({ channelId }) => {
 
                 return (
                   <div key={node.id} style={{
-                    padding: '8px 12px', borderRadius: 'var(--sl-radius-md)',
-                    border: `1px solid ${color}`,
-                    background: node.status === 'blocked' ? 'var(--sl-red-subtle)' : 'var(--sl-brand-subtle)',
+                    padding: '10px 14px', borderRadius: 'var(--sl-radius-md)',
+                    border: `1px solid ${color}40`, background: 'var(--sl-bg)',
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       {node.ownerAvatar && (
                         <div style={{
-                          width: 22, height: 22, borderRadius: '50%',
+                          width: 20, height: 20, borderRadius: '50%',
                           background: `${node.ownerColor || color}18`, color: node.ownerColor || color,
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 10, fontWeight: 700, border: `1px solid ${node.ownerColor || color}40`,
                         }}>{node.ownerAvatar}</div>
                       )}
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--sl-text-primary)' }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)', flex: 1 }}>
                         {node.owner}: {node.label}
                       </span>
                       <span style={{
-                        fontSize: 10, fontWeight: 600, padding: '1px 6px',
-                        borderRadius: 'var(--sl-radius-full)',
-                        background: color, color: 'white',
+                        fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 'var(--sl-radius-full)',
+                        background: `${color}15`, color: color,
                       }}>
-                        {node.status === 'blocked' ? '阻塞' : '进行中'}
+                        {node.status === 'blocked' ? '受阻塞' : '推进中'}
                       </span>
                     </div>
                     {node.description && (
-                      <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)', marginBottom: 4, paddingLeft: 30 }}>
+                      <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', marginBottom: 8, paddingLeft: 28, lineHeight: 1.5 }}>
                         {node.description}
                       </div>
                     )}
-                    <div style={{ fontSize: 11, paddingLeft: 30, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ fontSize: 11, paddingLeft: 28, display: 'flex', flexDirection: 'column', gap: 4 }}>
                       {upstreams.length > 0 && (
-                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
-                          ← 依赖: {upstreams.map((u, i) => (
-                            <span key={u.id}>
-                              <span style={{ color: u.status === 'done' ? 'var(--sl-green)' : 'var(--sl-text-tertiary)', fontWeight: 500 }}>{u.owner || u.label}</span>
-                              {u.status === 'done' ? ' ✓' : ' ⏳'}
-                              {i < upstreams.length - 1 ? ', ' : ''}
-                            </span>
-                          ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--sl-text-tertiary)' }}>
+                          <span style={{ opacity: 0.5 }}>← 依赖于:</span>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {upstreams.map(u => (
+                              <span key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <span style={{ color: u.status === 'done' ? 'var(--sl-green)' : 'var(--sl-text-secondary)', fontWeight: 500 }}>{u.owner || u.label}</span>
+                                {u.status === 'done' ? '✓' : '⏳'}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                       )}
                       {downstreams.length > 0 && (
-                        <div style={{ color: 'var(--sl-text-tertiary)' }}>
-                          → 阻塞: {downstreams.map((d, i) => (
-                            <span key={d.id}>
-                              <span style={{ fontWeight: 500 }}>{d.owner || d.label}</span> ⏳
-                              {i < downstreams.length - 1 ? ', ' : ''}
-                            </span>
-                          ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--sl-text-tertiary)' }}>
+                          <span style={{ opacity: 0.5 }}>→ 正阻塞:</span>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {downstreams.map(d => (
+                              <span key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <span style={{ fontWeight: 500, color: 'var(--sl-text-secondary)' }}>{d.owner || d.label}</span> ⏳
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                      )}
-                      {downstreams.length === 0 && (
-                        <div style={{ color: 'var(--sl-text-tertiary)' }}>→ 无下游阻塞</div>
                       )}
                     </div>
                   </div>
                 );
               })}
-
-            {/* Waiting items (compact) */}
-            {currentStage.workflow.nodes.filter(n => n.status === 'waiting').length > 0 && (
-              <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', padding: '4px 0' }}>
-                ⏳ 等待中: {currentStage.workflow.nodes.filter(n => n.status === 'waiting').map(n => `${n.owner || n.label}`).join(' · ')}
-              </div>
-            )}
           </div>
         </div>
       )}
 
-      {/* 3. ── DAG Workflow (uses DagWorkflow component) ── */}
-      <div style={{ padding: '10px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>工作流全景 (DAG)</div>
+      {/* 3. ── DAG Workflow with Integrated Progress ── */}
+      <div style={{ padding: '16px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            工作流全景 (DAG)
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontSize: 11, color: 'var(--sl-text-secondary)' }}>
+              进度 <span style={{ fontWeight: 600, color: 'var(--sl-text-primary)' }}>{currentStage.workItemsDone}/{currentStage.workItemsTotal}</span> 项
+            </div>
+            <div style={{ width: 120, height: 6, borderRadius: 3, background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)', overflow: 'hidden' }}>
+              <div style={{ width: `${(currentStage.workItemsDone / currentStage.workItemsTotal) * 100}%`, height: '100%', background: 'var(--sl-green)', transition: 'width 1s ease' }} />
+            </div>
+          </div>
+        </div>
         <DagWorkflow workflow={currentStage.workflow} />
       </div>
 
-      {/* 4. ── Next step ── */}
-      <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-brand)', color: 'white', boxShadow: '0 2px 8px var(--sl-brand-subtle)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Zap size={14} fill="white" />
-          <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>下一步 (NEXT STEP)</span>
+      {/* 4. ── Next step (Actionable Loop) ── */}
+      <div style={{ padding: '16px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-brand-subtle)', border: '1px solid var(--sl-brand)40' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Zap size={14} className="text-[var(--sl-brand)]" />
+          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-brand)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>系统建议下一步 (NEXT STEP)</span>
         </div>
-        <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600 }}>
-          {currentStage.nextStep}
+        <div style={{ 
+          background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-md)', padding: '12px 16px',
+          border: '1px solid var(--sl-border-light)', boxShadow: 'var(--sl-shadow-sm)',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+        }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 4 }}>
+              {currentStage.nextStep}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
+              点击指派相关席位执行此建议，或转化为具体的工作项。
+            </div>
+          </div>
+          <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--sl-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--sl-brand)' }}>
+            <ArrowRight size={16} />
+          </div>
         </div>
       </div>
 
-      {/* 5. ── Timeline: Just now (expanded) ── */}
-      <div style={{ padding: '0 2px' }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>刚刚发生</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {/* 5. ── Timeline (Activity Log, Unified) ── */}
+      <div style={{ padding: '12px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Clock size={14} /> 活动日志 (ACTIVITY)
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {justNow.map((e, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px', borderRadius: 'var(--sl-radius-sm)', fontSize: 12 }}>
-              <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11, width: 36, flexShrink: 0 }}>{e.time}</span>
-              <div style={{
-                width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-                background: e.type === 'decision' ? 'var(--sl-green)' : e.type === 'delivery' ? 'var(--sl-blue)' : 'var(--sl-amber)',
-              }} />
-              <span style={{ color: 'var(--sl-text-primary)' }}>{e.text}</span>
+            <div key={i} style={{ 
+              display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', 
+              borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+              cursor: 'pointer'
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 44, flexShrink: 0 }}>
+                <span style={{ color: 'var(--sl-text-tertiary)', fontFamily: 'monospace', fontSize: 11 }}>{e.time}</span>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: e.type === 'decision' ? 'var(--sl-green)' : e.type === 'delivery' ? 'var(--sl-blue)' : 'var(--sl-amber)' }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: 'var(--sl-text-primary)', fontWeight: 500 }}>{e.text}</div>
+                <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginTop: 2 }}>点击查看关联证据与历史快照</div>
+              </div>
             </div>
           ))}
         </div>
-        {/* ── Earlier (collapsed, expandable) ── */}
-        <button
-          onClick={() => setShowEarlier(!showEarlier)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6, width: '100%',
-            padding: '6px 10px', border: 'none', background: 'transparent',
-            cursor: 'pointer', fontSize: 11, color: 'var(--sl-text-tertiary)',
-            textAlign: 'left', fontWeight: 500,
-          }}
-          onMouseEnter={e => { e.currentTarget.style.color = 'var(--sl-brand)'; }}
-          onMouseLeave={e => { e.currentTarget.style.color = 'var(--sl-text-tertiary)'; }}
-        >
-          <span style={{ transform: showEarlier ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease', display: 'inline-block' }}>▸</span>
-          <span>今天早些: {earlierToday}</span>
-        </button>
-        {showEarlier && (
-          <div style={{ padding: '4px 10px 4px 22px', fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
-            <div style={{ marginBottom: 4 }}>昨天: {yesterday}</div>
-            <div style={{ color: 'var(--sl-brand)', cursor: 'pointer', fontWeight: 500 }}>查看完整历史 →</div>
-          </div>
-        )}
-      </div>
-
-      {/* 6. ── Current Stage header ── */}
-      <div style={{ padding: '12px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-tertiary)', textTransform: 'uppercase' }}>当前进度</span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)' }}>{currentStage.name}</span>
-          </div>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-brand)' }}>{Math.round((currentStage.workItemsDone / currentStage.workItemsTotal) * 100)}%</span>
-        </div>
-        <div style={{ height: 6, borderRadius: 3, background: 'var(--sl-border-light)', overflow: 'hidden' }}>
-          <div style={{ width: `${(currentStage.workItemsDone / currentStage.workItemsTotal) * 100}%`, height: '100%', background: 'var(--sl-brand)', transition: 'width 1s ease' }} />
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', textAlign: 'right' }}>{currentStage.workItemsDone}/{currentStage.workItemsTotal} 工作项已交付</div>
-      </div>
-
-      {/* 7. ── 目标和阶段 (Default Collapsed) ── */}
-      <div style={{ marginTop: 'auto', paddingTop: 12 }}>
-        <button 
-          onClick={() => setShowGoalsAndStages(!showGoalsAndStages)}
-          style={{
-            width: '100%', padding: '10px', borderRadius: 'var(--sl-radius-md)',
-            background: 'var(--sl-surface-hover)', border: '1px solid var(--sl-border-light)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--sl-text-secondary)'
-          }}
-        >
-          <span>{showGoalsAndStages ? '收起' : '展开'} 项目背景与阶段目标</span>
-          <span style={{ transform: showGoalsAndStages ? 'rotate(180deg)' : 'none', transition: 'transform 200ms' }}>▾</span>
-        </button>
-
-        {showGoalsAndStages && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-            {/* Project Goals */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
-              <span style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontWeight: 500, flexShrink: 0 }}>总目标</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, overflowX: 'auto' }}>
-                {goals.map((g, i) => (
-                  <React.Fragment key={g.name}>
-                    <span style={{
-                      fontSize: 12, fontWeight: g.status === 'active' ? 600 : 400,
-                      color: g.status === 'active' ? 'var(--sl-brand)' : g.status === 'done' ? 'var(--sl-text-secondary)' : 'var(--sl-text-tertiary)',
-                      padding: g.status === 'active' ? '2px 8px' : '2px 4px',
-                      background: g.status === 'active' ? 'var(--sl-brand-subtle)' : 'transparent',
-                      borderRadius: 'var(--sl-radius-full)',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {g.status === 'done' && '✓ '}{g.name}
-                    </span>
-                    {i < goals.length - 1 && <span style={{ color: 'var(--sl-border)', fontSize: 10 }}>→</span>}
-                  </React.Fragment>
-                ))}
-              </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--sl-border)' }}>
+          <button
+            onClick={() => setShowEarlier(!showEarlier)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+              padding: '8px 12px', border: 'none', background: 'var(--sl-bg)', borderRadius: 'var(--sl-radius-md)',
+              cursor: 'pointer', fontSize: 12, color: 'var(--sl-text-secondary)', fontWeight: 500
+            }}
+          >
+            <span style={{ transform: showEarlier ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease', display: 'inline-block', fontSize: 14 }}>▸</span>
+            <div style={{ flex: 1, textAlign: 'left' }}>
+              <span style={{ color: 'var(--sl-text-tertiary)', marginRight: 8 }}>今天早些:</span>
+              {earlierToday}
             </div>
+          </button>
+          {showEarlier && (
+            <div className="animate-in fade-in slide-in-from-top-2 duration-200" style={{ padding: '12px 12px 4px 34px', fontSize: 12, color: 'var(--sl-text-secondary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
 
-            {/* Stages */}
-            <div style={{ padding: '8px 12px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--sl-text-primary)' }}>{currentGoal.name} - 详细路线图</span>
-                <button onClick={() => setExpandStages(!expandStages)} style={{
-                  fontSize: 10, color: 'var(--sl-text-tertiary)', background: 'transparent', border: 'none', cursor: 'pointer',
-                }}>{expandStages ? '收起' : '全部展开'}</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ color: 'var(--sl-text-tertiary)' }}>昨天:</span>
+                {yesterday}
               </div>
+              <div style={{ color: 'var(--sl-brand)', cursor: 'pointer', fontWeight: 500, marginTop: 4 }}>查看完整账本历史记录 →</div>
+            </div>
+          )}
+        </div>
+      </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap' }}>
-                {!expandStages && beforeCount > 0 && (
-                  <>
-                    <button onClick={() => setExpandStages(true)} style={{
-                      fontSize: 10, color: 'var(--sl-text-tertiary)', background: 'var(--sl-surface-hover)',
-                      border: '1px solid var(--sl-border-light)', borderRadius: 'var(--sl-radius-full)',
-                      padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap',
-                    }}>{beforeCount} 个已完成 ▸</button>
-                    <span style={{ color: 'var(--sl-border)', fontSize: 10, margin: '0 4px' }}>→</span>
-                  </>
-                )}
-
-                {(expandStages ? stages : stages.slice(visibleRange.from, visibleRange.to + 1)).map((stage, i, arr) => {
-                  const dotColor = stage.status === 'done' ? 'var(--sl-green)'
-                    : stage.status === 'active' ? 'var(--sl-brand)'
-                    : stage.status === 'revisited' ? 'var(--sl-amber)'
-                    : 'var(--sl-border)';
-
-                  return (
-                    <React.Fragment key={stage.name}>
-                      <div style={{
-                        display: 'flex', alignItems: 'center', gap: 5,
-                        padding: '3px 8px', borderRadius: 'var(--sl-radius-full)',
-                        background: stage.status === 'active' ? 'var(--sl-brand-subtle)' : stage.status === 'revisited' ? 'var(--sl-amber-subtle)' : 'transparent',
-                        border: stage.status === 'active' ? '1px solid var(--sl-brand)' : stage.status === 'revisited' ? '1px solid var(--sl-amber)' : '1px solid transparent',
-                      }}>
-                        <div style={{ width: 7, height: 7, borderRadius: '50%', background: dotColor }} />
-                        <span style={{
-                          fontSize: 11, fontWeight: stage.status === 'active' || stage.status === 'revisited' ? 600 : 400,
-                          color: stage.status === 'active' ? 'var(--sl-brand)' : stage.status === 'revisited' ? 'var(--sl-amber)' : stage.status === 'done' ? 'var(--sl-text-secondary)' : 'var(--sl-text-tertiary)',
-                          whiteSpace: 'nowrap',
-                        }}>
-                          {stage.name}
-                          {stage.status === 'revisited' && ' ⟲'}
-                        </span>
-                      </div>
-                      {i < arr.length - 1 && <span style={{ color: 'var(--sl-border)', fontSize: 10, margin: '0 2px' }}>→</span>}
-                    </React.Fragment>
-                  );
-                })}
-
-                {!expandStages && afterCount > 0 && (
-                  <>
-                    <span style={{ color: 'var(--sl-border)', fontSize: 10, margin: '0 4px' }}>→</span>
-                    <button onClick={() => setExpandStages(true)} style={{
-                      fontSize: 10, color: 'var(--sl-text-tertiary)', background: 'var(--sl-surface-hover)',
-                      border: '1px solid var(--sl-border-light)', borderRadius: 'var(--sl-radius-full)',
-                      padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap',
-                    }}>▸ {afterCount} 个待完成</button>
-                  </>
-                )}
-              </div>
-
-              {stages.filter(s => s.status === 'revisited').map(s => (
-                <div key={s.name} style={{
-                  marginTop: 6, padding: '4px 8px', fontSize: 11,
-                  color: 'var(--sl-amber)', background: 'var(--sl-amber-subtle)',
-                  borderRadius: 'var(--sl-radius-sm)', display: 'flex', alignItems: 'center', gap: 4,
+      {/* 6. ── Deep Scroll Context (Goals & Stages) ── */}
+      <div style={{ 
+        marginTop: 60, paddingTop: 24, borderTop: '2px dashed var(--sl-border-light)',
+        opacity: 0.6, transition: 'opacity 300ms ease',
+        display: 'flex', flexDirection: 'column', gap: 16
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--sl-text-tertiary)', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          <Target size={14} /> 宏观背景：项目目标与阶段全景
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+          <span style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontWeight: 600, flexShrink: 0, textTransform: 'uppercase' }}>总目标</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, overflowX: 'auto', paddingBottom: 2 }}>
+            {goals.map((g, i) => (
+              <React.Fragment key={g.name}>
+                <span style={{
+                  fontSize: 12, fontWeight: g.status === 'active' ? 600 : 500,
+                  color: g.status === 'active' ? 'var(--sl-brand)' : g.status === 'done' ? 'var(--sl-text-secondary)' : 'var(--sl-text-tertiary)',
+                  padding: g.status === 'active' ? '4px 10px' : '4px 8px',
+                  background: g.status === 'active' ? 'var(--sl-brand-subtle)' : 'transparent',
+                  borderRadius: 'var(--sl-radius-full)', whiteSpace: 'nowrap',
                 }}>
-                  <span>⚠</span>
-                  <span>{s.name} 被重新打开{s.revisitReason ? `: ${s.revisitReason}` : ''}</span>
+                  {g.status === 'done' && '✓ '}{g.name}
+                </span>
+                {i < goals.length - 1 && <span style={{ color: 'var(--sl-border)', fontSize: 12 }}>→</span>}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+        <div style={{ padding: '14px', borderRadius: 'var(--sl-radius-md)', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 12 }}>{currentGoal.name} - 详细路线图</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap', rowGap: 8 }}>
+            {stages.map((stage, i, arr) => {
+              const dotColor = stage.status === 'done' ? 'var(--sl-green)' : stage.status === 'active' ? 'var(--sl-brand)' : stage.status === 'revisited' ? 'var(--sl-amber)' : 'var(--sl-border)';
+              return (
+                <React.Fragment key={stage.name}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 'var(--sl-radius-full)',
+                    background: stage.status === 'active' ? 'var(--sl-brand-subtle)' : stage.status === 'revisited' ? 'var(--sl-amber-subtle)' : 'transparent',
+                    border: stage.status === 'active' ? '1px solid var(--sl-brand)' : stage.status === 'revisited' ? '1px solid var(--sl-amber)' : '1px solid transparent',
+                  }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
+                    <span style={{ fontSize: 12, fontWeight: stage.status === 'active' || stage.status === 'revisited' ? 600 : 500, color: stage.status === 'active' ? 'var(--sl-brand)' : stage.status === 'revisited' ? 'var(--sl-amber)' : stage.status === 'done' ? 'var(--sl-text-secondary)' : 'var(--sl-text-tertiary)', whiteSpace: 'nowrap' }}>
+                      {stage.name}{stage.status === 'revisited' && ' ⟲'}
+                    </span>
+                  </div>
+                  {i < arr.length - 1 && <span style={{ color: 'var(--sl-border)', fontSize: 12, margin: '0 4px' }}>→</span>}
+                </React.Fragment>
+              );
+            })}
+          </div>
+          {stages.filter(s => s.status === 'revisited').length > 0 && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {stages.filter(s => s.status === 'revisited').map(s => (
+                <div key={s.name} style={{ padding: '8px 12px', fontSize: 11, color: 'var(--sl-amber)', background: 'var(--sl-amber-subtle)', border: '1px solid var(--sl-amber)40', borderRadius: 'var(--sl-radius-md)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertTriangle size={14} />
+                  <span style={{ fontWeight: 600 }}>{s.name} 阶段被重新打开</span>
+                  {s.revisitReason && <span style={{ color: 'var(--sl-text-secondary)' }}>: {s.revisitReason}</span>}
                 </div>
               ))}
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
     </div>
   );
 };
