@@ -324,3 +324,75 @@ pub struct ReviewCommentRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+// =============================================================================
+// Schema 005: Prompt + channel action authority
+// Mirrors infra/postgres/schema/005_prompt_and_channel_action_authority.sql
+// =============================================================================
+
+/// Active or historical prompt-blocked instance for a session.
+/// One row answers "what prompt is blocking this session right now?"
+/// without rereading terminal logs. (INT-16 / US-P0-11)
+#[derive(Debug, Clone)]
+pub struct PromptInstanceRow {
+    pub id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub status: String, // 'active'|'resolved'|'stopped'|'expired'|'superseded'
+    pub prompt_kind: String, // 'deterministic'|'wizard_menu'|'freeform'|'sensitive'
+    pub prompt_policy: String, // 'auto_allowed'|'needs_approval'|'human_required'
+    pub evidence_ref: Option<String>,
+    pub evidence_preview: Option<String>,
+    pub available_actions: Vec<String>,
+    pub assist_max_steps: Option<i32>,
+    pub assist_max_tokens: Option<i32>,
+    pub assist_steps_used: i32,
+    pub assist_tokens_used: i32,
+    pub expected_next_pattern: Option<String>,
+    pub detected_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub resolved_by: Option<String>,
+    pub result_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One resolution step in the prompt-action audit trail. (INT-16)
+#[derive(Debug, Clone)]
+pub struct PromptActionRow {
+    pub id: String,
+    pub prompt_id: String,
+    pub action_kind: String, // 'approve'|'human_takeover'|'supervisor_assist'|'stop'|'input_injected'|'auto_completed'
+    pub actor_ref: String,
+    pub source_channel: String, // 'desktop'|'mobile'|'supervisor'|'system'
+    pub note: Option<String>,
+    pub steps_budget_used: Option<i32>,
+    pub tokens_budget_used: Option<i32>,
+    pub result_status: String, // 'applied'|'rejected'|'stopped'|'conflict'
+    pub result_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Canonical receipt for a state-changing desktop/mobile/supervisor action.
+/// Covers approve / reject / escalate / reserve-desktop-takeover / etc.
+/// Unified across all target families to keep audit single-canonical.
+/// (US-P0-13, US-P0-14, US-P0-15, INT-18, INT-19, INT-20)
+#[derive(Debug, Clone)]
+pub struct ChannelActionReceiptRow {
+    pub id: String,
+    pub project_id: String,
+    pub target_kind: String, // 'workitem'|'handoff'|'review_thread'|'prompt'|'session'|'artifact'|'document'|'project'
+    pub target_id: String,
+    pub action_kind: String, // 'approve'|'reject'|'escalate'|'reserve_desktop_takeover'|'return'|'comment_submit'|'stop'
+    pub actor_ref: String,
+    pub source_channel: String, // 'desktop'|'mobile'|'supervisor'|'system'
+    pub note: Option<String>,
+    pub evidence_refs: Vec<String>,
+    pub policy_summary: Option<String>,
+    pub idempotency_key: String,
+    pub expected_revision: Option<i32>,
+    pub applied_revision: Option<i32>,
+    pub receipt_status: String, // 'applied'|'rejected'|'conflicted'|'noop'
+    pub result_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}

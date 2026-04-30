@@ -6,10 +6,11 @@ use thiserror::Error;
 use tokio_postgres::Row;
 
 use crate::db::models::{
-    ArtifactRow, CanonicalEventRow, CheckpointRow, DocumentAssociationRow, DocumentRow,
-    DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow,
-    ProjectRoleBindingRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    ArtifactRow, CanonicalEventRow, ChannelActionReceiptRow, CheckpointRow, DocumentAssociationRow,
+    DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow,
+    PipelineRunRow, ProjectRoleBindingRow, PromptActionRow, PromptInstanceRow, ReconcileItemRow,
+    ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow,
+    WorkItemRow,
 };
 
 pub struct SeatloomDb {
@@ -814,6 +815,265 @@ impl SeatloomDb {
             .await?;
         Ok(rows.first().map(row_to_review_comment))
     }
+
+    // =========================================================================
+    // Prompt authority (schema 005) — prompt_instances, prompt_actions
+    // Sort: detected_at descending for instances, created_at ascending for actions
+    // =========================================================================
+
+    pub async fn create_prompt_instance(&self, r: &PromptInstanceRow) -> Result<(), DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        client
+            .execute(
+                "INSERT INTO prompt_instances \
+                 (id, project_id, session_id, status, prompt_kind, prompt_policy, \
+                  evidence_ref, evidence_preview, available_actions, \
+                  assist_max_steps, assist_max_tokens, assist_steps_used, assist_tokens_used, \
+                  expected_next_pattern, detected_at, resolved_at, resolved_by, \
+                  result_event_id, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+                &[
+                    &r.id,
+                    &r.project_id,
+                    &r.session_id,
+                    &r.status,
+                    &r.prompt_kind,
+                    &r.prompt_policy,
+                    &r.evidence_ref,
+                    &r.evidence_preview,
+                    &r.available_actions,
+                    &r.assist_max_steps,
+                    &r.assist_max_tokens,
+                    &r.assist_steps_used,
+                    &r.assist_tokens_used,
+                    &r.expected_next_pattern,
+                    &r.detected_at,
+                    &r.resolved_at,
+                    &r.resolved_by,
+                    &r.result_event_id,
+                    &r.created_at,
+                    &r.updated_at,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_prompt_instances_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PromptInstanceRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, session_id, status, prompt_kind, prompt_policy, \
+                 evidence_ref, evidence_preview, available_actions, \
+                 assist_max_steps, assist_max_tokens, assist_steps_used, assist_tokens_used, \
+                 expected_next_pattern, detected_at, resolved_at, resolved_by, \
+                 result_event_id, created_at, updated_at \
+                 FROM prompt_instances WHERE session_id = $1 ORDER BY detected_at DESC",
+                &[&session_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_prompt_instance).collect())
+    }
+
+    pub async fn list_active_prompt_instances(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<PromptInstanceRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, session_id, status, prompt_kind, prompt_policy, \
+                 evidence_ref, evidence_preview, available_actions, \
+                 assist_max_steps, assist_max_tokens, assist_steps_used, assist_tokens_used, \
+                 expected_next_pattern, detected_at, resolved_at, resolved_by, \
+                 result_event_id, created_at, updated_at \
+                 FROM prompt_instances WHERE project_id = $1 AND status = 'active' \
+                 ORDER BY detected_at DESC",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_prompt_instance).collect())
+    }
+
+    pub async fn get_prompt_instance(
+        &self,
+        id: &str,
+    ) -> Result<Option<PromptInstanceRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, session_id, status, prompt_kind, prompt_policy, \
+                 evidence_ref, evidence_preview, available_actions, \
+                 assist_max_steps, assist_max_tokens, assist_steps_used, assist_tokens_used, \
+                 expected_next_pattern, detected_at, resolved_at, resolved_by, \
+                 result_event_id, created_at, updated_at \
+                 FROM prompt_instances WHERE id = $1",
+                &[&id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_prompt_instance))
+    }
+
+    pub async fn append_prompt_action(&self, r: &PromptActionRow) -> Result<(), DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        client
+            .execute(
+                "INSERT INTO prompt_actions \
+                 (id, prompt_id, action_kind, actor_ref, source_channel, note, \
+                  steps_budget_used, tokens_budget_used, result_status, result_event_id, created_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                &[
+                    &r.id, &r.prompt_id, &r.action_kind, &r.actor_ref,
+                    &r.source_channel, &r.note,
+                    &r.steps_budget_used, &r.tokens_budget_used,
+                    &r.result_status, &r.result_event_id, &r.created_at,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_prompt_actions_for_prompt(
+        &self,
+        prompt_id: &str,
+    ) -> Result<Vec<PromptActionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, prompt_id, action_kind, actor_ref, source_channel, note, \
+                 steps_budget_used, tokens_budget_used, result_status, result_event_id, created_at \
+                 FROM prompt_actions WHERE prompt_id = $1 ORDER BY created_at ASC",
+                &[&prompt_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_prompt_action).collect())
+    }
+
+    // =========================================================================
+    // Channel-action receipts (schema 005)
+    // Sort: created_at descending
+    // =========================================================================
+
+    pub async fn create_channel_action_receipt(
+        &self,
+        r: &ChannelActionReceiptRow,
+    ) -> Result<(), DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        client
+            .execute(
+                "INSERT INTO channel_action_receipts \
+                 (id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                  source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                  expected_revision, applied_revision, receipt_status, result_event_id, created_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+                &[
+                    &r.id, &r.project_id, &r.target_kind, &r.target_id,
+                    &r.action_kind, &r.actor_ref, &r.source_channel,
+                    &r.note, &r.evidence_refs, &r.policy_summary,
+                    &r.idempotency_key, &r.expected_revision, &r.applied_revision,
+                    &r.receipt_status, &r.result_event_id, &r.created_at,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_channel_action_receipts_for_target(
+        &self,
+        target_kind: &str,
+        target_id: &str,
+    ) -> Result<Vec<ChannelActionReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts \
+                 WHERE target_kind = $1 AND target_id = $2 \
+                 ORDER BY created_at DESC",
+                &[&target_kind, &target_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_channel_action_receipt).collect())
+    }
+
+    pub async fn list_channel_action_receipts(
+        &self,
+        project_id: &str,
+        source_channel: Option<&str>,
+        receipt_status: Option<&str>,
+    ) -> Result<Vec<ChannelActionReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match (source_channel, receipt_status) {
+                (Some(ch), Some(st)) => client
+                    .query(
+                        "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts \
+                 WHERE project_id = $1 AND source_channel = $2 AND receipt_status = $3 \
+                 ORDER BY created_at DESC",
+                        &[&project_id, &ch, &st],
+                    )
+                    .await?,
+                (Some(ch), None) => client
+                    .query(
+                        "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts \
+                 WHERE project_id = $1 AND source_channel = $2 \
+                 ORDER BY created_at DESC",
+                        &[&project_id, &ch],
+                    )
+                    .await?,
+                (None, Some(st)) => client
+                    .query(
+                        "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts \
+                 WHERE project_id = $1 AND receipt_status = $2 \
+                 ORDER BY created_at DESC",
+                        &[&project_id, &st],
+                    )
+                    .await?,
+                (None, None) => client
+                    .query(
+                        "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts \
+                 WHERE project_id = $1 \
+                 ORDER BY created_at DESC",
+                        &[&project_id],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_channel_action_receipt).collect())
+    }
+
+    pub async fn get_channel_action_receipt(
+        &self,
+        id: &str,
+    ) -> Result<Option<ChannelActionReceiptRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, target_kind, target_id, action_kind, actor_ref, \
+                 source_channel, note, evidence_refs, policy_summary, idempotency_key, \
+                 expected_revision, applied_revision, receipt_status, result_event_id, created_at \
+                 FROM channel_action_receipts WHERE id = $1",
+                &[&id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_channel_action_receipt))
+    }
 }
 
 // =============================================================================
@@ -1128,6 +1388,68 @@ fn row_to_review_comment(r: &Row) -> ReviewCommentRow {
         comment_metadata: r.get(9),
         created_at: r.get(10),
         updated_at: r.get(11),
+    }
+}
+
+fn row_to_prompt_instance(r: &Row) -> PromptInstanceRow {
+    PromptInstanceRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        session_id: r.get(2),
+        status: r.get(3),
+        prompt_kind: r.get(4),
+        prompt_policy: r.get(5),
+        evidence_ref: r.get(6),
+        evidence_preview: r.get(7),
+        available_actions: r.get(8),
+        assist_max_steps: r.get(9),
+        assist_max_tokens: r.get(10),
+        assist_steps_used: r.get(11),
+        assist_tokens_used: r.get(12),
+        expected_next_pattern: r.get(13),
+        detected_at: r.get(14),
+        resolved_at: r.get(15),
+        resolved_by: r.get(16),
+        result_event_id: r.get(17),
+        created_at: r.get(18),
+        updated_at: r.get(19),
+    }
+}
+
+fn row_to_prompt_action(r: &Row) -> PromptActionRow {
+    PromptActionRow {
+        id: r.get(0),
+        prompt_id: r.get(1),
+        action_kind: r.get(2),
+        actor_ref: r.get(3),
+        source_channel: r.get(4),
+        note: r.get(5),
+        steps_budget_used: r.get(6),
+        tokens_budget_used: r.get(7),
+        result_status: r.get(8),
+        result_event_id: r.get(9),
+        created_at: r.get(10),
+    }
+}
+
+fn row_to_channel_action_receipt(r: &Row) -> ChannelActionReceiptRow {
+    ChannelActionReceiptRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        target_kind: r.get(2),
+        target_id: r.get(3),
+        action_kind: r.get(4),
+        actor_ref: r.get(5),
+        source_channel: r.get(6),
+        note: r.get(7),
+        evidence_refs: r.get(8),
+        policy_summary: r.get(9),
+        idempotency_key: r.get(10),
+        expected_revision: r.get(11),
+        applied_revision: r.get(12),
+        receipt_status: r.get(13),
+        result_event_id: r.get(14),
+        created_at: r.get(15),
     }
 }
 

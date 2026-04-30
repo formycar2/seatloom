@@ -1,6 +1,6 @@
-source_map_version: "v3"
+source_map_version: "v4"
 generated: "2026-04-30"
-generated_by: "Nimbus + Lyra (packets: real-collaboration-db-baseline-v1, postgres-authority-and-typed-documents-v1, operational-review-and-continuity-v1)"
+generated_by: "Nimbus + Lyra (packets: real-collaboration-db-baseline-v1, postgres-authority-and-typed-documents-v1, operational-review-and-continuity-v1, postgres-prompt-and-channel-action-authority-v1)"
 project: "seatloom"
 
 summary: >
@@ -257,3 +257,19 @@ events:
 partial_families:
   - family: "artifacts (system-generated)"
     reason: "DiffSummary, TestReport etc. require real build/test outputs; not available in this baseline."
+
+# ---------------------------------------------------------------------------
+# Schema 005 prompt + channel action families — zero-row seed
+# ---------------------------------------------------------------------------
+prompt_and_channel_action_families:
+  seed_policy: "zero-row"
+  reason: >
+    The current collaboration record (Apr 27–30, 2026) contains no real
+    prompt-blocked events, mobile approval/interrupt actions, or
+    channel-action receipts. The schema-005 families (prompt_instances,
+    prompt_actions, channel_action_receipts) are structurally validated by
+    Rust integration tests using in-test fixtures only.
+  real_rows_allowed_when: >
+    Concrete evidence of prompt detection events, mobile approval receipts,
+    or reserve-desktop-takeover actions appears in the collaboration record.
+    Each such row must cite an evidence source in a future source-map update.

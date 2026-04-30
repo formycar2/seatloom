@@ -542,4 +542,209 @@ mod db_baseline {
             "comments must be returned in chronological order"
         );
     }
+
+    // =========================================================================
+    // Schema 005: Prompt + channel action authority (zero-row seed baseline)
+    // These tests prove the new families exist and the write/read path is real.
+    // They use in-test fixtures only; the seed is intentionally empty.
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
+    async fn prompt_instance_tables_exist_and_empty_at_baseline() {
+        let db = try_connect().await.expect("DB must be reachable");
+        // Baseline seed is zero-row; structural proof only.
+        let instances = db
+            .list_active_prompt_instances("seatloom")
+            .await
+            .expect("prompt instance list must succeed");
+        assert_eq!(
+            instances.len(),
+            0,
+            "no fabricated prompt rows in baseline seed"
+        );
+        let receipts = db
+            .list_channel_action_receipts("seatloom", None, None)
+            .await
+            .expect("channel action receipt list must succeed");
+        assert_eq!(
+            receipts.len(),
+            0,
+            "no fabricated channel action receipt rows in baseline seed"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
+    async fn prompt_instance_write_read_round_trip() {
+        use chrono::Utc;
+        use seatloom_core::db::models::PromptInstanceRow;
+
+        let db = try_connect().await.expect("DB must be reachable");
+        let now = Utc::now();
+        let fixture = PromptInstanceRow {
+            id: "pi-test-001".to_string(),
+            project_id: "seatloom".to_string(),
+            session_id: "ses-nimbus-infra-001".to_string(),
+            status: "active".to_string(),
+            prompt_kind: "freeform".to_string(),
+            prompt_policy: "needs_approval".to_string(),
+            evidence_ref: Some("ref-bounded-window-001".to_string()),
+            evidence_preview: Some("$ git commit -m \"".to_string()),
+            available_actions: vec!["approve".to_string(), "human_takeover".to_string()],
+            assist_max_steps: Some(10),
+            assist_max_tokens: Some(2000),
+            assist_steps_used: 0,
+            assist_tokens_used: 0,
+            expected_next_pattern: Some("Enter commit message".to_string()),
+            detected_at: now,
+            resolved_at: None,
+            resolved_by: None,
+            result_event_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        db.create_prompt_instance(&fixture)
+            .await
+            .expect("prompt instance insert must succeed");
+
+        let fetched = db
+            .get_prompt_instance("pi-test-001")
+            .await
+            .expect("get must succeed")
+            .expect("row must be present");
+
+        assert_eq!(fetched.id, "pi-test-001");
+        assert_eq!(fetched.prompt_kind, "freeform");
+        assert_eq!(fetched.prompt_policy, "needs_approval");
+        assert_eq!(fetched.available_actions.len(), 2);
+        assert!(fetched.available_actions.contains(&"approve".to_string()));
+
+        let by_session = db
+            .list_prompt_instances_for_session("ses-nimbus-infra-001")
+            .await
+            .expect("session list must succeed");
+        assert!(
+            by_session.iter().any(|p| p.id == "pi-test-001"),
+            "instance must appear in session list"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied; run after prompt_instance_write_read_round_trip"]
+    async fn prompt_action_append_and_list() {
+        use chrono::Utc;
+        use seatloom_core::db::models::PromptActionRow;
+
+        let db = try_connect().await.expect("DB must be reachable");
+        let now = Utc::now();
+        let action = PromptActionRow {
+            id: "pa-test-001".to_string(),
+            prompt_id: "pi-test-001".to_string(),
+            action_kind: "approve".to_string(),
+            actor_ref: "lyra".to_string(),
+            source_channel: "desktop".to_string(),
+            note: Some("Approved via desktop review".to_string()),
+            steps_budget_used: None,
+            tokens_budget_used: None,
+            result_status: "applied".to_string(),
+            result_event_id: None,
+            created_at: now,
+        };
+
+        db.append_prompt_action(&action)
+            .await
+            .expect("prompt action insert must succeed");
+
+        let actions = db
+            .list_prompt_actions_for_prompt("pi-test-001")
+            .await
+            .expect("action list must succeed");
+
+        assert!(
+            actions.iter().any(|a| a.id == "pa-test-001"),
+            "appended action must appear in list"
+        );
+        let fetched = actions.iter().find(|a| a.id == "pa-test-001").unwrap();
+        assert_eq!(fetched.action_kind, "approve");
+        assert_eq!(fetched.source_channel, "desktop");
+        assert_eq!(fetched.result_status, "applied");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
+    async fn channel_action_receipt_write_read_and_idempotency() {
+        use chrono::Utc;
+        use seatloom_core::db::models::ChannelActionReceiptRow;
+
+        let db = try_connect().await.expect("DB must be reachable");
+        let now = Utc::now();
+        let receipt = ChannelActionReceiptRow {
+            id: "car-test-001".to_string(),
+            project_id: "seatloom".to_string(),
+            target_kind: "workitem".to_string(),
+            target_id: "wi-hardening".to_string(),
+            action_kind: "approve".to_string(),
+            actor_ref: "lyra".to_string(),
+            source_channel: "mobile".to_string(),
+            note: Some("Approved from mobile during standup".to_string()),
+            evidence_refs: vec!["docs/coordination/acceptance/2026-04-29-lyra-nimbus-foundation-hardening-acceptance.md".to_string()],
+            policy_summary: Some("P0 acceptance gate passed".to_string()),
+            idempotency_key: "approve-wi-hardening-lyra-20260430T120000Z".to_string(),
+            expected_revision: Some(1),
+            applied_revision: Some(2),
+            receipt_status: "applied".to_string(),
+            result_event_id: None,
+            created_at: now,
+        };
+
+        db.create_channel_action_receipt(&receipt)
+            .await
+            .expect("receipt insert must succeed");
+
+        let fetched = db
+            .get_channel_action_receipt("car-test-001")
+            .await
+            .expect("get must succeed")
+            .expect("row must be present");
+
+        assert_eq!(fetched.id, "car-test-001");
+        assert_eq!(fetched.source_channel, "mobile");
+        assert_eq!(fetched.receipt_status, "applied");
+        assert_eq!(
+            fetched.idempotency_key,
+            "approve-wi-hardening-lyra-20260430T120000Z"
+        );
+
+        let by_target = db
+            .list_channel_action_receipts_for_target("workitem", "wi-hardening")
+            .await
+            .expect("target list must succeed");
+        assert!(
+            by_target.iter().any(|r| r.id == "car-test-001"),
+            "receipt must appear in target list"
+        );
+
+        let mobile_receipts = db
+            .list_channel_action_receipts("seatloom", Some("mobile"), None)
+            .await
+            .expect("channel filter list must succeed");
+        assert!(
+            mobile_receipts.iter().any(|r| r.id == "car-test-001"),
+            "receipt must appear in mobile-filtered list"
+        );
+
+        // Idempotency: duplicate insert must fail (unique constraint on idempotency_key)
+        let dup = ChannelActionReceiptRow {
+            id: "car-test-002".to_string(),
+            idempotency_key: "approve-wi-hardening-lyra-20260430T120000Z".to_string(),
+            ..receipt.clone()
+        };
+        let result = db.create_channel_action_receipt(&dup).await;
+        assert!(
+            result.is_err(),
+            "duplicate idempotency_key must be rejected"
+        );
+    }
 }

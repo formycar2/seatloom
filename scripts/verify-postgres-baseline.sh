@@ -14,8 +14,8 @@
 # Proof sequence:
 #   1. static seed consistency (pure Rust, no DB)
 #   2. volume teardown + clean container start
-#   3. schema apply (001–004, copied to container by this script)
-#   4. seed apply (001–003)
+#   3. schema apply (001–005, copied to container by this script)
+#   4. seed apply (001–004)
 #   5. bounded document reconcile
 #   6. body-ingest helper health check
 #   7. DB integration tests (--include-ignored)
@@ -76,7 +76,8 @@ for schema_file in \
   001_seatloom_core.sql \
   002_document_authority.sql \
   003_write_ingest_reconcile.sql \
-  004_operational_review_and_continuity.sql
+  004_operational_review_and_continuity.sql \
+  005_prompt_and_channel_action_authority.sql
 do
   echo "Applying schema/$schema_file"
   docker cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
@@ -89,7 +90,8 @@ echo "--- Step 3: Seed real collaboration baseline ---"
 for seed_file in \
   001_real_collaboration_baseline.sql \
   002_document_seed.sql \
-  003_operational_review_and_continuity_seed.sql
+  003_operational_review_and_continuity_seed.sql \
+  004_prompt_and_channel_action_seed.sql
 do
   echo "Applying seed/$seed_file"
   docker cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"

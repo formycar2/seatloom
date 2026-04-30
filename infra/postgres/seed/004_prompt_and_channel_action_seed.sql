@@ -1,0 +1,16 @@
+-- SeatLoom Seed 004: Prompt + Channel Action Authority — Zero-Row Baseline
+--
+-- Honest seed policy (LYRA-2026-04-30-postgres-runtime-authority-gap-review-v1,
+-- Requirement E): No prompt or channel-action receipt rows are seeded here
+-- because the current collaboration record (Apr 27–30, 2026) does not contain
+-- real prompt-blocked events or mobile approval/interrupt actions.
+--
+-- The three new schema-005 families (prompt_instances, prompt_actions,
+-- channel_action_receipts) are structurally validated by Rust integration
+-- tests using in-test fixtures rather than fabricated baseline rows.
+--
+-- When real operational data is available (prompt detection, mobile approve,
+-- reserve-desktop-takeover, etc.), seed rows backed by concrete evidence
+-- should be added here at that time.
+--
+-- Source-map documentation: .seatloom/bootstrap/source-map.yaml §prompt_and_channel_action_families
