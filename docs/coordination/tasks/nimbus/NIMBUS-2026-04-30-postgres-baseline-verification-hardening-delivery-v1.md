@@ -101,7 +101,7 @@ Remaining proof must be performed by Flux on the remote Docker-capable seat agai
 ## 8. Exact Branch and Commit
 
 - Branch: `track/infra-foundation`
-- Commit: see git log after push (exact hash to be filled by Flux verification)
+- Commit: `24c820b81de8f8a479e9d229f5c106ed440eb675`
 
 ## 9. Recommended Next Owner
 
