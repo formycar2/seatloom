@@ -51,7 +51,7 @@ Verify exactly this Git target:
 
 - `target_remote`: `git@github.com:formycar2/seatloom.git`
 - `target_branch`: `track/infra-foundation`
-- `target_commit`: `dc01d54411f81f1a5798af57e52e52efb58ac7ec`
+- `target_commit`: `dc01d54f9e814f722fc19d1e586f8622bf17ddbd`
 - `compare_base_commit`: `62f6f901655e3b9a92acae8d84f8277fc126fdd8`
 
 Hard rules:
@@ -116,7 +116,7 @@ ssh -CAXY buildthoughtonly.zhangxiaolong.shai-core.ws@platform.shaipower.com '\
   fi && \
   cd /data/seatloom-verify/repo && \
   git fetch origin track/infra-foundation && \
-  git checkout dc01d54411f81f1a5798af57e52e52efb58ac7ec && \
+  git checkout dc01d54f9e814f722fc19d1e586f8622bf17ddbd && \
   git rev-parse --abbrev-ref HEAD && \
   git rev-parse HEAD && \
   git status --short \
@@ -146,7 +146,7 @@ git status --short
 git log --oneline -n 5
 ```
 
-If `git rev-parse HEAD` is not exactly `dc01d54411f81f1a5798af57e52e52efb58ac7ec`, stop and return `HOLD`.
+If `git rev-parse HEAD` is not exactly `dc01d54f9e814f722fc19d1e586f8622bf17ddbd`, stop and return `HOLD`.
 If `git status --short` is non-empty before verification, stop and return `HOLD`.
 
 ### 6. Narrow Rust sanity checks

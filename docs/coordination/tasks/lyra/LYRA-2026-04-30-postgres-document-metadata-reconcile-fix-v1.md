@@ -100,12 +100,12 @@ Environment note:
 
 Infrastructure repair commit pushed for verification:
 - branch: `track/infra-foundation`
-- target commit: `dc01d54411f81f1a5798af57e52e52efb58ac7ec`
+- target commit: `dc01d54f9e814f722fc19d1e586f8622bf17ddbd`
 - compare base commit: `62f6f901655e3b9a92acae8d84f8277fc126fdd8`
 
 ## Next Step
 
-Issue one more commit-pinned Flux packet against commit `dc01d54411f81f1a5798af57e52e52efb58ac7ec` on the sponsor-provided docker-capable workspace.
+Issue one more commit-pinned Flux packet against commit `dc01d54f9e814f722fc19d1e586f8622bf17ddbd` on the sponsor-provided docker-capable workspace.
 
 The packet should prove:
 1. the exact commit was checked out,
