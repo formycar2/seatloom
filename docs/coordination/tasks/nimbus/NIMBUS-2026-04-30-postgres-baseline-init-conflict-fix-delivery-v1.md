@@ -78,7 +78,7 @@ Remaining proof must be done by Flux on the remote Docker-capable seat against t
 ## 6. Exact Branch and Commit
 
 - Branch: `track/infra-foundation`
-- Commit: see git log after push (Flux should verify by exact hash)
+- Commit: `b63656c778cc7f7f4bd508168ceb6c40930d76a9`
 
 ## 7. Status of the Broader Prompt/Channel Packet
 
