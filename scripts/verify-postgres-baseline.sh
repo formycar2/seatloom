@@ -39,7 +39,8 @@ fi
 INFRA_DIR="$REPO_ROOT/infra/postgres"
 export DATABASE_URL="postgresql://seatloom:seatloom@localhost:5432/seatloom"
 
-# Max seconds to wait for PostgreSQL to accept connections after container start.
+# Max seconds to wait for the seatloom database to become queryable after container start.
+# pg_isready is not sufficient — it proves only socket readiness, not database existence.
 # Override with: PG_READY_TIMEOUT=120 bash scripts/verify-postgres-baseline.sh
 PG_READY_TIMEOUT="${PG_READY_TIMEOUT:-60}"
 
@@ -57,17 +58,17 @@ echo "(destructive reset — ensures deterministic schema + seed state)"
 (cd "$INFRA_DIR" && docker compose down -v --remove-orphans 2>&1 || true)
 (cd "$INFRA_DIR" && docker compose up -d)
 
-echo "Waiting for PostgreSQL to become ready (timeout: ${PG_READY_TIMEOUT}s) ..."
+echo "Waiting for seatloom database to be queryable (timeout: ${PG_READY_TIMEOUT}s) ..."
 deadline=$(( $(date +%s) + PG_READY_TIMEOUT ))
-until docker exec seatloom-postgres pg_isready -U seatloom -d seatloom -q 2>/dev/null; do
+until docker exec seatloom-postgres psql -U seatloom -d seatloom -c "SELECT 1" -q >/dev/null 2>&1; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "ERROR: PostgreSQL did not become ready within ${PG_READY_TIMEOUT}s." >&2
+    echo "ERROR: seatloom database not queryable within ${PG_READY_TIMEOUT}s." >&2
     docker logs seatloom-postgres --tail 40 >&2
     exit 1
   fi
   sleep 1
 done
-echo "PostgreSQL ready."
+echo "seatloom database ready."
 echo ""
 
 echo "--- Step 2: Apply schema ---"
