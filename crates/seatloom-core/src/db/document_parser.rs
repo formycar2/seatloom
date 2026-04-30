@@ -49,7 +49,7 @@ pub struct ParsedSection {
 /// `None` / empty when the header table is absent. The title is populated
 /// from the first H1 heading regardless of whether a table exists.
 pub fn parse_header(body: &str) -> Option<ParsedDocHeader> {
-    let lines: Vec<&str> = body.lines().collect();
+    let lines = non_fenced_lines(body);
 
     let mut header = ParsedDocHeader {
         template: None,
@@ -106,7 +106,11 @@ pub fn parse_header(body: &str) -> Option<ParsedDocHeader> {
             continue;
         }
         match key.as_str() {
-            "template" => header.template = Some(value),
+            "template" => {
+                header.template = normalize_template(&value)
+                    .map(str::to_string)
+                    .or(Some(value));
+            }
             "subtype" => header.subtype = Some(value),
             "id" => header.doc_id = Some(value),
             "title" if header.title.is_none() => {
@@ -129,6 +133,24 @@ pub fn parse_header(body: &str) -> Option<ParsedDocHeader> {
     }
 
     Some(header)
+}
+
+fn non_fenced_lines(body: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut in_fence = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            lines.push(line);
+        }
+    }
+
+    lines
 }
 
 /// Parse a backtick-quoted or comma-separated list value from a table cell.
@@ -277,6 +299,20 @@ pub fn validate_subtype(template: &str, subtype: &str) -> bool {
     }
 }
 
+/// Normalize a template alias from document headers into the canonical DB family.
+pub fn normalize_template(template: &str) -> Option<&'static str> {
+    match template.trim() {
+        "T1" | "T1AuthorityDoc" => Some("T1AuthorityDoc"),
+        "T2" | "T2RoleProfile" => Some("T2RoleProfile"),
+        "T3" | "T3TaskPacket" => Some("T3TaskPacket"),
+        "T4" | "T4Review" => Some("T4Review"),
+        "T5" | "T5Acceptance" => Some("T5Acceptance"),
+        "T6" | "T6DailyMemory" => Some("T6DailyMemory"),
+        "T7" | "T7GovernanceDoc" => Some("T7GovernanceDoc"),
+        _ => None,
+    }
+}
+
 /// Validate a document's template and subtype together.
 pub fn validate_header_subtype(header: &ParsedDocHeader) -> bool {
     match (&header.template, &header.subtype) {
@@ -334,6 +370,49 @@ Higher output per cost through deterministic routing and reusable seat systems.
         let header = parse_header(SAMPLE_DOC).expect("header must parse");
         assert_eq!(header.template.as_deref(), Some("T1AuthorityDoc"));
         assert_eq!(header.subtype.as_deref(), Some("prd"));
+    }
+
+    #[test]
+    fn normalizes_short_template_aliases() {
+        let doc = r#"# Example
+
+| Field | Value |
+|-------|-------|
+| template | T3 |
+| subtype | task |
+| id | example |
+"#;
+
+        let header = parse_header(doc).expect("header must parse");
+        assert_eq!(header.template.as_deref(), Some("T3TaskPacket"));
+        assert_eq!(header.subtype.as_deref(), Some("task"));
+    }
+
+    #[test]
+    fn ignores_header_examples_inside_code_fences() {
+        let doc = r#"# SeatLoom Document Templates v1.0
+
+| Item | Content |
+|------|---------|
+| Document | Document Templates Specification |
+
+```markdown
+# <Document Title>
+
+| Field | Value |
+|-------|-------|
+| template | T1/T2/T3/T4/T5/T6/T7 |
+| subtype | <template-specific subtype> |
+```
+"#;
+
+        let header = parse_header(doc).expect("header must parse");
+        assert_eq!(
+            header.title.as_deref(),
+            Some("SeatLoom Document Templates v1.0")
+        );
+        assert_eq!(header.template, None);
+        assert_eq!(header.subtype, None);
     }
 
     #[test]

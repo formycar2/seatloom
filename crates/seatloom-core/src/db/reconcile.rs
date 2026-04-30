@@ -119,6 +119,8 @@ struct ReconcileItemInsert<'a> {
     parse_status: Option<&'a str>,
 }
 
+type ExistingDocumentRow = (String, i32, Option<String>, Option<String>, Option<String>);
+
 // ---------------------------------------------------------------------------
 // Allowed ingest paths (bounded, not arbitrary)
 // ---------------------------------------------------------------------------
@@ -316,19 +318,21 @@ async fn process_one_file(
     }
 
     // Look up existing document by file_path
-    let existing: Option<(String, i32, Option<String>)> = client
+    let existing: Option<ExistingDocumentRow> = client
         .query_opt(
-            "SELECT id, revision, body_digest FROM documents WHERE file_path = $1",
+            "SELECT id, revision, body_digest, template, subtype FROM documents WHERE file_path = $1",
             &[&repo_relative],
         )
         .await
         .ok()
         .flatten()
-        .map(|r| (r.get(0), r.get(1), r.get(2)));
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)));
 
     let h = header.as_ref();
-    let template = h.and_then(|h| h.template.as_deref());
-    let subtype = h.and_then(|h| h.subtype.as_deref());
+    let header_template = h.and_then(|h| h.template.clone());
+    let header_subtype = h.and_then(|h| h.subtype.clone());
+    let template = header_template.as_deref();
+    let subtype = header_subtype.as_deref();
     let parse_ok = match (template, subtype) {
         (Some(t), Some(s)) => validate_subtype(t, s),
         _ => false,
@@ -444,7 +448,20 @@ async fn process_one_file(
             }
         }
 
-        Some((doc_id_row, current_rev, current_digest)) => {
+        Some((doc_id_row, current_rev, current_digest, existing_template, existing_subtype)) => {
+            let resolved_template = header_template.or(existing_template);
+            let resolved_subtype = header_subtype.or(existing_subtype);
+            let resolved_parse_ok =
+                match (resolved_template.as_deref(), resolved_subtype.as_deref()) {
+                    (Some(t), Some(s)) => validate_subtype(t, s),
+                    _ => false,
+                };
+            let resolved_parse_status = if resolved_parse_ok {
+                "parsed"
+            } else {
+                "partial"
+            };
+
             // Existing document
             if current_digest.as_deref() == Some(&new_digest) {
                 // Unchanged
@@ -459,7 +476,7 @@ async fn process_one_file(
                         digest_after: Some(&new_digest),
                         revision_before: Some(current_rev),
                         revision_after: Some(current_rev),
-                        parse_status: Some(parse_status),
+                        parse_status: Some(resolved_parse_status),
                     },
                 )
                 .await;
@@ -490,12 +507,12 @@ async fn process_one_file(
                         &body,
                         &new_digest,
                         &(body.len() as i32),
-                        &parse_status,
+                        &resolved_parse_status,
                         &new_rev,
                         &title,
-                        &template,
-                        &subtype,
-                        &Some(parse_ok),
+                        &resolved_template,
+                        &resolved_subtype,
+                        &Some(resolved_parse_ok),
                         &doc_id_row,
                     ],
                 )
@@ -543,7 +560,7 @@ async fn process_one_file(
                     digest_after: Some(&new_digest),
                     revision_before: Some(current_rev),
                     revision_after: Some(new_rev),
-                    parse_status: Some(parse_status),
+                    parse_status: Some(resolved_parse_status),
                 },
             )
             .await;
