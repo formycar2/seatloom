@@ -88,7 +88,7 @@ Flux should perform the remote double-run proof against the exact commit hash be
 ## 6. Exact Branch and Commit
 
 - Branch: `track/infra-foundation`
-- Commit: `<populated after push>`
+- Commit: `b9bb7340416e3729f30dc751a4bb1f41ee726520`
 
 ## 7. Status of the Broader Prompt/Channel Packet
 
