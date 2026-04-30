@@ -7,10 +7,14 @@
 # It is NOT the steady-state production write path.
 # It is safe — and expected — to run this repeatedly on the same seat.
 #
+# Schema authority: this script is the sole authority for schema application.
+# docker-compose.yml does NOT mount schema files into /docker-entrypoint-initdb.d,
+# so there is no hidden auto-apply path during container init.
+#
 # Proof sequence:
 #   1. static seed consistency (pure Rust, no DB)
 #   2. volume teardown + clean container start
-#   3. schema apply (001–004)
+#   3. schema apply (001–004, copied to container by this script)
 #   4. seed apply (001–003)
 #   5. bounded document reconcile
 #   6. body-ingest helper health check
@@ -74,8 +78,9 @@ for schema_file in \
   004_operational_review_and_continuity.sql
 do
   echo "Applying schema/$schema_file"
+  docker cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
   docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
-    -f "/docker-entrypoint-initdb.d/$schema_file"
+    -f "/tmp/$schema_file"
 done
 echo ""
 

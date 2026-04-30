@@ -10,7 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - seatloom-pgdata:/var/lib/postgresql/data
-      - ./schema:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U seatloom -d seatloom"]
       interval: 5s
