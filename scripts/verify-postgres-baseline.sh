@@ -64,11 +64,15 @@ done
 echo "Seed complete."
 echo ""
 
-echo "--- Step 4: Ingest full document bodies ---"
+echo "--- Step 4: Run bounded document reconcile ---"
+"$CARGO" run -p seatloom-cli -- reconcile --project seatloom --root "$REPO_ROOT"
+echo ""
+
+echo "--- Step 5: Verify direct body-ingest helper remains healthy ---"
 bash "$REPO_ROOT/scripts/ingest-documents.sh"
 echo ""
 
-echo "--- Step 5: cargo test -p seatloom-core (with DB integration tests) ---"
+echo "--- Step 6: cargo test -p seatloom-core (with DB integration tests) ---"
 $CARGO test -p seatloom-core -- --include-ignored 2>&1
 echo ""
 
