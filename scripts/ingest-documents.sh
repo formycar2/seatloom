@@ -16,7 +16,7 @@ fi
 
 export DATABASE_URL="${DATABASE_URL:-postgresql://seatloom:seatloom@localhost:5432/seatloom}"
 
-PSQL_CMD="docker exec seatloom-postgres psql -U seatloom -d seatloom"
+PSQL_CMD=(docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom)
 
 echo "=== SeatLoom Document Body Ingest ==="
 echo "repo root: $REPO_ROOT"
@@ -35,17 +35,27 @@ ingest_doc() {
   local body_len=${#body}
   local digest
   digest=$(echo -n "$body" | shasum -a 256 | cut -d' ' -f1)
+  local updated
   # Use dollar-quoted string to safely pass arbitrary content
-  $PSQL_CMD -c "
-UPDATE documents
-SET body_text = \$BODY\$$body\$BODY\$,
-    body_length = $body_len,
-    body_digest = '$digest',
-    parse_status = 'parsed',
-    updated_at = NOW(),
-    revision = revision + 1
-WHERE id = '$doc_id';
-"
+  updated=$("${PSQL_CMD[@]}" -t -A -c "
+WITH updated AS (
+  UPDATE documents
+  SET body_text = \$BODY\$$body\$BODY\$,
+      body_length = $body_len,
+      body_digest = '$digest',
+      parse_status = 'parsed',
+      updated_at = NOW(),
+      revision = revision + 1
+  WHERE id = '$doc_id'
+  RETURNING id
+)
+SELECT count(*) FROM updated;
+")
+  updated=$(echo "$updated" | tr -d '[:space:]')
+  if [ "$updated" != "1" ]; then
+    echo "ERROR: expected documents.id=$doc_id to exist before ingest (updated=$updated)" >&2
+    exit 1
+  fi
   echo "  OK ($body_len chars): $file_path"
 }
 
@@ -86,7 +96,7 @@ echo ""
 
 # Extract full sections from ingested documents
 echo "--- Updating section search_text from ingested bodies ---"
-$PSQL_CMD -c "
+"${PSQL_CMD[@]}" -c "
 UPDATE document_sections ds
 SET search_text = ds.heading_text || ' ' || coalesce(ds.body_excerpt, '')
 WHERE EXISTS (SELECT 1 FROM documents d WHERE d.id = ds.document_id AND d.body_text IS NOT NULL);
@@ -94,7 +104,7 @@ WHERE EXISTS (SELECT 1 FROM documents d WHERE d.id = ds.document_id AND d.body_t
 
 echo ""
 echo "--- Verification: document body counts ---"
-$PSQL_CMD -c "
+"${PSQL_CMD[@]}" -c "
 SELECT
   template,
   COUNT(*) as docs,

@@ -25,7 +25,7 @@ INSERT INTO checkpoints (
     'Nimbus completed storage, PostgreSQL baseline, typed document authority, and foundation hardening work with passing local Rust verification.',
     'Infrastructure baseline is clean and compile-verified; PostgreSQL is the authority and the next step is higher-level acceptance plus remaining operational schema completion.',
     ARRAY['Should pipeline runs also capture remote verification evidence by commit hash?'], 'full',
-    ARRAY['ar-task-storage','ar-task-hardening','ar-acceptance-hardening'],
+    ARRAY['ar-task-storage','ar-task-db-baseline','ar-task-hardening','ar-acceptance-hardening'],
     'main', 'a658086b54323259fda2ad2a958d097701f1fbbd', NULL,
     '{"seat":"nimbus","runtime":"ClaudeCode","workspace":"seatloom","role":"architect"}'::jsonb,
     '{"active_workitems":["wi-storage","wi-hardening"],"last_checkpoint_basis":"accepted delivery packets","branch":"main"}'::jsonb,

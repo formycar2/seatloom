@@ -180,10 +180,10 @@ Done: toolchain frozen, fmt+clippy passing, cargo check 0 warnings, 22 tests pas
    ARRAY['NIMBUS-2026-04-29-foundation-hardening-v1'],
    ARRAY['nimbus','postgres','infrastructure','seed','baseline'],
    'docs/coordination/tasks/nimbus/NIMBUS-2026-04-29-real-collaboration-db-baseline-v1.md',
-   '# Task: Nimbus Real Collaboration PostgreSQL Baseline
+  '# Task: Nimbus Real Collaboration PostgreSQL Baseline
 
 PostgreSQL schema for core SeatLoom object families seeded with real collaboration data.
-5 seats, 6 WIs, 3 handoffs, 14 artifacts T1-T7, 34 canonical events.
+5 seats, 6 WIs, 3 handoffs, 15 artifacts T1-T7, 34 canonical events.
 
 [Full body available via scripts/ingest-documents.sh]',
    NULL, 'partial')

@@ -28,6 +28,10 @@ echo "repo root: $REPO_ROOT"
 echo "database:  $DATABASE_URL"
 echo ""
 
+echo "--- Step 0: Static cross-seed consistency ---"
+$CARGO test -p seatloom-core postgres_seed_consistency -- --nocapture
+echo ""
+
 echo "--- Step 1: Start PostgreSQL via docker compose ---"
 (cd "$INFRA_DIR" && docker compose up -d --wait)
 echo "PostgreSQL ready."
@@ -41,7 +45,7 @@ for schema_file in \
   004_operational_review_and_continuity.sql
 do
   echo "Applying schema/$schema_file"
-  docker exec seatloom-postgres psql -U seatloom -d seatloom \
+  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
     -f "/docker-entrypoint-initdb.d/$schema_file"
 done
 echo ""
@@ -54,12 +58,17 @@ for seed_file in \
 do
   echo "Applying seed/$seed_file"
   docker cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"
-  docker exec seatloom-postgres psql -U seatloom -d seatloom -f "/tmp/$seed_file"
+  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
+    -f "/tmp/$seed_file"
 done
 echo "Seed complete."
 echo ""
 
-echo "--- Step 4: cargo test -p seatloom-core (with DB integration tests) ---"
+echo "--- Step 4: Ingest full document bodies ---"
+bash "$REPO_ROOT/scripts/ingest-documents.sh"
+echo ""
+
+echo "--- Step 5: cargo test -p seatloom-core (with DB integration tests) ---"
 $CARGO test -p seatloom-core -- --include-ignored 2>&1
 echo ""
 
