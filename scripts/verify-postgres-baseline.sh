@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # verify-postgres-baseline.sh
-# Deterministic bootstrap and verification for the SeatLoom PostgreSQL baseline.
-# Starts the repo-managed PostgreSQL service, applies schema, seeds real collaboration data,
-# and runs the database integration tests.
+#
+# DESTRUCTIVE LOCAL BASELINE VERIFIER.
+# This script tears down the repo-managed PostgreSQL verification volume on
+# every run to guarantee a clean, deterministic schema + seed state.
+# It is NOT the steady-state production write path.
+# It is safe — and expected — to run this repeatedly on the same seat.
+#
+# Proof sequence:
+#   1. static seed consistency (pure Rust, no DB)
+#   2. volume teardown + clean container start
+#   3. schema apply (001–004)
+#   4. seed apply (001–003)
+#   5. bounded document reconcile
+#   6. body-ingest helper health check
+#   7. DB integration tests (--include-ignored)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,6 +35,10 @@ fi
 INFRA_DIR="$REPO_ROOT/infra/postgres"
 export DATABASE_URL="postgresql://seatloom:seatloom@localhost:5432/seatloom"
 
+# Max seconds to wait for PostgreSQL to accept connections after container start.
+# Override with: PG_READY_TIMEOUT=120 bash scripts/verify-postgres-baseline.sh
+PG_READY_TIMEOUT="${PG_READY_TIMEOUT:-60}"
+
 echo "=== SeatLoom PostgreSQL Baseline Verification ==="
 echo "repo root: $REPO_ROOT"
 echo "database:  $DATABASE_URL"
@@ -32,8 +48,21 @@ echo "--- Step 0: Static cross-seed consistency ---"
 $CARGO test -p seatloom-core postgres_seed_consistency -- --nocapture
 echo ""
 
-echo "--- Step 1: Start PostgreSQL via docker compose ---"
-(cd "$INFRA_DIR" && docker compose up -d --wait)
+echo "--- Step 1: Teardown stale volume + start clean container ---"
+echo "(destructive reset — ensures deterministic schema + seed state)"
+(cd "$INFRA_DIR" && docker compose down -v --remove-orphans 2>&1 || true)
+(cd "$INFRA_DIR" && docker compose up -d)
+
+echo "Waiting for PostgreSQL to become ready (timeout: ${PG_READY_TIMEOUT}s) ..."
+deadline=$(( $(date +%s) + PG_READY_TIMEOUT ))
+until docker exec seatloom-postgres pg_isready -U seatloom -d seatloom -q 2>/dev/null; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "ERROR: PostgreSQL did not become ready within ${PG_READY_TIMEOUT}s." >&2
+    docker logs seatloom-postgres --tail 40 >&2
+    exit 1
+  fi
+  sleep 1
+done
 echo "PostgreSQL ready."
 echo ""
 
