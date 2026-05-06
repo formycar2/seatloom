@@ -1,4 +1,4 @@
-# Task: app-v2 Phase 2 + Slice B UI Verification
+# Task: app-v2 Phase 2 + Slice B — Verify-Only
 
 | Field | Value |
 |---|---|
@@ -12,7 +12,7 @@
 | to | flux |
 | priority | P1 |
 | deadline | 2026-05-06 |
-| depends_on | `docs/coordination/tasks/flux/FLUX-2026-04-30-app-v2-truth-projection-slice-b-v1.md`, `docs/coordination/tasks/copilot/COPILOT-2026-04-30-frontend-modularization-v1.md` |
+| depends_on | `docs/coordination/tasks/flux/FLUX-2026-04-30-app-v2-truth-projection-slice-b-v1.md`, `docs/coordination/tasks/copilot/COPILOT-2026-04-30-frontend-modularization-v1.md`, `docs/coordination/deliveries/2026-04-30-frontend-v2-phase1-phase2-delivery.md`, commit `cb06ce0` |
 | tags | flux, verification, ui, app-v2, artifact, inbox, workitems, slice-b, phase2, commit-pinned |
 | owner | Flux |
 | acceptance owner | Lyra |
@@ -20,7 +20,7 @@
 
 ## Context
 
-Slice B (artifact panel) was originally assigned to Flux for implementation. Copilot implemented it instead as part of a broader Phase 2 work packet, committed at `cb06ce0`. Phase 1 (pure modular refactor) is at `21fc5af`.
+`FLUX-2026-04-30-app-v2-truth-projection-slice-b-v1` was originally assigned to Flux for implementation. Copilot implemented it instead as part of a broader Phase 2 work packet, committed at `cb06ce0` on `track/infra-foundation`. Phase 1 (pure modular refactor) is at `21fc5af`.
 
 This packet is **verify-only**. You are not implementing anything. You are confirming that `cb06ce0` satisfies the Slice B acceptance criteria and that the Phase 2 views (Inbox, WorkItems, Artifacts) render correctly with truth data.
 
@@ -28,10 +28,10 @@ This packet is **verify-only**. You are not implementing anything. You are confi
 
 **Phase 1 — `21fc5af`** (modular refactor, zero behavior change):
 - `AppV2.tsx` split from 2018 lines into 14 focused modules
-- New files: `types.ts`, `mock-data.ts`, `components/×4`, `panel/SupervisorPanel.tsx`, `dashboard/×6`
+- New files: `types.ts`, `mock-data.ts`, `components/×4`, `panel/SupervisorPanel.tsx`, `dashboard/×5 sections`
 
-**Phase 2 — `cb06ce0`** (new features, verify this):
-- `dashboard/ProjectDashboard.tsx`: tab navigation added (overview | inbox | workitems | artifacts); Slice B artifact panel added to overview (section "4-bis"); `buildArtifactHover()` for hover enrichment
+**Phase 2 — `cb06ce0`** (new features — verify this):
+- `dashboard/ProjectDashboard.tsx`: tab navigation (overview | inbox | workitems | artifacts); Slice B artifact panel in overview tab; `buildArtifactHover()` for hover enrichment
 - `views/ArtifactsView.tsx`: artifact list with T1–T7 template filter, status colors
 - `views/InboxView.tsx`: InboxItem list with priority sorting and archive action
 - `views/WorkItemsView.tsx`: WorkItem list with status-chip filter
@@ -40,31 +40,29 @@ This packet is **verify-only**. You are not implementing anything. You are confi
 ## Target Commit
 
 - `target_branch`: `track/infra-foundation`
-- `target_commit`: `cb06ce0` (Phase 2 HEAD — this is the commit to verify)
+- `target_commit`: `cb06ce0`
 - `compare_base_commit`: `365fc8e` (last Lyra-accepted UI commit, Slice A)
 
 **Hard rules:**
-- do not substitute a later `HEAD`
+- do not substitute a later HEAD
 - do not edit any code
 - do not run the postgres verifier or infra scripts
-- stay within `ui/` and the browser check
+- stay within `ui/` and browser verification
 
 ## Execution Steps
 
 ### 1. Commit identity gate
 
 ```bash
-git fetch origin track/infra-foundation
-git checkout cb06ce0
 git rev-parse HEAD
 git diff --stat HEAD -- ui/ crates/ infra/ scripts/
 ```
 
 Stop and return `HOLD` if:
-- `git rev-parse HEAD` is not exactly `cb06ce0f9b007a39ec17f8061d7ac7921c990aa9`
-- `git diff --stat HEAD -- ui/ crates/ infra/ scripts/` is non-empty (tracked code files modified)
+- HEAD is not exactly `cb06ce0`
+- `git diff --stat` shows tracked code modifications in `ui/`, `crates/`, `infra/`, or `scripts/`
 
-Note: pre-existing **untracked** files outside the code directories (e.g. `.gemini/`, `docs/coordination/` artifacts from prior sessions) are acceptable and do not constitute a gate failure. Only tracked-file modifications in `ui/`, `crates/`, `infra/`, or `scripts/` are a blocker.
+Pre-existing untracked files in `docs/coordination/` or `.gemini/` are acceptable — only tracked code modifications are blockers.
 
 ### 2. TypeScript check
 
@@ -84,69 +82,68 @@ Expected: build succeeds, no error exit.
 
 ### 4. Dev server + browser verification
 
-Start the dev server and open the app in a browser:
+Start the dev server:
 
 ```bash
 cd ui && pnpm dev
 ```
 
-For each of the three seeded projects (seatloom, a second project, a third if present), open the project channel and verify:
+Open the app and navigate to a project channel. For seeded project `p-1` (SeatLoom 协调核心):
 
 #### 4a. Overview tab — Slice B artifact panel (critical)
 
-- Section "4-bis" (Artifacts & Documents) is visible in the overview
-- For a project with truth data (`useDataStore` has artifacts): artifact cards render with title, template label (T1–T7), status chip, and source refs
-- For a project with no artifacts: the "本项目已有结构化 truth，但当前无 artifact 对象" placeholder shows (if truth data exists) OR section is absent (if no truth data)
-- Hover over an artifact card: tooltip appears with title, summary, and source refs
+- Section titled `文档与证据 (ARTIFACTS)` is visible in the overview
+- Artifact cards render with: title, template label (T1–T7), status chip, source refs line
+- Hover over an artifact card: popup appears with title, template, subtype, status, full path, source refs, summary
+- For a project with no artifacts: empty state message renders; no crash
+- Existing panels still render: blockers, active work, DAG, next-step, activity
 
 #### 4b. Tab navigation
 
 - Tab bar shows: 看板 | 待办 (N) | 工作项 | 文档 (N)
 - Clicking each tab switches view correctly
-- Badge counts on 待办 and 文档 reflect actual data lengths
+- Badge counts reflect actual data lengths
+- Tab state resets on contact switch
 
 #### 4c. Artifacts tab (ArtifactsView)
 
-- Template filter chips (T1–T7 + 全部) are rendered
-- Filtering by template narrows the visible artifact cards
-- Each card shows: template label (colored), subtype label, status chip, title, storage path basename, and summary preview
+- Template filter chips render (only templates present in data)
+- Filtering by template chip narrows visible artifact cards
+- Each card shows: template label, subtype, status, title, storage path basename
 
 #### 4d. Inbox tab (InboxView)
 
-- InboxItems are sorted by priority (Critical → Normal → Low)
-- Each item shows: priority chip, type, actor, summary, and linked artifact if present
-- Archive button is present on each item
+- InboxItems sorted by priority: Critical → Normal → Low
+- Each item shows: priority chip, type, summary
+- Archive button present per item
 
 #### 4e. WorkItems tab (WorkItemsView)
 
-- Status filter chips are rendered (All + each WorkItemStatus)
-- Filtering by status narrows the list
-- Each card shows: ID, title, status chip, priority, owner, and depends_on count
+- Status filter chips render (进行中 / 待处理 / 阻塞 / 审阅中 / 已完成 / 全部)
+- Filtering by status chip narrows list
+- Each card shows: ID, title, status chip, priority
 
-#### 4f. Regression check — prior panels still work
+#### 4f. Regression check — prior panels still work in overview
 
-In the overview tab:
-- Blockers section still renders (if any blockers exist)
-- Active work section still renders
-- DAG workflow still renders
-- Next steps section still renders
-- Timeline section still renders
+- Blockers section renders (if blockers exist)
+- Active work section renders
+- DAG workflow renders
+- Next steps section renders
+- Timeline section renders
+- No crashes, no blank panels for previously-visible data
 
-No crashes, no blank panels for data that was previously visible.
+## Verdict Options
 
-### 5. If any check fails
+- `PASS` — commit `cb06ce0` satisfies all requirements above
+- `HOLD` — real gap found; name the first gap with file:line
+- `FAIL` — fundamental contract breach
 
-Report the first real blocker exactly:
-- which tab or section failed
-- what the console error says (if any)
-- whether it's a data/render issue or a type/import issue
-
-Do not patch. Return `HOLD`.
-
-## Delivery Format
+## Reporting Format
 
 ```text
 [Flux -> Lyra] app-v2 Phase 2 + Slice B Verification
+commit:
+- cb06ce0
 completed:
 - ...
 validation:
@@ -162,7 +159,7 @@ validation:
 blockers:
 - none / ...
 verdict:
-- PASS | HOLD
+- PASS | HOLD | FAIL
 next action:
 - wait for Lyra acceptance
 artifact path(s):
