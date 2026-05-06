@@ -19,6 +19,7 @@ interface DataState {
   addHandoff: (handoff: Handoff) => void;
   updateHandoff: (id: string, updates: Partial<Handoff>) => void;
   removeInboxItem: (id: string) => void;
+  removeInboxItemFromProject: (projectId: string, id: string) => void;
 }
 
 const LOG_DAY = '2026-04-28';
@@ -1505,6 +1506,20 @@ export const useDataStore = create<DataState>((set) => ({
       projectData: {
         ...state.projectData,
         [state.activeProjectId]: {
+          ...data,
+          inboxItems: data.inboxItems.filter((item) => item.id !== id),
+        },
+      },
+    };
+  }),
+
+  removeInboxItemFromProject: (projectId, id) => set((state) => {
+    const data = state.projectData[projectId];
+    if (!data) return state;
+    return {
+      projectData: {
+        ...state.projectData,
+        [projectId]: {
           ...data,
           inboxItems: data.inboxItems.filter((item) => item.id !== id),
         },
