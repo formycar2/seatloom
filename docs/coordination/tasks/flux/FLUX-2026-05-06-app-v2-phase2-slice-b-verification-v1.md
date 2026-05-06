@@ -57,12 +57,14 @@ This packet is **verify-only**. You are not implementing anything. You are confi
 git fetch origin track/infra-foundation
 git checkout cb06ce0
 git rev-parse HEAD
-git status --short
+git diff --stat HEAD -- ui/ crates/ infra/ scripts/
 ```
 
 Stop and return `HOLD` if:
-- `git rev-parse HEAD` is not exactly `cb06ce0...` (full hash)
-- `git status --short` is non-empty
+- `git rev-parse HEAD` is not exactly `cb06ce0f9b007a39ec17f8061d7ac7921c990aa9`
+- `git diff --stat HEAD -- ui/ crates/ infra/ scripts/` is non-empty (tracked code files modified)
+
+Note: pre-existing **untracked** files outside the code directories (e.g. `.gemini/`, `docs/coordination/` artifacts from prior sessions) are acceptable and do not constitute a gate failure. Only tracked-file modifications in `ui/`, `crates/`, `infra/`, or `scripts/` are a blocker.
 
 ### 2. TypeScript check
 
