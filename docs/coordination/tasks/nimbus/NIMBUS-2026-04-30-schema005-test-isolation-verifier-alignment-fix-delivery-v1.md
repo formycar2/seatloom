@@ -93,7 +93,7 @@ Old → new:
 ## 7. Exact Branch and Commit
 
 - Branch: `track/infra-foundation`
-- Commit: (reported after push)
+- Commit: `1bb561a`
 
 ## 8. Reporting Format
 
@@ -102,7 +102,7 @@ Old → new:
 branch:
 - track/infra-foundation
 commit:
-- (reported after push)
+- 1bb561a
 completed:
 - removed prompt_instance_tables_exist_and_empty_at_baseline (moved to verifier SQL)
 - made prompt_action_append_and_list self-sufficient with own parent fixture
