@@ -16,9 +16,10 @@
 #   2. volume teardown + clean container start
 #   3. schema apply (001–005, copied to container by this script)
 #   4. seed apply (001–004)
-#   5. bounded document reconcile
-#   6. body-ingest helper health check
-#   7. DB integration tests (--include-ignored)
+#   5. schema-005 zero-row baseline proof (SQL spot-checks against fresh seed)
+#   6. bounded document reconcile
+#   7. body-ingest helper health check
+#   8. DB integration tests (--include-ignored)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -101,15 +102,47 @@ done
 echo "Seed complete."
 echo ""
 
-echo "--- Step 4: Run bounded document reconcile ---"
+echo "--- Step 4: Schema-005 zero-row baseline proof ---"
+# Schema 005 (prompt_instances, prompt_actions, channel_action_receipts) is
+# intentionally seeded as zero rows — these families track runtime artifacts
+# and must not be fabricated. This proof runs immediately after seed apply,
+# before any mutating Rust integration test, so global zero-row state is
+# observable. Any non-zero count here means seed 004 has drifted from the
+# honest zero-row policy or an earlier step inserted unauthorized rows.
+docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom <<'SQL'
+DO $$
+DECLARE
+  pi_count   INT;
+  pa_count   INT;
+  car_count  INT;
+BEGIN
+  SELECT COUNT(*) INTO pi_count  FROM prompt_instances;
+  SELECT COUNT(*) INTO pa_count  FROM prompt_actions;
+  SELECT COUNT(*) INTO car_count FROM channel_action_receipts;
+  IF pi_count <> 0 THEN
+    RAISE EXCEPTION 'prompt_instances must be zero rows at baseline, got %', pi_count;
+  END IF;
+  IF pa_count <> 0 THEN
+    RAISE EXCEPTION 'prompt_actions must be zero rows at baseline, got %', pa_count;
+  END IF;
+  IF car_count <> 0 THEN
+    RAISE EXCEPTION 'channel_action_receipts must be zero rows at baseline, got %', car_count;
+  END IF;
+  RAISE NOTICE 'schema-005 zero-row baseline confirmed';
+END;
+$$;
+SQL
+echo ""
+
+echo "--- Step 5: Run bounded document reconcile ---"
 "$CARGO" run -p seatloom-cli -- reconcile --project seatloom --root "$REPO_ROOT"
 echo ""
 
-echo "--- Step 5: Verify direct body-ingest helper remains healthy ---"
+echo "--- Step 6: Verify direct body-ingest helper remains healthy ---"
 bash "$REPO_ROOT/scripts/ingest-documents.sh"
 echo ""
 
-echo "--- Step 6: cargo test -p seatloom-core (with DB integration tests) ---"
+echo "--- Step 7: cargo test -p seatloom-core (with DB integration tests) ---"
 $CARGO test -p seatloom-core -- --include-ignored 2>&1
 echo ""
 

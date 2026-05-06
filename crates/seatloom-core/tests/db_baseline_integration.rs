@@ -545,34 +545,16 @@ mod db_baseline {
 
     // =========================================================================
     // Schema 005: Prompt + channel action authority (zero-row seed baseline)
+    //
     // These tests prove the new families exist and the write/read path is real.
     // They use in-test fixtures only; the seed is intentionally empty.
+    //
+    // Each test owns its fixture rows via unique IDs and does NOT depend on
+    // any other test having run first. The zero-row baseline proof is enforced
+    // by scripts/verify-postgres-baseline.sh as SQL spot-checks immediately
+    // after seed 004, which is the only point where global zero-row state is
+    // observable under the verifier's --include-ignored model.
     // =========================================================================
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
-    async fn prompt_instance_tables_exist_and_empty_at_baseline() {
-        let db = try_connect().await.expect("DB must be reachable");
-        // Baseline seed is zero-row; structural proof only.
-        let instances = db
-            .list_active_prompt_instances("seatloom")
-            .await
-            .expect("prompt instance list must succeed");
-        assert_eq!(
-            instances.len(),
-            0,
-            "no fabricated prompt rows in baseline seed"
-        );
-        let receipts = db
-            .list_channel_action_receipts("seatloom", None, None)
-            .await
-            .expect("channel action receipt list must succeed");
-        assert_eq!(
-            receipts.len(),
-            0,
-            "no fabricated channel action receipt rows in baseline seed"
-        );
-    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
@@ -632,16 +614,46 @@ mod db_baseline {
     }
 
     #[tokio::test]
-    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied; run after prompt_instance_write_read_round_trip"]
+    #[ignore = "requires PostgreSQL with 005_prompt_and_channel_action_authority.sql applied"]
     async fn prompt_action_append_and_list() {
         use chrono::Utc;
-        use seatloom_core::db::models::PromptActionRow;
+        use seatloom_core::db::models::{PromptActionRow, PromptInstanceRow};
 
         let db = try_connect().await.expect("DB must be reachable");
         let now = Utc::now();
+
+        // Self-contained fixture: create our own parent prompt instance.
+        // Uses a test-scoped ID distinct from prompt_instance_write_read_round_trip
+        // so the two tests can run in any order and in parallel.
+        let parent = PromptInstanceRow {
+            id: "pi-action-fixture-001".to_string(),
+            project_id: "seatloom".to_string(),
+            session_id: "ses-nimbus-infra-001".to_string(),
+            status: "active".to_string(),
+            prompt_kind: "freeform".to_string(),
+            prompt_policy: "needs_approval".to_string(),
+            evidence_ref: None,
+            evidence_preview: None,
+            available_actions: vec!["approve".to_string()],
+            assist_max_steps: None,
+            assist_max_tokens: None,
+            assist_steps_used: 0,
+            assist_tokens_used: 0,
+            expected_next_pattern: None,
+            detected_at: now,
+            resolved_at: None,
+            resolved_by: None,
+            result_event_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.create_prompt_instance(&parent)
+            .await
+            .expect("parent prompt instance insert must succeed");
+
         let action = PromptActionRow {
             id: "pa-test-001".to_string(),
-            prompt_id: "pi-test-001".to_string(),
+            prompt_id: "pi-action-fixture-001".to_string(),
             action_kind: "approve".to_string(),
             actor_ref: "lyra".to_string(),
             source_channel: "desktop".to_string(),
@@ -658,7 +670,7 @@ mod db_baseline {
             .expect("prompt action insert must succeed");
 
         let actions = db
-            .list_prompt_actions_for_prompt("pi-test-001")
+            .list_prompt_actions_for_prompt("pi-action-fixture-001")
             .await
             .expect("action list must succeed");
 
