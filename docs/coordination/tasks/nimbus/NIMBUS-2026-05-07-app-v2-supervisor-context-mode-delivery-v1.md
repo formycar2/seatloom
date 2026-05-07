@@ -140,7 +140,7 @@ Flux verify-only is expected to run all 8 scenarios in a real browser as part of
 
 - Branch: `track/infra-foundation`
 - Base commit: `1c7935c` (HEAD before this slice was `9ffed2f`, which contains the AD-013 docs revision)
-- Delivery commit: (reported after push)
+- Delivery commit: `f5b8423`
 
 ## 11. Reporting
 
@@ -149,7 +149,7 @@ Flux verify-only is expected to run all 8 scenarios in a real browser as part of
 branch:
 - track/infra-foundation
 commit:
-- (reported after push)
+- f5b8423
 completed:
 - types.ts: SupervisorContextMode + GlobalProjectSummary added
 - mock-data.ts: MOCK_GLOBAL_SUMMARY added (3 projects: p-1/p-2/p-3)
