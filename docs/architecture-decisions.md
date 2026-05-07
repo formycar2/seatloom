@@ -5,7 +5,7 @@
 | 文档 | Architecture Decisions v1.0 |
 | 状态 | Approved |
 | 更新时间 | 2026-05-07 |
-| 对齐版本 | v0.5 contract set (AD-008–AD-012 added); v2 UI L1 surface (AD-013 added) |
+| 对齐版本 | v0.5 contract set (AD-008–AD-012 added); v2 UI L1 surface (AD-013 v2 — viewMode orthogonal state, chan-03 + chan-09) |
 | 审批人 | 张小龙 |
 
 ---
@@ -523,6 +523,115 @@ Prompt 检测和 Supervisor assist 必须基于有界窗口（最后 10-20 行�
 2. **支持全局健康监控** — Aegis/Supervisor 的实际工作流需要先看"哪个 project 需要关注"才能决定进入哪个 project 细节（`supervisor-im-as-l1-insight.md`）。
 3. **与 L1 Supervisor IM 定位一致（chan-06）** — Supervisor 作为 L1 高频入口，必须提供"全局→细节"的双层跳转，而不是强迫用户从一个 project 跳到另一个 project 才能看到全局。
 4. **用户决策路径最短化** — 对比需要打开多个 project 频道才能拼凑全局视图的旧模式，两层 context 让"看全局"和"做项目级决策"各自成为一个单独的、命名明确的 Supervisor 状态。
+
+### 修订历史
+
+| 日期 | 版本 | 变更 | 触发 |
+|------|------|------|------|
+| 2026-05-07 | v1 | 初版（chan-03） | Aegis 设计，Lyra 验收 |
+| 2026-05-07 | v1.1 | 互斥规则收紧：global mode ⇒ activeProjectId 必须为 null | Lyra review 反馈 |
+| 2026-05-07 | v2 | 新增 §7 viewMode 正交状态（chan-09） | Mr. Zhang + Lyra design discussion |
+
+### §7 viewMode 正交状态（v2，chan-09）
+
+**问题陈述**：v1 把 `contextMode` 设计成同时承担两个职责 — (a) dashboard 数据隔离、(b) 右侧 pane 路由。这两个职责在 dashboard-only 场景下重合，但当用户在右侧 pane 与某个 seat **chat** 时出现歧义：dashboard 数据隔离仍然有意义，但右侧 pane 既不是 GlobalDashboard 也不是 ProjectDashboard，contextMode 不再能完整描述 UI 状态。
+
+**决定**：引入与 `contextMode` 正交的 `viewMode` 状态。
+
+```typescript
+type SupervisorContextMode = 'global' | 'project';   // 不变（§6 不变量保留）
+type SupervisorViewMode    = 'dashboard' | 'chat';   // 新增
+```
+
+#### 职责重新分配
+
+| 字段 | 职责 |
+|------|------|
+| `contextMode` | dashboard 数据隔离（决定 GlobalDashboard 还是 ProjectDashboard 的数据范围） |
+| `activeProjectId` | dashboard 互斥不变量的载体（与 contextMode 配对） |
+| `viewMode` | 右侧 pane 路由（决定渲染 dashboard 还是 chat） |
+| `activeContactId` | chat 当前选中的 contact（仅在 viewMode='chat' 下有渲染意义） |
+
+#### 右侧 pane 决策表
+
+| `viewMode` | 子条件 | 右侧 pane |
+|------------|-------|-----------|
+| `dashboard` | `contextMode === 'global'` | GlobalDashboard |
+| `dashboard` | `contextMode === 'project'` | ProjectDashboard for `activeProjectId` |
+| `chat` | `activeContact.type === 'supervisor'` | Chat（Supervisor） |
+| `chat` | `activeContact.type === 'seat'` | Chat（Seat） |
+| `chat` | `activeContact.type === 'project-channel'` | ProjectDashboard for `activeContact.projectId`（project channel 是 dashboard 的 alias，viewMode 一律走 dashboard 视觉） |
+
+> 注：实际实现可以把 project channel 点击映射为「viewMode=dashboard + enterProject(channel.projectId)」，从而让该行不存在；两种实现等价。NIMBUS 包推荐前者（路由分支收敛）。
+
+#### 面包屑决策表
+
+| `viewMode` | 子条件 | 面包屑 |
+|------------|-------|--------|
+| `dashboard` | `contextMode === 'global'` | `全局` |
+| `dashboard` | `contextMode === 'project'` | `全局 › <projectName(activeProjectId)>` |
+| `chat` | `activeContact.type === 'supervisor'` | `全局` |
+| `chat` | `activeContact.type === 'seat'` | `全局 › <projectName(seat.projectId)> › <seatName>` |
+
+**关键**：chat-with-seat 模式下面包屑显示的 `projectName` 来自 **seat contact 的 `projectId` 字段**，与 `activeProjectId` 解耦。这意味着用户可以处于「dashboard 看 p-1，chat 与 p-2 的某 seat」的分叉态——这是 v2 的合法状态，**不强制同步**。
+
+#### 触发器表
+
+| 用户动作 | 副作用 |
+|---------|-------|
+| 点面包屑的 `全局` | `viewMode='dashboard'` + `enterGlobal()` |
+| 点面包屑中间层 `<projectName>` | `viewMode='dashboard'` + `enterProject(projectId)` + `setActiveContactId(<该 project 的 channel contact>)`（同步 contact 高亮，避免 contact 列表 vs 右侧 pane 视觉不一致） |
+| 点 contact 列表中的 project channel | `viewMode='dashboard'` + `enterProject(contact.projectId)` + `setActiveContactId(contact.id)` |
+| 点 contact 列表中的 seat | `viewMode='chat'` + `setActiveContactId(seat.id)`；**不动** `contextMode` 与 `activeProjectId`（与 v1 的 switchContact 自动同步行为不同） |
+| 点 contact 列表中的 supervisor | `viewMode='chat'` + `setActiveContactId('supervisor')`；**不动** `contextMode` |
+
+#### 不变量
+
+**v1 不变量保留（不放松）**：
+- `contextMode === 'global'` ⇔ `activeProjectId === null`
+- 仅 `enterGlobal()` 和 `enterProject(projectId)` 可修改 `contextMode` / `activeProjectId`
+- Person-Supervisor 1:1 绑定
+- 切换是显式用户动作
+- 数据隔离规则：Global 不渲染单 project 详情，Project 不渲染其他 project 数据
+
+**v2 新增不变量**：
+- `viewMode` 与 `contextMode` 正交，互不蕴含
+- `viewMode` 由 contact 列表点击与面包屑点击驱动；不由 dashboard 内部交互驱动
+- chat-with-seat 模式下面包屑的 `projectName` 来源是 `activeContact.projectId`，**不**是 `activeProjectId`
+
+#### 视觉 affordance
+
+面包屑中间层 `<projectName>` 在 v2 下变成可点击 link，需要在视觉上明确：
+- 默认态：与 v1 中间层文本同色（`var(--sl-text-secondary)` 或 `var(--sl-text-primary)`）
+- hover 态：颜色切到 `var(--sl-brand)`，cursor: pointer
+- 与 `全局` 入口的视觉一致（同为 button 样式，无下划线）
+
+NIMBUS 包负责实现细节。
+
+#### localStorage key 清单（含本次新增）
+
+| key | 写入时机 | 读取规则 | stale fallback |
+|-----|---------|---------|---------------|
+| `seatloom.supervisor.contextMode` | enterGlobal / enterProject | 缺失或非法 → `'global'` | — |
+| `seatloom.supervisor.activeProjectId` | enterGlobal / enterProject | 缺失 → null；非法 projectId → 降级回 global mode | §D rule (chan-03) |
+| `seatloom.supervisor.viewMode`（新） | viewMode 切换时 | 缺失或非法 → `'dashboard'` | 同左 |
+| `sl-supervisor-active-contact`（已有，不改名） | switchContact | 既有 | 既有 |
+| `sl-supervisor-open` / `sl-supervisor-pos` / `sl-supervisor-size` / `sl-supervisor-draft-*`（已有） | 既有 | 既有 | 既有 |
+
+不得改名既有 key。
+
+#### 零回归约束（v2 扩展）
+
+- chan-03 已验收的 8 个 smoke 场景全部兼容
+- v2 新增 6 个 smoke 场景（chat 面包屑三级、chat 面包屑一级、面包屑中间层点击、chat→面包屑全局回退、跨 project 分叉态、回归 chan-03 全集）
+- v1 的 `switchContact` 在点击 seat 时自动同步 contextMode 的行为**被废弃**（v2 改为不动 contextMode）— 这是 v2 唯一的破坏性行为变更，必须通过 NIMBUS 包显式实现并通过 verify
+
+#### 理由
+
+1. **职责单一**：把 dashboard 数据隔离与右侧 pane 路由拆开两个状态字段，每个字段含义单一，避免 v1 的 contextMode 在 chat 模式下的歧义
+2. **保留分叉态作为合法 UI 状态**：用户可能希望"dashboard 维持对 p-1 的关注，同时与 p-2 的 seat 沟通"——v2 把这种状态显式化、合法化，而不是强制同步
+3. **chan-06 一致性**：Supervisor 作为 L1 高频入口，面包屑必须如实反映"我现在在跟谁说话 / 看谁的数据"，三级面包屑提供这种透明度
+4. **与 contact 列表视觉一致**：通过中间层点击同步 `activeContactId`，避免 contact 列表高亮与右侧 pane 内容错位
 
 ---
 

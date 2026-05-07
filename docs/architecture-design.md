@@ -894,19 +894,31 @@ interface TimelineState {
   appendEvent: (event: CanonicalEvent) => void;  // from Tauri event listener
 }
 
-// stores/supervisorStore.ts (AD-013, v2 L1 surface)
-// Supervisor 两层上下文模型：global（跨项目摘要）vs project（单项目细节）。
-// 互斥不变量：
-//   - mode === 'project'  ⇒ activeProjectId 必须非空
-//   - mode === 'global'   ⇒ activeProjectId 必须为 null（高亮由 Contact 列表自身处理）
-// 切换是显式用户动作，不自动推断。Person-Supervisor 为 1:1 绑定；Person 不是实体。
+// stores/supervisorStore.ts (AD-013 v2, v2 L1 surface)
+// Supervisor 状态机（v2 — chan-09 viewMode orthogonal extension）：
+//
+//   contextMode (dashboard 数据隔离, AD-013 §6 不变量保留):
+//     - 'project'  ⇒ activeProjectId !== null
+//     - 'global'   ⇒ activeProjectId === null
+//   viewMode (右侧 pane 路由, 与 contextMode 正交, AD-013 §7):
+//     - 'dashboard' → 渲染 GlobalDashboard 或 ProjectDashboard（按 contextMode）
+//     - 'chat'      → 渲染 chat pane（按 activeContact）
+//
+// chat-with-seat 模式下面包屑的 projectName 来源是 activeContact.projectId，
+// 不是 activeProjectId。允许「dashboard 看 p-1 / chat 与 p-2 seat」分叉态。
+//
+// Person-Supervisor 1:1；Person 不是实体；切换是显式用户动作。
 type SupervisorContextMode = 'global' | 'project';
+type SupervisorViewMode    = 'dashboard' | 'chat';
 
 interface SupervisorState {
-  currentContextMode: SupervisorContextMode;
+  contextMode: SupervisorContextMode;
   activeProjectId: string | null;       // global mode 下恒为 null
-  enterGlobal: () => void;               // Project → Global，必须清空 activeProjectId
-  enterProject: (projectId: string) => void;  // Global → Project，或 Project(A) → Project(B)
+  viewMode: SupervisorViewMode;
+  activeContactId: string;
+  enterGlobal: () => void;               // viewMode='dashboard' + contextMode='global' + activeProjectId=null
+  enterProject: (projectId: string) => void;  // viewMode='dashboard' + contextMode='project' + activeProjectId=projectId
+  selectContact: (contactId: string) => void; // 按 contact.type 决定 viewMode（详见 AD-013 §7 触发器表）
 }
 // 本 store 的 state 需要 localStorage 持久化（key 与 Phase 1/2 已有 key 不冲突），
 // 以便 Supervisor 重新打开时恢复上一次 context。
