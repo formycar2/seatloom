@@ -2,13 +2,15 @@
  * SupervisorPanel.tsx
  * Supervisor 浮层面板：可拖拽、可调整大小的 IM 风格浮窗，包含左侧联系人列表和右侧对话区。
  *
- * AD-013: Supervisor 两层上下文模型
- *   - currentContextMode: 'global' | 'project' (互斥)
- *   - 'global' ⇒ activeProjectId === null；'project' ⇒ activeProjectId 非空
- *   - 切换路径仅 enterGlobal() / enterProject(projectId)，是显式用户动作
- *   - localStorage 持久化 mode + activeProjectId，stale state 降级到 global
- *
- * 状态通过 localStorage 持久化：面板位置、尺寸、当前联系人、各联系人草稿、context mode、activeProjectId
+ * AD-013 v2: Supervisor 两层上下文模型 + viewMode 正交状态（chan-09）
+ *   contextMode ('global' | 'project'): dashboard 数据隔离
+ *     - 'global' ⇒ activeProjectId === null
+ *     - 'project' ⇒ activeProjectId 非空
+ *   viewMode ('dashboard' | 'chat'): 右侧 pane 路由，与 contextMode 正交
+ *     - 'dashboard' → GlobalDashboard 或 ProjectDashboard（按 contextMode）
+ *     - 'chat'      → IM chat pane（按 activeContact.type）
+ *   切换路径仅 enterGlobal() / enterProject(projectId)，是显式用户动作
+ *   chat-with-seat 面包屑的 projectName 来源是 activeContact.projectId，与 activeProjectId 解耦
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -19,13 +21,14 @@ import { MessageBubble } from '../components/MessageBubble';
 import { ChatInput } from '../components/ChatInput';
 import { ProjectDashboard } from '../dashboard/ProjectDashboard';
 import { GlobalDashboard } from '../dashboard/GlobalDashboard';
-import { SupervisorContextMode } from '../types';
+import { SupervisorContextMode, SupervisorViewMode } from '../types';
 import { useDataStore } from '../../stores/useDataStore';
 
 const STORAGE_KEY_POS = 'sl-supervisor-pos';
 const STORAGE_KEY_SIZE = 'sl-supervisor-size';
 const STORAGE_KEY_MODE = 'seatloom.supervisor.contextMode';
 const STORAGE_KEY_ACTIVE_PROJECT = 'seatloom.supervisor.activeProjectId';
+const STORAGE_KEY_VIEW_MODE = 'seatloom.supervisor.viewMode';
 
 function loadSaved() {
   try {
@@ -36,25 +39,54 @@ function loadSaved() {
   } catch { return { pos: null, size: null }; }
 }
 
-// AD-013 §D: stale state fallback. mode 必须合法；project mode 下 activeProjectId 必须在
-// useDataStore.projects 中存在，否则降级回 global。
-function loadInitialContext(): { mode: SupervisorContextMode; activeProjectId: string | null } {
+// AD-013 §D + §7 §E: stale state fallback.
+// contextMode: project 需要 activeProjectId 存在于 useDataStore.projects，否则降级 global。
+// viewMode: 缺失/非法 → 'dashboard'；'chat' 但 activeContactId 找不到 contact → 降级 'dashboard'。
+function loadInitialContext(): {
+  mode: SupervisorContextMode;
+  activeProjectId: string | null;
+  viewMode: SupervisorViewMode;
+} {
   const rawMode = localStorage.getItem(STORAGE_KEY_MODE);
   const rawProj = localStorage.getItem(STORAGE_KEY_ACTIVE_PROJECT);
-  const mode: SupervisorContextMode = rawMode === 'project' ? 'project' : 'global';
-  if (mode === 'global') return { mode: 'global', activeProjectId: null };
-  if (!rawProj) return { mode: 'global', activeProjectId: null };
-  const projects = useDataStore.getState().projects;
-  if (!projects.some((p) => p.id === rawProj)) {
-    return { mode: 'global', activeProjectId: null };
+  const rawView = localStorage.getItem(STORAGE_KEY_VIEW_MODE);
+
+  // contextMode + activeProjectId stale fallback (chan-03 §D)
+  const wantsProject = rawMode === 'project';
+  let mode: SupervisorContextMode = 'global';
+  let activeProjectId: string | null = null;
+  if (wantsProject && rawProj) {
+    const projects = useDataStore.getState().projects;
+    if (projects.some((p) => p.id === rawProj)) {
+      mode = 'project';
+      activeProjectId = rawProj;
+    }
   }
-  return { mode: 'project', activeProjectId: rawProj };
+
+  // viewMode stale fallback (chan-09 §E)
+  let viewMode: SupervisorViewMode = 'dashboard';
+  if (rawView === 'chat') {
+    const savedContact = localStorage.getItem('sl-supervisor-active-contact');
+    if (savedContact && MOCK_CONTACTS.some((c) => c.id === savedContact)) {
+      viewMode = 'chat';
+    }
+  }
+
+  return { mode, activeProjectId, viewMode };
+}
+
+// Resolve project display name: useDataStore → channel contact name → projectId fallback.
+function resolveProjectName(projectId: string | undefined): string {
+  if (!projectId) return '';
+  const proj = useDataStore.getState().projects.find((p) => p.id === projectId);
+  if (proj) return proj.name;
+  const channel = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === projectId);
+  return channel?.name || projectId;
 }
 
 export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [activeContactId, setActiveContactId] = useState(() => {
     const saved = localStorage.getItem('sl-supervisor-active-contact');
-    // Validate saved contact still exists
     if (saved && MOCK_CONTACTS.some(c => c.id === saved)) return saved;
     return 'supervisor';
   });
@@ -62,15 +94,18 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   const [search, setSearch] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // AD-013: context mode + activeProjectId state (option X — local useState)
+  // AD-013 v2: contextMode + activeProjectId + viewMode state (option X — local useState)
   const initialContextRef = useRef(loadInitialContext());
   const [contextMode, setContextMode] = useState<SupervisorContextMode>(initialContextRef.current.mode);
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(initialContextRef.current.activeProjectId);
+  const [viewMode, setViewMode] = useState<SupervisorViewMode>(initialContextRef.current.viewMode);
 
-  // Persist context mode + activeProjectId
+  // Persist contextMode
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_MODE, contextMode);
   }, [contextMode]);
+
+  // Persist activeProjectId
   useEffect(() => {
     if (activeProjectId === null) {
       localStorage.removeItem(STORAGE_KEY_ACTIVE_PROJECT);
@@ -79,20 +114,30 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
     }
   }, [activeProjectId]);
 
+  // Persist viewMode
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_VIEW_MODE, viewMode);
+  }, [viewMode]);
+
   // AD-013: 仅以下两个函数能修改 contextMode / activeProjectId
   const enterGlobal = useCallback(() => {
     setContextMode('global');
     setActiveProjectIdState(null);
+    setViewMode('dashboard');
   }, []);
+
   const enterProject = useCallback((projectId: string) => {
     setContextMode('project');
     setActiveProjectIdState(projectId);
-    // 同时让右侧 contact 跟随到该 project 的主频道，避免渲染上一个 project 的席位 IM
-    const channel = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === projectId);
-    if (channel) {
-      setActiveContactId((curr) => (curr === channel.id ? curr : channel.id));
-    }
+    setViewMode('dashboard');
   }, []);
+
+  // 面包屑中间层点击 + GlobalDashboard onSelectProject：进入 project 并同步 contact 高亮到 project channel
+  const enterProjectFromBreadcrumb = useCallback((projectId: string) => {
+    enterProject(projectId);
+    const ch = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === projectId);
+    if (ch) setActiveContactId(ch.id);
+  }, [enterProject]);
 
   // Position & size persistence
   const savedRef = useRef(loadSaved());
@@ -124,27 +169,26 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
     else localStorage.removeItem(key);
   }, [input, activeContactId]);
 
-  // When switching contact, load that contact's draft.
-  // AD-013: 点击带 projectId 的 contact（project-channel 或 project-scoped seat）等价于
-  // enterProject(projectId)，与 GlobalDashboard 中 project 行的点击保持同一切换路径。
-  // Supervisor contact 不携带 projectId，不会触发模式切换。
+  // AD-013 v2 §D: switchContact 按 contact.type 分支
+  // - project-channel → viewMode='dashboard' + enterProject + setActiveContactId
+  // - seat / supervisor → viewMode='chat' + setActiveContactId；不动 contextMode / activeProjectId
   const switchContact = (id: string) => {
     // Save current draft
     const curKey = `sl-supervisor-draft-${activeContactId}`;
     if (input) localStorage.setItem(curKey, input);
     else localStorage.removeItem(curKey);
-    // Switch
+    // Switch contact + restore draft
     setActiveContactId(id);
     setInput(localStorage.getItem(`sl-supervisor-draft-${id}`) || '');
     setSearch('');
     const contact = MOCK_CONTACTS.find((c) => c.id === id);
-    if (contact?.projectId) {
-      // Sync mode + activeProjectId atomically. We don't call enterProject() here
-      // because enterProject also redirects activeContact to the project channel —
-      // when the user explicitly clicked a seat contact, we want to keep that seat
-      // as the active contact, not jump to the channel.
-      setContextMode('project');
-      setActiveProjectIdState(contact.projectId);
+    if (!contact) return;
+    if (contact.type === 'project-channel' && contact.projectId) {
+      enterProject(contact.projectId);
+      // enterProject sets viewMode='dashboard'; activeContactId already set above
+    } else {
+      // seat or supervisor: only switch viewMode to chat, do NOT touch contextMode/activeProjectId
+      setViewMode('chat');
     }
   };
 
@@ -190,17 +234,12 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   const activeContact = MOCK_CONTACTS.find(c => c.id === activeContactId) || MOCK_CONTACTS[0];
   const messages = MOCK_MESSAGES[activeContactId] || [];
 
-  // AD-013 §F: project breadcrumb 名称解析。优先 useDataStore.projects（与 GlobalDashboard
-  // 数据源同源），退化到 project-channel 联系人名称，再退化到 projectId 字面量。
-  const projectDisplayName = (() => {
-    if (contextMode !== 'project' || !activeProjectId) return '';
-    const proj = useDataStore.getState().projects.find((p) => p.id === activeProjectId);
-    if (proj) return proj.name;
-    const channel = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === activeProjectId);
-    return channel?.name || activeProjectId;
-  })();
+  // For ProjectDashboard: find channel contact for activeProjectId
+  const projectChannelForDashboard = MOCK_CONTACTS.find(
+    (c) => c.type === 'project-channel' && c.projectId === activeProjectId
+  );
 
-  // Group contacts by project
+  // Group contacts by project (for sidebar)
   const projects = new Map<string, typeof MOCK_CONTACTS>();
   const channels: typeof MOCK_CONTACTS = [];
   const supervisorContact = MOCK_CONTACTS.find(c => c.type === 'supervisor')!;
@@ -218,6 +257,81 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
     : null;
 
   const listWidth = 220;
+
+  // ── AD-013 v2 §B: 面包屑 4 种渲染情况 ──
+  const renderBreadcrumb = () => {
+    // Case 1: dashboard + global → 仅「全局」
+    if (viewMode === 'dashboard' && contextMode === 'global') {
+      return <span style={{ color: 'var(--sl-text-primary)', fontWeight: 600 }}>全局</span>;
+    }
+
+    // Case 2: dashboard + project → 全局 › 项目名（项目名是当前位置，不可点击）
+    if (viewMode === 'dashboard' && contextMode === 'project') {
+      const projName = resolveProjectName(activeProjectId ?? undefined);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={enterGlobal}
+            style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--sl-text-secondary)', fontSize: 13, fontWeight: 500 }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--sl-brand)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--sl-text-secondary)'; }}
+          >全局</button>
+          <span aria-hidden style={{ color: 'var(--sl-text-tertiary)' }}>›</span>
+          <span
+            title={projName}
+            style={{ color: 'var(--sl-text-primary)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >{projName}</span>
+        </>
+      );
+    }
+
+    // Case 3: chat + supervisor → 仅「全局」（不伸展）
+    if (viewMode === 'chat' && activeContact.type === 'supervisor') {
+      return <span style={{ color: 'var(--sl-text-primary)', fontWeight: 600 }}>全局</span>;
+    }
+
+    // Case 4: chat + seat → 全局 › 项目名（可点击 link）› seat 名
+    if (viewMode === 'chat' && activeContact.type === 'seat') {
+      const seatProjName = resolveProjectName(activeContact.projectId);
+      const seatProjId = activeContact.projectId;
+      return (
+        <>
+          <button
+            type="button"
+            onClick={enterGlobal}
+            style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--sl-text-secondary)', fontSize: 13, fontWeight: 500 }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--sl-brand)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--sl-text-secondary)'; }}
+          >全局</button>
+          <span aria-hidden style={{ color: 'var(--sl-text-tertiary)' }}>›</span>
+          {/* 中间层：可点击 link，affordance 参考 §C */}
+          <button
+            type="button"
+            onClick={() => seatProjId && enterProjectFromBreadcrumb(seatProjId)}
+            title={seatProjName}
+            style={{
+              background: 'transparent', border: 'none', padding: 0,
+              cursor: seatProjId ? 'pointer' : 'default',
+              color: 'var(--sl-text-secondary)', fontSize: 13, fontWeight: 500,
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              maxWidth: 120,
+            }}
+            onMouseEnter={(e) => { if (seatProjId) e.currentTarget.style.color = 'var(--sl-brand)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--sl-text-secondary)'; }}
+          >{seatProjName}</button>
+          <span aria-hidden style={{ color: 'var(--sl-text-tertiary)' }}>›</span>
+          <span
+            title={activeContact.name}
+            style={{ color: 'var(--sl-text-primary)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >{activeContact.name}</span>
+        </>
+      );
+    }
+
+    // Fallback (project-channel in chat mode — treated as dashboard alias)
+    return <span style={{ color: 'var(--sl-text-primary)', fontWeight: 600 }}>全局</span>;
+  };
 
   return (
     <>
@@ -249,7 +363,7 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
           }}
         />
 
-        {/* ── Body: sidebar + chat ── */}
+        {/* ── Body: sidebar + right pane ── */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
           {/* ── Left: Contact list ── */}
@@ -278,9 +392,8 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
             {/* Contact list */}
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {filteredContacts ? (
-                // Search results
                 filteredContacts.map(c => (
-                  <ContactRow key={c.id} contact={c} active={c.id === activeContactId} onClick={() => { switchContact(c.id); }} />
+                  <ContactRow key={c.id} contact={c} active={c.id === activeContactId} onClick={() => switchContact(c.id)} />
                 ))
               ) : (
                 <>
@@ -318,40 +431,13 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
           {/* ── Right: Context-aware content ── */}
           <div data-no-drag style={{ flex: 1, display: 'flex', flexDirection: 'column', cursor: 'default', minWidth: 0 }}>
 
-            {/* AD-013 §F: Breadcrumb header */}
+            {/* AD-013 v2 §B: Breadcrumb header (4-case) */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 8,
               padding: '10px 16px', borderBottom: '1px solid var(--sl-divider)', flexShrink: 0,
             }}>
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, minWidth: 0 }}>
-                {contextMode === 'global' ? (
-                  <span style={{ color: 'var(--sl-text-primary)', fontWeight: 600 }}>全局</span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={enterGlobal}
-                      style={{
-                        background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                        color: 'var(--sl-text-secondary)', fontSize: 13, fontWeight: 500,
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--sl-brand)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--sl-text-secondary)'; }}
-                    >
-                      全局
-                    </button>
-                    <span aria-hidden style={{ color: 'var(--sl-text-tertiary)' }}>›</span>
-                    <span
-                      title={projectDisplayName}
-                      style={{
-                        color: 'var(--sl-text-primary)', fontWeight: 600,
-                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {projectDisplayName}
-                    </span>
-                  </>
-                )}
+                {renderBreadcrumb()}
               </div>
               <button onClick={onClose} style={{
                 width: 24, height: 24, borderRadius: 'var(--sl-radius-sm)', border: 'none',
@@ -363,12 +449,21 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
               >✕</button>
             </div>
 
-            {contextMode === 'global' ? (
-              /* ════ Global context: GlobalDashboard ════ */
-              <GlobalDashboard onSelectProject={enterProject} />
+            {viewMode === 'dashboard' ? (
+              /* ════ Dashboard pane ════ */
+              contextMode === 'global' ? (
+                <GlobalDashboard onSelectProject={enterProjectFromBreadcrumb} />
+              ) : (
+                <ProjectDashboard
+                  key={activeProjectId ?? 'project'}
+                  channelId={projectChannelForDashboard?.id ?? ''}
+                  projectId={activeProjectId ?? undefined}
+                />
+              )
             ) : (
+              /* ════ Chat pane ════ */
               <>
-                {/* Contact sub-header (project mode only) */}
+                {/* Contact sub-header */}
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '10px 16px', borderBottom: '1px solid var(--sl-divider)', flexShrink: 0,
@@ -377,39 +472,31 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)' }}>{activeContact.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
-                      {activeContact.type === 'project-channel' ? '项目工作台' : activeContact.role || '全局监督'}
+                      {activeContact.type === 'supervisor' ? '全局监督' : activeContact.role || ''}
                     </div>
                   </div>
                 </div>
 
-                {activeContact.type === 'project-channel' ? (
-                  /* ════ Project Channel: Workflow Dashboard ════ */
-                  <ProjectDashboard key={activeContactId} channelId={activeContact.id} projectId={activeContact.projectId} />
-                ) : (
-                  /* ════ Seat / Supervisor: IM Chat ════ */
-                  <>
-                    {/* Messages */}
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      {messages.length === 0 && (
-                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <p style={{ fontSize: 13, color: 'var(--sl-text-tertiary)' }}>开始和 {activeContact.name} 对话</p>
-                        </div>
-                      )}
-                      {messages.map(msg => <MessageBubble key={msg.id} msg={msg} />)}
+                {/* Messages */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {messages.length === 0 && (
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <p style={{ fontSize: 13, color: 'var(--sl-text-tertiary)' }}>开始和 {activeContact.name} 对话</p>
                     </div>
+                  )}
+                  {messages.map(msg => <MessageBubble key={msg.id} msg={msg} />)}
+                </div>
 
-                    {/* Routing governance + Input */}
-                    <ChatInput
-                      contact={activeContact}
-                      allContacts={MOCK_CONTACTS}
-                      input={input}
-                      onInputChange={setInput}
-                      inputRef={inputRef}
-                      onEscape={onClose}
-                      onRouteViaPO={(poId) => switchContact(poId)}
-                    />
-                  </>
-                )}
+                {/* Routing governance + Input */}
+                <ChatInput
+                  contact={activeContact}
+                  allContacts={MOCK_CONTACTS}
+                  input={input}
+                  onInputChange={setInput}
+                  inputRef={inputRef}
+                  onEscape={onClose}
+                  onRouteViaPO={(poId) => switchContact(poId)}
+                />
               </>
             )}
           </div>

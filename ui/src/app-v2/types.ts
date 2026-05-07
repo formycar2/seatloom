@@ -76,6 +76,9 @@ export interface ProjectChannelData {
 // AD-013: Supervisor 两层上下文模型
 export type SupervisorContextMode = 'global' | 'project';
 
+// AD-013 §7 (v2): 右侧 pane 路由（与 contextMode 正交）
+export type SupervisorViewMode = 'dashboard' | 'chat';
+
 export interface GlobalProjectSummary {
   projectId: string;
   projectName: string;
