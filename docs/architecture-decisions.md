@@ -4,8 +4,8 @@
 |------|------|
 | 文档 | Architecture Decisions v1.0 |
 | 状态 | Approved |
-| 更新时间 | 2026-04-28 |
-| 对齐版本 | v0.5 contract set (AD-008–AD-012 added) |
+| 更新时间 | 2026-05-07 |
+| 对齐版本 | v0.5 contract set (AD-008–AD-012 added); v2 UI L1 surface (AD-013 added) |
 | 审批人 | 张小龙 |
 
 ---
@@ -456,6 +456,70 @@ Prompt 检测和 Supervisor assist 必须基于有界窗口（最后 10-20 行�
 | `PromptInputInjected` | `operator`（`user` / `supervisor`）, `scope`（`once` / `session` / `project`）, `result`, `assist_steps_used?`, `assist_tokens_used?` |
 
 **理由**：INT-16 / US-P0-11 / UX-12 将交互式 prompt 处理定义为 P0 功能。无架构建模会导致：实现时将 prompt 处理散落在 adapter 层、无审计事件、Supervisor assist 无预算约束、sensitive prompt 保护缺失。
+
+---
+
+## AD-013: Supervisor 两层上下文模型 — Global vs Project Context
+
+**决定**：Supervisor 在单个 Person 的使用会话中只处于一个 context 下工作，分为 `Global` 和 `Project` 两种互斥模式。Global 提供跨项目摘要视图，Project 提供单项目细节视图。切换是显式用户动作，同一 Supervisor 会话不并发承载两种 context。
+
+> 本决定对应 `AEGIS-2026-04-30-pending-changes-register` 中 **chan-03** 的 AD-AEGIS-01 占位，正式编号落为 AD-013。
+
+### Person-Supervisor 绑定（Q4 对齐）
+
+- 一个 Person 对应一个 Supervisor 实例（1:1）
+- Person 不是实体（不引入 Person struct）
+- Supervisor 的 `currentContextMode` 是运行时状态，不是数据模型字段
+- Person-Supervisor 绑定关系不跨 Supervisor 会话（但 localStorage 可以持久化上一次 context）
+
+### Context mode 定义
+
+| Mode | 数据范围 | 决策目的 | 展示形态 |
+|------|---------|---------|---------|
+| `global` | 所有 project 的聚合 summary（不含具体 workitems/artifacts 详情） | Supervisor 要做"现在哪个 project 需要我关注"的决策 | GlobalDashboard 组件（新增） |
+| `project` | 单个 `activeProjectId` 的完整 `projectData` | Supervisor 要做"这个 project 内部的 gate/routing/approve"决策 | ProjectDashboard 组件（已存在） |
+
+**互斥规则**：同一时刻 `currentContextMode` 取 `global` 或 `project` 中恰好一个。Project mode 必须伴随有效 `activeProjectId`；Global mode 下 `activeProjectId` 可以为空。
+
+### 切换语义
+
+| 动作 | 前状态 | 后状态 | 实现锚点 |
+|------|-------|-------|---------|
+| 初次打开 | 无 | `global`（默认）或 localStorage 保存的上一次 context | SupervisorPanel `useState` 初始化 |
+| 从 Global 进入某 Project | `global` | `project` + 选中的 `projectId` | GlobalDashboard 中 project 行的点击 handler |
+| 从 Project 返回 Global | `project` | `global`，`activeProjectId` 清空（或保留用于 UI 高亮） | SupervisorPanel 顶部的 "全局" 切换入口 |
+| 切换不同 Project | `project` (A) | `project` (B) | Contact 列表中的 project channel 点击（已有机制） |
+
+切换是**显式用户动作**。不自动推断 context（避免 Supervisor 在用户不知情时跳出当前 project）。
+
+### 数据隔离规则
+
+- Global 视图**不得**渲染任何单一 project 的 workitems/artifacts/handoffs 详情（避免"看似 global 实则 project 碎片拼接"）
+- Project 视图**不得**在左侧 Contact 列表之外展示其他 project 的数据（避免跨 project context 污染）
+- Contact 列表（左侧）跨 context 保持不变：它是**导航通道**，不是 context 内数据
+
+### 实现锚点（v2 前端）
+
+| 组件 | 职责 |
+|------|------|
+| `panel/SupervisorPanel.tsx` | 承载 `currentContextMode` state 和切换入口；根据 mode 决定渲染 GlobalDashboard 或 ProjectDashboard |
+| `dashboard/GlobalDashboard.tsx`（新增） | Global context 视图：所有 project 的健康度卡片、阻塞汇总、最近活动 |
+| `dashboard/ProjectDashboard.tsx`（已存在） | Project context 视图：保持 Phase 1/2 已交付的 tab 和 section 结构不变 |
+| `mock-data.ts` | 新增 `MOCK_GLOBAL_SUMMARY`（所有 project 的聚合摘要） |
+| `types.ts` | 新增 `SupervisorContextMode = 'global' \| 'project'` |
+
+### 零回归约束
+
+- Project mode 下的所有 Phase 1/2 已交付视图（Inbox / WorkItems / Artifacts / Overview 各 section）保持行为不变
+- `projectId` prop 在 Project mode 下的来源、传递、默认值均不变
+- 现有 localStorage key 不改名（新增 key 可以）
+
+**理由**：
+
+1. **避免跨 project context 污染** — Mr. Zhang 在 Q4-Q5 对齐中明确要求 Supervisor 在单 project 内不混入其他 project 的数据（chan-03 核心问题）。
+2. **支持全局健康监控** — Aegis/Supervisor 的实际工作流需要先看"哪个 project 需要关注"才能决定进入哪个 project 细节（`supervisor-im-as-l1-insight.md`）。
+3. **与 L1 Supervisor IM 定位一致（chan-06）** — Supervisor 作为 L1 高频入口，必须提供"全局→细节"的双层跳转，而不是强迫用户从一个 project 跳到另一个 project 才能看到全局。
+4. **用户决策路径最短化** — 对比需要打开多个 project 频道才能拼凑全局视图的旧模式，两层 context 让"看全局"和"做项目级决策"各自成为一个单独的、命名明确的 Supervisor 状态。
 
 ---
 

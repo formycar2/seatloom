@@ -27,7 +27,7 @@ Session / Checkpoint / Handoff / Pipeline / Delegation overlay / PromptState run
 |---|---|
 | surface class | **L1** (Supervisor IM context) |
 | ownership (design) | Aegis (write AD-AEGIS-01 first) |
-| ownership (implementation) | **Copilot** (well-scoped structural extension, follows Phase 1/2 pattern) |
+| ownership (implementation) | **Nimbus** (cross-track assignment: Copilot unavailable per Mr. Zhang 2026-05-07; Nimbus takes UI/TS implementation despite main track being Rust/Postgres) |
 | verification | Flux (verify-only, same model as Phase 2 slice-b verification) |
 | acceptance | Lyra |
 | priority | P0 |
@@ -76,7 +76,7 @@ chan-03 是 pending changes register 中 **已确认共识**、**尚未实现**�
    - mock-data 增加全局摘要数据源
    - `ProjectDashboard` 区分 context 路径（已存在 projectId prop，只需确保 global 路径不触发它）
 
-4. **与 Phase 1/2 模式一致**：结构化扩展，零需求歧义，适合 Copilot 单 slice 完成。
+4. **与 Phase 1/2 模式一致**：结构化扩展，零需求歧义，适合单 slice 完成。Nimbus 跨轨需额外结构化引导（见 Step 2）。
 
 ## Execution sequence
 
@@ -84,16 +84,21 @@ chan-03 是 pending changes register 中 **已确认共识**、**尚未实现**�
 产出 `AD-AEGIS-01: Supervisor 两层上下文模型` 作为架构决策记录，写入 `docs/architecture-decisions.md`。
 同步更新 `architecture-design.md §6.1 Seat store` 中对 Person-Supervisor 绑定和 context mode 的描述。
 
-**Step 2 — Copilot (实现)**
-Aegis 发包 `COPILOT-2026-05-07-app-v2-supervisor-context-mode-v1`，明确：
+**Step 2 — Nimbus (实现)**
+Aegis 发包 `NIMBUS-2026-05-07-app-v2-supervisor-context-mode-v1`（路径：`docs/coordination/tasks/nimbus/`），明确：
 - 新文件 `dashboard/GlobalDashboard.tsx`
 - `SupervisorPanel.tsx` 增加 context mode state + global/project 切换入口
 - `mock-data.ts` 增加 `MOCK_GLOBAL_SUMMARY`
 - `types.ts` 增加 `SupervisorContextMode` 类型
 - 零回归：所有 Phase 1/2 已交付视图在 project mode 下保持不变
 
+**Nimbus 跨轨提示**（Nimbus 主轨为 Rust/Postgres infra，本次跨入 UI/TypeScript）：
+- 任务包需要附上 Phase 1 的 14 个模块结构参考（文件列表 + 各自职责一行）
+- 任务包需要附上 `GlobalDashboard.tsx` 与 `ProjectDashboard.tsx` 的对照点（context mode 切换路径、`projectId` prop 的来源与传递）
+- 验收门控明确：`cd ui && npx tsc --noEmit` 零错误 + `pnpm build` PASS + 浏览器 smoke test（切换 global ↔ project 无回归）
+
 **Step 3 — Flux (verify-only)**
-同 Phase 2 + Slice B 模式：commit-pinned，`tsc --noEmit` + 浏览器 smoke test + 回归检查。
+同 Phase 2 + Slice B 模式：commit-pinned，`tsc --noEmit` + `pnpm build` + 浏览器 smoke test + 回归检查。
 
 **Step 4 — Lyra (验收)**
 关闭 chan-03 in AEGIS-2026-04-30-pending-changes-register。

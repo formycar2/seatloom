@@ -893,6 +893,21 @@ interface TimelineState {
   setFilters: (filters: Partial<TimelineFilters>) => void;
   appendEvent: (event: CanonicalEvent) => void;  // from Tauri event listener
 }
+
+// stores/supervisorStore.ts (AD-013, v2 L1 surface)
+// Supervisor 两层上下文模型：global（跨项目摘要）vs project（单项目细节）。
+// 互斥：同一时刻只能处于其中一种 mode；Project mode 必须伴随有效 activeProjectId。
+// 切换是显式用户动作，不自动推断。Person-Supervisor 为 1:1 绑定；Person 不是实体。
+type SupervisorContextMode = 'global' | 'project';
+
+interface SupervisorState {
+  currentContextMode: SupervisorContextMode;
+  activeProjectId: string | null;      // 仅在 project mode 下为非空
+  enterGlobal: () => void;              // Project → Global
+  enterProject: (projectId: string) => void;  // Global → Project，或 Project(A) → Project(B)
+}
+// 本 store 的 state 需要 localStorage 持久化（key 与 Phase 1/2 已有 key 不冲突），
+// 以便 Supervisor 重新打开时恢复上一次 context。
 ```
 
 ### 7.2 数据流
