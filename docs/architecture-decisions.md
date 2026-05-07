@@ -479,16 +479,19 @@ Prompt 检测和 Supervisor assist 必须基于有界窗口（最后 10-20 行�
 | `global` | 所有 project 的聚合 summary（不含具体 workitems/artifacts 详情） | Supervisor 要做"现在哪个 project 需要我关注"的决策 | GlobalDashboard 组件（新增） |
 | `project` | 单个 `activeProjectId` 的完整 `projectData` | Supervisor 要做"这个 project 内部的 gate/routing/approve"决策 | ProjectDashboard 组件（已存在） |
 
-**互斥规则**：同一时刻 `currentContextMode` 取 `global` 或 `project` 中恰好一个。Project mode 必须伴随有效 `activeProjectId`；Global mode 下 `activeProjectId` 可以为空。
+**互斥规则**：同一时刻 `currentContextMode` 取 `global` 或 `project` 中恰好一个。
+
+- Project mode 必须伴随**非空** `activeProjectId`
+- Global mode 下 `activeProjectId` **必须为 `null`**（不得用于 UI 高亮或其他目的；高亮由 Contact 列表自身的 hover/selection 机制处理）
 
 ### 切换语义
 
 | 动作 | 前状态 | 后状态 | 实现锚点 |
 |------|-------|-------|---------|
 | 初次打开 | 无 | `global`（默认）或 localStorage 保存的上一次 context | SupervisorPanel `useState` 初始化 |
-| 从 Global 进入某 Project | `global` | `project` + 选中的 `projectId` | GlobalDashboard 中 project 行的点击 handler |
-| 从 Project 返回 Global | `project` | `global`，`activeProjectId` 清空（或保留用于 UI 高亮） | SupervisorPanel 顶部的 "全局" 切换入口 |
-| 切换不同 Project | `project` (A) | `project` (B) | Contact 列表中的 project channel 点击（已有机制） |
+| 从 Global 进入某 Project | `global`, `activeProjectId = null` | `project`, `activeProjectId = <selected>` | GlobalDashboard 中 project 行的点击 handler |
+| 从 Project 返回 Global | `project`, `activeProjectId = <X>` | `global`, `activeProjectId = null`（**清空**） | SupervisorPanel 顶部的 "全局" 切换入口 |
+| 切换不同 Project | `project`, `activeProjectId = A` | `project`, `activeProjectId = B` | Contact 列表中的 project channel 点击（已有机制） |
 
 切换是**显式用户动作**。不自动推断 context（避免 Supervisor 在用户不知情时跳出当前 project）。
 
