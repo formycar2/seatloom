@@ -4,7 +4,7 @@
  * 包括：MOCK_CONTACTS（联系人列表）、MOCK_MESSAGES（每个联系人的消息）、MOCK_CHANNEL_DATA（项目频道工作流数据）
  */
 
-import { ChatContact, ChatMessage, ProjectChannelData } from './types';
+import { ChatContact, ChatMessage, GlobalProjectSummary, ProjectChannelData } from './types';
 
 export const MOCK_CONTACTS: ChatContact[] = [
   // ── Global ──
@@ -286,3 +286,29 @@ export const MOCK_CHANNEL_DATA: Record<string, ProjectChannelData> = {
     yesterday: 'CVE 扫描完成: 0 Critical / 2 Medium',
   },
 };
+
+// AD-013 §7.1: 跨项目摘要（Global context 视图数据源）
+// projectId/projectName 必须与 useDataStore.INITIAL_PROJECTS 对齐
+export const MOCK_GLOBAL_SUMMARY: GlobalProjectSummary[] = [
+  {
+    projectId: 'p-1',
+    projectName: 'SeatLoom 协调核心',
+    healthStatus: 'warning',
+    activeBlockerCount: 1,
+    lastActivityTime: '2026-04-28T14:30:00+08:00',
+  },
+  {
+    projectId: 'p-2',
+    projectName: 'ThoughtOnly 叙事引擎',
+    healthStatus: 'blocked',
+    activeBlockerCount: 2,
+    lastActivityTime: '2026-04-28T13:45:00+08:00',
+  },
+  {
+    projectId: 'p-3',
+    projectName: 'DeepSpeed 推理优化',
+    healthStatus: 'healthy',
+    activeBlockerCount: 0,
+    lastActivityTime: '2026-04-28T12:10:00+08:00',
+  },
+];

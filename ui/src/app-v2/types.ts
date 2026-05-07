@@ -72,3 +72,14 @@ export interface ProjectChannelData {
   earlierToday: string;         // one-line summary (collapsed)
   yesterday: string;            // one-line summary (collapsed)
 }
+
+// AD-013: Supervisor 两层上下文模型
+export type SupervisorContextMode = 'global' | 'project';
+
+export interface GlobalProjectSummary {
+  projectId: string;
+  projectName: string;
+  healthStatus: 'healthy' | 'warning' | 'blocked';
+  activeBlockerCount: number;
+  lastActivityTime: string; // ISO 8601 timestamp
+}
