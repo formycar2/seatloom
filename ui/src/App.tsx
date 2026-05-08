@@ -34,8 +34,14 @@ type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress'
 type SelectedObject = { type: SelectedObjectType; id: string } | null;
 
 const App: React.FC = () => {
-  const { projectData, activeProjectId, setActiveProject, addWorkItem } = useDataStore();
+  const { projectData, activeProjectId, setActiveProject, addWorkItem, hydrateFromBackend } = useDataStore();
   const { projectUIStates, updateProjectUIState } = useAppStore();
+
+  // Hydrate from backend on first mount. Silently noops in browser-dev.
+  useEffect(() => {
+    hydrateFromBackend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);

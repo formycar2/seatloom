@@ -4,6 +4,15 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 #[derive(Debug, Clone)]
+pub struct ProjectRow {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub worker_budget_tokens: i32,
+    pub supervisor_budget_tokens: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct SeatRow {
     pub id: String,
     pub name: String,

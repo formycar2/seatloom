@@ -22,6 +22,7 @@ use commands::{
     },
     handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs},
     inbox_cmds::cmd_get_inbox,
+    project_cmds::{cmd_get_project, cmd_list_projects},
     prompt_cmds::{cmd_list_active_prompts, cmd_list_prompt_actions, cmd_list_prompts_for_session},
     reconcile_cmds::{
         cmd_get_reconcile_run, cmd_list_reconcile_items, cmd_list_reconcile_runs, cmd_reconcile,
@@ -88,6 +89,9 @@ fn main() {
         .manage(build_app_state())
         .invoke_handler(tauri::generate_handler![
             cmd_ping,
+            // projects
+            cmd_list_projects,
+            cmd_get_project,
             // seats
             cmd_list_seats,
             cmd_get_seat,

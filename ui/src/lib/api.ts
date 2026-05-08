@@ -22,6 +22,7 @@ import type {
   InboxPayloadDto,
   LaunchRequest,
   LiveSessionDto,
+  ProjectDto,
   ReconcileResultDto,
   ReconcileRunDto,
   RoleBindingDto,
@@ -44,6 +45,11 @@ export function isTauri(): boolean {
 
 export const api = {
   ping: (): Promise<string> => invoke('cmd_ping'),
+
+  // --- Projects ---
+  listProjects: (): Promise<ProjectDto[]> => invoke('cmd_list_projects'),
+  getProject: (projectId: string): Promise<ProjectDto | null> =>
+    invoke('cmd_get_project', { projectId }),
 
   // --- Seats / roles / delegations ---
   listSeats: (): Promise<SeatDto[]> => invoke('cmd_list_seats'),

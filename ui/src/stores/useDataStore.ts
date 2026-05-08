@@ -1,10 +1,24 @@
 import { create } from 'zustand';
 import { Artifact, CanonicalEvent, Handoff, Project, ProjectData, Seat, Session, WorkItem } from '../types';
+import { api, isTauri } from '../lib/api';
+import {
+  artifactFromDto,
+  eventFromDto,
+  handoffFromDto,
+  projectFromDto,
+  seatFromDto,
+  sessionFromDto,
+  workitemFromDto,
+} from '../lib/dto-to-v1';
 
 interface DataState {
   projects: Project[];
   projectData: Record<string, ProjectData>;
   activeProjectId: string | null;
+
+  // Hydration state (R1 — pulls real data from Tauri backend).
+  backendHydrated: boolean;
+  backendHydrateError: string | null;
 
   // Actions
   setActiveProject: (id: string | null) => void;
@@ -20,6 +34,13 @@ interface DataState {
   updateHandoff: (id: string, updates: Partial<Handoff>) => void;
   removeInboxItem: (id: string) => void;
   removeInboxItemFromProject: (projectId: string, id: string) => void;
+
+  /**
+   * Replace mock projects + projectData with live data from PostgreSQL.
+   * Called on app mount. Silently falls back to mock if Tauri isn't
+   * available (browser-dev or pre-bootstrap).
+   */
+  hydrateFromBackend: () => Promise<void>;
 }
 
 const LOG_DAY = '2026-04-28';
@@ -1360,10 +1381,12 @@ const INITIAL_DATA: Record<string, ProjectData> = {
   },
 };
 
-export const useDataStore = create<DataState>((set) => ({
+export const useDataStore = create<DataState>((set, get) => ({
   projects: INITIAL_PROJECTS,
   projectData: INITIAL_DATA,
   activeProjectId: 'p-1',
+  backendHydrated: false,
+  backendHydrateError: null,
 
   setActiveProject: (id) => set((state) => ({
     activeProjectId: id,
@@ -1526,4 +1549,83 @@ export const useDataStore = create<DataState>((set) => ({
       },
     };
   }),
+
+  hydrateFromBackend: async () => {
+    if (!isTauri()) {
+      // Browser-dev fallback: leave mock data in place. Not an error.
+      set({ backendHydrated: false, backendHydrateError: null });
+      return;
+    }
+    try {
+      const [projectsDto, seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto] = await Promise.all([
+        api.listProjects(),
+        api.listSeats(),
+        api.listWorkitems(),
+        api.listHandoffs(),
+        api.listArtifacts(),
+        api.listSessions(),
+        api.listEvents(400),
+      ]);
+
+      // Build V1 role-binding lookup so seats show the right role per project.
+      const roleBindingsByProject = new Map<string, Record<string, string>>();
+      await Promise.all(
+        projectsDto.map(async (p) => {
+          try {
+            const bindings = await api.listRoleBindings(p.id);
+            const map: Record<string, string> = {};
+            for (const b of bindings) map[b.seatId] = b.role;
+            roleBindingsByProject.set(p.id, map);
+          } catch {
+            roleBindingsByProject.set(p.id, {});
+          }
+        }),
+      );
+
+      const projects: Project[] = projectsDto.map(projectFromDto);
+      const projectData: Record<string, ProjectData> = {};
+
+      // v0.1: all seeded data belongs to the single 'seatloom' project. We
+      // attribute every seat/workitem/session/handoff/artifact/event under
+      // each project's ProjectData to make the V1 shell render regardless.
+      // Multi-project partitioning lands when schema adds project_id FKs.
+      for (const p of projectsDto) {
+        const roles = roleBindingsByProject.get(p.id) ?? {};
+        const seats: Seat[] = seatsDto.map((s) => seatFromDto(s, roles[s.id]));
+        const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
+        const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
+        const artifacts: Artifact[] = artifactsDto.map(artifactFromDto);
+        const sessions: Session[] = sessionsDto.map(sessionFromDto);
+        const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
+
+        projectData[p.id] = {
+          seats,
+          sessions,
+          workItems,
+          artifacts,
+          handoffs,
+          events,
+          inboxItems: [], // derived view; not hydrated for v0.1
+        };
+      }
+
+      const currentActive = get().activeProjectId;
+      const nextActive = projects.find((p) => p.id === currentActive)?.id
+        ?? projects[0]?.id
+        ?? null;
+
+      set({
+        projects,
+        projectData,
+        activeProjectId: nextActive,
+        backendHydrated: true,
+        backendHydrateError: null,
+      });
+    } catch (e) {
+      set({
+        backendHydrated: false,
+        backendHydrateError: String(e),
+      });
+    }
+  },
 }));

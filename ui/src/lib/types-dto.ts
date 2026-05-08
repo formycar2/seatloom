@@ -5,6 +5,14 @@
 // ui/src/types/index.ts still defines the (mock-data) shapes used by v1
 // components; v2 code should prefer these types for anything freshly wired.
 
+export interface ProjectDto {
+  id: string;
+  name: string;
+  createdAt: string;
+  workerBudgetTokens: number;
+  supervisorBudgetTokens: number;
+}
+
 export interface SeatDto {
   id: string;
   name: string;

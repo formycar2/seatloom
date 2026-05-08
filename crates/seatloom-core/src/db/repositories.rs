@@ -8,9 +8,9 @@ use tokio_postgres::Row;
 use crate::db::models::{
     ArtifactRow, CanonicalEventRow, ChannelActionReceiptRow, CheckpointRow, DocumentAssociationRow,
     DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow,
-    PipelineRunRow, ProjectRoleBindingRow, PromptActionRow, PromptInstanceRow, ReconcileItemRow,
-    ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow,
-    WorkItemRow,
+    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
+    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
+    SeatRow, SessionRow, WorkItemRow,
 };
 
 pub struct SeatloomDb {
@@ -30,6 +30,34 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         client.query_one("SELECT 1", &[]).await?;
         Ok(())
+    }
+
+    // =========================================================================
+    // Projects — sort: name ascending
+    // =========================================================================
+
+    pub async fn list_projects(&self) -> Result<Vec<ProjectRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                 FROM projects ORDER BY name ASC",
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_project).collect())
+    }
+
+    pub async fn get_project(&self, project_id: &str) -> Result<Option<ProjectRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                 FROM projects WHERE id = $1",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_project))
     }
 
     // =========================================================================
@@ -1088,6 +1116,16 @@ fn row_to_seat(r: &Row) -> SeatRow {
         capability_tags: r.get(3),
         status: r.get(4),
         created_at: r.get(5),
+    }
+}
+
+fn row_to_project(r: &Row) -> ProjectRow {
+    ProjectRow {
+        id: r.get(0),
+        name: r.get(1),
+        created_at: r.get(2),
+        worker_budget_tokens: r.get(3),
+        supervisor_budget_tokens: r.get(4),
     }
 }
 

@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
     ArtifactRow, CanonicalEventRow, CheckpointRow, DocumentAssociationRow, DocumentRow,
     DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow,
-    ProjectRoleBindingRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    ProjectRoleBindingRow, ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,28 @@ fn iso(ts: DateTime<Utc>) -> String {
 
 fn iso_opt(ts: Option<DateTime<Utc>>) -> Option<String> {
     ts.map(iso)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDto {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub worker_budget_tokens: i32,
+    pub supervisor_budget_tokens: i32,
+}
+
+impl From<ProjectRow> for ProjectDto {
+    fn from(r: ProjectRow) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            created_at: iso(r.created_at),
+            worker_budget_tokens: r.worker_budget_tokens,
+            supervisor_budget_tokens: r.supervisor_budget_tokens,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
