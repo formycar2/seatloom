@@ -21,7 +21,7 @@ import AddSeatDialog from './components/AddSeatDialog';
 import InitDialog from './components/InitDialog';
 import ShortcutHelpDialog from './components/ShortcutHelpDialog';
 import SupervisorCommandBar from './components/SupervisorCommandBar';
-import { SupervisorIM } from './supervisor/SupervisorIM';
+import { SupervisorPanel } from './app-v2/panel/SupervisorPanel';
 import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
@@ -320,26 +320,30 @@ const App: React.FC = () => {
       <ShortcutHelpDialog isOpen={showHelp} onClose={() => setShowHelp(false)} />
       <SupervisorCommandBar isOpen={showCommandBar} onClose={() => setShowCommandBar(false)} onConfirmProposal={handleConfirmProposal} />
 
-      {/* Supervisor IM (L1 surface) — embedded by default; ⌘K opens; Detach
-          opens it in its own OS-level Tauri window (R3). */}
+      {/* Supervisor IM (V2 floating panel) — embedded by default; ⌘K opens;
+          Detach opens it in its own OS-level Tauri window (R3). Note: the V2
+          SupervisorPanel UI is the canonical IM; we do NOT replace it. */}
       {showSupervisorIM && !supervisorDetached && (
-        <SupervisorIM
-          embedded
-          onClose={() => setShowSupervisorIM(false)}
-          onDetach={async () => {
-            if (!isTauri()) {
-              // Local fallback for browser-dev: visually acknowledge.
-              setSupervisorDetached(true);
-              setShowSupervisorIM(false);
-              return;
-            }
-            try {
-              await api.openSupervisorWindow();
-            } catch (e) {
-              console.error('openSupervisorWindow failed', e);
-            }
-          }}
-        />
+        <>
+          <SupervisorPanel onClose={() => setShowSupervisorIM(false)} />
+          {/* Detach affordance — rendered alongside SupervisorPanel so the V2
+              component itself stays untouched. Fixed top-right of viewport. */}
+          <button
+            onClick={async () => {
+              if (!isTauri()) { setSupervisorDetached(true); setShowSupervisorIM(false); return; }
+              try { await api.openSupervisorWindow(); }
+              catch (e) { console.error('openSupervisorWindow failed', e); }
+            }}
+            title="Open Supervisor in its own window"
+            style={{
+              position: 'fixed', top: 12, right: 18, zIndex: 10000,
+              padding: '4px 12px', fontSize: 12, fontWeight: 600,
+              background: 'var(--sl-surface)', color: 'var(--sl-text-primary)',
+              border: '1px solid var(--sl-border)', borderRadius: 6,
+              cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+            }}
+          >↗ Detach Supervisor</button>
+        </>
       )}
 
       {protectionType && (
