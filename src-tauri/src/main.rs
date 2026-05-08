@@ -31,8 +31,9 @@ use commands::{
         cmd_list_seats,
     },
     session_cmds::{
-        cmd_list_checkpoints, cmd_list_checkpoints_for_session, cmd_list_sessions,
-        cmd_list_sessions_for_seat,
+        cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
+        cmd_list_checkpoints_for_session, cmd_list_live_sessions, cmd_list_sessions,
+        cmd_list_sessions_for_seat, cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
     timeline_cmds::{cmd_list_events, cmd_list_events_by_type},
     workitem_cmds::{cmd_get_workitem, cmd_list_workitems},
@@ -107,6 +108,13 @@ fn main() {
             cmd_list_sessions_for_seat,
             cmd_list_checkpoints,
             cmd_list_checkpoints_for_session,
+            // live PTY sessions
+            cmd_launch_session,
+            cmd_pty_write,
+            cmd_pty_write_bytes,
+            cmd_pty_resize,
+            cmd_kill_session,
+            cmd_list_live_sessions,
             // documents
             cmd_list_documents,
             cmd_get_document,

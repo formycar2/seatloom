@@ -5,6 +5,7 @@ pub mod git;
 pub mod ledger;
 pub mod objects;
 pub mod pipeline;
+pub mod pty;
 pub mod reconcile;
 pub mod storage;
 pub mod views;
