@@ -224,10 +224,24 @@ Step 3 — 最终优先级排序重新确认
 - [x] `prd-v0.5.md` §3.1 L1/L2 优先级层定义（chan-06）— CLOSED 2026-05-08
 - [x] `priorities.md` 统一优先级判断原则（chan-06）— CLOSED 2026-05-08
 - [x] Chan-07（Copilot Phase 2 优先级重评）关闭（chan-07）— CLOSED 2026-05-08
+- [x] CLI plan-mode integration 设计评审发布（chan-10，新增）— CLOSED 2026-05-08
 - [ ] `architecture-decisions.md` 新增 AD-AEGIS-02（Playbook binding scope，chan-05）
 - [ ] `architecture-design.md` §3 Session Resources 字段归属更正（chan-04）
 - [ ] `playbook.rs` binding scope 数据结构更新（chan-05）
+- [ ] Phase 4 NIMBUS packet 引用 CLI plan-mode design doc 并实施 Layer A 捕获（chan-10）
+- [ ] Phase 5 NIMBUS packet 引用 CLI plan-mode design doc 并实施 hook 注入（chan-10）
 
 ---
 
-*Changes Register by Aegis · 2026-04-30 · Status: open — 9/12 CLOSED, remaining: chan-04 (Session field), chan-05 (Playbook binding scope)*
+### chan-10 · [设计] CLI plan-mode + structured event integration
+
+- **来源**：Mr. Zhang 2026-05-08 提问 — PTY-only 不足以捕获 claude code 的 plan mode / ExitPlanMode / 其他 CLI 的结构化决策面
+- **状态**：✅ 设计评审 CLOSED 2026-05-08 — 实现 Phase 4/5 pending
+- **核心决策**：分层捕获（Layer A 转录尾读 + Layer B 原生 hook + Layer C PTY 兜底），映射到现有 schema 005 prompt authority，不新增表
+- **已交付**：
+  - `docs/coordination/reviews/2026-05-08-aegis-cli-plan-mode-integration-design.md`（T4 design_proposal）
+- **后续依赖**：Phase 4 NIMBUS packet（ClaudeAdapter Layer A + PTY）必须 cite 本设计；Phase 5 NIMBUS packet（hook-ingest + install-claude-hooks + Supervisor approval loop）必须 cite 本设计
+
+---
+
+*Changes Register by Aegis · 2026-04-30 · Status: open — 10/14 CLOSED, remaining: chan-04 (Session field), chan-05 (Playbook binding scope), chan-10 implementation (Phase 4 + Phase 5 NIMBUS packets)*
