@@ -1,0 +1,13 @@
+{
+  "name": "seatloom",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri": "sh -c '. \"$HOME/.cargo/env\" 2>/dev/null || true; tauri \"$@\"' --",
+    "tauri:dev": "sh -c '. \"$HOME/.cargo/env\" 2>/dev/null || true; tauri dev'",
+    "tauri:build": "sh -c '. \"$HOME/.cargo/env\" 2>/dev/null || true; tauri build'"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

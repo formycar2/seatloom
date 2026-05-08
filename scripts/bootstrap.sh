@@ -98,7 +98,12 @@ else
   if ! "$CONTAINER" volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
     "$CONTAINER" volume create "$VOLUME_NAME" >/dev/null
   fi
-  echo "Creating $CONTAINER_NAME from $POSTGRES_IMAGE ..."
+  # Pull image explicitly so progress is visible (otherwise run -d hides it).
+  if ! "$CONTAINER" image inspect "$POSTGRES_IMAGE" >/dev/null 2>&1; then
+    echo "Pulling $POSTGRES_IMAGE (first run only, ~230MB) ..."
+    "$CONTAINER" pull "$POSTGRES_IMAGE"
+  fi
+  echo "Creating $CONTAINER_NAME ..."
   "$CONTAINER" run -d \
     --name "$CONTAINER_NAME" \
     -e POSTGRES_USER=seatloom \
@@ -106,7 +111,7 @@ else
     -e POSTGRES_DB=seatloom \
     -p 5432:5432 \
     -v "${VOLUME_NAME}:/var/lib/postgresql/data" \
-    "$POSTGRES_IMAGE" >/dev/null
+    "$POSTGRES_IMAGE"
 fi
 
 echo "Waiting for seatloom database to be queryable (timeout: ${PG_READY_TIMEOUT}s)..."
@@ -141,12 +146,26 @@ echo ""
 
 # --- Step 3: Apply seed (idempotent via ON CONFLICT DO NOTHING) ---
 echo "--- Step 3: Apply seed baseline ---"
+# Seed 002 pre-populates a small fixed set of document rows + sections as a
+# fallback for environments without a reconcile engine. Once our reconcile has
+# run against docs/, those rows are superseded by the live markdown — and
+# re-applying seed 002 would collide with document_sections rows reconcile
+# already wrote (unique key on (document_id, ordinal)). So: skip seed 002
+# automatically on subsequent runs once reconcile has populated documents.
+DOC_COUNT=$("$CONTAINER" exec "$CONTAINER_NAME" psql -U seatloom -d seatloom -t -A -c \
+  "SELECT count(*) FROM documents WHERE parse_status = 'parsed'" 2>/dev/null || echo "0")
+DOC_COUNT=$(echo "$DOC_COUNT" | tr -d '[:space:]')
+
 for seed_file in \
   001_real_collaboration_baseline.sql \
   002_document_seed.sql \
   003_operational_review_and_continuity_seed.sql \
   004_prompt_and_channel_action_seed.sql
 do
+  if [ "$seed_file" = "002_document_seed.sql" ] && [ "${DOC_COUNT:-0}" -gt 0 ]; then
+    echo "Skipping seed/002_document_seed.sql (reconcile has populated documents; $DOC_COUNT parsed rows)"
+    continue
+  fi
   echo "Applying seed/$seed_file"
   "$CONTAINER" cp "$INFRA_DIR/seed/$seed_file" "${CONTAINER_NAME}:/tmp/$seed_file"
   "$CONTAINER" exec "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \

@@ -113,17 +113,21 @@ files under `docs/` are not touched.
 
 ## Launching the Tauri desktop app (Phase 1)
 
-Once bootstrap has populated the database:
+Once bootstrap has populated the database, run from the **repo root**:
 
 ```bash
-cd ui
-pnpm install
+pnpm install     # first time only; installs @tauri-apps/cli at root
 pnpm tauri dev
 ```
 
-The Tauri shell connects to the same `DATABASE_URL`
+`pnpm tauri dev` auto-starts Vite (via `beforeDevCommand` in `src-tauri/tauri.conf.json`)
+and launches the desktop app. The Tauri shell connects to the same `DATABASE_URL`
 (`postgresql://seatloom:seatloom@localhost:5432/seatloom`) by default. Override
 via env var if your local Postgres listens elsewhere.
+
+**Do not run `pnpm tauri dev` from `ui/`** — Tauri 2's CLI searches the current
+dir and its subfolders for `src-tauri/tauri.conf.json`; from `ui/` it can't
+find the sibling `src-tauri/`.
 
 ## CLI operations
 
