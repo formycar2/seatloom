@@ -158,6 +158,27 @@
 
 ---
 
+### chan-09 · [共识] Supervisor viewMode 正交状态（AD-013 v2）
+
+- **来源**：Mr. Zhang 2026-05-07 设计讨论；Lyra review 确认
+- **状态**：✅ **CLOSED — 2026-05-08**（acceptance: `docs/coordination/acceptance/2026-05-08-lyra-app-v2-viewmode-chan-09-acceptance.md`）
+- **核心内容**：
+  - 引入 `SupervisorViewMode = 'dashboard' | 'chat'` 与 `contextMode` 正交的状态维度
+  - `contextMode` 专司 dashboard 数据隔离（AD-013 v1 不变量严格保留）
+  - `viewMode` 专司右侧 pane 路由 + 面包屑渲染（4 种情况决策表）
+  - `switchContact` for seat 不再自动同步 `contextMode`（解耦 chat 与 dashboard）
+  - 面包屑中间层在 chat 模式下变为 active link（`enterProjectFromBreadcrumb` 同步 activeContactId）
+  - 跨 project 分叉态（dashboard p-1 + chat p-2）为合法 UI 状态
+
+- **已交付**：
+  - `architecture-decisions.md` → AD-013 v2（commit `4f051b3`）
+  - `architecture-design.md` → §7.1 supervisorStore v2 接口（commit `4f051b3`）
+  - `ui/src/app-v2/types.ts` → `SupervisorViewMode` 类型
+  - `ui/src/app-v2/panel/SupervisorPanel.tsx` → viewMode state + breadcrumb 4-case + `enterProjectFromBreadcrumb` + 解耦 switchContact
+  - 实现 commit: `cadf36e`；delivery commit: `eb0ddaa`
+
+---
+
 ## 文档更新顺序（设计先于实现）
 
 ```
@@ -193,6 +214,8 @@ Step 3 — 最终优先级排序重新确认
 - [x] `architecture-design.md` §7.1 supervisorStore 定义（chan-03）— CLOSED 2026-05-07
 - [x] `SupervisorPanel.tsx` context mode 扩展实现（chan-03）— CLOSED 2026-05-07
 - [x] `GlobalDashboard` 组件实现（chan-03）— CLOSED 2026-05-07
+- [x] AD-013 v2 viewMode 正交状态（chan-09）— CLOSED 2026-05-08
+- [x] `SupervisorPanel.tsx` viewMode 实现（chan-09）— CLOSED 2026-05-08
 - [ ] `architecture-decisions.md` 新增 AD-AEGIS-02（Playbook binding scope，chan-05）
 - [ ] `architecture-design.md` §3 Session Resources 字段归属更正（chan-04）
 - [ ] `prd-v0.5.md` §3 优先级层新增 L1/L2 定义（chan-06）
