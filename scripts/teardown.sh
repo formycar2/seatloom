@@ -7,17 +7,31 @@
 #
 # After running this, use ./scripts/bootstrap.sh to rebuild.
 #
+# Works with either Docker Desktop or Podman (auto-detected).
+#
 # Usage:
 #   ./scripts/teardown.sh          # prompts for confirmation
 #   FORCE=1 ./scripts/teardown.sh  # skips prompt
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-INFRA_DIR="$REPO_ROOT/infra/postgres"
+# --- Detect container runtime ---
+if [ -n "${CONTAINER:-}" ]; then
+  :
+elif command -v docker >/dev/null 2>&1; then
+  CONTAINER="docker"
+elif command -v podman >/dev/null 2>&1; then
+  CONTAINER="podman"
+else
+  echo "ERROR: neither docker nor podman found on PATH." >&2
+  exit 1
+fi
+
+CONTAINER_NAME="seatloom-postgres"
+VOLUME_NAME="seatloom-pgdata"
 
 if [ "${FORCE:-}" != "1" ]; then
-  echo "This will STOP seatloom-postgres AND DELETE its Postgres volume."
+  echo "This will STOP $CONTAINER_NAME AND DELETE its Postgres volume ($VOLUME_NAME)."
   echo "Markdown source files under docs/ will NOT be touched."
   read -r -p "Type 'yes' to proceed: " confirm
   if [ "$confirm" != "yes" ]; then
@@ -26,6 +40,13 @@ if [ "${FORCE:-}" != "1" ]; then
   fi
 fi
 
-echo "Stopping container and removing volume..."
-(cd "$INFRA_DIR" && docker compose down -v --remove-orphans)
+echo "Stopping container (if running) ..."
+"$CONTAINER" stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+echo "Removing container (if present) ..."
+"$CONTAINER" rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+echo "Removing volume $VOLUME_NAME ..."
+"$CONTAINER" volume rm "$VOLUME_NAME" >/dev/null 2>&1 || true
+
 echo "Teardown complete. Run ./scripts/bootstrap.sh to rebuild."

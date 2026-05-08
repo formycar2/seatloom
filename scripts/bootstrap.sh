@@ -8,13 +8,17 @@
 #
 # Non-destructive. For a clean reset use scripts/teardown.sh followed by this.
 #
+# Works with either Docker Desktop or Podman. Auto-detected at startup.
+# For Podman on macOS, the podman machine is auto-started if stopped.
+#
 # Usage:
 #   ./scripts/bootstrap.sh
 #
 # Environment:
-#   DATABASE_URL    default: postgresql://seatloom:seatloom@localhost:5432/seatloom
+#   DATABASE_URL     default: postgresql://seatloom:seatloom@localhost:5432/seatloom
 #   PG_READY_TIMEOUT default: 60 (seconds to wait for Postgres to become queryable)
-#   SKIP_RECONCILE  default: unset (set to 1 to skip the reconcile step)
+#   CONTAINER        override container runtime (docker|podman); auto-detected otherwise
+#   SKIP_RECONCILE   set to 1 to skip the reconcile step
 
 set -euo pipefail
 
@@ -32,35 +36,85 @@ if [ -z "$CARGO" ] || [ ! -x "$CARGO" ]; then
   exit 1
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "ERROR: docker not found. Install Docker Desktop." >&2
+# --- Detect container runtime ---
+if [ -n "${CONTAINER:-}" ]; then
+  if ! command -v "$CONTAINER" >/dev/null 2>&1; then
+    echo "ERROR: CONTAINER=$CONTAINER but that binary is not on PATH." >&2
+    exit 1
+  fi
+elif command -v docker >/dev/null 2>&1; then
+  CONTAINER="docker"
+elif command -v podman >/dev/null 2>&1; then
+  CONTAINER="podman"
+else
+  echo "ERROR: neither docker nor podman found on PATH." >&2
+  echo "Install Docker Desktop OR Podman (https://podman.io/docs/installation)." >&2
   exit 1
+fi
+
+# --- Podman on macOS needs a running VM ---
+if [ "$CONTAINER" = "podman" ] && [ "$(uname -s)" = "Darwin" ]; then
+  machine_state="$(podman machine inspect podman-machine-default --format '{{.State}}' 2>/dev/null || echo 'missing')"
+  case "$machine_state" in
+    running) ;;
+    stopped)
+      echo "Podman machine is stopped. Starting podman-machine-default ..."
+      podman machine start podman-machine-default
+      ;;
+    missing)
+      echo "No podman machine found. Initialising default machine ..."
+      podman machine init
+      podman machine start
+      ;;
+    *)
+      echo "Podman machine state is '$machine_state' — attempting start anyway ..."
+      podman machine start podman-machine-default || true
+      ;;
+  esac
 fi
 
 INFRA_DIR="$REPO_ROOT/infra/postgres"
 export DATABASE_URL="${DATABASE_URL:-postgresql://seatloom:seatloom@localhost:5432/seatloom}"
 PG_READY_TIMEOUT="${PG_READY_TIMEOUT:-60}"
+CONTAINER_NAME="seatloom-postgres"
+VOLUME_NAME="seatloom-pgdata"
+POSTGRES_IMAGE="postgres:16-alpine"
 
 echo "=== SeatLoom v0.1 Bootstrap ==="
+echo "runtime:   $CONTAINER"
 echo "repo root: $REPO_ROOT"
 echo "database:  $DATABASE_URL"
 echo ""
 
 # --- Step 1: Ensure Postgres container is running ---
 echo "--- Step 1: Postgres container ---"
-if docker ps --format '{{.Names}}' | grep -q '^seatloom-postgres$'; then
-  echo "seatloom-postgres already running."
+if "$CONTAINER" ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+  echo "$CONTAINER_NAME already running."
+elif "$CONTAINER" ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+  echo "Starting existing $CONTAINER_NAME container ..."
+  "$CONTAINER" start "$CONTAINER_NAME" >/dev/null
 else
-  echo "Starting seatloom-postgres via docker compose..."
-  (cd "$INFRA_DIR" && docker compose up -d)
+  # Ensure the named volume exists for persistence
+  if ! "$CONTAINER" volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
+    "$CONTAINER" volume create "$VOLUME_NAME" >/dev/null
+  fi
+  echo "Creating $CONTAINER_NAME from $POSTGRES_IMAGE ..."
+  "$CONTAINER" run -d \
+    --name "$CONTAINER_NAME" \
+    -e POSTGRES_USER=seatloom \
+    -e POSTGRES_PASSWORD=seatloom \
+    -e POSTGRES_DB=seatloom \
+    -p 5432:5432 \
+    -v "${VOLUME_NAME}:/var/lib/postgresql/data" \
+    "$POSTGRES_IMAGE" >/dev/null
 fi
 
 echo "Waiting for seatloom database to be queryable (timeout: ${PG_READY_TIMEOUT}s)..."
 deadline=$(( $(date +%s) + PG_READY_TIMEOUT ))
-until docker exec seatloom-postgres psql -U seatloom -d seatloom -c "SELECT 1" -q >/dev/null 2>&1; do
+until "$CONTAINER" exec "$CONTAINER_NAME" psql -U seatloom -d seatloom -c "SELECT 1" -q >/dev/null 2>&1; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
     echo "ERROR: seatloom database not queryable within ${PG_READY_TIMEOUT}s." >&2
-    docker logs seatloom-postgres --tail 40 >&2
+    "$CONTAINER" logs "$CONTAINER_NAME" --tail 40 >&2 || true
     exit 1
   fi
   sleep 1
@@ -78,8 +132,8 @@ for schema_file in \
   005_prompt_and_channel_action_authority.sql
 do
   echo "Applying schema/$schema_file"
-  docker cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
-  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
+  "$CONTAINER" cp "$INFRA_DIR/schema/$schema_file" "${CONTAINER_NAME}:/tmp/$schema_file"
+  "$CONTAINER" exec "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
     -f "/tmp/$schema_file" >/dev/null
 done
 echo "Schema applied."
@@ -94,8 +148,8 @@ for seed_file in \
   004_prompt_and_channel_action_seed.sql
 do
   echo "Applying seed/$seed_file"
-  docker cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"
-  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
+  "$CONTAINER" cp "$INFRA_DIR/seed/$seed_file" "${CONTAINER_NAME}:/tmp/$seed_file"
+  "$CONTAINER" exec "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
     -f "/tmp/$seed_file" >/dev/null
 done
 echo "Seed applied."
@@ -112,7 +166,7 @@ echo ""
 
 # --- Step 5: Summary ---
 echo "--- Summary: document authority state ---"
-docker exec seatloom-postgres psql -U seatloom -d seatloom -c "
+"$CONTAINER" exec "$CONTAINER_NAME" psql -U seatloom -d seatloom -c "
 SELECT
   template,
   COUNT(*) AS docs,
@@ -129,5 +183,5 @@ echo "=== Bootstrap complete ==="
 echo ""
 echo "Next:"
 echo "  - Launch Tauri desktop app:  cd ui && pnpm install && pnpm tauri dev"
-echo "  - Inspect data manually:     docker exec -it seatloom-postgres psql -U seatloom -d seatloom"
+echo "  - Inspect data manually:     $CONTAINER exec -it $CONTAINER_NAME psql -U seatloom -d seatloom"
 echo "  - Tear down (destructive):   ./scripts/teardown.sh"

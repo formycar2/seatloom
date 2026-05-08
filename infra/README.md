@@ -6,7 +6,8 @@ is Phase 1 and runs on top of this foundation.
 
 ## Prerequisites
 
-- Docker Desktop (or any Docker daemon with `docker compose`)
+- **Container runtime**: Docker Desktop **or** Podman (auto-detected). On macOS
+  with Podman, bootstrap will start the `podman-machine-default` VM if stopped.
 - Rust toolchain (install via https://rustup.rs)
 - Node.js ≥ 20 and pnpm (only needed to launch the Tauri desktop app)
 
@@ -20,16 +21,19 @@ From the repository root:
 
 This is **idempotent** — safe to run repeatedly. It will:
 
-1. Start the `seatloom-postgres` container (Postgres 16-alpine).
-2. Wait for the database to be queryable.
-3. Apply all five schema files (`infra/postgres/schema/00{1..5}_*.sql`). Tables
+1. Detect container runtime (docker or podman). Starts the podman VM if needed.
+2. Start the `seatloom-postgres` container (Postgres 16-alpine) via `run`.
+3. Wait for the database to be queryable.
+4. Apply all five schema files (`infra/postgres/schema/00{1..5}_*.sql`). Tables
    use `CREATE TABLE IF NOT EXISTS`, so re-runs are no-ops.
-4. Apply the four seed files (`infra/postgres/seed/00{1..4}_*.sql`). Rows use
+5. Apply the four seed files (`infra/postgres/seed/00{1..4}_*.sql`). Rows use
    `ON CONFLICT DO NOTHING`, so re-runs are no-ops.
-5. Run the CLI reconcile: scans `docs/` markdown, parses T1–T7 typed headers,
+6. Run the CLI reconcile: scans `docs/` markdown, parses T1–T7 typed headers,
    and upserts into the `documents` / `document_sections` / `document_versions`
    tables.
-6. Print a per-template document count summary.
+7. Print a per-template document count summary.
+
+Force a specific runtime: `CONTAINER=podman ./scripts/bootstrap.sh`.
 
 Expected output on a first run is roughly:
 
@@ -67,7 +71,10 @@ After bootstrap the local database contains:
 ## Inspecting the database manually
 
 ```bash
+# Docker:
 docker exec -it seatloom-postgres psql -U seatloom -d seatloom
+# Podman:
+podman exec -it seatloom-postgres psql -U seatloom -d seatloom
 ```
 
 Useful queries:
@@ -129,9 +136,15 @@ cargo run -p seatloom-cli -- reconcile --project seatloom --root .
 
 ## Troubleshooting
 
-**"docker exec seatloom-postgres ... no such container"**
-The container isn't running. Re-run `./scripts/bootstrap.sh`, or start it
-manually: `cd infra/postgres && docker compose up -d`.
+**"neither docker nor podman found on PATH"**
+Install Docker Desktop or Podman and retry. Podman users: `brew install podman`.
+
+**"Podman machine is stopped"**
+The bootstrap script auto-starts the default machine. If that fails, run
+`podman machine start` manually and retry.
+
+**"seatloom-postgres ... no such container"**
+The container isn't running. Re-run `./scripts/bootstrap.sh`.
 
 **"seatloom database not queryable within 60s"**
 Bootstrap raises this if Postgres doesn't become queryable in time. Increase
