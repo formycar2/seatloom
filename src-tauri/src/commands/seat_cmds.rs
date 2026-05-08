@@ -1,15 +1,67 @@
-use seatloom_core::objects::seat::SeatIdentity;
-use seatloom_core::storage::seat_registry::SeatRegistry;
+// Seat commands — Tauri IPC bindings that read from SeatloomDb.
 
-/// List all seats registered in the current project.
-/// Bounded assumption: project root is `std::env::current_dir()`.
-/// Sort: by `name` ascending.
-#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
-pub fn list_seats() -> Vec<SeatIdentity> {
-    let root = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(_) => return vec![],
-    };
-    let registry = SeatRegistry::new(&root);
-    registry.list_seat_identities().unwrap_or_default()
+use crate::dto::{DelegationDto, RoleBindingDto, SeatDto};
+use crate::state::AppState;
+use tauri::State;
+
+#[tauri::command]
+pub async fn cmd_list_seats(state: State<'_, AppState>) -> Result<Vec<SeatDto>, String> {
+    state
+        .db
+        .list_seats()
+        .await
+        .map(|rows| rows.into_iter().map(SeatDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_get_seat(
+    state: State<'_, AppState>,
+    seat_id: String,
+) -> Result<Option<SeatDto>, String> {
+    state
+        .db
+        .get_seat(&seat_id)
+        .await
+        .map(|opt| opt.map(SeatDto::from))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_list_role_bindings(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<RoleBindingDto>, String> {
+    let pid = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    state
+        .db
+        .list_role_bindings_for_project(&pid)
+        .await
+        .map(|rows| rows.into_iter().map(RoleBindingDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_list_delegations(
+    state: State<'_, AppState>,
+) -> Result<Vec<DelegationDto>, String> {
+    state
+        .db
+        .list_delegations()
+        .await
+        .map(|rows| rows.into_iter().map(DelegationDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_get_delegation(
+    state: State<'_, AppState>,
+    delegation_id: String,
+) -> Result<Option<DelegationDto>, String> {
+    state
+        .db
+        .get_delegation(&delegation_id)
+        .await
+        .map(|opt| opt.map(DelegationDto::from))
+        .map_err(|e| e.to_string())
 }

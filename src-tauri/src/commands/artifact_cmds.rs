@@ -1,21 +1,32 @@
-use seatloom_core::objects::artifact::Artifact;
-use seatloom_core::storage::artifact_store::ArtifactStore;
+// Artifact commands — read-only with template/subtype filtering.
 
-/// List Artifacts, optionally filtered by template and/or subtype (AD-008).
-/// Bounded assumption: project root is `std::env::current_dir()`.
-/// Sort: by `created_at` descending.
-#[allow(dead_code)] // scaffold: not yet registered with Tauri invoke handler
-pub fn list_artifacts(
-    _template: Option<String>,
-    _subtype: Option<String>,
-    _workitem_id: Option<String>,
-) -> Vec<Artifact> {
-    let root = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(_) => return vec![],
-    };
-    let store = ArtifactStore::new(&root);
-    store
-        .list_artifacts(None, _subtype.as_deref(), _workitem_id.as_deref())
-        .unwrap_or_default()
+use crate::dto::ArtifactDto;
+use crate::state::AppState;
+use tauri::State;
+
+#[tauri::command]
+pub async fn cmd_list_artifacts(
+    state: State<'_, AppState>,
+    template: Option<String>,
+    subtype: Option<String>,
+) -> Result<Vec<ArtifactDto>, String> {
+    state
+        .db
+        .list_artifacts(template.as_deref(), subtype.as_deref())
+        .await
+        .map(|rows| rows.into_iter().map(ArtifactDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_get_artifact(
+    state: State<'_, AppState>,
+    artifact_id: String,
+) -> Result<Option<ArtifactDto>, String> {
+    state
+        .db
+        .get_artifact(&artifact_id)
+        .await
+        .map(|opt| opt.map(ArtifactDto::from))
+        .map_err(|e| e.to_string())
 }

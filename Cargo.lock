@@ -3173,6 +3173,7 @@ dependencies = [
 name = "seatloom-tauri"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "seatloom-core",
  "serde",
  "serde_json",

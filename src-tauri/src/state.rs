@@ -1,6 +1,24 @@
-// AppState holds seatloom-core engine references as Tauri managed state.
-// Full initialization deferred to runtime-engine packet.
-#[allow(dead_code)] // scaffold: not yet wired to Tauri managed state
+// Tauri-managed application state.
+// Holds the shared PostgreSQL connection pool wrapped in SeatloomDb.
+
+use seatloom_core::db::repositories::SeatloomDb;
+use std::path::PathBuf;
+
 pub struct AppState {
-    // TODO: LedgerWriter, PackEngine, etc.
+    /// Canonical truth store repository.
+    pub db: SeatloomDb,
+    /// Repository root — used for reconcile scans.
+    pub repo_root: PathBuf,
+    /// Default project id for v0.1 (single-project mode).
+    pub default_project_id: String,
+}
+
+impl AppState {
+    pub fn new(db: SeatloomDb, repo_root: PathBuf, default_project_id: String) -> Self {
+        Self {
+            db,
+            repo_root,
+            default_project_id,
+        }
+    }
 }
