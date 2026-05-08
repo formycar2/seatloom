@@ -318,6 +318,88 @@ impl SeatloomDb {
     }
 
     // =========================================================================
+    // Supervisor IM support (R2)
+    // =========================================================================
+
+    /// Append a supervisor-routed message as a canonical_events row.
+    /// Also writes event_object_refs to target the seat for later filtering.
+    /// Returns the stored row.
+    pub async fn append_supervisor_message(
+        &self,
+        event_id: &str,
+        actor_ref: &str,
+        target_seat_id: Option<&str>,
+        content: &str,
+        event_type: &str, // 'SupervisorMessage' | 'SeatResponse'
+    ) -> Result<CanonicalEventRow, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let payload = serde_json::json!({
+            "content": content,
+            "target_seat_id": target_seat_id,
+        });
+        client
+            .execute(
+                "INSERT INTO canonical_events (id, event_type, occurred_at, actor_ref, payload) \
+                 VALUES ($1, $2, NOW(), $3, $4)",
+                &[&event_id, &event_type, &actor_ref, &payload],
+            )
+            .await?;
+        if let Some(target) = target_seat_id {
+            let _ = client
+                .execute(
+                    "INSERT INTO event_object_refs (event_id, ref_type, ref_id) \
+                     VALUES ($1, 'seat', $2) ON CONFLICT DO NOTHING",
+                    &[&event_id, &target],
+                )
+                .await;
+        }
+        // Read back the row we just wrote (captures DB-generated created_at + occurred_at).
+        let row = client
+            .query_one(
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                 FROM canonical_events WHERE id = $1",
+                &[&event_id],
+            )
+            .await?;
+        Ok(row_to_event(&row))
+    }
+
+    /// List supervisor-flavoured messages (both SupervisorMessage and SeatResponse),
+    /// optionally filtered to those targeting a given seat via event_object_refs.
+    /// Sort: occurred_at ascending (chat-oriented).
+    pub async fn list_supervisor_messages(
+        &self,
+        target_seat_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<CanonicalEventRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = if let Some(seat_id) = target_seat_id {
+            client
+                .query(
+                    "SELECT e.id, e.event_type, e.occurred_at, e.actor_ref, e.payload, e.created_at \
+                     FROM canonical_events e \
+                     INNER JOIN event_object_refs r \
+                       ON r.event_id = e.id AND r.ref_type = 'seat' AND r.ref_id = $1 \
+                     WHERE e.event_type IN ('SupervisorMessage','SeatResponse','PlanProposed','PromptDetected','PromptResolved') \
+                     ORDER BY e.occurred_at ASC LIMIT $2",
+                    &[&seat_id, &limit],
+                )
+                .await?
+        } else {
+            client
+                .query(
+                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                     FROM canonical_events \
+                     WHERE event_type IN ('SupervisorMessage','SeatResponse','PlanProposed','PromptDetected','PromptResolved') \
+                     ORDER BY occurred_at ASC LIMIT $1",
+                    &[&limit],
+                )
+                .await?
+        };
+        Ok(rows.iter().map(row_to_event).collect())
+    }
+
+    // =========================================================================
     // Documents — schema 002 document authority layer
     // Sort: updated_at descending
     // =========================================================================

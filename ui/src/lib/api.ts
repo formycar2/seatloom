@@ -105,6 +105,20 @@ export const api = {
   listEventsByType: (eventType: string): Promise<CanonicalEventDto[]> =>
     invoke('cmd_list_events_by_type', { eventType }),
 
+  // --- Supervisor IM ---
+  listSupervisorMessages: (
+    opts: { targetSeatId?: string; limit?: number } = {},
+  ): Promise<CanonicalEventDto[]> => invoke('cmd_list_supervisor_messages', opts),
+  appendSupervisorMessage: (
+    request: {
+      targetSeatId?: string;
+      content: string;
+      eventType?: string;
+      actorRef?: string;
+    },
+  ): Promise<CanonicalEventDto> =>
+    invoke('cmd_append_supervisor_message', { request }),
+
   // --- Inbox ---
   getInbox: (): Promise<InboxPayloadDto> => invoke('cmd_get_inbox'),
 
@@ -136,6 +150,14 @@ export function onSessionExit(
   handler: (event: SessionExitEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SessionExitEvent>('session:exit', (e: Event<SessionExitEvent>) =>
+    handler(e.payload),
+  );
+}
+
+export function onCanonicalAppended(
+  handler: (event: import('./types-dto').CanonicalEventDto) => void,
+): Promise<UnlistenFn> {
+  return listen<import('./types-dto').CanonicalEventDto>('canonical:appended', (e) =>
     handler(e.payload),
   );
 }

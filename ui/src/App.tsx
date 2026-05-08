@@ -21,6 +21,8 @@ import AddSeatDialog from './components/AddSeatDialog';
 import InitDialog from './components/InitDialog';
 import ShortcutHelpDialog from './components/ShortcutHelpDialog';
 import SupervisorCommandBar from './components/SupervisorCommandBar';
+import { SupervisorIM } from './supervisor/SupervisorIM';
+import { api, isTauri } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
 import SwitchProtectionDialog from './components/SwitchProtectionDialog';
@@ -47,6 +49,28 @@ const App: React.FC = () => {
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
+  const [showSupervisorIM, setShowSupervisorIM] = useState(() =>
+    localStorage.getItem('seatloom.supervisor.open') === 'true'
+  );
+  const [supervisorDetached, setSupervisorDetached] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('seatloom.supervisor.open', showSupervisorIM ? 'true' : 'false');
+  }, [showSupervisorIM]);
+
+  // ⌘K toggles the Supervisor IM — the L1 surface. The V1 command bar is
+  // still registered on ⌘⇧K for backwards compatibility with existing
+  // global shortcuts.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'k') {
+        e.preventDefault();
+        setShowSupervisorIM((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const [activeForm, setActiveForm] = useState<FormView>('none');
   const [isInitOpen, setIsInitOpen] = useState(false);
@@ -267,6 +291,19 @@ const App: React.FC = () => {
       <AddSeatDialog isOpen={activeForm === 'addSeat'} onClose={() => setActiveForm('none')} />
       <ShortcutHelpDialog isOpen={showHelp} onClose={() => setShowHelp(false)} />
       <SupervisorCommandBar isOpen={showCommandBar} onClose={() => setShowCommandBar(false)} onConfirmProposal={handleConfirmProposal} />
+
+      {/* Supervisor IM (L1 surface) — embedded by default; detach in R3. */}
+      {showSupervisorIM && !supervisorDetached && (
+        <SupervisorIM
+          embedded
+          onClose={() => setShowSupervisorIM(false)}
+          onDetach={async () => {
+            // Phase R3 wiring lands next; for now toggle locally so the UI affordance is visible.
+            setSupervisorDetached(true);
+            setShowSupervisorIM(false);
+          }}
+        />
+      )}
 
       {protectionType && (
         <SwitchProtectionDialog
