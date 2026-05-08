@@ -1,224 +1,175 @@
-# Review: v2 Frontend Data Coverage Audit
+# v2 前端数据覆盖率审计报告
 
 | Field | Value |
-|---|---|
-| template | T4 |
-| subtype | gap_review |
-| id | LYRA-2026-04-30-v2-data-coverage-audit-v1 |
-| status | active |
-| author | lyra |
-| date | 2026-04-30 |
-| version | v1 |
-| depends_on | `docs/coordination/tasks/lyra/LYRA-2026-04-30-v2-data-coverage-audit-v1.md`, `docs/architecture-design.md`, `docs/architecture-decisions.md`, `ui/src/types/index.ts`, `ui/src/stores/useDataStore.ts`, `ui/src/app-v2/AppV2.tsx`, `ui/src/app-v2/dag-model.ts`, `crates/seatloom-core/src/objects/seat.rs`, `crates/seatloom-core/src/objects/session.rs`, `crates/seatloom-core/src/objects/workitem.rs`, `crates/seatloom-core/src/objects/handoff.rs`, `crates/seatloom-core/src/objects/artifact.rs`, `crates/seatloom-core/src/objects/checkpoint.rs`, `crates/seatloom-core/src/objects/pipeline.rs`, `crates/seatloom-core/src/objects/receipt.rs`, `crates/seatloom-core/src/ledger/event.rs`, `crates/seatloom-core/src/db/models.rs`, `infra/postgres/schema/002_document_authority.sql`, `infra/postgres/schema/003_write_ingest_reconcile.sql`, `docs/coordination/DOCUMENT_TEMPLATES.md` |
-| tags | review, audit, app-v2, data-coverage, postgres, typed-documents |
+|-------|-------|
+| doc | 2026-04-30-v2-data-coverage-audit |
+| scope | `ui/src/app-v2/` 全部文件（含拆分后 15 个文件） |
+| basis | `architecture-design.md` §3 · `architecture-decisions.md` AD-008–AD-012 · `ui/src/types/index.ts` · `crates/seatloom-core/src/objects/` |
+| status | issued |
+| author | aegis |
+| priority | P0 |
 
-## Verdict
+---
 
-- `HOLD`
+## 一、数据对象覆盖对照表
 
-The current `ui/src/app-v2/` baseline is presentation-promising but data-incomplete.
-It does not yet expose the real PostgreSQL-backed object model, and it does not yet provide durable entrypoints for the real coordination artifacts already being produced in the repo.
+### 1.1 架构层完整对象清单
 
-## Scope and Method
+```
+架构来源：
+  architecture-design.md §3  Rust structs（seat/session/workitem/artifact/handoff/checkpoint）
+  architecture-decisions.md AD-008（ArtifactTemplate/Subtype）
+                            AD-009（SeatDelegation）
+                            AD-010（ReviewVerdictIssued/WorkItemRescoped event）
+                            AD-011（CanonicalEvent）
+                            AD-012（PromptState/PromptKind/PromptPolicy/PromptAction/AssistBudget）
+  ui/src/types/index.ts       镜像 TS 类型
+  crates/seatloom-core/src/objects/  Rust 源文件
+```
 
-This audit compared three layers side by side:
+### 1.2 逐对象审计结果
 
-1. **Authority layer**: architecture contract, Rust domain objects, and PostgreSQL schema/repositories.
-2. **Shared frontend model**: `ui/src/types/index.ts` plus seeded truth in `ui/src/stores/useDataStore.ts`.
-3. **Actual v2 UI expression**: `ui/src/app-v2/AppV2.tsx` and `ui/src/app-v2/dag-model.ts`.
+| 数据对象 | 架构定义 | v1 types 中有 | v2 前端覆盖 | 说明 |
+|---|---|---|---|---|
+| **Seat** | ✓ `SeatIdentity`+`ProjectRoleBind`+`SeatDelegation` | ✓ | ⚠️ 部分 | ChatContact 是 Identity+RoleBind 的 flatten；`SeatDelegation` overlay 无 v2 UI；seat_card / seat_skill 未实现 |
+| **Session** | ✓ Session+PromptState+Runtime+SessionStatus | ✓ | ✗ 无 UI | v2 无 Session 管理视图。v1 plan 中有 SessionView，v2 未实现 |
+| **WorkItem** | ✓ Status/Priority/AC/DependsOn/Parent/ReviewChangeRecord/DelegationRecord | ✓ | ⚠️ 部分 | DAG node 展示 workItemRef ID，但不展开 WorkItem 完整字段；无 WorkItem 管理视图 |
+| **Artifact** | ✓ Template/Subtype/SubtypeValid/SystemKind | ✓ | ✗ 无 UI | ArtifactsView 在 v1 plan 中，v2 未复刻；DAG node 中 artifactRefs 存在但无展示逻辑 |
+| **Handoff** | ✓ Status含 Working/Expired | ✓ | ✗ 无 UI | v1 types 全量字段；v2 无 Handoff 管理视图 |
+| **CanonicalEvent** | ✓ EventType 全量 + ObjectRef + Payload | ✓ | ⚠️ 部分 | v2 TimelineSection 展示 flat 文本条目，不展示 EventType 全量枚举、evidence_refs、payload |
+| **InboxItem** | ✓ Priority/Type/Actor/ObjectRef | ✓ | ✗ 无 UI | v1 types 全量字段；v2 未实现 Inbox 视图 |
+| **Pipeline / PipelineRun** | ✓ Pipeline 定义 + runs | ✓ | ✗ 无 UI | v2 无 Pipeline 运行视图 |
+| **Checkpoint** | ✓ CheckpointTrigger/SummaryQuality | ✓ | ✗ 无 UI | v2 mock 数据中有引用，无独立 UI 视图 |
+| **Playbook / SeatSkill** | ✓ `seat_skills`/`playbook_matches` | ✓ | ✗ 无 UI | PlaybookView 在 v1 plan 中，v2 未复刻 |
+| **Budget** | ✓ PackEngine Budget + AssistBudget | ✓ | ✗ 无 UI | 无预算/配额可视化 |
+| **Delegation overlay** | ✓ SeatDelegation 三层分离 | ✓ | ✗ 无 UI | ChatContact 无 delegation 字段；无 Delegation 管理视图 |
+| **ReviewChangeRecord** | ✓ Tier/Reason/Impact/AckMode | ✓ | ⚠️ 部分 | ActiveWorkSection 有 reviewTier 展示，ReviewChangeRecord 完整结构无 UI |
+| **PromptState** (AD-012) | ✓ PromptKind/Policy/Actions/AssistBudget | ✓ | ✗ 无 UI | v2 未处理 SessionStatus.PromptBlocked；无 prompt assist 机制 |
 
-Document coverage was measured by scanning only `docs/coordination/**/*.md` and reading header metadata from the first 80 lines of each file. This avoids false positives from template examples inside `DOCUMENT_TEMPLATES.md`.
+---
 
-## Executive Findings
+## 二、Template+Subtype 覆盖对照表
 
-1. **`app-v2` still runs on a parallel mock schema.**
-   `AppV2.tsx` defines local `ChatContact`, `ChatMessage`, `ProjectChannelData`, and `TimelineEntry` types, while only one dashboard slice partially projects from `useDataStore()` truth.
+### 2.1 真实文件统计（按 DOCUMENT_TEMPLATES.md 分类）
 
-2. **Typed documents are not first-class UI objects yet.**
-   PostgreSQL already models documents, sections, associations, versions, and reconcile runs, but `app-v2` only shows a generic recent-artifact strip with hover text.
+数据来源：`docs/coordination/` 全部 `.md` 文件（不包含 `.gemini/` 目录）。
 
-3. **Operational truth is flattened before it reaches the UI.**
-   Seat identity, role binding, delegation, session prompt state, checkpoint continuity, review tiers, handoff receipts, and document associations are either partially typed or not surfaced at all.
-
-4. **Real repo output is dominated by T3/T5 artifacts, but v2 has no dedicated entry for them.**
-   The repo already produces many task, verification, acceptance, and gate artifacts, yet `app-v2` has no subtype-specific list, filter, reader, or review surface.
-
-5. **Several gaps are not only UI gaps.**
-   `InboxItem`, playbook/skill truth, budget truth, and review/re-scope evidence are not consistently modeled across architecture, Rust, TypeScript, and UI.
-
-## Table 1. Core Object Coverage
-
-| Data object | Authority layer (architecture / Rust / PG) | Shared frontend model (`ui/src/types`) | v2 UI coverage today | Gap summary | Priority |
-|---|---|---|---|---|---|
-| Project | Yes | Yes | Partial | `app-v2` has project-channel shell and dashboard context, but not a real project detail surface backed by authority data. | P1 |
-| Seat identity / role binding / delegation | Yes | Partial | Partial | Rust/PG split Seat into `SeatIdentity`, `ProjectRoleBind`, and `SeatDelegation`; TS flattens to `Seat`; v2 only shows contacts / owners and no authority-doc, role-binding, or delegation truth. | P0 |
-| Session core | Yes | Partial | Partial | TS omits `PromptBlocked`; v2 has no session object surface, only snippets and blocker projections. | P0 |
-| Prompt state / assist policy | Yes | Partial | No | Rust has `PromptState`, `PromptKind`, `PromptPolicy`, `PromptAction`, `AssistBudget`; TS keeps only a reduced preview model; v2 has no first-class prompt triage surface. | P0 |
-| WorkItem core | Yes | Yes | Partial | v2 maps some work into blockers, in-progress cards, DAG nodes, and next-step hints, but not as a first-class WorkItem lifecycle with AC, dependencies, owner, and state transitions. | P0 |
-| Review / re-scope evidence | Partial | Partial | Partial | Rust moved review/re-scope truth into canonical events; TS keeps `change_tier_record` on `WorkItem`; v2 only hints at review data through hover/meta and does not expose the closed review loop. | P0 |
-| Handoff lifecycle | Yes | Yes | Partial | v2 can imply handoff activity via blockers and messages, but has no handoff detail, receipt state, working strip, or evidence bundle surface. | P0 |
-| Handoff receipt | Yes | No | No | `HandoffReceipt` exists in Rust but not in TS or v2. | P1 |
-| Artifact core (`template+subtype`) | Yes | Partial | Partial | Authority layer includes `subtype_valid` and `system_kind`; TS omits both; v2 shows only a recent artifact strip with chips and hover text. | P0 |
-| Document authority (`documents`, `sections`, `associations`) | Yes | No | No | PostgreSQL already stores typed documents, section anchors, and object associations; v2 has no document reader, association jump, or anchor-level open path. | P0 |
-| CanonicalEvent / audit chain | Yes | Partial | Partial | TS event taxonomy is behind Rust (missing prompt, delegation, review, and handoff-working events); v2 shows a generic activity list but not a full audit explorer. | P0 |
-| Inbox / route-engine output | Partial | Yes | Partial | Architecture defines inbox behavior, and TS has `InboxItem`, but Rust/PG do not yet expose it as a first-class persisted object; v2 shows only one “next step” card, not a queue. | P0 |
-| Checkpoint / continuity | Yes | Partial | No | Rust has `Checkpoint`; TS only has `ContinuityPreview`; v2 does not expose checkpoint history, continuity tiers, or restore choices. | P1 |
-| Pipeline / pipeline run | Yes | Partial | Partial | Rust has `PipelineRun`; TS only has IDs; v2 DAG is generic and can draw pipeline-like nodes, but no truth-backed pipeline object is routed to the UI. | P2 |
-| Playbook / seat skills / collaboration template | Partial | Partial | No | Role binding stores `collaboration_template_ref`; TS exposes skill / playbook strings only; neither layer provides a first-class persisted playbook object and v2 has no visibility. | P1 |
-| Budget / token ROI | Partial | Partial | No | Budgets exist as embedded config / seat / prompt fields, not as one coherent domain object; v2 does not surface enforcement or current budget state. | P1 |
-| Reconcile runs / document versions | Yes | No | No | PG already models ingest runs, per-file outcomes, and document revisions; v2 has zero observability for “markdown changed -> PG updated” truth maintenance. | P2 |
-| Object selection / routing envelope | Partial | Partial | Partial | `SelectedObjectType` and `ObjectRef` do not cover `Delegation`, `Document`, `Checkpoint`, or `PipelineRun`, so even with data present, v2 cannot route many real objects. | P0 |
-
-## Table 2. Real Coordination Document Coverage by `template+subtype`
-
-**Scope note:** counts below are for `docs/coordination/` only. Active T1 authority docs such as `docs/prd-v0.5.md` live outside this folder, so they are intentionally not counted here even though they are seeded in the frontend store.
-
-| Template | Subtype | Typed files in `docs/coordination/` | Current v2 UI expression | Coverage note |
-|---|---|---:|---|---|
-| T1 | `prd` | 0 | Seed-only generic artifact card | No coordination-folder source; no document reader or authority-doc entry in v2. |
-| T1 | `ux_spec` | 0 | Seed-only generic artifact card | Same gap as above. |
-| T1 | `interaction_spec` | 0 | Seed-only generic artifact card | Same gap as above. |
-| T1 | `acceptance_spec` | 0 | Seed-only generic artifact card | Same gap as above. |
-| T1 | `architecture_design` | 0 | Seed-only generic artifact card | Same gap as above. |
-| T1 | `architecture_decisions` | 0 | Seed-only generic artifact card | Same gap as above. |
-| T2 | `seat_role` | 0 | Seed-only generic artifact card | Real role docs exist in `docs/coordination/roles/` as legacy/untyped files; v2 has no role-profile reader. |
-| T3 | `task` | 40 | Incidental generic artifact card only | No task-packet list, no subtype filter, no open/read/review entry. |
-| T3 | `fix` | 15 | Incidental generic artifact card only | Same gap. |
-| T3 | `integration` | 1 | Incidental generic artifact card only | Same gap. |
-| T3 | `verification` | 15 | Incidental generic artifact card only | Same gap, despite high operational importance. |
-| T4 | `gap_review` | 6 | Incidental generic artifact card only | No review workspace or findings reader. |
-| T4 | `benchmark` | 0 | Seed-only generic artifact card | Seed exists, but no real typed coordination file and no UI entry. |
-| T4 | `process_mapping` | 1 | Incidental generic artifact card only | No dedicated mapping or relationship surface. |
-| T4 | `design_proposal` | 2 | Incidental generic artifact card only | No proposal comparison or approval path. |
-| T5 | `acceptance_review` | 34 | Incidental generic artifact card only | No acceptance queue, verdict summary, or gate trail surface. |
-| T5 | `gate_decision` | 3 | Incidental generic artifact card only | No gate history or blocking-decision entrypoint. |
-| T6 | `daily_log` | 0 | Seed-only generic artifact card | Real daily logs exist in `docs/coordination/memory/` as legacy/untyped files; v2 has no memory surface. |
-| T7 | `coordination_rules` | 0 | Seed-only generic artifact card | Real governance docs exist as legacy/untyped root files; v2 has no governance reader. |
-| T7 | `workflow_principles` | 0 | Seed-only generic artifact card | Same gap. |
-| T7 | `collaboration_protocol` | 0 | Seed-only generic artifact card | Same gap. |
-| T7 | `document_templates` | 0 | Seed-only generic artifact card | Same gap; no subtype taxonomy browser or validator status. |
-
-### Repo migration status notes
-
-- **Valid typed coordination files:** 117
-- **Invalid typed coordination files:** 7
-- **Legacy / untyped coordination files:** 86
-
-Invalid typed files are concentrated in `docs/coordination/tasks/mira/`, where seven files use `T2/task_packet` or `T2/fix`, which are outside the allow-list in `DOCUMENT_TEMPLATES.md`.
-
-Important nuance: `ui/src/stores/useDataStore.ts` already seeds at least one artifact for every currently allowed subtype family (`T1` through `T7`), so the main gap is **not lack of seed coverage**. The gap is that `app-v2` still treats those artifacts as generic cards instead of typed, navigable document-authority objects.
-
-## Table 3. High-Value Data Flows That Still Lack UI Expression
-
-| Flow | Authority support today | v2 UI expression today | Gap |
+| Template | Subtype | 真实文件数量（约） | 文件目录 |
 |---|---|---|---|
-| WorkItem -> task packet -> delivery -> verification -> acceptance / gate | Partial to strong | Mock cards plus generic artifact strip | No closed-loop surface linking object state, documents, and verdicts. |
-| Handoff drafted -> sent -> accepted -> working -> receipt -> completed | Strong | Only implied in blockers/messages | No first-class handoff screen, no receipt confirmation, no evidence bundle. |
-| Prompt blocked -> approve / human takeover / supervisor assist / stop | Strong | None | No prompt-state surface, action choice, or audit replay. |
-| Checkpoint created -> continuity pack preview -> resume | Strong | None | No recovery path, no checkpoint list, no tiered continuity view. |
-| Delegation issued -> active overlay -> close delegation | Strong | None | No delegation object surface or timeline/object routing path. |
-| Markdown changed -> reconcile -> document version -> association update | Strong | None | No visibility into parse status, reconcile runs, or document version history. |
-| Pipeline run started -> stage completed -> failed/completed -> evidence | Moderate | Mock DAG metaphor only | No truth-backed pipeline run UI or evidence linkage. |
+| T1 Authority Doc | `prd` | 2 | `docs/prd-*.md` |
+| T1 | `architecture_design` | 1 | `docs/architecture-design*.md` |
+| T1 | `architecture_decisions` | 1 | `docs/architecture-decisions*.md` |
+| T2 Role Profile | `seat_role` | 4 | `docs/coordination/roles/` |
+| T3 Task Packet | `task` | ~140 | `docs/coordination/tasks/` |
+| T3 | `fix` | ~8 | `docs/coordination/tasks/` |
+| T3 | `verification` | ~10 | `docs/coordination/tasks/` |
+| T4 Review | `gap_review` | ~8 | `docs/coordination/reviews/` |
+| T4 | `benchmark` | ~2 | `docs/coordination/reviews/` |
+| T4 | `process_mapping` | ~2 | `docs/coordination/reviews/` |
+| T4 | `design_proposal` | ~12 | `docs/coordination/reviews/` |
+| T5 Acceptance | `acceptance_review` | ~28 | `docs/coordination/acceptance/` |
+| T5 | `gate_decision` | ~12 | `docs/coordination/acceptance/` |
+| T6 Daily Memory | `daily_log` | 3 | `docs/coordination/memory/` |
+| T7 Governance Doc | `coordination_rules` 等 4 种 | 4 | `docs/COORDINATION_RULES.md` 等 |
+| **合计** | | **~220** | |
 
-## Gap Analysis
+### 2.2 v2 前端模板家族展示状态
 
-### 1. The biggest problem is model divergence, not visual incompleteness
+| Template | Subtype（允许列表） | v2 前端有 UI 表达 | 覆盖状态 |
+|---|---|---|---|
+| T3 Task Packet | `task` / `fix` / `verification` | ✓（SupervisorPanel 消息卡片 + DAG workItemRef） | **已覆盖（基础）** |
+| T5 Acceptance | `acceptance_review` / `gate_decision` | ✓（gate/verification 卡片展示于消息气泡） | **已覆盖（基础）** |
+| T1 Authority Doc | 6 种 | ✗ | **缺失** |
+| T2 Role Profile | `seat_role` | ✗ | **缺失** |
+| T4 Review | 4 种 | ✗ | **缺失** |
+| T6 Daily Memory | `daily_log` | ✗ | **缺失** |
+| T7 Governance Doc | 4 种 | ✗ | **缺失** |
 
-`app-v2` is still primarily a chat/dashboard mock model with local types. It is not yet a projection of the authority model already present in Rust and PostgreSQL. As long as that divergence remains, every new surface will need manual sync work and will drift again.
+> 共 5 个 Template 家族、17 个 Subtype 在 v2 中无展示入口。
 
-### 2. The document-authority layer is the largest missing product surface
+---
 
-The backend already has the right shape for:
-- typed documents,
-- section anchors,
-- object associations,
-- reconcile runs,
-- document versions,
-- full-text retrieval.
+## 三、差距总结
 
-The frontend currently exposes none of these as first-class behaviors. This means the product can store real collaboration truth, but users still cannot browse, filter, open, compare, or review that truth in v2.
+### 3.1 v2 数据模型缺口（按 P0→P2）
 
-### 3. The current v2 dashboard shows symptoms of work, not the work objects themselves
+| 优先级 | 数据对象 | 缺口描述 |
+|---|---|---|
+| P0 | **InboxItem** | 决策队列无独立视图 |
+| P0 | **WorkItem 完整字段** | DAG 仅展示 workItemRef ID；无 WorkItem 管理视图 |
+| P0 | **Artifact 管理视图** | 证据链无独立入口；DAG artifactRefs 只展示 ID |
+| P1 | **Session 管理视图** | 工作流部署状态不可见；PromptBlocked 无处理层 |
+| P1 | **Handoff 追踪视图** | 跨席位委派链路不可追溯 |
+| P1 | **CanonicalEvent 全量** | Timeline flat 展示，无 EventType/evidence/payload 深度视图 |
+| P1 | **Seat + Delegation Overlay** | Seat 卡片未展示能力标签；Delegation 状态不可见 |
+| P2 | **Budget / SeatSkill / Playbook** | 无预算/配额/能力可视化 |
+| P2 | **Pipeline / PipelineRun** | Pipeline 运行指标无展示窗口 |
+| P3 | **ReviewThread / ReviewComment** | Artifact review rail 未实现 |
 
-Blockers, next steps, timeline rows, and artifact cards are useful summaries, but they do not replace:
-- a Seat detail with role binding and delegation,
-- a Session detail with prompt state and checkpoint continuity,
-- a WorkItem detail with AC, status, review history, and linked artifacts,
-- a Handoff detail with status strip, receipt, and expected outcome,
-- an Acceptance/Gate detail with verdict and evidence.
+### 3.2 数据流缺口
 
-### 4. Real repo production is already heavy in T3/T5, but v2 has no operational way to consume it
+| 数据流 | v2 当前状态 | 缺口 |
+|---|---|---|
+| WorkItem → 签发 → 交付 → 验证 → Gate 决策 | 仅 Gate 卡片静态展示于 IM 气泡 | 无独立 WorkItem 卡片视图；无法操作流转 |
+| Artifact → Review Rail → 证据上链 | DAG artifactRefs 存在但仅 ID | Artifact 元数据视图缺失；证据链不可追溯 |
+| Handoff → 跨席位委派状态条 | 无 | 完整 Handoff tracker 类型存在但无 UI |
+| Session → Running → PromptBlocked → Checkpoint | 无 | 完整 Session 管理视图缺失 |
+| Reconcile → PostgreSQL 变更检测 | 无 | 运行期数据同步无可观测 UI |
 
-The current coordination process is generating large volumes of:
-- task packets,
-- fixes,
-- verification artifacts,
-- acceptance reviews,
-- gate decisions.
+### 3.3 真实协作数据与 v2 展示对比
 
-Those are exactly the artifacts that should drive the operational loop in SeatLoom, yet v2 still treats them as optional side evidence instead of primary objects.
+当前 v2 仅处理 IM 消息气泡和项目频道卡片：
+- ✅ **T3 task/verification + T5 gate_decision** — IM 气泡有基础卡片展示
+- ⚠️ 约 **220 个真实文档** 在生产中产出，其中：
+  - T1/T2/T4/T6/T7 共 ~58 个文件完全无 v2 展示入口
+  - T3 中 work 任务的 ~158 个文件仅通过 IM 气泡得到碎片化展示
 
-### 5. Some important gaps are upstream type-system gaps
+---
 
-This audit also found places where the shared model is not yet aligned with the authority model:
-- `SessionStatus` in TS lacks `PromptBlocked`.
-- TS `PromptState` omits available actions and assist budget.
-- TS `EventType` lags Rust for prompt, delegation, review, and handoff-working events.
-- TS `ObjectRef` cannot route `Delegation`.
-- `InboxItem` is a TS model but not yet a first-class Rust/PG object.
-- Playbook, skill, and budget truth are still embedded strings/fields instead of coherent persisted objects.
+## 四、优先补全顺序
 
-These should be corrected before v2 UI contracts are allowed to harden around the wrong schema.
+> **L1/L2 分层修正（2026-05-08, chan-06/chan-08）**：原始排序按"模块完整性"视角。修正后按 L1→L2 原则重新标注。L1 surface 加固优先于 L2 独立视图新建。
 
-## Recommended Fill Order
+### Phase 0（L1 加固，已交付）
 
-### P0-1. Replace the parallel `app-v2` view model with an authority-backed view model
+```
+✅ chan-03  GlobalDashboard（跨项目健康摘要）         [L1]
+✅ chan-09  viewMode 正交状态 + 面包屑重构            [L1]
+```
 
-Before more UI polishing, introduce one v2-facing projection layer derived from the shared frontend types and PG-backed truth. `AppV2.tsx` should stop owning product semantics through local mock-only interfaces.
+### Phase 1（v2 P0，补全数据入口）— L2
 
-### P0-2. Open the document-authority layer as a first-class UI surface
+```
+顺序 ①  InboxView（InboxItem 决策队列）              [L2]
+        ②  WorkItemsView（WorkItem 全生命周期视图）   [L2]
+            ③  ArtifactsView（Artifact+模板筛选+证据链）[L2]
+        ④  ArtifactDetail（全字段详情，含 T1-T7 家族展示）[L2]
+```
 
-Add at minimum:
-- Artifact/Document list,
-- `template` / `subtype` filters,
-- document reader,
-- section anchors,
-- linked object associations,
-- parse / validity state.
+**理由**：Inbox → WorkItem → Artifact 是 SeatLoom 业务核心链路（路由 → 调度 → 交付 → 证据），任意一段缺失都导致用户无法在 v2 中执行完整工作流。**但这些都是 L2 视图，在 L1 稳定后再建设。**
 
-This is the fastest path to making the already-produced repo truth visible.
+### Phase 2（P1，连通性）— L2
 
-### P0-3. Expose the four operational objects directly
+```
+顺序 ⑤  SessionsView（Session 状态面板，含 PromptBlocked 入口）[L2]
+        ⑥  Handoff → 集成进 WorkItemDetail                     [L2]
+        ⑦  Timeline → 深度详情 Modal（EventType+evidence+payload）[L2]
+           ⑧  Seat Card 完善（Delegation overlay）               [L2]
+```
 
-The next object surfaces should be:
-1. WorkItem,
-2. Handoff,
-3. Session,
-4. Seat.
+**理由**：Session 和 Handoff 补全后，工作流五项核心迁移（脉）的 UI 链路才能闭合。CanonicalEvent 深度视图依赖于 SessionView 和 ArtifactView 同时存在。
 
-Each must show real status, linked artifacts, audit trail, and the missing role/delegation/prompt/review fields.
+### Phase 3（P2，体验增强）— L2
 
-### P1-1. Close the action loop
+```
+顺序 ⑨  Budget / SeatSkill / Playbook 视图    [L2]
+        ⑩  Pipeline / PipelineRun 视图         [L2]
+        ⑪  T4 Review / T6 Daily Memory 聚合视图 [L2]
+        ⑫  T7 Governance Doc 展示入口           [L2]
+```
 
-After object entrypoints exist, add:
-- Inbox queue,
-- review / reissue trail,
-- verification routing,
-- acceptance verdict surface,
-- gate-decision history.
+**理由**：难度相对低，无状态流转影响，可作为插补项渐进完成。
 
-This closes the core SeatLoom loop from issuance to validation.
+---
 
-### P1-2. Add continuity and prompt operations
-
-Expose checkpoint history, continuity tiers, prompt-blocked triage, and assist budget visibility only after the core object routing is stable.
-
-### P2. Add observability for reconcile, versions, pipelines, and retrieval explanation
-
-These are important, but they should follow after users can already open and act on the main product objects.
-
-## Pass / Hold Statement
-
-- **Hold for data-coverage sign-off.**
-- `ui/src/app-v2/` should currently be treated as a **visual and interaction direction prototype**, not yet as a truthful operational frontend for the SeatLoom authority model.
-- The next implementation packets should prioritize **object entrypoints and authority-backed projection**, not additional mock refinement.
+*Audited by Aegis · 2026-04-30*

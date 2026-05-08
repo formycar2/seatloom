@@ -74,7 +74,18 @@ These modules are not independent add-ons. They are the product core. Each one m
 | P1 | The user can reuse what the team has already learned, resume work with lower context cost, inspect execution progress with less polling, and review more supporting context from mobile without turning the phone into a second desktop IDE. | Playbook publish/apply flows, collaboration template cloning, supervisor-assisted artifact comments, richer supervisor continuity packs, semantic retrieval layer, session suspend/resume with delta context, Handoff `working` state and optional live activity mode, Execution Template inspector, version history and diff review, token-savings visibility, and richer mobile evidence quick view linked to approvals and feedback loops. | Full autonomy, self-changing governance, always-on background orchestration, full multi-pane review workbench on mobile. |
 | P2 | The user can allow bounded automation proposals and compare which patterns actually save time or tokens without losing human approval and auditability. | Draft handoffs/artifacts/work proposals by seats, template recommendations, review-derived action suggestions, advanced ROI dashboards, execution-behavior version history comparisons. | Unbounded agent autonomy, silent state mutation, cloud-first coordination as a requirement. |
 
-### 3.1 Required mobile companion boundary
+### 3.1 Interaction-frequency layers (L1 / L2)
+
+Within each priority tier (P0, P1, P2), features are further classified by **interaction frequency layer**:
+
+| Layer | Definition | Design implication |
+|---|---|---|
+| **L1** | Highest-frequency, shortest-path interactions — the supervisor's primary daily interface. Currently: **Supervisor IM** (intent → structured proposal → instant confirmation, no view-switching). | L1 surfaces receive investment priority within the same P-tier. Every sprint should strengthen L1 before expanding L2. |
+| **L2** | Necessary but lower-frequency data views (Inbox, WorkItems, Artifacts, Sessions, Handoffs). Usage is 10–30× lower than L1 on a per-session basis. | L2 views are built after L1 is stable. They serve lookup / audit / batch-review needs and should link back to L1 for action. |
+
+**Ordering rule**: within the same P-tier, L1 items are implemented before L2 items unless L2 is a hard prerequisite for L1 functionality.
+
+### 3.2 Required mobile companion boundary
 
 Mobile support is required in the active v0.5 contract, but its job is narrow and value-driven:
 

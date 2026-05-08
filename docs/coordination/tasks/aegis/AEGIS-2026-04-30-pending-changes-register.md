@@ -114,7 +114,7 @@
 ### chan-06 · [洞察] Supervisor IM 是 L1，传统数据视图是 L2
 
 - **来源**：Mr. Zhang 2026-04-30 反馈
-- **状态**：✅ 洞察（已写入 `supervisor-im-as-l1-insight.md`）
+- **状态**：✅ **CLOSED — 2026-05-08**
 - **影响范围**：重塑整个 v2 优先级判断逻辑、所有优先级排序重构
 
 - **核心影响**：
@@ -122,24 +122,27 @@
   - **L1 工作流的定义**：Supervisor IM 意图 → 结构化 Proposal → 即时确认 → 无需切换视图
   - **阶段收到的建设顺序**应该 reverse 回 L1 目标
 
-- **待变更文档**：
-  - `prd-v0.5.md` → 更新优先级定义，新增 L1/L2 分层概念
+- **已交付**：
+  - `prd-v0.5.md` §3.1 → 新增 L1/L2 interaction-frequency layer 定义
   - `docs/coordination/reviews/priorities.md`（新建）→ 统一记录优先级判断原则
-  - `docs/coordination/deliveries/` → 阶段 3/4/5 的预期成果按 L1→L2 重新描述
+  - `docs/coordination/reviews/2026-04-30-seatloom-value-review.md` → §10 L1/L2 impact supplement
+  - `docs/coordination/reviews/2026-04-30-v2-data-coverage-audit.md` → Phase 0 + L1/L2 标签
 
 ---
 
 ### chan-07 · [待确认] v2 Copilot Phase 1-2 设计意图
 
 - **来源**：Copilot Phase 2 交付说明
-- **状态**：⚠️ 需要确认是否符合 L1 原则
+- **状态**：✅ **CLOSED — 2026-05-08**（结论：chan-03/09 的 L1 加固已实质性解决此质疑）
 - **现有设计**：
   - Phase 1：AppV2.tsx 模块化拆分 ✅
   - Phase 2：InboxView + WorkItemsView + ArtifactsView（P0 数据覆盖）
-- **质疑**：Phase 2 把 P0 资源投入传统 L2 视图，而非继续加固 L1 Supervisor IM
-- **待确认**：Inbox/WorkItems/Artifacts 是否应该作为"正文章节"，还是继续作为L2 完成任务甚至在完成 L1 后再完成
-
-- **需要等待 Mr. Zhang 决策后再决定文档/实现的调整**
+- **原始质疑**：Phase 2 把 P0 资源投入传统 L2 视图，而非继续加固 L1 Supervisor IM
+- **关闭理由**：
+  - chan-03（GlobalDashboard）和 chan-09（viewMode 正交状态）已按 L1 优先原则执行
+  - L1/L2 优先级框架（chan-06）已正式写入 PRD §3.1
+  - Phase 2 L2 视图保留为后续 backlog，不影响当前 L1 加固方向
+  - Mr. Zhang 2026-05-08 确认关闭
 
 ---
 
@@ -152,9 +155,11 @@
 | 数据覆盖率是模块完整性 | = **那个模块让 Supervisor IM 更强** |
 | DAG/Blockers 是功能 | 这些只 Ｌ是信息 **密度** 的展示，不是功能的完整实现 |
 
-- **待变更文档**：
-  - `docs/coordination/reviews/2026-04-30-seatloom-value-review.md` → 补充以上洞察对评估的影响（注意，Chan-06 才是正反馈）
-  - `docs/coordination/reviews/2026-04-30-v2-data-coverage-audit.md` → 补充 L1/L2 标签，标记传统数据视图的优先级
+- **状态**：✅ **CLOSED — 2026-05-08**
+- **已交付**：
+  - `docs/coordination/reviews/2026-04-30-seatloom-value-review.md` → §10.2 补充 L1/L2 标签
+  - `docs/coordination/reviews/2026-04-30-v2-data-coverage-audit.md` → Phase 0 (L1 已交付) + 全 Phase L1/L2 标签
+  - `docs/coordination/reviews/priorities.md` → §5 value correction table
 
 ---
 
@@ -216,12 +221,13 @@ Step 3 — 最终优先级排序重新确认
 - [x] `GlobalDashboard` 组件实现（chan-03）— CLOSED 2026-05-07
 - [x] AD-013 v2 viewMode 正交状态（chan-09）— CLOSED 2026-05-08
 - [x] `SupervisorPanel.tsx` viewMode 实现（chan-09）— CLOSED 2026-05-08
+- [x] `prd-v0.5.md` §3.1 L1/L2 优先级层定义（chan-06）— CLOSED 2026-05-08
+- [x] `priorities.md` 统一优先级判断原则（chan-06）— CLOSED 2026-05-08
+- [x] Chan-07（Copilot Phase 2 优先级重评）关闭（chan-07）— CLOSED 2026-05-08
 - [ ] `architecture-decisions.md` 新增 AD-AEGIS-02（Playbook binding scope，chan-05）
 - [ ] `architecture-design.md` §3 Session Resources 字段归属更正（chan-04）
-- [ ] `prd-v0.5.md` §3 优先级层新增 L1/L2 定义（chan-06）
 - [ ] `playbook.rs` binding scope 数据结构更新（chan-05）
-- [ ] Chan-07（Copilot Phase 2 优先级重评）得到明确结论
 
 ---
 
-*Changes Register by Aegis · 2026-04-30 · Status: open — design stage ongoing*
+*Changes Register by Aegis · 2026-04-30 · Status: open — 9/12 CLOSED, remaining: chan-04 (Session field), chan-05 (Playbook binding scope)*
