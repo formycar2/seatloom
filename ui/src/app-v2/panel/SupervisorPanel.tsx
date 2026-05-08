@@ -21,8 +21,10 @@ import { MessageBubble } from '../components/MessageBubble';
 import { ChatInput } from '../components/ChatInput';
 import { ProjectDashboard } from '../dashboard/ProjectDashboard';
 import { GlobalDashboard } from '../dashboard/GlobalDashboard';
-import { SupervisorContextMode, SupervisorViewMode } from '../types';
+import { SupervisorContextMode, SupervisorViewMode, ChatMessage } from '../types';
 import { useDataStore } from '../../stores/useDataStore';
+import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
+import { api, isTauri } from '../../lib/api';
 
 const STORAGE_KEY_POS = 'sl-supervisor-pos';
 const STORAGE_KEY_SIZE = 'sl-supervisor-size';
@@ -232,7 +234,71 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
 
   // Data
   const activeContact = MOCK_CONTACTS.find(c => c.id === activeContactId) || MOCK_CONTACTS[0];
-  const messages = MOCK_MESSAGES[activeContactId] || [];
+  const mockMessages = MOCK_MESSAGES[activeContactId] || [];
+
+  // Local session messages keyed by contactId. When the user sends via
+  // ChatInput and the target seat has a live PTY session, we route the input
+  // into the PTY and append a local echo so the user sees what they sent.
+  const [localMessages, setLocalMessages] = useState<Record<string, ChatMessage[]>>({});
+  const messages = [...mockMessages, ...(localMessages[activeContactId] || [])];
+
+  // Live PTY session lookup (seat → sessionId), for routing.
+  const sessionFor = useLiveSessionsStore((s) => s.sessionFor);
+
+  const handleSend = useCallback(async (text: string) => {
+    if (!text) return;
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const echo: ChatMessage = {
+      id: `local-${Date.now()}`,
+      contactId: activeContactId,
+      from: 'user',
+      time: hhmm,
+      type: 'text',
+      content: text,
+    };
+    setLocalMessages((prev) => ({
+      ...prev,
+      [activeContactId]: [...(prev[activeContactId] || []), echo],
+    }));
+
+    // If the active contact is a seat with a live PTY session, route there.
+    if (activeContact.type === 'seat' && isTauri()) {
+      const sid = sessionFor(activeContact.name);
+      if (sid) {
+        try {
+          await api.ptyWrite(sid, text + '\n');
+        } catch (err) {
+          const errMsg: ChatMessage = {
+            id: `err-${Date.now()}`,
+            contactId: activeContactId,
+            from: 'contact',
+            time: hhmm,
+            type: 'text',
+            content: `[PTY write failed: ${String(err)}]`,
+          };
+          setLocalMessages((prev) => ({
+            ...prev,
+            [activeContactId]: [...(prev[activeContactId] || []), errMsg],
+          }));
+        }
+      } else {
+        // Seat has no live session — hint how to start one.
+        const hint: ChatMessage = {
+          id: `hint-${Date.now()}`,
+          contactId: activeContactId,
+          from: 'contact',
+          time: hhmm,
+          type: 'text',
+          content: `[${activeContact.name} has no live session. Launch one from the Sessions workspace to route messages.]`,
+        };
+        setLocalMessages((prev) => ({
+          ...prev,
+          [activeContactId]: [...(prev[activeContactId] || []), hint],
+        }));
+      }
+    }
+  }, [activeContactId, activeContact, sessionFor]);
 
   // For ProjectDashboard: find channel contact for activeProjectId
   const projectChannelForDashboard = MOCK_CONTACTS.find(
@@ -496,6 +562,7 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
                   inputRef={inputRef}
                   onEscape={onClose}
                   onRouteViaPO={(poId) => switchContact(poId)}
+                  onSend={handleSend}
                 />
               </>
             )}

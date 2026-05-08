@@ -14,7 +14,8 @@ export const ChatInput: React.FC<{
   inputRef: React.RefObject<HTMLInputElement | null>;
   onEscape: () => void;
   onRouteViaPO: (poId: string) => void;
-}> = ({ contact, allContacts, input, onInputChange, inputRef, onEscape, onRouteViaPO }) => {
+  onSend?: (text: string) => void;
+}> = ({ contact, allContacts, input, onInputChange, inputRef, onEscape, onRouteViaPO, onSend }) => {
   const [showRoutingGuard, setShowRoutingGuard] = useState(false);
 
   const isDirectWorker = contact.type === 'seat' && (contact.seatType === 'worker' || contact.seatType === 'verifier');
@@ -23,13 +24,15 @@ export const ChatInput: React.FC<{
     : null;
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    const text = input.trim();
+    if (!text) return;
     if (isDirectWorker && !showRoutingGuard) {
       setShowRoutingGuard(true);
       return;
     }
-    // Direct send (after guard confirmation)
+    // Direct send (after guard confirmation or non-worker contact).
     setShowRoutingGuard(false);
+    onSend?.(text);
     onInputChange('');
   };
 

@@ -11,12 +11,14 @@
 import React, { useEffect, useState } from 'react';
 import { api, isTauri } from '../../lib/api';
 import type { LaunchRequest, LiveSessionDto, SeatDto } from '../../lib/types-dto';
+import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
 import { SessionTerminal } from './SessionTerminal';
 
 interface LiveSessionState extends LiveSessionDto {
   exited?: boolean;
   exitCode?: number | null;
   label: string;
+  seatName?: string;
 }
 
 interface QuickLauncher {
@@ -48,6 +50,8 @@ export const SessionsWorkspace: React.FC = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
+  const clearSession = useLiveSessionsStore((s) => s.clearSession);
 
   // Hydrate seat list from backend on mount. Silently tolerates browser-dev.
   useEffect(() => {
@@ -75,8 +79,9 @@ export const SessionsWorkspace: React.FC = () => {
       const label = seat
         ? `${seat.name} · ${launcher.label}`
         : `${launcher.label}`;
-      setSessions((prev) => [...prev, { ...live, label }]);
+      setSessions((prev) => [...prev, { ...live, label, seatName: seat?.name }]);
       setActiveId(live.id);
+      if (seat?.name) setSessionForSeat(seat.name, live.id);
     } catch (e) {
       setError(`launch failed: ${String(e)}`);
     } finally {
@@ -104,6 +109,7 @@ export const SessionsWorkspace: React.FC = () => {
     setSessions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, exited: true, exitCode: code } : s)),
     );
+    clearSession(id);
   };
 
   return (
