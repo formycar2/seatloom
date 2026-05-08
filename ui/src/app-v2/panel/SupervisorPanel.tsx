@@ -14,7 +14,6 @@
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { MOCK_CONTACTS, MOCK_MESSAGES } from '../mock-data';
 import { Avatar } from '../components/Avatar';
 import { ContactRow } from '../components/ContactRow';
 import { MessageBubble } from '../components/MessageBubble';
@@ -25,6 +24,7 @@ import { SupervisorContextMode, SupervisorViewMode, ChatMessage } from '../types
 import { useDataStore } from '../../stores/useDataStore';
 import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
 import { api, isTauri } from '../../lib/api';
+import { useContacts, useMessages, backendSeatIdFromContact } from '../hooks/useSupervisorData';
 
 const STORAGE_KEY_POS = 'sl-supervisor-pos';
 const STORAGE_KEY_SIZE = 'sl-supervisor-size';
@@ -65,11 +65,13 @@ function loadInitialContext(): {
     }
   }
 
-  // viewMode stale fallback (chan-09 §E)
+  // viewMode stale fallback (chan-09 §E). With backend-driven contacts the
+  // strict membership check happens at render time (activeContact resolution
+  // falls back to contacts[0]), so init-time we just honour the saved view.
   let viewMode: SupervisorViewMode = 'dashboard';
   if (rawView === 'chat') {
     const savedContact = localStorage.getItem('sl-supervisor-active-contact');
-    if (savedContact && MOCK_CONTACTS.some((c) => c.id === savedContact)) {
+    if (savedContact) {
       viewMode = 'chat';
     }
   }
@@ -77,20 +79,21 @@ function loadInitialContext(): {
   return { mode, activeProjectId, viewMode };
 }
 
-// Resolve project display name: useDataStore → channel contact name → projectId fallback.
+// Resolve project display name: useDataStore → projectId fallback.
 function resolveProjectName(projectId: string | undefined): string {
   if (!projectId) return '';
   const proj = useDataStore.getState().projects.find((p) => p.id === projectId);
   if (proj) return proj.name;
-  const channel = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === projectId);
-  return channel?.name || projectId;
+  return projectId;
 }
 
 export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  // Live contact list and message stream from real backend data.
+  const contacts = useContacts();
+
   const [activeContactId, setActiveContactId] = useState(() => {
     const saved = localStorage.getItem('sl-supervisor-active-contact');
-    if (saved && MOCK_CONTACTS.some(c => c.id === saved)) return saved;
-    return 'supervisor';
+    return saved || 'supervisor';
   });
   const [input, setInput] = useState(() => localStorage.getItem(`sl-supervisor-draft-${localStorage.getItem('sl-supervisor-active-contact') || 'supervisor'}`) || '');
   const [search, setSearch] = useState('');
@@ -137,9 +140,9 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   // 面包屑中间层点击 + GlobalDashboard onSelectProject：进入 project 并同步 contact 高亮到 project channel
   const enterProjectFromBreadcrumb = useCallback((projectId: string) => {
     enterProject(projectId);
-    const ch = MOCK_CONTACTS.find((c) => c.type === 'project-channel' && c.projectId === projectId);
+    const ch = contacts.find((c) => c.type === 'project-channel' && c.projectId === projectId);
     if (ch) setActiveContactId(ch.id);
-  }, [enterProject]);
+  }, [enterProject, contacts]);
 
   // Position & size persistence
   const savedRef = useRef(loadSaved());
@@ -183,7 +186,7 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
     setActiveContactId(id);
     setInput(localStorage.getItem(`sl-supervisor-draft-${id}`) || '');
     setSearch('');
-    const contact = MOCK_CONTACTS.find((c) => c.id === id);
+    const contact = contacts.find((c) => c.id === id);
     if (!contact) return;
     if (contact.type === 'project-channel' && contact.projectId) {
       enterProject(contact.projectId);
@@ -232,85 +235,49 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
     window.addEventListener('keydown', fn); return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
 
-  // Data
-  const activeContact = MOCK_CONTACTS.find(c => c.id === activeContactId) || MOCK_CONTACTS[0];
-  const mockMessages = MOCK_MESSAGES[activeContactId] || [];
-
-  // Local session messages keyed by contactId. When the user sends via
-  // ChatInput and the target seat has a live PTY session, we route the input
-  // into the PTY and append a local echo so the user sees what they sent.
-  const [localMessages, setLocalMessages] = useState<Record<string, ChatMessage[]>>({});
-  const messages = [...mockMessages, ...(localMessages[activeContactId] || [])];
+  // Data — backend-driven via hooks (see useSupervisorData.ts).
+  const activeContact = contacts.find(c => c.id === activeContactId) || contacts[0];
+  const messages = useMessages(activeContact ?? null);
 
   // Live PTY session lookup (seat → sessionId), for routing.
   const sessionFor = useLiveSessionsStore((s) => s.sessionFor);
 
   const handleSend = useCallback(async (text: string) => {
-    if (!text) return;
-    const now = new Date();
-    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const echo: ChatMessage = {
-      id: `local-${Date.now()}`,
-      contactId: activeContactId,
-      from: 'user',
-      time: hhmm,
-      type: 'text',
-      content: text,
-    };
-    setLocalMessages((prev) => ({
-      ...prev,
-      [activeContactId]: [...(prev[activeContactId] || []), echo],
-    }));
+    if (!text || !activeContact) return;
+    if (!isTauri()) return;
 
-    // If the active contact is a seat with a live PTY session, route there.
-    if (activeContact.type === 'seat' && isTauri()) {
+    // Persist to canonical_events. The backend emits canonical:appended
+    // which the useMessages hook listens for, so the bubble appears live.
+    try {
+      const targetSeatId = activeContact.type === 'seat'
+        ? backendSeatIdFromContact(activeContact)
+        : undefined;
+      await api.appendSupervisorMessage({ targetSeatId, content: text });
+    } catch (err) {
+      console.error('[SupervisorPanel] appendSupervisorMessage failed:', err);
+    }
+
+    // Forward into a live PTY session if the target seat has one.
+    if (activeContact.type === 'seat') {
       const sid = sessionFor(activeContact.name);
       if (sid) {
-        try {
-          await api.ptyWrite(sid, text + '\n');
-        } catch (err) {
-          const errMsg: ChatMessage = {
-            id: `err-${Date.now()}`,
-            contactId: activeContactId,
-            from: 'contact',
-            time: hhmm,
-            type: 'text',
-            content: `[PTY write failed: ${String(err)}]`,
-          };
-          setLocalMessages((prev) => ({
-            ...prev,
-            [activeContactId]: [...(prev[activeContactId] || []), errMsg],
-          }));
-        }
-      } else {
-        // Seat has no live session — hint how to start one.
-        const hint: ChatMessage = {
-          id: `hint-${Date.now()}`,
-          contactId: activeContactId,
-          from: 'contact',
-          time: hhmm,
-          type: 'text',
-          content: `[${activeContact.name} has no live session. Launch one from the Sessions workspace to route messages.]`,
-        };
-        setLocalMessages((prev) => ({
-          ...prev,
-          [activeContactId]: [...(prev[activeContactId] || []), hint],
-        }));
+        try { await api.ptyWrite(sid, text + '\n'); }
+        catch (err) { console.error('[SupervisorPanel] ptyWrite failed:', err); }
       }
     }
-  }, [activeContactId, activeContact, sessionFor]);
+  }, [activeContact, sessionFor]);
 
   // For ProjectDashboard: find channel contact for activeProjectId
-  const projectChannelForDashboard = MOCK_CONTACTS.find(
+  const projectChannelForDashboard = contacts.find(
     (c) => c.type === 'project-channel' && c.projectId === activeProjectId
   );
 
   // Group contacts by project (for sidebar)
-  const projects = new Map<string, typeof MOCK_CONTACTS>();
-  const channels: typeof MOCK_CONTACTS = [];
-  const supervisorContact = MOCK_CONTACTS.find(c => c.type === 'supervisor')!;
+  const projects = new Map<string, typeof contacts>();
+  const channels: typeof contacts = [];
+  const supervisorContact = contacts.find(c => c.type === 'supervisor') ?? contacts[0];
 
-  MOCK_CONTACTS.forEach(c => {
+  contacts.forEach(c => {
     if (c.type === 'supervisor') return;
     if (c.type === 'project-channel') { channels.push(c); return; }
     const key = c.projectId || '_';
@@ -319,7 +286,7 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   });
 
   const filteredContacts = search.trim()
-    ? MOCK_CONTACTS.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || (c.role || '').includes(search))
+    ? contacts.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || (c.role || '').includes(search))
     : null;
 
   const listWidth = 220;
@@ -556,7 +523,7 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
                 {/* Routing governance + Input */}
                 <ChatInput
                   contact={activeContact}
-                  allContacts={MOCK_CONTACTS}
+                  allContacts={contacts}
                   input={input}
                   onInputChange={setInput}
                   inputRef={inputRef}
