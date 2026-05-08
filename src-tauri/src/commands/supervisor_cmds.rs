@@ -8,7 +8,7 @@
 use crate::dto::CanonicalEventDto;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 fn new_event_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -85,4 +85,57 @@ pub async fn cmd_list_supervisor_messages(
         .await
         .map(|rows| rows.into_iter().map(CanonicalEventDto::from).collect())
         .map_err(|e| e.to_string())
+}
+
+// -----------------------------------------------------------------------------
+// Multi-window management (R3)
+// -----------------------------------------------------------------------------
+
+const SUPERVISOR_WINDOW_LABEL: &str = "supervisor";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorWindowStatus {
+    pub detached: bool,
+}
+
+/// Open (or focus) the detached Supervisor IM window.
+#[tauri::command]
+pub async fn cmd_open_supervisor_window(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(SUPERVISOR_WINDOW_LABEL) {
+        win.set_focus().map_err(|e| e.to_string())?;
+        let _ = app.emit("supervisor:detached", ());
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        SUPERVISOR_WINDOW_LABEL,
+        WebviewUrl::App("supervisor.html".into()),
+    )
+    .title("SeatLoom · Supervisor")
+    .inner_size(720.0, 620.0)
+    .min_inner_size(480.0, 420.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    let _ = app.emit("supervisor:detached", ());
+    Ok(())
+}
+
+/// Close the detached Supervisor IM window (if present).
+#[tauri::command]
+pub async fn cmd_close_supervisor_window(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(SUPERVISOR_WINDOW_LABEL) {
+        win.close().map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("supervisor:reembedded", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cmd_supervisor_window_status(
+    app: AppHandle,
+) -> Result<SupervisorWindowStatus, String> {
+    Ok(SupervisorWindowStatus {
+        detached: app.get_webview_window(SUPERVISOR_WINDOW_LABEL).is_some(),
+    })
 }

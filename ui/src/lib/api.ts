@@ -118,6 +118,10 @@ export const api = {
     },
   ): Promise<CanonicalEventDto> =>
     invoke('cmd_append_supervisor_message', { request }),
+  openSupervisorWindow: (): Promise<void> => invoke('cmd_open_supervisor_window'),
+  closeSupervisorWindow: (): Promise<void> => invoke('cmd_close_supervisor_window'),
+  supervisorWindowStatus: (): Promise<{ detached: boolean }> =>
+    invoke('cmd_supervisor_window_status'),
 
   // --- Inbox ---
   getInbox: (): Promise<InboxPayloadDto> => invoke('cmd_get_inbox'),
@@ -160,6 +164,14 @@ export function onCanonicalAppended(
   return listen<import('./types-dto').CanonicalEventDto>('canonical:appended', (e) =>
     handler(e.payload),
   );
+}
+
+export function onSupervisorDetached(handler: () => void): Promise<UnlistenFn> {
+  return listen<void>('supervisor:detached', () => handler());
+}
+
+export function onSupervisorReembedded(handler: () => void): Promise<UnlistenFn> {
+  return listen<void>('supervisor:reembedded', () => handler());
 }
 
 /**

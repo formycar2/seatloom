@@ -22,7 +22,7 @@ import InitDialog from './components/InitDialog';
 import ShortcutHelpDialog from './components/ShortcutHelpDialog';
 import SupervisorCommandBar from './components/SupervisorCommandBar';
 import { SupervisorIM } from './supervisor/SupervisorIM';
-import { api, isTauri } from './lib/api';
+import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
 import SwitchProtectionDialog from './components/SwitchProtectionDialog';
@@ -58,19 +58,47 @@ const App: React.FC = () => {
     localStorage.setItem('seatloom.supervisor.open', showSupervisorIM ? 'true' : 'false');
   }, [showSupervisorIM]);
 
+  // Reflect the current detached/embedded state from the backend on mount so
+  // reopening the main window after detaching the IM doesn't re-show the
+  // embedded panel next to the detached window.
+  useEffect(() => {
+    if (!isTauri()) return;
+    api.supervisorWindowStatus()
+      .then((s) => setSupervisorDetached(s.detached))
+      .catch(() => {});
+    let offDetached: (() => void) | null = null;
+    let offReembed: (() => void) | null = null;
+    onSupervisorDetached(() => {
+      setSupervisorDetached(true);
+      setShowSupervisorIM(false);
+    }).then((fn) => { offDetached = fn; });
+    onSupervisorReembedded(() => {
+      setSupervisorDetached(false);
+    }).then((fn) => { offReembed = fn; });
+    return () => {
+      if (offDetached) offDetached();
+      if (offReembed) offReembed();
+    };
+  }, []);
+
   // ⌘K toggles the Supervisor IM — the L1 surface. The V1 command bar is
   // still registered on ⌘⇧K for backwards compatibility with existing
-  // global shortcuts.
+  // global shortcuts. If the IM is detached, ⌘K focuses that window
+  // instead of reopening the embedded panel.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'k') {
         e.preventDefault();
+        if (supervisorDetached && isTauri()) {
+          api.openSupervisorWindow().catch(() => {});
+          return;
+        }
         setShowSupervisorIM((v) => !v);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [supervisorDetached]);
 
   const [activeForm, setActiveForm] = useState<FormView>('none');
   const [isInitOpen, setIsInitOpen] = useState(false);
@@ -292,15 +320,24 @@ const App: React.FC = () => {
       <ShortcutHelpDialog isOpen={showHelp} onClose={() => setShowHelp(false)} />
       <SupervisorCommandBar isOpen={showCommandBar} onClose={() => setShowCommandBar(false)} onConfirmProposal={handleConfirmProposal} />
 
-      {/* Supervisor IM (L1 surface) — embedded by default; detach in R3. */}
+      {/* Supervisor IM (L1 surface) — embedded by default; ⌘K opens; Detach
+          opens it in its own OS-level Tauri window (R3). */}
       {showSupervisorIM && !supervisorDetached && (
         <SupervisorIM
           embedded
           onClose={() => setShowSupervisorIM(false)}
           onDetach={async () => {
-            // Phase R3 wiring lands next; for now toggle locally so the UI affordance is visible.
-            setSupervisorDetached(true);
-            setShowSupervisorIM(false);
+            if (!isTauri()) {
+              // Local fallback for browser-dev: visually acknowledge.
+              setSupervisorDetached(true);
+              setShowSupervisorIM(false);
+              return;
+            }
+            try {
+              await api.openSupervisorWindow();
+            } catch (e) {
+              console.error('openSupervisorWindow failed', e);
+            }
           }}
         />
       )}

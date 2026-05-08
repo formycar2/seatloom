@@ -36,7 +36,10 @@ use commands::{
         cmd_list_checkpoints_for_session, cmd_list_live_sessions, cmd_list_sessions,
         cmd_list_sessions_for_seat, cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
-    supervisor_cmds::{cmd_append_supervisor_message, cmd_list_supervisor_messages},
+    supervisor_cmds::{
+        cmd_append_supervisor_message, cmd_close_supervisor_window,
+        cmd_list_supervisor_messages, cmd_open_supervisor_window, cmd_supervisor_window_status,
+    },
     timeline_cmds::{cmd_list_events, cmd_list_events_by_type},
     workitem_cmds::{cmd_get_workitem, cmd_list_workitems},
 };
@@ -137,6 +140,9 @@ fn main() {
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,
+            cmd_open_supervisor_window,
+            cmd_close_supervisor_window,
+            cmd_supervisor_window_status,
             // inbox
             cmd_get_inbox,
             // prompts
