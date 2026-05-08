@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './styles/tokens.css';
 import { SeatLoomLogo, StatusDot, Avatar } from './components/Avatar';
 import { SupervisorPanel } from './panel/SupervisorPanel';
+import { SessionsWorkspace } from './panel/SessionsWorkspace';
 import { MOCK_CONTACTS } from './mock-data';
 
 const AppV2: React.FC = () => {
@@ -82,24 +83,7 @@ const AppV2: React.FC = () => {
       </header>
 
       {/* ═══ Workspace ═══ */}
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-        <div style={{ textAlign: 'center', maxWidth: 480 }}>
-          <div style={{ fontSize: 48, marginBottom: 20, opacity: 0.12 }}>💬</div>
-          <h2 style={{ fontSize: 20, fontWeight: 600, color: 'var(--sl-text-primary)', marginBottom: 8 }}>监督工作台</h2>
-          <p style={{ fontSize: 14, color: 'var(--sl-text-secondary)', lineHeight: 1.7, marginBottom: 28 }}>
-            通过 Supervisor 与席位团队协作。
-            <br />按 <kbd style={{ padding: '1px 6px', fontSize: 12, background: 'var(--sl-surface-hover)', border: '1px solid var(--sl-border-light)', borderRadius: 'var(--sl-radius-sm)' }}>⌘K</kbd> 打开对话。
-          </p>
-          <button onClick={() => setShowSupervisor(true)} style={{
-            padding: '10px 24px', fontSize: 14, fontWeight: 600, color: 'white',
-            background: 'var(--sl-brand)', border: 'none', borderRadius: 'var(--sl-radius-md)',
-            cursor: 'pointer', boxShadow: '0 1px 3px rgba(47,111,235,0.3)', transition: 'all 120ms ease',
-          }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--sl-brand-hover)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'var(--sl-brand)'; }}
-          >打开 Supervisor</button>
-        </div>
-      </div>
+      <SessionsWorkspace />
 
       {/* ═══ Floating Supervisor ═══ */}
       {showSupervisor && <SupervisorPanel onClose={() => setShowSupervisor(false)} />}
