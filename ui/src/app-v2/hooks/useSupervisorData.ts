@@ -123,18 +123,92 @@ function formatTime(iso: string): string {
 
 function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage {
   const payload = (evt.payload ?? {}) as Record<string, any>;
-  const content =
-    typeof payload.content === 'string'
-      ? payload.content
-      : `[${evt.eventType}]`;
   const fromUser = (evt.actorRef ?? '').toLowerCase().startsWith('human');
+
+  // Prefer explicit content; otherwise synthesise a human-readable line from
+  // the event type + payload / actor so the ledger becomes a readable feed
+  // instead of opaque event ids.
+  let content = '';
+  let type: ChatMessage['type'] = 'text';
+
+  if (typeof payload.content === 'string') {
+    content = payload.content;
+  } else {
+    const etype = evt.eventType;
+    switch (etype) {
+      case 'SessionStarted':
+        content = `🟢 Session started — ${payload.session_id ?? ''}`;
+        type = 'info';
+        break;
+      case 'SessionCompleted':
+        content = `⚪ Session completed — ${payload.session_id ?? ''}`;
+        type = 'info';
+        break;
+      case 'SessionFailed':
+      case 'SessionInterrupted':
+        content = `🔴 ${etype} — ${payload.session_id ?? ''}`;
+        type = 'alert';
+        break;
+      case 'ArtifactCreated':
+        content = `📄 Artifact created — ${payload.artifact_id ?? payload.title ?? ''}`;
+        type = 'info';
+        break;
+      case 'HandoffDrafted':
+      case 'HandoffSent':
+      case 'HandoffReceived':
+      case 'HandoffAccepted':
+      case 'HandoffWorking':
+      case 'HandoffReturned':
+      case 'HandoffCompleted':
+        content = `📤 ${etype} — ${payload.handoff_id ?? ''}`;
+        type = 'delivery';
+        break;
+      case 'WorkItemCreated':
+        content = `📋 WorkItem created — ${payload.title ?? payload.workitem_id ?? ''}`;
+        type = 'progress';
+        break;
+      case 'WorkItemStatusChanged':
+        content = `📋 WorkItem status → ${payload.new_status ?? ''} (${payload.workitem_id ?? ''})`;
+        type = 'progress';
+        break;
+      case 'ReviewVerdictIssued':
+        content = `✅ Review verdict: ${payload.verdict ?? ''} — ${payload.workitem_id ?? ''}`;
+        type = 'verification';
+        break;
+      case 'SeatDelegationIssued':
+        content = `🔁 Delegation issued: ${payload.from_seat ?? ''} → ${payload.to_seat ?? ''}`;
+        type = 'info';
+        break;
+      case 'SeatDelegationClosed':
+        content = `🔁 Delegation closed — ${payload.delegation_id ?? ''}`;
+        type = 'info';
+        break;
+      case 'CheckpointCreated':
+        content = `📌 Checkpoint created`;
+        type = 'info';
+        break;
+      case 'PromptDetected':
+        content = `⚠️ Prompt detected (${payload.prompt_kind ?? ''})`;
+        type = 'alert';
+        break;
+      case 'SupervisorMessage':
+      case 'SeatResponse':
+        content = payload.content ?? '[empty message]';
+        type = 'text';
+        break;
+      default:
+        content = `[${etype}]`;
+        type = 'info';
+    }
+  }
+
   return {
     id: evt.id,
     contactId,
     from: fromUser ? 'user' : 'contact',
     content,
     time: formatTime(evt.occurredAt),
-    type: 'text',
+    type,
   };
 }
 
@@ -143,6 +217,11 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
  *   - the chat history (sorted ascending by time) loaded from
  *     cmd_list_supervisor_messages on contact change
  *   - newly appended messages received via canonical:appended
+ *
+ * Routing rules per contact type:
+ *   - seat              → events authored by the seat OR addressed to it
+ *   - supervisor        → all events (global activity feed)
+ *   - project-channel   → all events for the project (v0.1 single project: all)
  */
 export function useMessages(contact: ChatContact | null): ChatMessage[] {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -154,7 +233,7 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
       ? backendSeatIdFromContact(contact)
       : undefined;
     let cancelled = false;
-    api.listSupervisorMessages({ targetSeatId, limit: 200 })
+    api.listSupervisorMessages({ targetSeatId, limit: 400 })
       .then((rows) => {
         if (cancelled) return;
         setMessages(rows.map((r) => eventToMessage(r, contact.id)));
@@ -168,15 +247,19 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
     if (!isTauri()) return;
     let unlisten: (() => void) | null = null;
     onCanonicalAppended((evt) => {
-      const target = (evt.payload as any)?.target_seat_id ?? null;
+      const targetFromPayload = (evt.payload as any)?.target_seat_id ?? null;
+      const actorRef = evt.actorRef ?? '';
+      let accept = false;
       if (contact.type === 'seat') {
         const expected = backendSeatIdFromContact(contact);
-        if (target !== expected) return;
-      } else if (contact.type === 'supervisor') {
-        if (target != null) return;
-      } else {
-        return; // project-channel: no message routing for now
+        if (!expected) return;
+        // Accept if the seat is the actor OR the addressed target.
+        accept = actorRef === `seat:${expected}` || targetFromPayload === expected;
+      } else if (contact.type === 'supervisor' || contact.type === 'project-channel') {
+        // Both surfaces consume the global activity feed for v0.1.
+        accept = true;
       }
+      if (!accept) return;
       setMessages((prev) => {
         if (prev.some((m) => m.id === evt.id)) return prev;
         return [...prev, eventToMessage(evt, contact.id)];

@@ -364,8 +364,12 @@ impl SeatloomDb {
         Ok(row_to_event(&row))
     }
 
-    /// List supervisor-flavoured messages (both SupervisorMessage and SeatResponse),
-    /// optionally filtered to those targeting a given seat via event_object_refs.
+    /// List supervisor-flavoured messages + related activity events, optionally
+    /// filtered to events relevant to a given seat. A seat-targeted feed shows:
+    ///   - events authored by the seat         (`actor_ref = 'seat:<seat_id>'`)
+    ///   - messages addressed to the seat      (`payload->>'target_seat_id' = <seat_id>`)
+    /// so both the user's outbound SupervisorMessages and the seat's own
+    /// SessionStarted/HandoffSent/etc. events appear in its chat.
     /// Sort: occurred_at ascending (chat-oriented).
     pub async fn list_supervisor_messages(
         &self,
@@ -374,23 +378,23 @@ impl SeatloomDb {
     ) -> Result<Vec<CanonicalEventRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = if let Some(seat_id) = target_seat_id {
-            client
-                .query(
-                    "SELECT e.id, e.event_type, e.occurred_at, e.actor_ref, e.payload, e.created_at \
-                     FROM canonical_events e \
-                     INNER JOIN event_object_refs r \
-                       ON r.event_id = e.id AND r.ref_type = 'seat' AND r.ref_id = $1 \
-                     WHERE e.event_type IN ('SupervisorMessage','SeatResponse','PlanProposed','PromptDetected','PromptResolved') \
-                     ORDER BY e.occurred_at ASC LIMIT $2",
-                    &[&seat_id, &limit],
-                )
-                .await?
-        } else {
+            let actor_ref = format!("seat:{}", seat_id);
             client
                 .query(
                     "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
                      FROM canonical_events \
-                     WHERE event_type IN ('SupervisorMessage','SeatResponse','PlanProposed','PromptDetected','PromptResolved') \
+                     WHERE actor_ref = $1 \
+                        OR payload->>'target_seat_id' = $2 \
+                     ORDER BY occurred_at ASC LIMIT $3",
+                    &[&actor_ref, &seat_id, &limit],
+                )
+                .await?
+        } else {
+            // Supervisor view: all events in the ledger form the global activity feed.
+            client
+                .query(
+                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                     FROM canonical_events \
                      ORDER BY occurred_at ASC LIMIT $1",
                     &[&limit],
                 )

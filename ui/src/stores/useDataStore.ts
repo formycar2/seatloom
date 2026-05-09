@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Artifact, CanonicalEvent, Handoff, Project, ProjectData, Seat, Session, WorkItem } from '../types';
+import { Artifact, CanonicalEvent, Handoff, InboxItem, Project, ProjectData, Seat, Session, WorkItem } from '../types';
 import { api, isTauri } from '../lib/api';
 import {
   artifactFromDto,
@@ -1598,6 +1598,58 @@ export const useDataStore = create<DataState>((set, get) => ({
         const sessions: Session[] = sessionsDto.map(sessionFromDto);
         const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
 
+        // Derive inbox items from workitem/handoff state so V1 InboxView and
+        // SupervisionDashboard show real "needs attention" rows. Real
+        // InboxItem persistence (a routing engine) is deferred; this view
+        // is computed-from-state for now.
+        const inboxItems: InboxItem[] = [];
+        for (const w of workItems) {
+          if (w.status === 'Blocked') {
+            inboxItems.push({
+              id: `inbox-wi-blocked-${w.id}`,
+              priority: w.priority === 'Critical' ? 'Critical' : 'Normal',
+              type: 'WorkItemBlocked',
+              actor: w.owner_seat_id ?? 'unknown',
+              object_ref: w.id,
+              summary: `Blocked: ${w.title}`,
+              timestamp: w.updated_at,
+            });
+          } else if (w.status === 'InReview') {
+            inboxItems.push({
+              id: `inbox-wi-review-${w.id}`,
+              priority: 'Normal',
+              type: 'ReviewPending',
+              actor: w.owner_seat_id ?? 'unknown',
+              object_ref: w.id,
+              summary: `Review pending: ${w.title}`,
+              timestamp: w.updated_at,
+            });
+          } else if (w.status === 'Drifted') {
+            inboxItems.push({
+              id: `inbox-wi-drift-${w.id}`,
+              priority: 'Critical',
+              type: 'DriftDetected',
+              actor: w.owner_seat_id ?? 'unknown',
+              object_ref: w.id,
+              summary: `Drift: ${w.title}`,
+              timestamp: w.updated_at,
+            });
+          }
+        }
+        for (const h of handoffs) {
+          if (h.status === 'Sent' || h.status === 'Received' || h.status === 'Working') {
+            inboxItems.push({
+              id: `inbox-ho-${h.id}`,
+              priority: h.required_receipt ? 'Critical' : 'Normal',
+              type: 'HandoffPending',
+              actor: typeof h.from_ref === 'string' ? h.from_ref : (h.from_ref as any).Seat ?? 'unknown',
+              object_ref: h.id,
+              summary: `Handoff ${h.status.toLowerCase()}: ${h.purpose}`,
+              timestamp: h.sent_at ?? h.created_at,
+            });
+          }
+        }
+
         projectData[p.id] = {
           seats,
           sessions,
@@ -1605,7 +1657,7 @@ export const useDataStore = create<DataState>((set, get) => ({
           artifacts,
           handoffs,
           events,
-          inboxItems: [], // derived view; not hydrated for v0.1
+          inboxItems,
         };
       }
 
