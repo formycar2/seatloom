@@ -15,6 +15,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { useDataStore } from '../stores/useDataStore';
 import { useResponsive } from '../hooks/useResponsive';
 import ProjectSwitcher from './ProjectSwitcher';
+import { SeatLoomLogo } from '../app-v2/components/Avatar';
 
 export type NavTab =
   | 'dashboard'
@@ -67,6 +68,16 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
       className="flex flex-col h-full border-r bg-canvas transition-all duration-layout overflow-hidden shrink-0"
       style={{ width: effectiveCollapsed ? 48 : 180 }}
     >
+      {/* Brand logo */}
+      <div className="p-2 border-b border-border-subtle flex items-center gap-2" style={{ minHeight: 48 }}>
+        <SeatLoomLogo size={effectiveCollapsed ? 32 : 40} />
+        {!effectiveCollapsed && (
+          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--sl-text-primary)', letterSpacing: '-0.01em' }}>
+            SeatLoom
+          </span>
+        )}
+      </div>
+
       {/* Project switcher area */}
       <div className="p-2 border-b border-border-subtle">
         {effectiveCollapsed ? (

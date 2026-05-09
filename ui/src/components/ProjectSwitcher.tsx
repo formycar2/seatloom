@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
+import ReactDOM from 'react-dom';
 import { Check, ChevronDown, Clock, Folder, Pin, Search } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import { formatShortDateTimeZh } from '../utils/display';
@@ -11,8 +12,17 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
   const { projects, projectData, activeProjectId, pinProject } = useDataStore();
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+
+  useEffect(() => {
+    if (isOpen && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropdownPos({ top: rect.bottom + 8, left: rect.left });
+    }
+  }, [isOpen]);
 
   const filteredProjects = useMemo(
     () =>
@@ -25,6 +35,7 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg transition-all group focus:outline-none focus:ring-2 focus:ring-primary/20 ${
           isOpen ? 'bg-primary/10 border-primary text-primary shadow-sm' : 'bg-secondary border-border text-foreground hover:bg-muted'
@@ -35,10 +46,13 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
         <ChevronDown size={14} className={`text-muted-foreground transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
+      {isOpen && ReactDOM.createPortal(
         <>
-          <div className="fixed inset-0 z-40 bg-accent/20" onClick={() => setIsOpen(false)} />
-          <div className="absolute top-full left-0 mt-2 w-[360px] bg-card border border-border rounded-xl shadow-2xl z-50 overflow-hidden animate-in slide-in-from-top-2 duration-200 backdrop-blur-xl">
+          <div className="fixed inset-0 z-[9998] bg-accent/20" onClick={() => setIsOpen(false)} />
+          <div
+            className="w-[360px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden animate-in slide-in-from-top-2 duration-200 backdrop-blur-xl"
+            style={{ position: 'fixed', top: dropdownPos.top, left: dropdownPos.left, zIndex: 9999 }}
+          >
             <div className="p-3 border-b border-border bg-secondary/80">
               <div className="relative">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -135,7 +149,8 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
               </div>
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
