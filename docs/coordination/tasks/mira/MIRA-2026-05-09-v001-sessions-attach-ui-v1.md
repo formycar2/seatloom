@@ -30,6 +30,37 @@
 
 ---
 
+## Dependency Strategy: Build UI Skeleton with Mocks First, Wire Real API After A3 PASS
+
+The Tauri commands `cmd_list_tmux_sessions` and `cmd_attach_tmux_session` are implemented by **Nimbus A3** and may not be available when you start this packet. To unblock parallel work:
+
+**Phase A4-α (this packet)** — Build the UI skeleton with mock data:
+1. Implement the dropdown, Attach button, sessions tab list, and read-only xterm exactly as specified below.
+2. Replace `invoke('cmd_list_tmux_sessions')` with a hardcoded mock array, e.g.:
+   ```tsx
+   const MOCK_TMUX_SESSIONS: TmuxSessionInfo[] = [
+     { session_name: 'Lyra-po-seatloom', created_at: 0, attached: true },
+     { session_name: 'Nimbus-TechArchi-seatloom', created_at: 0, attached: true },
+     { session_name: 'Mira-UX/UED-seatloom', created_at: 0, attached: true },
+   ];
+   ```
+3. Replace `invoke('cmd_attach_tmux_session', ...)` with a no-op + `console.warn('A3 not yet available; mock attach for <session>')`.
+4. Mark each mock site with `// TODO(A4-β): replace with real api call after A3 PASS`.
+
+**Phase A4-β (separate follow-up commit, after A3 PASS)** — Wire real API:
+- Replace mock list with `await invoke<TmuxSessionInfo[]>('cmd_list_tmux_sessions')`.
+- Replace mock attach with real `await invoke('cmd_attach_tmux_session', { sessionId, tmuxSessionName, rows: 24, cols: 80 })`.
+- Subscribe to `session:output` Tauri events and feed into xterm.
+- This should be a small (~2-line + event subscription) follow-up commit. Lyra will issue a short delivery-spec for A4-β when A3 PASS.
+
+**Acceptance for A4 (this packet)**:
+- UI renders the dropdown + Attach button + sessions tab + read-only banner.
+- Selecting a mock session and clicking Attach adds a tab (with empty/placeholder xterm).
+- TypeScript clean, build green.
+- All `// TODO(A4-β)` markers visible in the diff so Mira can find them later.
+
+---
+
 ## Requirements
 
 ### 1. Replace Quick-Launcher Buttons with Attach Dropdown

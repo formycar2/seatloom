@@ -26,6 +26,21 @@ Two UI bugs surfaced during Mira's v01 delivery:
 
 2. **ProjectSwitcher dropdown clipped**: When the user clicks the ProjectSwitcher in the NavRail, the dropdown menu is clipped by an ancestor's `overflow: hidden` style (likely in `AppShell.tsx` or a parent container). The dropdown should render fully visible above all other UI elements.
 
+---
+
+## Prerequisite — Close v01 Before Starting A2
+
+Before beginning work on A2, you must finish the v01 delivery doc that is still outstanding:
+
+**Required artifact**: `docs/coordination/tasks/mira/MIRA-2026-05-09-v01-sessions-live-wiring-delivery-v1.md`
+
+Must contain:
+- Complete commit chain (578ff7c §A, 4651bb4 §B, 2f83624 §C) with `git show --stat` for each.
+- Three validation segments with **verbatim tool output** (no summaries): `tsc --noEmit`, `pnpm build`, and the on-screen observation Mr. Zhang asked for.
+- Scope-drift incident recorded faithfully in three parts: what happened, what was reverted (`b11d878`), what the corrective behavior is.
+
+A2 may not be dispatched or accepted until v01 delivery is posted and Aegis closes v01. Do not conflate v01 closure with A2 in the same commit — they are separate packets.
+
 ## Your Task
 
 Fix both issues in a **bounded, surgical** way. No layout redesigns, no i18n changes, no unrelated refactors.
