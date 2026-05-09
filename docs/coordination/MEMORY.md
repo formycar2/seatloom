@@ -246,7 +246,12 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 - [x] Nimbus Rust Foundation Hardening Accepted - PASS (2026-04-29, Lyra / Nimbus)
 - [x] Commit-Pinned Infrastructure Baseline Published (`track/infra-foundation` @ `d007721`, advanced to `a658086`) (2026-04-29, Lyra / Nimbus)
 - [x] Nimbus Real Collaboration PostgreSQL Baseline Accepted - PASS (2026-04-29, Lyra / Nimbus / Flux)
+- [x] SG-A §A1 (Nimbus V1 white-screen diagnosis) Accepted — PASS (no-fix) — commit 39af8b2 / tree HEAD 48af37d — symptom self-resolved, TopErrorBoundary remains armed (2026-05-09, Lyra / Nimbus)
+- [x] Mira v01 Sessions Live Wiring Accepted — PASS via Aegis factual-record takeover (e864392) — §A=578ff7c §B=4651bb4 §C=2f83624; 4 Mira delivery attempts failed checklist, escalation protocol invoked (2026-05-09, Lyra / Aegis / Mira)
+- [ ] SG-A §A2 Mira NavRail Logo + ProjectSwitcher Portal (unblocked — v01 closed)
+- [ ] SG-A §A3 Nimbus tmux pipe-pane attach read path (in progress)
+- [ ] SG-A §A4-α Mira SessionsWorkspace attach UI mock-first (dispatched)
 - [ ] MVP Implementation Start
 
 ---
-*Last Updated: 2026-04-29 (PostgreSQL baseline accepted; remote DB verification passed)*
+*Last Updated: 2026-05-09 (SG-A §A1 closed no-fix; v01 closed via Aegis takeover; A2 unblocked; A3 in progress; A4-α dispatched)*
