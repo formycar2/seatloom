@@ -256,11 +256,23 @@ File system watchers (per tmux-mirror R4 + AD-007 supersession) watch only `docs
 
 ### 3.2 Gap
 
-Schema state (`infra/postgres/schema/001_seatloom_core.sql`):
+Schema state (verified 2026-05-09 against `infra/postgres/schema/001..005_*.sql`):
 
-- `projects` table: PK `id`. Today contains a single seed row.
-- `project_role_bindings`: composite PK `(seat_id, project_id)` — multi-project capable.
-- `workitems`, `handoffs`, `artifacts`, `canonical_events`, `sessions`, `checkpoints`, `pipeline_runs`, `review_threads`, `prompt_instances`, `documents`: **no `project_id` column**.
+**Tables that already carry `project_id`** (schemas 002, 004, 005):
+
+- `documents` — schema 002, indexed
+- `review_threads` — schema 004, indexed
+- `prompt_instances` — schema 005, indexed
+- `channel_action_receipts` — schema 005, indexed
+- `project_role_bindings` — schema 001, composite PK
+
+**Tables that do NOT yet carry `project_id`** (schema 001 + 003 + part of 004):
+
+- `workitems`, `handoffs`, `artifacts`, `canonical_events`, `sessions` (schema 001)
+- `checkpoints`, `handoff_receipts`, `pipeline_runs` (schema 004)
+- `reconcile_runs`, `reconcile_items` (schema 003)
+
+The asymmetry is the root cause of the multi-project gap: artifact-side tables (added later, in schemas 002/004/005) were built multi-project-aware; the core operational tables in schema 001/003/the-pre-005-portion-of-004 still assume one project.
 
 Mr. Zhang has multiple active projects in tmux today: `seatloom`, plus `Zephyr-cn-gpu-infer-fabric` (a separate project) and `Onyx-data-seatloom` (extending seatloom but a distinct workstream). PRD US-P0-03 implies these should be browsable as distinct contexts.
 
@@ -275,12 +287,12 @@ Workitems, handoffs, artifacts, sessions become materialized views filtered by t
 **Pros**: minimal migration; aligns with §1.4 Option C (event-first).
 **Cons**: every join query must traverse events; query plans get more complex; some views may need denormalized `project_id` for index efficiency anyway.
 
-##### Option B — Add `project_id NOT NULL` to all top-level state tables (workitems, handoffs, artifacts, sessions, canonical_events, checkpoints, pipeline_runs, review_threads, prompt_instances, documents)
+##### Option B — Add `project_id NOT NULL` to the remaining 10 top-level state tables
 
-Each table carries its own `project_id` FK to `projects.id`. Reconcile sets it on insert based on the file path (`docs/coordination/...` ⇒ seatloom project; future `docs/projects/<other>/coordination/...` ⇒ other projects).
+Add the column to `workitems`, `handoffs`, `artifacts`, `canonical_events`, `sessions`, `checkpoints`, `handoff_receipts`, `pipeline_runs`, `reconcile_runs`, `reconcile_items`. Each table carries its own `project_id` FK to `projects.id`. Reconcile sets it on insert based on the file path (`docs/coordination/...` ⇒ seatloom project; future `docs/projects/<other>/coordination/...` ⇒ other projects). Matches the pattern already in force on `documents`, `review_threads`, `prompt_instances`, `channel_action_receipts`.
 
-**Pros**: simple queries; index-friendly; project switch is `WHERE project_id = $1` everywhere.
-**Cons**: ~10 ALTER TABLE; back-fill required for existing rows (set all to `seatloom`); future tables must remember to include the column.
+**Pros**: simple queries; index-friendly; project switch is `WHERE project_id = $1` everywhere; consistent with the already-multi-project tables.
+**Cons**: 10 ALTER TABLE; back-fill required for existing rows (set all to `seatloom`); future tables must remember to include the column.
 
 ##### Option C — Add `project_id NULLABLE` for now; tighten to NOT NULL later
 
