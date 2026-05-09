@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AppShell from './layouts/AppShell';
 import MasterDetail from './layouts/MasterDetail';
 import InboxView from './views/InboxView';
@@ -39,6 +39,8 @@ type SelectedObject = { type: SelectedObjectType; id: string } | null;
 const App: React.FC = () => {
   const { projectData, activeProjectId, setActiveProject, addWorkItem, hydrateFromBackend } = useDataStore();
   const { projectUIStates, updateProjectUIState } = useAppStore();
+  const projectUIStatesRef = useRef(projectUIStates);
+  useEffect(() => { projectUIStatesRef.current = projectUIStates; });
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -139,7 +141,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (activeProjectId && activeProjectId !== 'all-projects') {
-      const savedState = projectUIStates[activeProjectId];
+      const savedState = projectUIStatesRef.current[activeProjectId];
       if (savedState) {
         setActiveTab(savedState.activeTab as Tab);
         setSelectedObject(
@@ -149,7 +151,7 @@ const App: React.FC = () => {
         );
       }
     }
-  }, [activeProjectId, projectUIStates]);
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (activeProjectId && activeProjectId !== 'all-projects' && activeTab !== 'all-projects') {
