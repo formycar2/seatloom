@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Artifact, CanonicalEvent, Handoff, InboxItem, Project, ProjectData, Seat, Session, WorkItem } from '../types';
 import { api, isTauri } from '../lib/api';
 import {
+  artifactFromDocument,
   artifactFromDto,
   eventFromDto,
   handoffFromDto,
@@ -1557,7 +1558,7 @@ export const useDataStore = create<DataState>((set, get) => ({
       return;
     }
     try {
-      const [projectsDto, seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto] = await Promise.all([
+      const [projectsDto, seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto, documentsDto] = await Promise.all([
         api.listProjects(),
         api.listSeats(),
         api.listWorkitems(),
@@ -1565,6 +1566,7 @@ export const useDataStore = create<DataState>((set, get) => ({
         api.listArtifacts(),
         api.listSessions(),
         api.listEvents(400),
+        api.listDocuments({}),
       ]);
 
       // Build V1 role-binding lookup so seats show the right role per project.
@@ -1594,7 +1596,15 @@ export const useDataStore = create<DataState>((set, get) => ({
         const seats: Seat[] = seatsDto.map((s) => seatFromDto(s, roles[s.id]));
         const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
         const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
-        const artifacts: Artifact[] = artifactsDto.map(artifactFromDto);
+        // Merge runtime artifacts (seed/001 — 15 rows) with reconcile-ingested
+        // coordination documents (291 rows) so V1 ArtifactsView surfaces the
+        // full collaboration corpus, not just session-bound output. Documents
+        // come first because they are the bulk of evidence the supervisor
+        // typically searches for.
+        const artifacts: Artifact[] = [
+          ...documentsDto.map(artifactFromDocument),
+          ...artifactsDto.map(artifactFromDto),
+        ];
         const sessions: Session[] = sessionsDto.map(sessionFromDto);
         const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
 

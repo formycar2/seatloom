@@ -12,6 +12,7 @@ import type {
   ArtifactDto,
   CanonicalEventDto,
   DelegationDto,
+  DocumentDto,
   HandoffDto,
   ProjectDto,
   SeatDto,
@@ -233,6 +234,46 @@ export function artifactFromDto(d: ArtifactDto): Artifact {
     source_session_id: d.sourceSessionId ?? undefined,
     source_workitem_id: d.sourceWorkitemId ?? undefined,
     storage_path: d.storagePath,
+    created_at: d.createdAt,
+  };
+}
+
+/**
+ * Reconcile-ingested coordination markdown documents are not stored in the
+ * `artifacts` table (which is reserved for runtime-produced session/workitem
+ * outputs). To surface them in V1's ArtifactsView, we map each typed document
+ * row into the V1 Artifact shape on the frontend. The body_text excerpt
+ * provides preview rows; full body remains available via cmd_get_document.
+ */
+export function artifactFromDocument(d: DocumentDto): Artifact {
+  const body = d.bodyText ?? '';
+  const previewLines = body
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+    .slice(0, 6);
+  const summary = body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('---'))
+    .slice(0, 1)
+    .join(' ')
+    .slice(0, 240);
+  return {
+    id: d.id,
+    title: d.title,
+    template: (d.template ?? 'T3') as ArtifactTemplate,
+    subtype: (d.subtype ?? 'task') as ArtifactSubtype,
+    status: d.status ?? undefined,
+    author: d.author ?? undefined,
+    date: d.docDate ?? undefined,
+    version: d.version ?? undefined,
+    depends_on: d.dependsOn,
+    supersedes: d.supersedes ?? undefined,
+    tags: d.tags,
+    summary: summary || undefined,
+    summary_points: summary ? [summary] : [],
+    content_preview: previewLines,
+    storage_path: d.filePath,
     created_at: d.createdAt,
   };
 }
