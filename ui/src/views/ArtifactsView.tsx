@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Package, Search, FileText, ChevronRight } from 'lucide-react';
+import { Package, Search, FileText, ChevronRight, RefreshCw } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import { Artifact, ArtifactTemplate } from '../types';
 import { getArtifactTemplateLabel, getArtifactSubtypeLabel } from '../utils/artifacts';
+import { api, isTauri } from '../lib/api';
+import type { ReconcileResultDto } from '../lib/types-dto';
 
 interface ArtifactsViewProps {
   onSelectArtifact: (artifact: Artifact) => void;
@@ -24,6 +26,24 @@ const ArtifactsView: React.FC<ArtifactsViewProps> = ({ onSelectArtifact, selecte
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
   const [searchTerm, setSearchTerm] = useState('');
   const [templateFilter, setTemplateFilter] = useState<ArtifactTemplate | 'all'>('all');
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<ReconcileResultDto | null>(null);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
+
+  const handleReconcile = async () => {
+    if (!isTauri()) return;
+    setReconciling(true);
+    setReconcileResult(null);
+    setReconcileError(null);
+    try {
+      const result = await api.reconcile();
+      setReconcileResult(result);
+    } catch (e) {
+      setReconcileError(String(e));
+    } finally {
+      setReconciling(false);
+    }
+  };
 
   const artifacts = currentData?.artifacts || [];
 
@@ -70,7 +90,27 @@ const ArtifactsView: React.FC<ArtifactsViewProps> = ({ onSelectArtifact, selecte
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--sl-panel)] border border-[var(--sl-border)] rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
+          {isTauri() && (
+            <button
+              onClick={handleReconcile}
+              disabled={reconciling}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[var(--sl-panel)] border border-[var(--sl-border)] rounded-md hover:bg-[var(--sl-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={12} className={reconciling ? 'animate-spin' : ''} />
+              {reconciling ? '正在同步…' : '同步文档'}
+            </button>
+          )}
         </div>
+        {reconcileResult && (
+          <div className="text-xs text-[var(--sl-ink-secondary)] bg-[var(--sl-panel)] border border-[var(--sl-border)] rounded px-3 py-1.5">
+            已扫描 {reconcileResult.scanned} · 新增 {reconcileResult.inserted} · 更新 {reconcileResult.updated} · 未变 {reconcileResult.unchanged} · 失败 {reconcileResult.failed} · 冲突 {reconcileResult.conflicted}
+          </div>
+        )}
+        {reconcileError && (
+          <div className="text-xs text-[var(--sl-error)] bg-[var(--sl-error-light)] border border-[var(--sl-error)] rounded px-3 py-1.5">
+            {reconcileError}
+          </div>
+        )}
 
         {/* Template filter chips */}
         <div className="flex gap-1 flex-wrap">

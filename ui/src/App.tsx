@@ -107,7 +107,11 @@ const App: React.FC = () => {
   const [isInitOpen, setIsInitOpen] = useState(false);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [showReconcileSummary, setShowReconcileSummary] = useState(false);
-  const [reconcileIssueCount] = useState(0);
+  const currentProjectData = activeProjectId ? projectData[activeProjectId] : null;
+  const reconcileIssueCount = useMemo(
+    () => currentProjectData?.workItems.filter(w => w.status === 'Blocked').length ?? 0,
+    [currentProjectData?.workItems],
+  );
 
   const [timelineFilters, setTimelineFilters] = useState<{
     seatId: string | null;
@@ -228,8 +232,6 @@ const App: React.FC = () => {
   };
 
   // ─── Data ───
-  const currentProjectData = activeProjectId ? projectData[activeProjectId] : null;
-
   const resolvedData = useMemo(() => {
     if (!selectedObject || !currentProjectData) return null;
     switch (selectedObject.type) {
