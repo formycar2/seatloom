@@ -246,12 +246,14 @@ This file tracks major decisions, sign-offs, and state transitions for the proje
 - [x] Nimbus Rust Foundation Hardening Accepted - PASS (2026-04-29, Lyra / Nimbus)
 - [x] Commit-Pinned Infrastructure Baseline Published (`track/infra-foundation` @ `d007721`, advanced to `a658086`) (2026-04-29, Lyra / Nimbus)
 - [x] Nimbus Real Collaboration PostgreSQL Baseline Accepted - PASS (2026-04-29, Lyra / Nimbus / Flux)
-- [x] SG-A §A1 (Nimbus V1 white-screen diagnosis) Accepted — PASS (no-fix) — commit 39af8b2 / tree HEAD 48af37d — symptom self-resolved, TopErrorBoundary remains armed (2026-05-09, Lyra / Nimbus)
-- [x] Mira v01 Sessions Live Wiring Accepted — PASS via Aegis factual-record takeover (e864392) — §A=578ff7c §B=4651bb4 §C=2f83624; 4 Mira delivery attempts failed checklist, escalation protocol invoked (2026-05-09, Lyra / Aegis / Mira)
-- [ ] SG-A §A2 Mira NavRail Logo + ProjectSwitcher Portal (unblocked — v01 closed)
-- [ ] SG-A §A3 Nimbus tmux pipe-pane attach read path (in progress)
-- [ ] SG-A §A4-α Mira SessionsWorkspace attach UI mock-first (dispatched)
+- [~] SG-A §A1 (Nimbus V1 white-screen diagnosis) **PROVISIONAL PASS (no-fix)** — delivery 39af8b2 / tree HEAD 48af37d — awaiting Flux commit-pinned verify (FLUX-2026-05-09-sg-a-combined-verification-v1 at 34bd0a1) before final acceptance (2026-05-09, Lyra / Nimbus)
+- [~] SG-A v01 (Mira sessions live wiring) **PROVISIONAL PASS** — deliverables 578ff7c / 4651bb4 / 2f83624; delivery doc via Aegis factual-record takeover at e864392 — awaiting Flux commit-pinned verify before final acceptance (2026-05-09, Lyra / Mira / Aegis)
+- [ ] SG-A §A4-α (Mira SessionsWorkspace mock-first attach UI) delivery bdac54b — Flux verify pending, acceptance held
+- [ ] SG-A §A2 (Mira NavRail Logo + ProjectSwitcher Portal) delivery 3b7ac17 + delivery doc posted 18:28 — Flux verify pending, acceptance held
+- [ ] SG-A §A3 (Nimbus tmux pipe-pane attach read path) — in progress
+- [ ] SG-A §A4-β (Mira real-API wire-up) — blocked on A3 PASS
+- [ ] Process correction 2026-05-09: Flux commit-pinned verify is a mandatory layer between delivery and Lyra acceptance; Aegis pre-flight review does not substitute. Sequence: `delivery → Aegis pre-flight (scope/drift) → Flux verify (commit-pinned build/tsc/smoke + static invariants + runtime) → Lyra acceptance`. Recorded after Mr. Zhang flagged missed gate on A1/v01/A4-α/A2. (Lyra / Aegis / Mr. Zhang)
 - [ ] MVP Implementation Start
 
 ---
-*Last Updated: 2026-05-09 (SG-A §A1 closed no-fix; v01 closed via Aegis takeover; A2 unblocked; A3 in progress; A4-α dispatched)*
+*Last Updated: 2026-05-09 (SG-A deliverables 1-4 provisional pending Flux combined verify at 34bd0a1; A3 in progress; three-layer gate protocol reaffirmed)*
