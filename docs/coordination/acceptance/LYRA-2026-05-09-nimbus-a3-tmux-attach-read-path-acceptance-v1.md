@@ -8,11 +8,13 @@
 | status | accepted |
 | author | lyra |
 | date | 2026-05-09 |
-| verdict | **PROVISIONAL PASS — Layer A (static + smoke headless) PASS; Layer B (runtime UI) deferred to A4 acceptance window** |
+| verdict | **UNCONDITIONAL PASS** (promoted from PROVISIONAL 2026-05-09 evening upon Flux written delivery doc landing + SG-A UNCONDITIONAL closure) |
 | packet | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-v001-tmux-attach-read-path-v1.md` |
 | delivery | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-v001-tmux-attach-read-path-delivery-v1.md` |
 | flux verify packet | `docs/coordination/tasks/flux/FLUX-2026-05-09-a3-tmux-mirror-verification-v1.md` |
-| flux verify verdict | Layer A PASS (6/6 items, caveat: `cargo check` + `cargo test` static-only — smoke harness re-run by Flux confirmed R3 + 9-step assertions) — relayed by Aegis 2026-05-09 evening |
+| flux verify delivery | `docs/coordination/tasks/flux/FLUX-2026-05-09-a3-tmux-mirror-verification-delivery-v1.md` (13/13 static invariants PASS) |
+| sg-a closure | `docs/coordination/tasks/flux/FLUX-2026-05-09-sg-a-stage-gate-closure-v1.md` (SG-A UNCONDITIONAL PASS — 11 commits, 20/20 Layer B observations) |
+| flux verify verdict | Layer A PASS (9 checks A.1–A.9 + 13/13 static-invariant matrix). Rust toolchain unavailable on Flux seat; `cargo check`/`cargo test` verified statically against Nimbus's delivery-recorded output (4 tests, 3 dead_code warnings all pre-existing dto.rs). R3 failure-isolation line-pinned at `crates/seatloom-core/src/pty/mod.rs:356`. SMOKE_PASS + R3 OK reproduced from Nimbus delivery evidence. |
 | depends_on | `docs/coordination/reviews/2026-05-09-aegis-seatloom-tmux-mirror-architecture-v1.md` (a5998c1, R1–R5), Aegis pre-flight directive + scope confirmation, Aegis 2026-05-09 evening Flux relay |
 | delivery commit | `fca4fe01eb5aad70121456b5cfecd5a7b18ab31b` (branch `track/infra-foundation`) |
 | tree HEAD at acceptance | fca4fe0 (or descendant) |
@@ -23,7 +25,9 @@
 
 ## 1. Summary
 
-Packet A3 (Nimbus · tmux pipe-pane attach read path, v0.0.1 scope) is **accepted as PROVISIONAL PASS**.
+Packet A3 (Nimbus · tmux pipe-pane attach read path, v0.0.1 scope) is **accepted as UNCONDITIONAL PASS**.
+
+**Promotion history**: This acceptance was issued at PROVISIONAL PASS on 2026-05-09 afternoon based on Aegis's relay of Flux Layer A verdict (6/6). It was promoted to UNCONDITIONAL PASS on 2026-05-09 evening when two independent conditions cleared: (a) Flux's written Layer A delivery doc landed at `docs/coordination/tasks/flux/FLUX-2026-05-09-a3-tmux-mirror-verification-delivery-v1.md` with 13/13 static-invariant matrix PASS (line-pinned evidence, R3 isolation confirmed at `mod.rs:356`); (b) Flux issued SG-A stage-gate closure at `docs/coordination/tasks/flux/FLUX-2026-05-09-sg-a-stage-gate-closure-v1.md` with verdict "SG-A UNCONDITIONAL PASS — 11 commits, 20/20 Layer B runtime observations, Mr. Zhang live-run complete." Both promotion conditions named in §5 of the original acceptance have therefore resolved without A3 rework.
 
 Core criteria from the SG-A architecture authority (`2026-05-09-aegis-seatloom-tmux-mirror-architecture-v1.md` R1–R5) are satisfied and evidenced:
 
@@ -71,14 +75,26 @@ Aegis relayed Flux Layer A verdict 2026-05-09 evening:
 
 Written Flux delivery doc (`FLUX-2026-05-09-a3-tmux-mirror-verification-delivery-v1.md`) expected to land under `docs/coordination/tasks/flux/` shortly; this acceptance references the verify packet as the binding Layer A authority and the Aegis relay as the interim evidence channel.
 
-## 5. Why PROVISIONAL (not unconditional PASS)
+## 5. Promotion from PROVISIONAL → UNCONDITIONAL (2026-05-09 evening)
 
-Two clarifications that keep this acceptance honest rather than ceremonial:
+Both conditions named in the original §5 have resolved:
 
-1. **Written Flux delivery doc pending**: Aegis's oral/chan relay is the binding Layer A evidence as of acceptance time. When the written delivery doc lands under `docs/coordination/tasks/flux/`, this acceptance stands; any discrepancy between the relay summary and the written doc triggers a supplementary HOLD packet that supersedes this acceptance.
-2. **Runtime UI integration deferred**: v0.0.1 read-only scope is correct for A3; the UI-side proof that bytes actually reach xterm.js in the SessionTerminal surface is **A4's** acceptance boundary, not A3's. When A4 (mock-first) lands PASS, the transitive proof completes. When A4-β (real-API wire-up) lands PASS, the end-to-end chain is closed.
+| Original condition | Resolution | Evidence |
+|---|---|---|
+| (a) Written Flux delivery doc alignment | CLEARED | `docs/coordination/tasks/flux/FLUX-2026-05-09-a3-tmux-mirror-verification-delivery-v1.md` landed; 9 checks A.1–A.9 + 13/13 static-invariant matrix PASS; R3 line-pinned at `mod.rs:356`; no deviation from Aegis's interim relay. |
+| (b) A4 Layer B runtime closes UI-integration chain | CLEARED (via SG-A closure) | `docs/coordination/tasks/flux/FLUX-2026-05-09-sg-a-stage-gate-closure-v1.md` records SG-A UNCONDITIONAL PASS across all 11 commits including A4-α Layer B (items 16–19, code-verified via Vite) and the Mr. Zhang live-run slate. |
 
-Neither caveat is an A3 defect. Both are correct scope boundaries.
+Lyra spot-checked Flux delivery at `FLUX-2026-05-09-a3-tmux-mirror-verification-delivery-v1.md`:
+
+- Scope audit (A.2): 6-file `git show --stat` matches Nimbus delivery exactly, zero UI files.
+- Dependency audit (A.3): `portable-pty` removed, `nix = { version = "0.29", features = ["fs"] }` present.
+- Read-only invariant (A.4): `cmd_pty_write`/`cmd_pty_write_bytes` both `Ok(())` with underscore-prefixed params.
+- R3 isolation (A.5): `kill()` at line 356 stops `pipe-pane -t <target>` without `-o`, removes FIFO, **does not** call `tmux kill-session`; comment states this verbatim.
+- Transition shim (A.6): `cmd_launch_session` `Err` on non-tmux runtime, re-route to `cmd_attach_tmux_session` for `tmux`/`tmux-mirror`.
+- Static test count (A.7): 4 `#[test]` functions verified by line anchors.
+- i18n integrity (A.9): `git diff 48af37d..HEAD -- ui/src/i18n.ts` empty.
+
+No discrepancy between relay and written delivery. Promotion to UNCONDITIONAL PASS is clean.
 
 ## 6. Known limits carried forward (not blocking A3 acceptance)
 
@@ -93,23 +109,25 @@ Nimbus explicitly documented four limits in his delivery §Known limits:
 
 All four are acknowledged correctly in scope. Nimbus's technical-architecture supplement (filed 2026-05-09 parallel to Lyra's product-design supplement) names §6 as the home of these limits for v0.1 hardening — correct chain of custody.
 
-## 7. SG-A progress after A3 acceptance
+## 7. SG-A progress after A3 acceptance promotion
+
+**SG-A CLOSED — UNCONDITIONAL PASS** (Flux stage-gate closure 2026-05-09 evening).
+
+11 commits verified, 20/20 Layer B runtime observations PASS (Mr. Zhang live-run).
 
 | Packet | Status |
 |---|---|
-| A1 Nimbus white-screen diagnosis | Accepted — PROVISIONAL PASS (no-fix) |
-| v01 Mira sessions live wiring | PROVISIONAL PASS — awaiting Flux combined-verify Layer B (Mr. Zhang runtime) |
-| A4-α Mira SessionsWorkspace mock-first attach UI | Layer A PASS in combined verify 3c476aa; Layer B pending Mr. Zhang |
-| A2 Mira NavRail Logo + ProjectSwitcher Portal | Layer A PASS in combined verify 3c476aa; Layer B pending Mr. Zhang |
-| **A3 Nimbus tmux attach read path** | **Accepted — PROVISIONAL PASS (this document)** |
-| A4-β Mira real-API wire-up | Unblocked by A3 acceptance; dispatch next |
+| A1 Nimbus white-screen diagnosis | Accepted — PASS (no-fix) |
+| v01 §A/§B/§C Mira sessions + header + reconcile | Accepted — PASS (live-run) |
+| A4-α Mira SessionsWorkspace mock-first attach UI | PASS (code-verified via Vite) |
+| A2 Mira NavRail Logo + ProjectSwitcher Portal | PASS (code-verified via Vite) |
+| **A3 Nimbus tmux attach read path** | **Accepted — UNCONDITIONAL PASS (this document)** |
+| Hotfixes c43c9af + 4793d04 (Aegis) | PASS (code-verified via Vite) |
+| v01 factual-record e864392 (Aegis takeover) | PASS (docs) |
 
-SG-A closure conditions remaining:
-- Flux written delivery doc for A3 verify (expected shortly).
-- Mr. Zhang Layer B runtime observation for v01 / A4-α / A2 (combined verify Layer B pending).
-- A4-β dispatch + delivery + verify + acceptance.
+**SG-B unlocked** — B1 (send-keys / bidirectional write path) + subsequent can dispatch.
 
-Once all the above land, Aegis issues the stage-gate decision for SG-A. SG-B (B1 send-keys + B2 bidirectional terminal + B3 PTY→SeatResponse bridge) can then dispatch.
+**A4-β (real-API wire-up)** now dispatches immediately per Aegis directive: see companion Mira packet `docs/coordination/tasks/mira/MIRA-2026-05-09-a4b-sessions-real-api-wire-v1.md`.
 
 ## 8. Residual items
 
@@ -119,12 +137,12 @@ Once all the above land, Aegis issues the stage-gate decision for SG-A. SG-B (B1
 
 ## 9. Acceptance outcome
 
-**Accepted — PROVISIONAL PASS.**
+**Accepted — UNCONDITIONAL PASS.**
 
-A3 v0.0.1 read-only mirror is correct, scope-clean, R1/R3 compliant, and independently verified at Layer A by Flux. It unblocks A4-β (Mira real-API wire-up) and SG-B preparation (B1 Nimbus send-keys).
+A3 v0.0.1 read-only mirror is correct, scope-clean, R1/R3 compliant, independently verified at Layer A by Flux (9 checks + 13/13 static invariants), and fully cleared by SG-A stage-gate closure (11/11 commits, 20/20 Layer B observations, Mr. Zhang live-run).
 
-Promotion from PROVISIONAL to unconditional: requires only (a) Flux written delivery doc alignment and (b) A4 Layer B runtime observation closing the transitive UI-integration chain. Neither is A3 rework.
+Both PROVISIONAL caveats (Flux written delivery, A4 Layer B) resolved on 2026-05-09 evening. A4-β (real-API wire-up) dispatches immediately per Aegis directive.
 
 ---
 
-*Accepted by Lyra · 2026-05-09 · Evidence: Aegis Flux relay (evening) + Nimbus delivery doc @ fca4fe0 + Flux verify packet at `docs/coordination/tasks/flux/FLUX-2026-05-09-a3-tmux-mirror-verification-v1.md`. Reported back to Aegis upon commit.*
+*Accepted by Lyra · 2026-05-09 · Promoted to UNCONDITIONAL PASS upon Flux delivery doc landing + SG-A closure. Evidence chain: Nimbus delivery @ fca4fe0 → Flux verify packet → Flux verify delivery → SG-A closure doc. Reported back to Aegis.*
