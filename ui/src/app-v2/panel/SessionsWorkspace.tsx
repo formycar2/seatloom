@@ -4,14 +4,12 @@
 //   - A left rail of seat launchers (aegis / lyra / mira / nimbus / flux / custom shell)
 //   - A main area with one tab per active session, each hosting a SessionTerminal
 //   - A "+" new-session launcher prompting for runtime + command
-//
-// This is the primary surface that replaces tmux: side-by-side wrapped agent
-// processes, always visible, streamable, inject-able.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { api, isTauri } from '../../lib/api';
-import type { LaunchRequest, LiveSessionDto, SeatDto } from '../../lib/types-dto';
+import type { LaunchRequest, LiveSessionDto } from '../../lib/types-dto';
 import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
+import { useDataStore } from '../../stores/useDataStore';
 import { SessionTerminal } from './SessionTerminal';
 
 interface LiveSessionState extends LiveSessionDto {
@@ -45,7 +43,7 @@ const SEAT_SUGGESTIONS: Record<string, string> = {
 };
 
 export const SessionsWorkspace: React.FC = () => {
-  const [seats, setSeats] = useState<SeatDto[]>([]);
+  const { activeProjectId, projectData } = useDataStore();
   const [sessions, setSessions] = useState<LiveSessionState[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -53,15 +51,13 @@ export const SessionsWorkspace: React.FC = () => {
   const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
   const clearSession = useLiveSessionsStore((s) => s.clearSession);
 
-  // Hydrate seat list from backend on mount. Silently tolerates browser-dev.
-  useEffect(() => {
-    if (!isTauri()) return;
-    api.listSeats()
-      .then((rows) => setSeats(rows))
-      .catch((e) => setError(`list seats: ${String(e)}`));
-  }, []);
+  // Derived seats from useDataStore (AD-014: use source of truth)
+  const seats = useMemo(() => {
+    const current = activeProjectId ? projectData[activeProjectId] : null;
+    return current?.seats || [];
+  }, [activeProjectId, projectData]);
 
-  const launch = async (seat: SeatDto | null, launcher: QuickLauncher) => {
+  const launch = async (seatName: string | null, seatId: string | null, launcher: QuickLauncher) => {
     if (!isTauri()) {
       setError('Tauri backend not available — run `pnpm tauri dev`.');
       return;
@@ -70,18 +66,18 @@ export const SessionsWorkspace: React.FC = () => {
     setError(null);
     try {
       const request: LaunchRequest = {
-        seatId: seat?.id,
+        seatId: seatId || undefined,
         runtime: launcher.runtime,
         command: launcher.command,
         args: launcher.args,
       };
       const live = await api.launchSession(request);
-      const label = seat
-        ? `${seat.name} · ${launcher.label}`
+      const label = seatName
+        ? `${seatName} · ${launcher.label}`
         : `${launcher.label}`;
-      setSessions((prev) => [...prev, { ...live, label, seatName: seat?.name }]);
+      setSessions((prev) => [...prev, { ...live, label, seatName: seatName || undefined }]);
       setActiveId(live.id);
-      if (seat?.name) setSessionForSeat(seat.name, live.id);
+      if (seatName) setSessionForSeat(seatName, live.id);
     } catch (e) {
       setError(`launch failed: ${String(e)}`);
     } finally {
@@ -90,6 +86,10 @@ export const SessionsWorkspace: React.FC = () => {
   };
 
   const kill = async (id: string) => {
+    // AD-015: Kill confirmation to prevent accidental loss of work
+    if (!window.confirm('确定要强行终止该会话吗？未保存的工作将会丢失。')) {
+      return;
+    }
     try {
       await api.killSession(id);
     } catch (e) {
@@ -121,7 +121,7 @@ export const SessionsWorkspace: React.FC = () => {
         background: 'var(--sl-surface)', overflow: 'auto',
       }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
             Quick launch
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -129,7 +129,7 @@ export const SessionsWorkspace: React.FC = () => {
               <button
                 key={l.key}
                 disabled={launching}
-                onClick={() => launch(null, l)}
+                onClick={() => launch(null, null, l)}
                 style={{
                   textAlign: 'left', padding: '8px 10px',
                   background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
@@ -144,36 +144,36 @@ export const SessionsWorkspace: React.FC = () => {
         </div>
 
         <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
-            Seats
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
+            Project Seats
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {seats.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--sl-text-tertiary)' }}>
-                {isTauri() ? 'No seats loaded.' : 'Backend offline — run `pnpm tauri dev`.'}
+                {activeProjectId ? '当前项目暂无席位数据。' : '请先在左侧选择一个项目频道。'}
               </div>
             )}
             {seats.map((seat) => {
-              const suggestedLabel = SEAT_SUGGESTIONS[seat.name] ?? 'Claude Code';
+              const suggestedLabel = SEAT_SUGGESTIONS[seat.name.toLowerCase()] ?? 'Claude Code';
               const launcher =
                 QUICK_LAUNCHERS.find((l) => l.label === suggestedLabel) ?? QUICK_LAUNCHERS[0];
               return (
                 <button
                   key={seat.id}
                   disabled={launching}
-                  onClick={() => launch(seat, launcher)}
-                  title={`Launch ${launcher.label} as ${seat.name}`}
+                  onClick={() => launch(seat.name, seat.id, launcher)}
+                  title={`使用 ${launcher.label} 启动 ${seat.name} 席位`}
                   style={{
-                    textAlign: 'left', padding: '8px 10px',
+                    textAlign: 'left', padding: '10px',
                     background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-                    borderRadius: 'var(--sl-radius-sm)', fontSize: 13, color: 'var(--sl-text-primary)',
+                    borderRadius: 'var(--sl-radius-md)', fontSize: 13, color: 'var(--sl-text-primary)',
                     cursor: launching ? 'wait' : 'pointer',
                     display: 'flex', flexDirection: 'column', gap: 2,
                   }}
                 >
-                  <span style={{ fontWeight: 600 }}>{seat.name}</span>
-                  <span style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
-                    {seat.defaultRuntime ?? 'Generic'} → {launcher.label}
+                  <span style={{ fontWeight: 700 }}>{seat.name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontWeight: 500 }}>
+                    {typeof seat.role === 'string' ? seat.role : seat.role.Custom} → {launcher.label}
                   </span>
                 </button>
               );
@@ -199,7 +199,7 @@ export const SessionsWorkspace: React.FC = () => {
         }}>
           {sessions.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--sl-text-tertiary)', padding: '0 12px' }}>
-              No active sessions. Launch one from the left rail to replace your tmux pane.
+              无活跃会话。从左侧席位列表中启动一个 agent 来替代 tmux。
             </div>
           ) : sessions.map((s) => (
             <div
@@ -207,41 +207,50 @@ export const SessionsWorkspace: React.FC = () => {
               onClick={() => setActiveId(s.id)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                padding: '6px 10px', fontSize: 12,
+                padding: '6px 12px', fontSize: 12,
                 background: s.id === activeId ? 'var(--sl-bg)' : 'transparent',
                 borderRight: '1px solid var(--sl-border-light)',
                 borderTop: s.id === activeId ? '2px solid var(--sl-brand)' : '2px solid transparent',
                 cursor: 'pointer', color: s.exited ? 'var(--sl-text-tertiary)' : 'var(--sl-text-primary)',
-                whiteSpace: 'nowrap',
+                whiteSpace: 'nowrap', transition: 'all 120ms ease',
               }}
             >
               <span style={{
                 width: 6, height: 6, borderRadius: '50%',
                 background: s.exited ? 'var(--sl-text-tertiary)' : 'var(--sl-green)',
               }} />
-              <span>{s.label}</span>
+              <span style={{ fontWeight: s.id === activeId ? 600 : 500 }}>{s.label}</span>
+              
+              {/* Exit Code Pill */}
+              {s.exited && s.exitCode !== undefined && (
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: '1px 4px', borderRadius: 4,
+                  background: s.exitCode === 0 ? 'var(--sl-green-subtle)' : 'var(--sl-red-subtle)',
+                  color: s.exitCode === 0 ? 'var(--sl-green)' : 'var(--sl-red)',
+                  border: `1px solid ${s.exitCode === 0 ? 'var(--sl-green)' : 'var(--sl-red)'}40`
+                }}>
+                  exit {s.exitCode}
+                </span>
+              )}
+
               {!s.exited && (
                 <button
                   onClick={(e) => { e.stopPropagation(); kill(s.id); }}
-                  title="Kill session"
-                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
+                  title="终止会话"
+                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1, opacity: 0.6 }}
                 >×</button>
               )}
               {s.exited && (
                 <button
                   onClick={(e) => { e.stopPropagation(); closeTab(s.id); }}
-                  title="Close tab"
-                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
+                  title="关闭标签页"
+                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1, opacity: 0.6 }}
                 >×</button>
               )}
             </div>
           ))}
         </div>
 
-        {/* Terminal mount — only the active session renders; others unmount to
-            free xterm canvas, but the backend PTY keeps running and we'll
-            resubscribe to scrollback on re-activation (xterm scrollback is
-            in-process, so switching tabs clears it — acceptable for v0.1). */}
         <div style={{ flex: 1, position: 'relative' }}>
           {sessions.map((s) => (
             <div
@@ -265,17 +274,14 @@ export const SessionsWorkspace: React.FC = () => {
             }}>
               <div style={{ fontSize: 48, opacity: 0.15 }}>⌨</div>
               <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--sl-text-secondary)' }}>
-                SeatLoom Sessions
+                SeatLoom 会话工作台
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 440 }}>
-                Launch a wrapped agent from the left rail. Each session is a real PTY with a
-                live terminal, its output streamed to this window and persisted to
-                <code style={{ padding: '0 4px', background: 'var(--sl-surface-hover)', borderRadius: 3 }}>
-                  .seatloom/transcripts/&lt;id&gt;.raw.log
-                </code>.
+                从左侧侧边栏启动一个 agent 席位。每个会话都是一个真实的 PTY 终端，
+                其输出将实时串流至此并持久化存储。
               </div>
               <div style={{ fontSize: 12, color: 'var(--sl-text-tertiary)', marginTop: 12 }}>
-                Press <kbd style={{ padding: '1px 6px', fontSize: 11, background: 'var(--sl-surface-hover)', border: '1px solid var(--sl-border-light)', borderRadius: 3 }}>⌘K</kbd> for Supervisor.
+                按下 <kbd style={{ padding: '1px 6px', fontSize: 11, background: 'var(--sl-surface-hover)', border: '1px solid var(--sl-border-light)', borderRadius: 3 }}>⌘K</kbd> 呼出 Supervisor 指令面板。
               </div>
             </div>
           )}
