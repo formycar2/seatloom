@@ -5,15 +5,30 @@
 | template | T4 |
 | subtype | gap_review |
 | id | 2026-05-09-aegis-mvp-gap-to-tmux-replacement |
-| status | issued |
+| status | **held** |
 | author | aegis |
 | date | 2026-05-09 |
-| to | lyra |
+| to | lyra (on re-issuance) |
 | priority | P0 |
 | depends_on | `docs/PRODUCT_TRUTH.md` (§1.2 active contract set), `docs/prd-v0.5.md` (§3 priority boundaries, §5 P0 story map US-P0-01 – US-P0-15, §6 module contracts), `docs/architecture-decisions.md` (AD-008 – AD-013 v2), `docs/architecture-design.md`, `docs/coordination/reviews/priorities.md` (L1/L2 framework, chan-06), `docs/coordination/reviews/2026-05-08-aegis-cli-plan-mode-integration-design.md` (chan-10), `docs/coordination/COORDINATION_RULES.md` |
-| tags | mvp, tmux-replacement, gap-analysis, v0.1, coordination |
-| acceptance owner | lyra |
-| concurrency rule | Review authority only. Does not itself edit code or seed. Lyra sequences T3 packets citing this doc. |
+| tags | mvp, tmux-replacement, gap-analysis, v0.1, coordination, held |
+| acceptance owner | lyra (on re-issuance) |
+| concurrency rule | Review authority only. Does not itself edit code or seed. Lyra sequences T3 packets citing this doc — **but only after re-issuance**. |
+
+---
+
+## Hold state (2026-05-09)
+
+**Status: HELD.** This review is on disk and traceable, but it is **not dispatched to Lyra** and **no T3 packets may be drafted against it** until Mr. Zhang explicitly ratifies the upstream precondition below.
+
+| Aspect | Value |
+|---|---|
+| Directly-engaged seat | **Mira** |
+| Baseline under rework | V1 + v2 frontend shell — Mr. Zhang is working with Mira directly on frontend rework before the multi-seat coordination cascade kicks in |
+| Explicit signal that re-issues this review | Mr. Zhang says he is satisfied with Mira's frontend rework, OR explicitly instructs Aegis to hand this review to Lyra |
+| Effect during hold | Lyra must not acknowledge, must not draft A1, must not queue B1/B2/B3. Aegis will not push follow-up supervision artifacts that presume the packet list below is the baseline. §4 packet scopes may shift once Mira's rework lands. |
+
+On re-issuance: flip `status: held` → `status: issued`, remove this section, tmux-notify Lyra to begin A1 drafting.
 
 ---
 
