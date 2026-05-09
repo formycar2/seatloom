@@ -222,12 +222,17 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
  *   - seat              → events authored by the seat OR addressed to it
  *   - supervisor        → all events (global activity feed)
  *   - project-channel   → all events for the project (v0.1 single project: all)
+ *
+ * Effects depend only on the contact identity (id + type) so changes to other
+ * fields on the ChatContact object never re-subscribe.
  */
 export function useMessages(contact: ChatContact | null): ChatMessage[] {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const contactId = contact?.id ?? null;
+  const contactType = contact?.type ?? null;
 
   useEffect(() => {
-    if (!contact) { setMessages([]); return; }
+    if (!contact || !contactId) { setMessages([]); return; }
     if (!isTauri()) { setMessages([]); return; }
     const targetSeatId = contact.type === 'seat'
       ? backendSeatIdFromContact(contact)
@@ -238,25 +243,29 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
         if (cancelled) return;
         setMessages(rows.map((r) => eventToMessage(r, contact.id)));
       })
-      .catch(() => {});
+      .catch((e) => {
+        console.error('[useMessages] listSupervisorMessages failed:', e);
+        if (!cancelled) setMessages([]);
+      });
     return () => { cancelled = true; };
-  }, [contact]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactId, contactType]);
 
   useEffect(() => {
-    if (!contact) return;
+    if (!contact || !contactId) return;
     if (!isTauri()) return;
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
     onCanonicalAppended((evt) => {
+      if (cancelled) return;
       const targetFromPayload = (evt.payload as any)?.target_seat_id ?? null;
       const actorRef = evt.actorRef ?? '';
       let accept = false;
       if (contact.type === 'seat') {
         const expected = backendSeatIdFromContact(contact);
         if (!expected) return;
-        // Accept if the seat is the actor OR the addressed target.
         accept = actorRef === `seat:${expected}` || targetFromPayload === expected;
       } else if (contact.type === 'supervisor' || contact.type === 'project-channel') {
-        // Both surfaces consume the global activity feed for v0.1.
         accept = true;
       }
       if (!accept) return;
@@ -264,9 +273,18 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
         if (prev.some((m) => m.id === evt.id)) return prev;
         return [...prev, eventToMessage(evt, contact.id)];
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
-  }, [contact]);
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
+    }).catch((e) => {
+      console.error('[useMessages] onCanonicalAppended failed:', e);
+    });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactId, contactType]);
 
   return messages;
 }

@@ -236,8 +236,22 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   }, [onClose]);
 
   // Data — backend-driven via hooks (see useSupervisorData.ts).
-  const activeContact = contacts.find(c => c.id === activeContactId) || contacts[0];
-  const messages = useMessages(activeContact ?? null);
+  // Defensive: if contacts haven't loaded yet (race during hydration) we
+  // synthesise a placeholder supervisor contact so render never sees
+  // `undefined`, which would crash the panel and white-screen the app.
+  const FALLBACK_SUPERVISOR: typeof contacts[number] = {
+    id: 'supervisor',
+    name: 'Supervisor',
+    type: 'supervisor',
+    online: true,
+    unread: 0,
+    avatar: 'A',
+    color: 'var(--sl-brand)',
+  };
+  const activeContact = contacts.find(c => c.id === activeContactId)
+    ?? contacts[0]
+    ?? FALLBACK_SUPERVISOR;
+  const messages = useMessages(activeContact);
 
   // Live PTY session lookup (seat → sessionId), for routing.
   const sessionFor = useLiveSessionsStore((s) => s.sessionFor);

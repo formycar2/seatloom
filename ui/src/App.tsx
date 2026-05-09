@@ -22,6 +22,7 @@ import InitDialog from './components/InitDialog';
 import ShortcutHelpDialog from './components/ShortcutHelpDialog';
 import SupervisorCommandBar from './components/SupervisorCommandBar';
 import { SupervisorPanel } from './app-v2/panel/SupervisorPanel';
+import { IMErrorBoundary } from './supervisor/IMErrorBoundary';
 import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
@@ -324,7 +325,7 @@ const App: React.FC = () => {
           Detach opens it in its own OS-level Tauri window (R3). Note: the V2
           SupervisorPanel UI is the canonical IM; we do NOT replace it. */}
       {showSupervisorIM && !supervisorDetached && (
-        <>
+        <IMErrorBoundary>
           <SupervisorPanel onClose={() => setShowSupervisorIM(false)} />
           {/* Detach affordance — rendered alongside SupervisorPanel so the V2
               component itself stays untouched. Fixed top-right of viewport. */}
@@ -343,7 +344,7 @@ const App: React.FC = () => {
               cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
             }}
           >↗ Detach Supervisor</button>
-        </>
+        </IMErrorBoundary>
       )}
 
       {protectionType && (
