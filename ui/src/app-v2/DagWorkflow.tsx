@@ -3,7 +3,7 @@
  * Inspired by AntV X6 design patterns.
  */
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { 
   CheckCircle2, 
   Clock3, 
@@ -177,7 +177,7 @@ export const DagWorkflow: React.FC<{
 
   const layers = useMemo(() => computeLayers(workflow.nodes), [workflow.nodes]);
 
-  const updateCoords = () => {
+  const updateCoords = useCallback(() => {
     if (!contentWrapperRef.current) return;
     const wrapperRect = contentWrapperRef.current.getBoundingClientRect();
     const newCoords: Record<string, { x: number; y: number, leftX: number }> = {};
@@ -186,24 +186,34 @@ export const DagWorkflow: React.FC<{
       if (el) {
         const rect = el.getBoundingClientRect();
         newCoords[id] = {
-          x: rect.left - wrapperRect.left + rect.width, // Right connection point
-          y: rect.top - wrapperRect.top + rect.height / 2, // Vertical center
-          leftX: rect.left - wrapperRect.left, // Left connection point
+          x: rect.left - wrapperRect.left + rect.width,
+          y: rect.top - wrapperRect.top + rect.height / 2,
+          leftX: rect.left - wrapperRect.left,
         };
       }
     });
-    setCoords(newCoords);
-  };
+
+    setCoords(prev => {
+      const keys = Object.keys(newCoords);
+      if (keys.length !== Object.keys(prev).length) return newCoords;
+      for (const k of keys) {
+        const p = prev[k];
+        const n = newCoords[k];
+        if (!p || p.x !== n.x || p.y !== n.y || p.leftX !== n.leftX) return newCoords;
+      }
+      return prev;
+    });
+  }, []);
 
   useEffect(() => {
     updateCoords();
-    const timer = setTimeout(updateCoords, 150); // Delay for layout settling
+    const timer = setTimeout(updateCoords, 150);
     window.addEventListener('resize', updateCoords);
     return () => {
       clearTimeout(timer);
       window.removeEventListener('resize', updateCoords);
     };
-  }, [layers, selectedId]);
+  }, [layers, selectedId, updateCoords]);
 
   const edges = useMemo(() => {
     const e: { from: string; to: string; color: string; active: boolean }[] = [];
