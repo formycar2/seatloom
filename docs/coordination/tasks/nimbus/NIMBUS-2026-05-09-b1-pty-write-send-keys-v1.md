@@ -7,19 +7,20 @@
 | template | T4 |
 | subtype | implementation |
 | id | NIMBUS-2026-05-09-b1-pty-write-send-keys-v1 |
-| status | **draft — do not start yet** |
+| status | **dispatched** (2026-05-09 late-evening, after A4-β acceptance) |
 | author | lyra |
 | date | 2026-05-09 |
 | version | v1 |
 | to | nimbus |
 | priority | P0 (SG-B entrypoint) |
 | milestone | v0.0.2 |
-| blocked_by | A4-β Flux Layer A verify PASS; Aegis formal dispatch release |
-| depends_on | A3 UNCONDITIONAL PASS @ `fca4fe0` (read path); A4-β real-API wire-up (Mira, in flight); `docs/coordination/reviews/2026-05-09-aegis-seatloom-tmux-mirror-architecture-v1.md` (architecture review) |
+| dispatched_at | 2026-05-09 late-evening |
+| gate_cleared_by | A4-β PASS @ `ab672e5` (Mira delivery); Flux Layer A verify PASS; Lyra acceptance `docs/coordination/acceptance/2026-05-09-lyra-mira-a4b-sessions-real-api-wire-acceptance.md` |
+| depends_on | A3 UNCONDITIONAL PASS @ `fca4fe0` (read path); A4-β PASS @ `ab672e5` (real-API wire-up); `docs/coordination/reviews/2026-05-09-aegis-seatloom-tmux-mirror-architecture-v1.md` (architecture review) |
 | delivery path | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-b1-pty-write-send-keys-delivery-v1.md` |
 | tags | nimbus, B1, SG-B, tmux, send-keys, bidirectional, v0.0.2 |
 
-> **Gating note**: This packet is issued as a draft for Nimbus visibility so architecture prep can begin. **Do not start implementation.** Formal dispatch happens after A4-β Flux Layer A verify lands PASS. Watch for Lyra's "B1 GO" dispatch before writing code.
+> **Dispatch note**: Gate cleared 2026-05-09 late-evening. A4-β Flux Layer A verify landed PASS (13/13 static + 5/5 R-rules) and Lyra acceptance is posted at `docs/coordination/acceptance/2026-05-09-lyra-mira-a4b-sessions-real-api-wire-acceptance.md`. **Nimbus is now cleared to begin B1 implementation.** The §9 Timing section's draft caveat is superseded by this dispatch note.
 
 ---
 
