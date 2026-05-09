@@ -32,9 +32,10 @@ use commands::{
         cmd_list_seats,
     },
     session_cmds::{
-        cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
+        cmd_attach_tmux_session, cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
         cmd_list_checkpoints_for_session, cmd_list_live_sessions, cmd_list_sessions,
-        cmd_list_sessions_for_seat, cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
+        cmd_list_sessions_for_seat, cmd_list_tmux_sessions, cmd_pty_resize, cmd_pty_write,
+        cmd_pty_write_bytes,
     },
     supervisor_cmds::{
         cmd_append_supervisor_message, cmd_close_supervisor_window,
@@ -116,7 +117,9 @@ fn main() {
             cmd_list_sessions_for_seat,
             cmd_list_checkpoints,
             cmd_list_checkpoints_for_session,
-            // live PTY sessions
+            // live tmux-mirror sessions (v0.0.1 A3)
+            cmd_list_tmux_sessions,
+            cmd_attach_tmux_session,
             cmd_launch_session,
             cmd_pty_write,
             cmd_pty_write_bytes,

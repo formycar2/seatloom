@@ -1,19 +1,26 @@
 // Session commands.
 //
 // Read commands (Phase 1) list DB-persisted session rows.
-// Live commands (Phase 4) spawn PTY-wrapped agent processes, stream output
-// via Tauri events, accept keystroke/resize/kill operations.
 //
-// Each live session emits two Tauri event channels:
-//   - "session:output" — payload { sessionId, data (base64) }
-//   - "session:exit"   — payload { sessionId, exitCode, signal }
+// Live commands (v0.0.1 A3) no longer spawn CLIs via portable-pty — per the
+// tmux-mirror architecture (a5998c1), SeatLoom attaches to existing tmux
+// sessions. Each live session emits two Tauri event channels:
+//   - "session:output" — payload { sessionId, data (base64) } — bytes
+//     mirrored from `tmux pipe-pane` into /tmp/seatloom-mirror/<id>.fifo
+//   - "session:exit"   — payload { sessionId, exitCode, signal } — emitted
+//     when the pipe-pane tail closes (e.g., kill_session detaches the mirror)
+//
+// R3 failure isolation: SeatLoom is NEVER the parent process of tmux. Even if
+// SeatLoom crashes, tmux continues running and user workflow is unaffected.
 
 use crate::dto::{CheckpointDto, SessionDto};
 use crate::state::AppState;
 use base64::Engine as _;
-use seatloom_core::pty::{default_transcripts_dir, LaunchOptions, PtyEvent, PtySession};
+use seatloom_core::pty::{
+    default_transcripts_dir, list_tmux_sessions, LaunchOptions, PtyEvent, PtySession,
+    TmuxSessionInfo,
+};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
 
 // -----------------------------------------------------------------------------
@@ -70,23 +77,19 @@ pub async fn cmd_list_checkpoints_for_session(
 }
 
 // -----------------------------------------------------------------------------
-// Live PTY commands (Phase 4)
+// Live tmux-mirror commands (v0.0.1 A3)
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LaunchRequest {
-    /// Seat to attribute the session to (optional — "human" seat is default).
+pub struct AttachTmuxRequest {
+    /// Seat to attribute the mirrored session to (optional).
     pub seat_id: Option<String>,
-    /// Runtime label for bookkeeping ("ClaudeCode" / "GeminiCli" / "Custom").
-    pub runtime: String,
-    /// Command to exec (e.g. "claude", "gemini", "bash").
-    pub command: String,
-    /// Command args.
-    pub args: Vec<String>,
-    /// Working directory; defaults to the repo root.
-    pub working_dir: Option<String>,
-    /// Initial terminal size.
+    /// tmux session name to mirror (e.g., "Lyra-po-seatloom").
+    pub tmux_session_name: String,
+    /// Optional explicit SeatLoom session id; generated if absent.
+    pub session_id: Option<String>,
+    /// Initial pane size (used by `tmux resize-pane`).
     pub rows: Option<u16>,
     pub cols: Option<u16>,
 }
@@ -101,6 +104,12 @@ pub struct LiveSessionDto {
     pub args: Vec<String>,
     pub working_dir: String,
     pub transcript_path: String,
+    /// tmux session name being mirrored (empty for legacy callers).
+    #[serde(default)]
+    pub tmux_session_name: String,
+    /// Path to the pipe-pane FIFO (empty for legacy callers).
+    #[serde(default)]
+    pub fifo_path: String,
 }
 
 fn new_session_id() -> String {
@@ -127,32 +136,42 @@ struct ExitEventPayload {
     signal: Option<String>,
 }
 
+/// Discover tmux sessions whose name ends in `-seatloom`. Returns an empty
+/// list if tmux is not running or no matching sessions exist.
 #[tauri::command]
-pub async fn cmd_launch_session(
+pub async fn cmd_list_tmux_sessions() -> Result<Vec<TmuxSessionInfo>, String> {
+    list_tmux_sessions().map_err(|e| e.to_string())
+}
+
+/// Attach to an existing tmux session and begin mirroring its first pane into
+/// a FIFO under /tmp/seatloom-mirror/. Emits `session:output` events for each
+/// chunk of bytes read from the FIFO.
+///
+/// R3 rule: SeatLoom never becomes the parent of tmux. If SeatLoom crashes,
+/// tmux continues running and the FIFO is re-attachable on restart.
+#[tauri::command]
+pub async fn cmd_attach_tmux_session(
     state: State<'_, AppState>,
     app: AppHandle,
-    request: LaunchRequest,
+    request: AttachTmuxRequest,
 ) -> Result<LiveSessionDto, String> {
-    let id = new_session_id();
-    let working_dir = request
-        .working_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| state.repo_root.clone());
+    let id = request.session_id.unwrap_or_else(new_session_id);
     let transcripts_dir = default_transcripts_dir(&state.repo_root);
 
     let opts = LaunchOptions {
-        command: request.command.clone(),
-        args: request.args.clone(),
-        working_dir: working_dir.clone(),
+        command: "tmux".to_string(),
+        args: vec!["pipe-pane".to_string(), request.tmux_session_name.clone()],
+        working_dir: state.repo_root.clone(),
         rows: request.rows.unwrap_or(30),
         cols: request.cols.unwrap_or(120),
         env: LaunchOptions::default_env(),
         transcripts_dir,
     };
 
-    let session = PtySession::launch(&id, opts).map_err(|e| e.to_string())?;
+    let session = PtySession::attach_tmux(&id, &request.tmux_session_name, opts)
+        .map_err(|e| e.to_string())?;
 
-    // Spawn a tokio task that forwards PTY events to the Tauri app as JSON events.
+    // Forward tmux-mirror events to the Tauri app as JSON events.
     let mut rx = session.subscribe();
     let app_for_events = app.clone();
     let id_for_events = id.clone();
@@ -175,7 +194,6 @@ pub async fn cmd_launch_session(
                         signal,
                     };
                     let _ = app_for_events.emit("session:exit", payload);
-                    // Auto-deregister from live registry on exit.
                     let mut sessions = sessions_for_exit.lock().await;
                     sessions.remove(&id_for_events);
                     break;
@@ -189,44 +207,86 @@ pub async fn cmd_launch_session(
     let dto = LiveSessionDto {
         id: id.clone(),
         seat_id: request.seat_id.clone(),
-        runtime: request.runtime.clone(),
-        command: request.command.clone(),
-        args: request.args.clone(),
-        working_dir: working_dir.display().to_string(),
+        runtime: "tmux-mirror".to_string(),
+        command: "tmux pipe-pane".to_string(),
+        args: vec![request.tmux_session_name.clone()],
+        working_dir: state.repo_root.display().to_string(),
         transcript_path: session.transcript_path.display().to_string(),
+        tmux_session_name: session.tmux_session_name.clone(),
+        fifo_path: session.fifo_path.display().to_string(),
     };
 
     state.sessions.lock().await.insert(id.clone(), session);
     Ok(dto)
 }
 
+/// v0.0.1 transitional shim: kept so existing UI callers that still invoke
+/// `cmd_launch_session({runtime:'tmux', command:<tmux_session_name>, ...})`
+/// can reach `cmd_attach_tmux_session` without a breaking rename. B1
+/// (v0.0.2) introduces true `tmux send-keys` write support at which point the
+/// command surface may be further consolidated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub seat_id: Option<String>,
+    pub runtime: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub working_dir: Option<String>,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+}
+
+#[tauri::command]
+pub async fn cmd_launch_session(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    request: LaunchRequest,
+) -> Result<LiveSessionDto, String> {
+    // The `command` field is reinterpreted as the tmux session name under the
+    // v0.0.1 mirror architecture; the legacy portable-pty spawn path is gone.
+    let tmux_session_name = if request.runtime == "tmux" || request.runtime == "tmux-mirror" {
+        request.command.clone()
+    } else {
+        // For non-tmux runtimes, fail loudly — v0.0.1 has no other launch mode.
+        return Err(format!(
+            "cmd_launch_session: runtime {:?} no longer supported; use cmd_attach_tmux_session",
+            request.runtime
+        ));
+    };
+    let attach = AttachTmuxRequest {
+        seat_id: request.seat_id,
+        tmux_session_name,
+        session_id: None,
+        rows: request.rows,
+        cols: request.cols,
+    };
+    cmd_attach_tmux_session(state, app, attach).await
+}
+
+/// v0.0.1 read-only mirror: write path is intentionally disabled. B1 (v0.0.2)
+/// will map this to `tmux send-keys`.
 #[tauri::command]
 pub async fn cmd_pty_write(
-    state: State<'_, AppState>,
-    session_id: String,
-    data: String,
+    _state: State<'_, AppState>,
+    _session_id: String,
+    _data: String,
 ) -> Result<(), String> {
-    let sessions = state.sessions.lock().await;
-    let sess = sessions
-        .get(&session_id)
-        .ok_or_else(|| format!("session not found: {session_id}"))?;
-    // `data` is interpreted as raw UTF-8 keystrokes. Frontend can send "\n" etc.
-    sess.write(data.as_bytes()).map_err(|e| e.to_string())
+    Ok(())
 }
 
+/// v0.0.1 read-only mirror: byte-level write path is intentionally disabled.
+/// B1 (v0.0.2) will route keystrokes via `tmux send-keys`.
 #[tauri::command]
 pub async fn cmd_pty_write_bytes(
-    state: State<'_, AppState>,
-    session_id: String,
-    bytes: Vec<u8>,
+    _state: State<'_, AppState>,
+    _session_id: String,
+    _bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let sessions = state.sessions.lock().await;
-    let sess = sessions
-        .get(&session_id)
-        .ok_or_else(|| format!("session not found: {session_id}"))?;
-    sess.write(&bytes).map_err(|e| e.to_string())
+    Ok(())
 }
 
+/// Resize the mirrored tmux pane (maps to `tmux resize-pane`).
 #[tauri::command]
 pub async fn cmd_pty_resize(
     state: State<'_, AppState>,
@@ -241,13 +301,18 @@ pub async fn cmd_pty_resize(
     sess.resize(rows, cols).map_err(|e| e.to_string())
 }
 
+/// Detach the tmux mirror for this session.
+///
+/// Stops the `tmux pipe-pane` copy, removes the FIFO, and drops the session
+/// handle from the live registry. The tmux session itself continues running
+/// — that is the R3 failure-isolation contract: SeatLoom observes, never owns.
 #[tauri::command]
 pub async fn cmd_kill_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let sessions = state.sessions.lock().await;
-    if let Some(sess) = sessions.get(&session_id) {
+    let mut sessions = state.sessions.lock().await;
+    if let Some(sess) = sessions.remove(&session_id) {
         sess.kill().map_err(|e| e.to_string())?;
     }
     Ok(())
