@@ -12,7 +12,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
 import { api, isTauri } from '../../lib/api';
-import type { DocumentAssociationDto, DocumentDto } from '../../lib/types-dto';
+import { useDataStore } from '../../stores/useDataStore';
+import type { DocumentAssociationDto, DocumentDto, ReconcileResultDto } from '../../lib/types-dto';
 
 const TEMPLATES: { key: string; label: string; tone: string }[] = [
   { key: 'T1AuthorityDoc',  label: 'T1 Authority',  tone: 'var(--sl-purple)' },
@@ -38,6 +39,26 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<DocumentDto | null>(null);
   const [associations, setAssociations] = useState<DocumentAssociationDto[]>([]);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<ReconcileResultDto | null>(null);
+
+  const handleReconcile = async () => {
+    if (reconciling) return;
+    setReconciling(true);
+    setReconcileResult(null);
+    try {
+      const result = await api.reconcile();
+      setReconcileResult(result);
+      await useDataStore.getState().hydrateFromBackend();
+      // Refresh local list to pick up any changes
+      const rows = await api.listDocuments({ template: template ?? undefined });
+      setDocs(rows);
+    } catch (e) {
+      setError(`reconcile: ${String(e)}`);
+    } finally {
+      setReconciling(false);
+    }
+  };
 
   // Initial load (or when template changes).
   useEffect(() => {
@@ -119,6 +140,32 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
             color: 'var(--sl-text-primary)', outline: 'none',
           }}
         />
+
+        <button
+          onClick={handleReconcile}
+          disabled={reconciling}
+          style={{
+            padding: '6px 10px', fontSize: 13, borderRadius: 4,
+            border: '1px solid var(--sl-border)', background: 'var(--sl-bg)',
+            color: 'var(--sl-text-primary)', cursor: reconciling ? 'not-allowed' : 'pointer',
+            opacity: reconciling ? 0.6 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+          }}
+        >
+          {reconciling ? '正在同步…' : '🔄 同步文档'}
+        </button>
+
+        {reconcileResult && (
+          <div style={{
+            fontSize: 11, padding: '8px 10px', borderRadius: 4,
+            border: `1px solid ${reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'var(--sl-red)' : 'var(--sl-border-light)'}`,
+            color: reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'var(--sl-red)' : 'var(--sl-text-secondary)',
+            background: reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'rgba(255,123,114,0.05)' : 'transparent',
+            lineHeight: 1.5,
+          }}>
+            已扫描 {reconcileResult.scanned} · 新增 {reconcileResult.inserted} · 更新 {reconcileResult.updated} · 未变 {reconcileResult.unchanged} · 失败 {reconcileResult.failed} · 冲突 {reconcileResult.conflicted}
+          </div>
+        )}
 
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
