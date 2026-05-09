@@ -87,6 +87,21 @@ function resolveProjectName(projectId: string | undefined): string {
   return projectId;
 }
 
+// Stable fallback contact object — defined at module scope so its identity
+// never changes across renders. Embedding it inside the component body would
+// allocate a new reference each render, which propagates through
+// activeContact → useMessages dependencies and triggers
+// "Maximum update depth exceeded" via the canonical:appended subscription.
+const FALLBACK_SUPERVISOR_CONTACT = {
+  id: 'supervisor',
+  name: 'Supervisor',
+  type: 'supervisor' as const,
+  online: true,
+  unread: 0,
+  avatar: 'A',
+  color: 'var(--sl-brand)',
+};
+
 export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Live contact list and message stream from real backend data.
   const contacts = useContacts();
@@ -236,21 +251,12 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
   }, [onClose]);
 
   // Data — backend-driven via hooks (see useSupervisorData.ts).
-  // Defensive: if contacts haven't loaded yet (race during hydration) we
-  // synthesise a placeholder supervisor contact so render never sees
-  // `undefined`, which would crash the panel and white-screen the app.
-  const FALLBACK_SUPERVISOR: typeof contacts[number] = {
-    id: 'supervisor',
-    name: 'Supervisor',
-    type: 'supervisor',
-    online: true,
-    unread: 0,
-    avatar: 'A',
-    color: 'var(--sl-brand)',
-  };
+  // FALLBACK_SUPERVISOR_CONTACT lives at module scope so activeContact has
+  // a stable identity when contacts is empty, preventing infinite re-render
+  // loops in dependent hooks (useMessages → onCanonicalAppended).
   const activeContact = contacts.find(c => c.id === activeContactId)
     ?? contacts[0]
-    ?? FALLBACK_SUPERVISOR;
+    ?? FALLBACK_SUPERVISOR_CONTACT;
   const messages = useMessages(activeContact);
 
   // Live PTY session lookup (seat → sessionId), for routing.
