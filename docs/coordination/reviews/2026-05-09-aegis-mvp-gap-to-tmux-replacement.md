@@ -5,30 +5,28 @@
 | template | T4 |
 | subtype | gap_review |
 | id | 2026-05-09-aegis-mvp-gap-to-tmux-replacement |
-| status | **held** |
+| status | **issued** |
 | author | aegis |
 | date | 2026-05-09 |
-| to | lyra (on re-issuance) |
+| to | lyra |
 | priority | P0 |
-| depends_on | `docs/PRODUCT_TRUTH.md` (§1.2 active contract set), `docs/prd-v0.5.md` (§3 priority boundaries, §5 P0 story map US-P0-01 – US-P0-15, §6 module contracts), `docs/architecture-decisions.md` (AD-008 – AD-013 v2), `docs/architecture-design.md`, `docs/coordination/reviews/priorities.md` (L1/L2 framework, chan-06), `docs/coordination/reviews/2026-05-08-aegis-cli-plan-mode-integration-design.md` (chan-10), `docs/coordination/COORDINATION_RULES.md` |
-| tags | mvp, tmux-replacement, gap-analysis, v0.1, coordination, held |
-| acceptance owner | lyra (on re-issuance) |
-| concurrency rule | Review authority only. Does not itself edit code or seed. Lyra sequences T3 packets citing this doc — **but only after re-issuance**. |
+| depends_on | `docs/PRODUCT_TRUTH.md` (§1.2 active contract set), `docs/prd-v0.5.md` (§3 priority boundaries, §5 P0 story map US-P0-01 – US-P0-15, §6 module contracts), `docs/architecture-decisions.md` (AD-008 – AD-013 v2), `docs/architecture-design.md`, `docs/coordination/reviews/priorities.md` (L1/L2 framework, chan-06), `docs/coordination/reviews/2026-05-08-aegis-cli-plan-mode-integration-design.md` (chan-10), `docs/coordination/COORDINATION_RULES.md`, `docs/coordination/tasks/mira/MIRA-2026-05-09-v01-sessions-live-wiring-v1.md` (Mira's v01 closed by §C commit 2f83624), `docs/coordination/tasks/mira/MIRA-2026-05-09-v01-sessions-live-wiring-hold-v1.md` (HOLD resolved) |
+| tags | mvp, tmux-replacement, gap-analysis, v0.1, coordination |
+| acceptance owner | lyra |
+| concurrency rule | Review authority. Lyra now sequences T3 packets per §4 packet list. |
 
 ---
 
-## Hold state (2026-05-09)
+## Re-issuance note (2026-05-09)
 
-**Status: HELD.** This review is on disk and traceable, but it is **not dispatched to Lyra** and **no T3 packets may be drafted against it** until Mr. Zhang explicitly ratifies the upstream precondition below.
+Hold released by Mr. Zhang directive ("把 Lyra 和 Flux 还有 Nimbus 都召唤起来吧"). Mira's v01 (sessions wiring + header counters + reconcile button) closed at commits `578ff7c` (§A) + `4651bb4` (§B) + `2f83624` (§C). Frontend baseline is acceptable for SG-A diagnostic + SG-B execution.
 
-| Aspect | Value |
-|---|---|
-| Directly-engaged seat | **Mira** |
-| Baseline under rework | V1 + v2 frontend shell — Mr. Zhang is working with Mira directly on frontend rework before the multi-seat coordination cascade kicks in |
-| Explicit signal that re-issues this review | Mr. Zhang says he is satisfied with Mira's frontend rework, OR explicitly instructs Aegis to hand this review to Lyra |
-| Effect during hold | Lyra must not acknowledge, must not draft A1, must not queue B1/B2/B3. Aegis will not push follow-up supervision artifacts that presume the packet list below is the baseline. §4 packet scopes may shift once Mira's rework lands. |
+Two newly-surfaced UI bugs to fold into A1 scope (or a sibling A2 packet at Lyra's discretion):
 
-On re-issuance: flip `status: held` → `status: issued`, remove this section, tmux-notify Lyra to begin A1 drafting.
+- **Logo missing in V1 NavRail**: `ui/src/components/NavRail.tsx` has no brand mark. The Logo Mira placed in commit `31367a0` was reverted with the scope-violation revert `b11d878`. Should be reinstated as a **bounded** UI fix, not a full layout redesign.
+- **ProjectSwitcher dropdown clipped**: the AppShell's `overflow-hidden` ancestors clip the absolute-positioned dropdown. Diagnose root in `ui/src/layouts/AppShell.tsx` + `ui/src/components/ProjectSwitcher.tsx` z-index / portal strategy.
+
+Lyra to author A1 (Nimbus white-screen diagnosis from `TopErrorBoundary` stack) as immediate first packet; A2 (Mira UI Logo + ProjectSwitcher z-index) as parallel-dispatchable.
 
 ---
 
