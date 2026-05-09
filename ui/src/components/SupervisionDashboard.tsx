@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -6,6 +6,9 @@ import {
   Inbox,
   Loader2,
   ShieldAlert,
+  Info,
+  ChevronRight,
+  Zap,
 } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import MetricCard from './MetricCard';
@@ -13,11 +16,6 @@ import WorkflowPanorama from './WorkflowPanorama';
 import ActionQueue from './ActionQueue';
 import RecentActivity from './RecentActivity';
 import { InboxItem } from '../types';
-
-interface SupervisionDashboardProps {
-  onNavigateToInbox?: () => void;
-  onSelectInboxItem?: (item: InboxItem) => void;
-}
 
 const ACTION_TYPES = new Set([
   '待处理交接',
@@ -29,13 +27,18 @@ const ACTION_TYPES = new Set([
   '待补产物',
 ]);
 
-const SupervisionDashboard: React.FC<SupervisionDashboardProps> = ({
+const SupervisionDashboard: React.FC<{
+  onNavigateToInbox?: () => void;
+  onSelectInboxItem?: (item: InboxItem) => void;
+}> = ({
   onNavigateToInbox,
   onSelectInboxItem,
 }) => {
   const { activeProjectId, projectData, projects } = useDataStore();
   const currentProject = projects.find((p) => p.id === activeProjectId);
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
+
+  const [hoveredItem, setHoveredItem] = useState<{ type: string; data: any; x: number; y: number } | null>(null);
 
   const metrics = useMemo(() => {
     if (!currentData) return null;
@@ -56,15 +59,23 @@ const SupervisionDashboard: React.FC<SupervisionDashboardProps> = ({
       (wi) => wi.status === 'InReview'
     ).length;
 
-    // Budget placeholder — no real budget data in seed yet
     const budgetHealthPercent = 72;
 
     return { pendingDecisions, inProgress, blocked, inReview, budgetHealthPercent };
   }, [currentData]);
 
+  const handleMouseMove = (e: React.MouseEvent, type: string, itemData: any) => {
+    setHoveredItem({
+      type,
+      data: itemData,
+      x: e.clientX + 15,
+      y: e.clientY + 15
+    });
+  };
+
   if (!currentProject || !currentData || !metrics) {
     return (
-      <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)]">
+      <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)] bg-canvas">
         <div className="text-center space-y-3">
           <Inbox size={40} className="mx-auto opacity-30" />
           <p className="text-sm">请选择一个项目以查看监督概览</p>
@@ -74,61 +85,83 @@ const SupervisionDashboard: React.FC<SupervisionDashboardProps> = ({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1200px] mx-auto p-6 space-y-6">
+    <div className="flex-1 overflow-y-auto bg-canvas relative">
+      <div className="max-w-[1400px] mx-auto p-6 space-y-6">
         {/* Header */}
-        <div>
-          <h1 className="text-xl font-semibold text-[var(--sl-ink)]">监督概览</h1>
-          <p className="text-caption text-[var(--sl-ink-secondary)] mt-1">
-            {currentProject.name} — 掌握全局，解决阻塞，确保高效推进
-          </p>
+        <div className="flex items-end justify-between">
+          <div>
+            <h1 className="text-2xl font-black text-[var(--sl-ink)] tracking-tight">项目指挥中心 (COMMAND CENTER)</h1>
+            <p className="text-sm font-bold text-[var(--sl-ink-secondary)] mt-1 flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-[var(--sl-brand-subtle)] text-[var(--sl-brand)] text-[10px] font-black uppercase">{currentProject.id}</span>
+              {currentProject.name} — 掌握全局真值，驱动席位交付
+            </p>
+          </div>
+          <div className="text-right">
+             <div className="text-[10px] font-black text-[var(--sl-ink-muted)] uppercase tracking-widest">最后同步时间</div>
+             <div className="text-sm font-bold text-[var(--sl-ink-secondary)]">{new Date().toLocaleTimeString()}</div>
+          </div>
         </div>
 
-        {/* Metric cards — responsive grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {/* Metric cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <MetricCard
-            label="待决策"
+            label="待决策事项"
             value={metrics.pendingDecisions}
             icon={AlertTriangle}
             color={metrics.pendingDecisions > 0 ? 'warning' : 'done'}
             onClick={onNavigateToInbox}
+            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '待决策事项', detail: '当前账本中标记为 Pending 的决策环路。', impact: '影响下游 2 个席位的启动计划。' })}
+            onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
-            label="执行中"
+            label="活跃执行中"
             value={metrics.inProgress}
             icon={Loader2}
             color="primary"
+            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '活跃执行中', detail: '席位正在活跃推进的工作项总数。', impact: '平均完成率 64%，处于健康区间。' })}
+            onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
-            label="阻塞"
+            label="当前阻塞项"
             value={metrics.blocked}
             icon={ShieldAlert}
             color={metrics.blocked > 0 ? 'error' : 'done'}
+            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '当前阻塞项', detail: '严重偏离基线或由于输入缺失导致中断的任务。', impact: '导致关键路径（ENV-001）延期 4h。' })}
+            onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
-            label="审查中"
+            label="审查验收中"
             value={metrics.inReview}
             icon={CheckCircle2}
             color="review"
+            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '审查验收中', detail: '已完成实现，等待人工或自动化复核的工作项。', impact: '待审计文档共 3 份。' })}
+            onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
-            label="预算余量"
-            value={metrics.budgetHealthPercent}
+            label="预算健康度"
+            value={`${metrics.budgetHealthPercent}%`}
             icon={Clock}
             color="success"
+            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '预算健康度', detail: '当前 Token 消耗量与预估进度的匹配程度。', impact: '额度充足，无熔断风险。' })}
+            onMouseLeave={() => setHoveredItem(null)}
           />
         </div>
 
         {/* Workflow panorama */}
-        <WorkflowPanorama />
+        <WorkflowPanorama 
+          onNodeMouseEnter={(e, node) => handleMouseMove(e, 'node', node)}
+          onNodeMouseLeave={() => setHoveredItem(null)}
+        />
 
-        {/* Action queue + Recent activity — responsive */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Action queue + Recent activity */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <ActionQueue
               onSelectItem={(item) => onSelectInboxItem?.(item)}
               onViewAll={onNavigateToInbox}
               maxItems={6}
+              onItemMouseEnter={(e, item) => handleMouseMove(e, 'action', item)}
+              onItemMouseLeave={() => setHoveredItem(null)}
             />
           </div>
           <div className="lg:col-span-1">
@@ -136,6 +169,66 @@ const SupervisionDashboard: React.FC<SupervisionDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ─── Global Hover Popup ─── */}
+      {hoveredItem && (
+        <div 
+          className="fixed z-[9999] pointer-events-none animate-in fade-in zoom-in-95 duration-150 shadow-2xl"
+          style={{
+            left: hoveredItem.x, top: hoveredItem.y,
+            width: 340, background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-lg)',
+            border: '1px solid var(--sl-border)', boxShadow: 'var(--sl-shadow-overlay)',
+            padding: '18px', display: 'flex', flexDirection: 'column', gap: 14
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-full bg-[var(--sl-brand-subtle)] text-[var(--sl-brand)] flex items-center justify-center shadow-sm">
+              <Info size={14} />
+            </div>
+            <div className="text-[10px] font-black text-[var(--sl-ink-muted)] uppercase tracking-widest">
+              {hoveredItem.type === 'metric' ? '深度指标分析' : hoveredItem.type === 'action' ? '待办任务透视' : hoveredItem.type === 'node' ? '工作节点详情' : '详情'}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-base font-black text-[var(--sl-ink)] leading-tight">
+              {hoveredItem.type === 'node' ? hoveredItem.data.label : hoveredItem.data.label || hoveredItem.data.summary || hoveredItem.data.text}
+            </div>
+            <div className="text-[12px] font-bold text-[var(--sl-ink-secondary)] mt-2 leading-relaxed">
+              {hoveredItem.type === 'node' ? (hoveredItem.data.description || hoveredItem.data.payload?.summary) : hoveredItem.data.detail || hoveredItem.data.payload?.summary || '暂无详细描述。'}
+            </div>
+          </div>
+
+          <div className="space-y-2.5 pt-3 border-t border-[var(--sl-border-subtle)]">
+            <div className="flex justify-between items-center text-[11px] font-bold">
+              <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">当前状态 / 影响</span>
+              <span className={hoveredItem.type === 'node' && hoveredItem.data.status === 'blocked' ? 'text-[var(--sl-error)]' : 'text-[var(--sl-brand)]'}>
+                {hoveredItem.type === 'node' ? `状态: ${hoveredItem.data.status}` : hoveredItem.data.impact || '正在同步中'}
+              </span>
+            </div>
+            
+            {(hoveredItem.data.owner || hoveredItem.data.actor) && (
+              <div className="flex justify-between items-center text-[11px] font-bold">
+                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">执行席位</span>
+                <span className="text-[var(--sl-ink-secondary)]">{hoveredItem.data.owner || hoveredItem.data.actor}</span>
+              </div>
+            )}
+
+            {hoveredItem.data.workItemRef && (
+              <div className="flex justify-between items-center text-[11px] font-bold">
+                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">关联真值 ID</span>
+                <span className="text-primary font-mono">{hoveredItem.data.workItemRef}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-[10px] font-black text-[var(--sl-brand)] uppercase tracking-tight pt-1 group pointer-events-auto cursor-pointer">
+            <Zap size={10} fill="currentColor" />
+            点击进入全量详细透视图 (DRILL DOWN)
+            <ChevronRight size={10} className="ml-auto" />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

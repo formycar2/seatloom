@@ -1,8 +1,6 @@
 /**
  * Professional DAG Workflow Renderer
  * Inspired by AntV X6 design patterns.
- * 
- * Fixed: Coordinate misalignment on scroll.
  */
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
@@ -46,7 +44,8 @@ const DagNode: React.FC<{
   selected: boolean;
   onSelect: (id: string | null) => void;
   registerRef: (id: string, el: HTMLDivElement | null) => void;
-}> = ({ node, selected, onSelect, registerRef }) => {
+  onMouseEnter?: (e: React.MouseEvent, node: WorkNode) => void;
+}> = ({ node, selected, onSelect, registerRef, onMouseEnter }) => {
   const [hovered, setHovered] = useState(false);
   const color = node.accentColor || defaultStatusColor(node.status);
   
@@ -60,7 +59,10 @@ const DagNode: React.FC<{
         e.stopPropagation();
         onSelect(selected ? null : node.id);
       }}
-      onMouseEnter={() => setHovered(true)}
+      onMouseEnter={(e) => {
+        setHovered(true);
+        onMouseEnter?.(e, node);
+      }}
       onMouseLeave={() => setHovered(false)}
       style={{
         width: 180,
@@ -93,13 +95,6 @@ const DagNode: React.FC<{
             {node.owner || node.label}
           </div>
         </div>
-        {node.type === 'gate' && (
-          <div style={{ 
-            fontSize: 9, fontWeight: 800, padding: '1px 4px', 
-            borderRadius: 4, background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-            color: 'var(--sl-text-tertiary)', textTransform: 'uppercase'
-          }}>GATE</div>
-        )}
       </div>
 
       <div style={{ padding: '0 12px 8px 12px' }}>
@@ -172,7 +167,8 @@ const CurvedEdge: React.FC<{
 
 export const DagWorkflow: React.FC<{
   workflow: StageWorkflow;
-}> = ({ workflow }) => {
+  onNodeMouseEnter?: (e: React.MouseEvent, node: WorkNode) => void;
+}> = ({ workflow, onNodeMouseEnter }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const contentWrapperRef = useRef<HTMLDivElement>(null);
@@ -181,7 +177,6 @@ export const DagWorkflow: React.FC<{
 
   const layers = useMemo(() => computeLayers(workflow.nodes), [workflow.nodes]);
 
-  // Track node positions relative to the CONTENT WRAPPER
   const updateCoords = () => {
     if (!contentWrapperRef.current) return;
     const wrapperRect = contentWrapperRef.current.getBoundingClientRect();
@@ -203,20 +198,10 @@ export const DagWorkflow: React.FC<{
   useEffect(() => {
     updateCoords();
     const timer = setTimeout(updateCoords, 150); // Delay for layout settling
-
     window.addEventListener('resize', updateCoords);
-    // Also update on scroll just in case, though with the new structure it shouldn't be needed
-    const scrollContainer = scrollContainerRef.current;
-    if (scrollContainer) {
-      scrollContainer.addEventListener('scroll', updateCoords);
-    }
-
     return () => {
       clearTimeout(timer);
       window.removeEventListener('resize', updateCoords);
-      if (scrollContainer) {
-        scrollContainer.removeEventListener('scroll', updateCoords);
-      }
     };
   }, [layers, selectedId]);
 
@@ -238,7 +223,6 @@ export const DagWorkflow: React.FC<{
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* Outer Scroll Container */}
       <div 
         ref={scrollContainerRef}
         style={{
@@ -247,7 +231,6 @@ export const DagWorkflow: React.FC<{
           paddingBottom: 10,
         }}
       >
-        {/* Inner Content Wrapper: grow to fit content and provide coordinate system */}
         <div 
           ref={contentWrapperRef}
           style={{
@@ -269,13 +252,13 @@ export const DagWorkflow: React.FC<{
                   node={node}
                   selected={selectedId === node.id}
                   onSelect={setSelectedId}
+                  onMouseEnter={onNodeMouseEnter}
                   registerRef={(id, el) => { nodeRefs.current[id] = el; }}
                 />
               ))}
             </div>
           ))}
 
-          {/* SVG Edge Layer: absolutely positioned within the content wrapper */}
           <svg 
             style={{ 
               position: 'absolute', inset: 0, pointerEvents: 'none', 
@@ -299,33 +282,6 @@ export const DagWorkflow: React.FC<{
           </svg>
         </div>
       </div>
-
-      {/* Quick Info (if selected) */}
-      {selectedId && (
-        <div 
-          className="animate-in fade-in slide-in-from-top-1 duration-200"
-          style={{ 
-            marginTop: 12, padding: '12px', background: 'var(--sl-bg)', 
-            borderRadius: 'var(--sl-radius-md)', border: '1px solid var(--sl-border-light)',
-            display: 'flex', alignItems: 'start', gap: 10,
-            boxShadow: 'var(--sl-shadow-sm)'
-          }}
-        >
-          <Info size={16} style={{ color: 'var(--sl-brand)', marginTop: 2 }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)' }}>
-              {workflow.nodes.find(n => n.id === selectedId)?.label}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', marginTop: 4 }}>
-              {workflow.nodes.find(n => n.id === selectedId)?.description || '暂无详细描述。'}
-            </div>
-          </div>
-          <button 
-            onClick={() => setSelectedId(null)}
-            style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--sl-text-tertiary)' }}
-          >✕</button>
-        </div>
-      )}
     </div>
   );
 };

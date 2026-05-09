@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { AlertCircle, CheckCircle2, Clock, ArrowRight } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, ArrowRight, Link2 } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import { InboxItem } from '../types';
 
@@ -12,12 +12,6 @@ const ACTION_TYPES = new Set([
   '会话恢复',
   '待补产物',
 ]);
-
-const priorityColors: Record<string, string> = {
-  Critical: 'bg-[var(--sl-error)] text-white',
-  Normal: 'bg-primary text-white',
-  Low: 'bg-[var(--sl-done)] text-white',
-};
 
 const typeIcons: Record<string, { color: string; label: string }> = {
   '待处理交接': { color: 'text-primary', label: 'Handoff' },
@@ -33,9 +27,17 @@ interface ActionQueueProps {
   onSelectItem: (item: InboxItem) => void;
   onViewAll?: () => void;
   maxItems?: number;
+  onItemMouseEnter?: (e: React.MouseEvent, item: InboxItem) => void;
+  onItemMouseLeave?: () => void;
 }
 
-const ActionQueue: React.FC<ActionQueueProps> = ({ onSelectItem, onViewAll, maxItems = 5 }) => {
+const ActionQueue: React.FC<ActionQueueProps> = ({ 
+  onSelectItem, 
+  onViewAll, 
+  maxItems = 5,
+  onItemMouseEnter,
+  onItemMouseLeave
+}) => {
   const { activeProjectId, projectData } = useDataStore();
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
 
@@ -55,7 +57,7 @@ const ActionQueue: React.FC<ActionQueueProps> = ({ onSelectItem, onViewAll, maxI
   return (
     <div className="sl-card overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--sl-border-subtle)]">
-        <h3 className="text-sm font-semibold text-[var(--sl-ink)]">需要你行动</h3>
+        <h3 className="text-sm font-semibold text-[var(--sl-ink)]">需要你行动 (ACTION QUEUE)</h3>
         {onViewAll && (
           <button
             onClick={onViewAll}
@@ -83,6 +85,8 @@ const ActionQueue: React.FC<ActionQueueProps> = ({ onSelectItem, onViewAll, maxI
               <button
                 key={item.id}
                 onClick={() => onSelectItem(item)}
+                onMouseEnter={(e) => onItemMouseEnter?.(e, item)}
+                onMouseLeave={onItemMouseLeave}
                 className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--sl-panel)] transition-colors text-left group"
               >
                 {/* Priority indicator */}
@@ -92,26 +96,33 @@ const ActionQueue: React.FC<ActionQueueProps> = ({ onSelectItem, onViewAll, maxI
                     : 'var(--sl-done)'
                 }} />
 
-                {/* Type */}
-                <span className={`text-xs font-semibold shrink-0 ${typeInfo.color}`}>
-                  {typeInfo.label}
-                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`text-[10px] font-black uppercase tracking-wider ${typeInfo.color}`}>
+                      {typeInfo.label}
+                    </span>
+                    {item.object_ref && (
+                      <span className="text-[10px] font-bold text-[var(--sl-ink-muted)] flex items-center gap-1 bg-[var(--sl-bg)] px-1.5 rounded">
+                        <Link2 size={10} />
+                        {item.object_ref}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-[var(--sl-ink)] font-semibold truncate group-hover:text-primary transition-colors">
+                    {item.summary}
+                  </div>
+                </div>
 
-                {/* Summary */}
-                <span className="text-sm text-[var(--sl-ink)] truncate flex-1 group-hover:text-primary transition-colors">
-                  {item.summary}
-                </span>
-
-                {/* Actor */}
-                <span className="text-xs text-[var(--sl-ink-muted)] shrink-0">
-                  {item.actor}
-                </span>
-
-                {/* Wait time */}
-                <span className="text-xs text-[var(--sl-ink-muted)] shrink-0 flex items-center gap-1">
-                  <Clock size={10} />
-                  {waitLabel}
-                </span>
+                {/* Actor & Time */}
+                <div className="text-right flex flex-col items-end gap-1 shrink-0">
+                  <span className="text-[11px] font-bold text-[var(--sl-ink-secondary)]">
+                    {item.actor}
+                  </span>
+                  <span className="text-[10px] text-[var(--sl-ink-muted)] flex items-center gap-1 font-medium">
+                    <Clock size={10} />
+                    等待 {waitLabel}
+                  </span>
+                </div>
               </button>
             );
           })}

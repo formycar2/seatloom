@@ -1,106 +1,77 @@
 import React from 'react';
 import { useDataStore } from '../stores/useDataStore';
-import { SeatRole, SeatStatus } from '../types';
+import DagWorkflow from '../app-v2/DagWorkflow';
+import { StageWorkflow, WorkNode } from '../app-v2/dag-model';
+import { WorkItem } from '../types';
 
-interface SeatNode {
-  id: string;
-  name: string;
-  role: SeatRole;
-  activeCount: number;
-  blocked: boolean;
-  status: SeatStatus;
+interface WorkflowPanoramaProps {
+  onNodeMouseEnter?: (e: React.MouseEvent, node: any) => void;
+  onNodeMouseLeave?: () => void;
 }
 
-const WorkflowPanorama: React.FC = () => {
+const WorkflowPanorama: React.FC<WorkflowPanoramaProps> = ({ 
+  onNodeMouseEnter, 
+  onNodeMouseLeave 
+}) => {
   const { activeProjectId, projectData } = useDataStore();
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
 
   if (!currentData) return null;
 
-  const seatNodes: SeatNode[] = currentData.seats.map((seat) => {
-    const ownedWIs = currentData.workItems.filter(
-      (wi) => wi.owner_seat_id === seat.id && wi.status !== 'Done' && wi.status !== 'Verified'
-    );
-    const hasBlocked = ownedWIs.some((wi) => wi.status === 'Blocked') ||
-      currentData.sessions.some((s) => s.seat_id === seat.id && s.status === 'InputRequired');
+  // ── Mapping Truth (WorkItems) to DAG Nodes ──
+  const mapWorkItemToNode = (wi: WorkItem): WorkNode => {
+    const owner = currentData.seats.find(s => s.id === wi.owner_seat_id)?.name || '未指派';
+    
+    // Determine status color/icon mapping
+    let status: any = 'waiting';
+    if (wi.status === 'Active') status = 'active';
+    else if (wi.status === 'Blocked') status = 'blocked';
+    else if (wi.status === 'InReview') status = 'active'; // Showing as pulse
+    else if (wi.status === 'Done' || wi.status === 'Verified') status = 'done';
 
     return {
-      id: seat.id,
-      name: seat.name.charAt(0).toUpperCase() + seat.name.slice(1),
-      role: seat.role,
-      activeCount: ownedWIs.length,
-      blocked: hasBlocked,
-      status: seat.status,
-    };
-  });
+      id: wi.id,
+      type: 'task',
+      label: wi.title,
+      owner: owner.charAt(0).toUpperCase() + owner.slice(1),
+      ownerAvatar: owner.charAt(0).toUpperCase(),
+      status: status,
+      dependsOn: wi.depends_on || [],
+      description: wi.goal,
+      workItemRef: wi.id.toUpperCase(),
+      // Adding extra fields for the hover popup
+      payload: {
+        summary: wi.goal,
+        ac: wi.acceptance_criteria,
+        updated: wi.updated_at
+      }
+    } as any;
+  };
 
-  const activeNodes = seatNodes.filter((n) => n.status === 'Active');
+  const workflow: StageWorkflow = {
+    nodes: currentData.workItems.map(mapWorkItemToNode),
+    edges: [] // DagWorkflow will compute these from nodes.dependsOn
+  };
 
   return (
-    <div className="sl-card p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-[var(--sl-ink)]">工作流全景</h3>
-        <span className="text-caption text-[var(--sl-ink-muted)]">席位流转</span>
+    <div className="sl-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--sl-border-subtle)] bg-[var(--sl-panel)]">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-[var(--sl-ink)] uppercase tracking-wider">实时工作流全景 (TRUTH-DRIVEN DAG)</h3>
+          <span className="text-[10px] font-black px-2 py-0.5 rounded bg-primary text-white">LIVE</span>
+        </div>
+        <div className="flex items-center gap-4 text-[11px] font-medium text-[var(--sl-ink-muted)]">
+          <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[var(--sl-brand)]" /> 进行中</span>
+          <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[var(--sl-red)]" /> 阻塞</span>
+          <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[var(--sl-done)]" /> 已交付</span>
+        </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2 py-3 overflow-x-auto">
-        {activeNodes.map((node, i) => (
-          <React.Fragment key={node.id}>
-            {/* Seat node */}
-            <div
-              className={`
-                flex flex-col items-center gap-1.5 px-4 py-3 rounded-lg border transition-all min-w-[80px]
-                ${node.blocked
-                  ? 'border-[var(--sl-error)] bg-[var(--sl-error-light)]'
-                  : 'border-[var(--sl-border)] bg-canvas hover:border-primary/40'
-                }
-              `}
-            >
-              <div
-                className={`
-                  w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
-                  ${node.blocked
-                    ? 'bg-[var(--sl-error)] text-white'
-                    : 'bg-primary/10 text-primary'
-                  }
-                `}
-              >
-                {node.name.charAt(0)}
-              </div>
-              <span className="text-xs font-semibold text-[var(--sl-ink)] truncate max-w-[72px]">{node.name}</span>
-              <span className={`text-[10px] font-medium ${node.blocked ? 'text-[var(--sl-error)]' : 'text-[var(--sl-ink-secondary)]'}`}>
-                {node.blocked ? '阻塞' : `${node.activeCount} 项`}
-              </span>
-            </div>
-
-            {/* Connector arrow */}
-            {i < activeNodes.length - 1 && (
-              <div className="flex items-center text-[var(--sl-ink-muted)] shrink-0">
-                <div className="w-6 h-px bg-[var(--sl-border)]" />
-                <svg width="8" height="12" viewBox="0 0 8 12" fill="none" className="shrink-0">
-                  <path d="M1 1L6 6L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-            )}
-          </React.Fragment>
-        ))}
-
-        {/* Gate node */}
-        <div className="flex items-center text-[var(--sl-ink-muted)] shrink-0">
-          <div className="w-6 h-px bg-[var(--sl-border)]" />
-          <svg width="8" height="12" viewBox="0 0 8 12" fill="none" className="shrink-0">
-            <path d="M1 1L6 6L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-        <div className="flex flex-col items-center gap-1.5 px-4 py-3 rounded-lg border border-dashed border-[var(--sl-border)] bg-canvas min-w-[80px]">
-          <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold bg-[var(--sl-warning-light)] text-[var(--sl-warning)]">
-            G
-          </div>
-          <span className="text-xs font-semibold text-[var(--sl-ink)]">Gate</span>
-          <span className="text-[10px] font-medium text-[var(--sl-ink-secondary)]">
-            {currentData.workItems.filter((wi) => wi.status === 'InReview').length} 待审
-          </span>
-        </div>
+      <div className="p-4 bg-canvas/30" onMouseLeave={onNodeMouseLeave}>
+        <DagWorkflow 
+          workflow={workflow} 
+          onNodeMouseEnter={onNodeMouseEnter}
+        />
       </div>
     </div>
   );
