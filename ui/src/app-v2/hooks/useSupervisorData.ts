@@ -125,12 +125,11 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
   const payload = (evt.payload ?? {}) as Record<string, any>;
   const fromUser = (evt.actorRef ?? '').toLowerCase().startsWith('human');
 
-  // Prefer explicit content; otherwise synthesise a human-readable line from
-  // the event type + payload / actor so the ledger becomes a readable feed
-  // instead of opaque event ids.
-  let content = '';
-  let type: ChatMessage['type'] = 'text';
-
+  // All ledger-derived bubbles render as plain text — the V2 MessageBubble
+  // expects a populated `card` object for any non-text type, and we don't
+  // have one for synthesized activity-feed lines. The emoji prefix carries
+  // the category visually (📤 / ✅ / 📋 / etc.) without needing card chrome.
+  let content: string;
   if (typeof payload.content === 'string') {
     content = payload.content;
   } else {
@@ -138,20 +137,16 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
     switch (etype) {
       case 'SessionStarted':
         content = `🟢 Session started — ${payload.session_id ?? ''}`;
-        type = 'info';
         break;
       case 'SessionCompleted':
         content = `⚪ Session completed — ${payload.session_id ?? ''}`;
-        type = 'info';
         break;
       case 'SessionFailed':
       case 'SessionInterrupted':
         content = `🔴 ${etype} — ${payload.session_id ?? ''}`;
-        type = 'alert';
         break;
       case 'ArtifactCreated':
         content = `📄 Artifact created — ${payload.artifact_id ?? payload.title ?? ''}`;
-        type = 'info';
         break;
       case 'HandoffDrafted':
       case 'HandoffSent':
@@ -161,44 +156,34 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
       case 'HandoffReturned':
       case 'HandoffCompleted':
         content = `📤 ${etype} — ${payload.handoff_id ?? ''}`;
-        type = 'delivery';
         break;
       case 'WorkItemCreated':
         content = `📋 WorkItem created — ${payload.title ?? payload.workitem_id ?? ''}`;
-        type = 'progress';
         break;
       case 'WorkItemStatusChanged':
         content = `📋 WorkItem status → ${payload.new_status ?? ''} (${payload.workitem_id ?? ''})`;
-        type = 'progress';
         break;
       case 'ReviewVerdictIssued':
         content = `✅ Review verdict: ${payload.verdict ?? ''} — ${payload.workitem_id ?? ''}`;
-        type = 'verification';
         break;
       case 'SeatDelegationIssued':
         content = `🔁 Delegation issued: ${payload.from_seat ?? ''} → ${payload.to_seat ?? ''}`;
-        type = 'info';
         break;
       case 'SeatDelegationClosed':
         content = `🔁 Delegation closed — ${payload.delegation_id ?? ''}`;
-        type = 'info';
         break;
       case 'CheckpointCreated':
         content = `📌 Checkpoint created`;
-        type = 'info';
         break;
       case 'PromptDetected':
         content = `⚠️ Prompt detected (${payload.prompt_kind ?? ''})`;
-        type = 'alert';
         break;
       case 'SupervisorMessage':
       case 'SeatResponse':
         content = payload.content ?? '[empty message]';
-        type = 'text';
         break;
       default:
-        content = `[${etype}]`;
-        type = 'info';
+        content = `• ${etype}`;
     }
   }
 
@@ -208,7 +193,7 @@ function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage 
     from: fromUser ? 'user' : 'contact',
     content,
     time: formatTime(evt.occurredAt),
-    type,
+    type: 'text',
   };
 }
 
