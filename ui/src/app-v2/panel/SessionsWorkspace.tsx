@@ -1,63 +1,50 @@
-// SessionsWorkspace — main-window workspace listing active PTY sessions.
+// SessionsWorkspace — main-window workspace listing active tmux mirror sessions.
 //
-// Replaces the old "打开 Supervisor" empty state. Shows:
-//   - A left rail of seat launchers (aegis / lyra / mira / nimbus / flux / custom shell)
-//   - A main area with one tab per active session, each hosting a SessionTerminal
-//   - A "+" new-session launcher prompting for runtime + command
+// v0.0.1: attach-only mode. Lists available tmux sessions via cmd_list_tmux_sessions
+// (mocked until A3 PASS) and attaches to them. xterm is read-only (display mirror).
 
-import React, { useEffect, useState, useMemo } from 'react';
-import { api, isTauri } from '../../lib/api';
-import type { LaunchRequest, LiveSessionDto } from '../../lib/types-dto';
-import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
-import { useDataStore } from '../../stores/useDataStore';
+import React, { useEffect, useState } from 'react';
+import { isTauri } from '../../lib/api';
+import type { LiveSessionDto } from '../../lib/types-dto';
 import { SessionTerminal } from './SessionTerminal';
 
+interface TmuxSessionInfo {
+  session_name: string;
+  created_at: number;
+  attached: boolean;
+}
+
 interface LiveSessionState extends LiveSessionDto {
-  exited?: boolean;
-  exitCode?: number | null;
   label: string;
-  seatName?: string;
 }
 
-interface QuickLauncher {
-  key: string;
-  label: string;
-  runtime: string;
-  command: string;
-  args: string[];
-}
-
-const QUICK_LAUNCHERS: QuickLauncher[] = [
-  { key: 'claude', label: 'Claude Code', runtime: 'ClaudeCode', command: 'claude', args: [] },
-  { key: 'gemini', label: 'Gemini CLI', runtime: 'GeminiCli', command: 'gemini', args: [] },
-  { key: 'codex',  label: 'Codex CLI',  runtime: 'Codex',      command: 'codex',  args: [] },
-  { key: 'zsh',    label: 'Shell (zsh)', runtime: 'Custom',    command: 'zsh',    args: ['-l'] },
+// TODO(A4-β): replace with real api call after A3 PASS
+const MOCK_TMUX_SESSIONS: TmuxSessionInfo[] = [
+  { session_name: 'Lyra-po-seatloom', created_at: 0, attached: true },
+  { session_name: 'Nimbus-TechArchi-seatloom', created_at: 0, attached: true },
+  { session_name: 'Mira-UX/UED-seatloom', created_at: 0, attached: true },
 ];
 
-const SEAT_SUGGESTIONS: Record<string, string> = {
-  aegis:  'Claude Code',
-  lyra:   'Gemini CLI',
-  mira:   'Gemini CLI',
-  nimbus: 'Claude Code',
-  flux:   'Shell (zsh)',
-};
-
 export const SessionsWorkspace: React.FC = () => {
-  const { activeProjectId, projectData } = useDataStore();
   const [sessions, setSessions] = useState<LiveSessionState[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
-  const clearSession = useLiveSessionsStore((s) => s.clearSession);
+  const [tmuxSessions, setTmuxSessions] = useState<TmuxSessionInfo[]>([]);
+  const [selectedTmuxSession, setSelectedTmuxSession] = useState<string>('');
 
-  // Derived seats from useDataStore (AD-014: use source of truth)
-  const seats = useMemo(() => {
-    const current = activeProjectId ? projectData[activeProjectId] : null;
-    return current?.seats || [];
-  }, [activeProjectId, projectData]);
+  useEffect(() => {
+    // TODO(A4-β): replace with real api call after A3 PASS
+    //   const sessions = await invoke<TmuxSessionInfo[]>('cmd_list_tmux_sessions');
+    //   setTmuxSessions(sessions);
+    setTmuxSessions(MOCK_TMUX_SESSIONS);
+    const interval = setInterval(() => {
+      setTmuxSessions(MOCK_TMUX_SESSIONS);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const launch = async (seatName: string | null, seatId: string | null, launcher: QuickLauncher) => {
+  const attachToTmux = async (tmuxSessionName: string) => {
     if (!isTauri()) {
       setError('Tauri backend not available — run `pnpm tauri dev`.');
       return;
@@ -65,35 +52,30 @@ export const SessionsWorkspace: React.FC = () => {
     setLaunching(true);
     setError(null);
     try {
-      const request: LaunchRequest = {
-        seatId: seatId || undefined,
-        runtime: launcher.runtime,
-        command: launcher.command,
-        args: launcher.args,
-      };
-      const live = await api.launchSession(request);
-      const label = seatName
-        ? `${seatName} · ${launcher.label}`
-        : `${launcher.label}`;
-      setSessions((prev) => [...prev, { ...live, label, seatName: seatName || undefined }]);
-      setActiveId(live.id);
-      if (seatName) setSessionForSeat(seatName, live.id);
+      const sessionId = `tmux-${Date.now()}`;
+
+      // TODO(A4-β): replace with real api call after A3 PASS
+      //   await invoke('cmd_attach_tmux_session', { sessionId, tmuxSessionName, rows: 24, cols: 80 });
+      console.warn(`A3 not yet available; mock attach for ${tmuxSessionName}`);
+
+      const label = `tmux: ${tmuxSessionName}`;
+      setSessions((prev) => [...prev, {
+        id: sessionId,
+        seatId: null,
+        runtime: 'tmux',
+        command: tmuxSessionName,
+        args: [],
+        workingDir: '',
+        transcriptPath: '',
+        label,
+      }]);
+
+      setActiveId(sessionId);
+      setSelectedTmuxSession('');
     } catch (e) {
-      setError(`launch failed: ${String(e)}`);
+      setError(`Failed to attach to tmux session: ${String(e)}`);
     } finally {
       setLaunching(false);
-    }
-  };
-
-  const kill = async (id: string) => {
-    // AD-015: Kill confirmation to prevent accidental loss of work
-    if (!window.confirm('确定要强行终止该会话吗？未保存的工作将会丢失。')) {
-      return;
-    }
-    try {
-      await api.killSession(id);
-    } catch (e) {
-      console.error(e);
     }
   };
 
@@ -105,79 +87,50 @@ export const SessionsWorkspace: React.FC = () => {
     }
   };
 
-  const markExited = (id: string, code: number | null) => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, exited: true, exitCode: code } : s)),
-    );
-    clearSession(id);
-  };
-
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', background: 'var(--sl-bg)' }}>
-      {/* ═══ Launchers rail ═══ */}
+      {/* ═══ Attach rail ═══ */}
       <aside style={{
-        width: 240, borderRight: '1px solid var(--sl-border)', padding: 16,
+        width: 280, borderRight: '1px solid var(--sl-border)', padding: 16,
         display: 'flex', flexDirection: 'column', gap: 16,
         background: 'var(--sl-surface)', overflow: 'auto',
       }}>
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
-            Quick launch
+            Attach to tmux
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {QUICK_LAUNCHERS.map((l) => (
-              <button
-                key={l.key}
-                disabled={launching}
-                onClick={() => launch(null, null, l)}
-                style={{
-                  textAlign: 'left', padding: '8px 10px',
-                  background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-                  borderRadius: 'var(--sl-radius-sm)', fontSize: 13, color: 'var(--sl-text-primary)',
-                  cursor: launching ? 'wait' : 'pointer',
-                }}
-              >
-                {l.label}
-              </button>
+          <select
+            value={selectedTmuxSession}
+            onChange={(e) => setSelectedTmuxSession(e.target.value)}
+            disabled={launching}
+            style={{
+              width: '100%', padding: '8px 10px', marginBottom: 8,
+              background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
+              borderRadius: 'var(--sl-radius-sm)', fontSize: 13, color: 'var(--sl-text-primary)',
+            }}
+          >
+            <option value="">-- Select a tmux session --</option>
+            {tmuxSessions.map((s) => (
+              <option key={s.session_name} value={s.session_name}>
+                {s.session_name}
+              </option>
             ))}
-          </div>
-        </div>
-
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
-            Project Seats
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {seats.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--sl-text-tertiary)' }}>
-                {activeProjectId ? '当前项目暂无席位数据。' : '请先在左侧选择一个项目频道。'}
-              </div>
-            )}
-            {seats.map((seat) => {
-              const suggestedLabel = SEAT_SUGGESTIONS[seat.name.toLowerCase()] ?? 'Claude Code';
-              const launcher =
-                QUICK_LAUNCHERS.find((l) => l.label === suggestedLabel) ?? QUICK_LAUNCHERS[0];
-              return (
-                <button
-                  key={seat.id}
-                  disabled={launching}
-                  onClick={() => launch(seat.name, seat.id, launcher)}
-                  title={`使用 ${launcher.label} 启动 ${seat.name} 席位`}
-                  style={{
-                    textAlign: 'left', padding: '10px',
-                    background: 'var(--sl-bg)', border: '1px solid var(--sl-border-light)',
-                    borderRadius: 'var(--sl-radius-md)', fontSize: 13, color: 'var(--sl-text-primary)',
-                    cursor: launching ? 'wait' : 'pointer',
-                    display: 'flex', flexDirection: 'column', gap: 2,
-                  }}
-                >
-                  <span style={{ fontWeight: 700 }}>{seat.name}</span>
-                  <span style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontWeight: 500 }}>
-                    {typeof seat.role === 'string' ? seat.role : seat.role.Custom} → {launcher.label}
-                  </span>
-                </button>
-              );
-            })}
+          </select>
+          <button
+            onClick={() => attachToTmux(selectedTmuxSession)}
+            disabled={!selectedTmuxSession || launching}
+            style={{
+              width: '100%', padding: '8px 10px',
+              background: 'var(--sl-brand)', border: '1px solid var(--sl-brand)',
+              borderRadius: 'var(--sl-radius-sm)', fontSize: 13, fontWeight: 600, color: 'white',
+              cursor: (!selectedTmuxSession || launching) ? 'not-allowed' : 'pointer',
+              opacity: (!selectedTmuxSession || launching) ? 0.5 : 1,
+            }}
+          >
+            Attach
+          </button>
+          <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginTop: 8, lineHeight: 1.4 }}>
+            v0.0.1 attach-only · read-only mirror
           </div>
         </div>
 
@@ -199,7 +152,7 @@ export const SessionsWorkspace: React.FC = () => {
         }}>
           {sessions.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--sl-text-tertiary)', padding: '0 12px' }}>
-              无活跃会话。从左侧席位列表中启动一个 agent 来替代 tmux。
+              无附加会话。从左侧下拉框选择一个 tmux 会话并点击 Attach。
             </div>
           ) : sessions.map((s) => (
             <div
@@ -211,42 +164,20 @@ export const SessionsWorkspace: React.FC = () => {
                 background: s.id === activeId ? 'var(--sl-bg)' : 'transparent',
                 borderRight: '1px solid var(--sl-border-light)',
                 borderTop: s.id === activeId ? '2px solid var(--sl-brand)' : '2px solid transparent',
-                cursor: 'pointer', color: s.exited ? 'var(--sl-text-tertiary)' : 'var(--sl-text-primary)',
+                cursor: 'pointer', color: 'var(--sl-text-primary)',
                 whiteSpace: 'nowrap', transition: 'all 120ms ease',
               }}
             >
               <span style={{
                 width: 6, height: 6, borderRadius: '50%',
-                background: s.exited ? 'var(--sl-text-tertiary)' : 'var(--sl-green)',
+                background: 'var(--sl-green)',
               }} />
               <span style={{ fontWeight: s.id === activeId ? 600 : 500 }}>{s.label}</span>
-              
-              {/* Exit Code Pill */}
-              {s.exited && s.exitCode !== undefined && (
-                <span style={{
-                  fontSize: 10, fontWeight: 700, padding: '1px 4px', borderRadius: 4,
-                  background: s.exitCode === 0 ? 'var(--sl-green-subtle)' : 'var(--sl-red-subtle)',
-                  color: s.exitCode === 0 ? 'var(--sl-green)' : 'var(--sl-red)',
-                  border: `1px solid ${s.exitCode === 0 ? 'var(--sl-green)' : 'var(--sl-red)'}40`
-                }}>
-                  exit {s.exitCode}
-                </span>
-              )}
-
-              {!s.exited && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); kill(s.id); }}
-                  title="终止会话"
-                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1, opacity: 0.6 }}
-                >×</button>
-              )}
-              {s.exited && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); closeTab(s.id); }}
-                  title="关闭标签页"
-                  style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1, opacity: 0.6 }}
-                >×</button>
-              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); closeTab(s.id); }}
+                title="关闭标签页"
+                style={{ padding: 0, width: 16, height: 16, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, lineHeight: 1, opacity: 0.6 }}
+              >×</button>
             </div>
           ))}
         </div>
@@ -257,13 +188,16 @@ export const SessionsWorkspace: React.FC = () => {
               key={s.id}
               style={{
                 position: 'absolute', inset: 0,
-                display: s.id === activeId ? 'block' : 'none',
+                display: s.id === activeId ? 'flex' : 'none',
+                flexDirection: 'column',
               }}
             >
-              <SessionTerminal
-                sessionId={s.id}
-                onExit={(code) => markExited(s.id, code)}
-              />
+              <div style={{ background: '#FEF3C7', padding: '8px', fontSize: 12, color: '#92400E', flexShrink: 0 }}>
+                ⚠️ Read-only mode (v0.0.1). Typing in this terminal is disabled. Use tmux directly to send commands.
+              </div>
+              <div style={{ flex: 1, position: 'relative' }}>
+                <SessionTerminal sessionId={s.id} />
+              </div>
             </div>
           ))}
           {sessions.length === 0 && (
@@ -274,14 +208,11 @@ export const SessionsWorkspace: React.FC = () => {
             }}>
               <div style={{ fontSize: 48, opacity: 0.15 }}>⌨</div>
               <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--sl-text-secondary)' }}>
-                SeatLoom 会话工作台
+                SeatLoom tmux 镜像工作台
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 440 }}>
-                从左侧侧边栏启动一个 agent 席位。每个会话都是一个真实的 PTY 终端，
-                其输出将实时串流至此并持久化存储。
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--sl-text-tertiary)', marginTop: 12 }}>
-                按下 <kbd style={{ padding: '1px 6px', fontSize: 11, background: 'var(--sl-surface-hover)', border: '1px solid var(--sl-border-light)', borderRadius: 3 }}>⌘K</kbd> 呼出 Supervisor 指令面板。
+                从左侧选择一个现有 tmux 会话并 Attach。v0.0.1 为只读镜像模式，
+                终端显示 tmux pane 的实时输出；输入请直接在 tmux 中进行。
               </div>
             </div>
           )}

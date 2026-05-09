@@ -61,8 +61,9 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: 13,
       lineHeight: 1.2,
-      cursorBlink: true,
+      cursorBlink: false,
       cursorStyle: 'bar',
+      disableStdin: true,
       scrollback: 10000,
       allowProposedApi: true,
       theme: THEME,
@@ -76,19 +77,7 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Forward keystrokes to the backend PTY.
-    // onData fires for both typed characters and pasted content — xterm gives
-    // us utf-8 strings. We send as raw bytes to preserve escape sequences.
-    const keyDisposable = term.onData((data) => {
-      const bytes: number[] = [];
-      // Encode as UTF-8 bytes. Most typed chars are < 128, but pasted non-ASCII
-      // needs proper encoding — TextEncoder handles it.
-      const encoded = new TextEncoder().encode(data);
-      for (let i = 0; i < encoded.length; i++) bytes.push(encoded[i]);
-      api.ptyWriteBytes(sessionId, bytes).catch((err) => {
-        console.error('[SessionTerminal] ptyWriteBytes failed:', err);
-      });
-    });
+    // TODO(B2): re-enable keystroke forwarding when write path is implemented.
 
     // Resize observer → cmd_pty_resize.
     const resizeObserver = new ResizeObserver(() => {
@@ -125,7 +114,6 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
     });
 
     return () => {
-      keyDisposable.dispose();
       resizeObserver.disconnect();
       if (unlistenOutput) unlistenOutput();
       if (unlistenExit) unlistenExit();
