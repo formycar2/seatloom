@@ -7,9 +7,16 @@ import { DocumentsWorkspace } from './views/DocumentsWorkspace';
 import SupervisionDashboard from '../components/SupervisionDashboard';
 import { MOCK_CONTACTS } from './mock-data';
 
+import { useDataStore } from '../stores/useDataStore';
+
 type MainView = 'dashboard' | 'sessions' | 'documents';
 
 const AppV2: React.FC = () => {
+  const { activeProjectId, projectData } = useDataStore();
+  const workItems = activeProjectId ? projectData[activeProjectId]?.workItems ?? [] : [];
+  const blockedCount = workItems.filter(wi => wi.status === 'Blocked').length;
+  const activeCount = workItems.filter(wi => wi.status === 'Active').length;
+
   const [showSupervisor, setShowSupervisor] = useState(() => localStorage.getItem('sl-supervisor-open') === 'true');
   const [mainView, setMainView] = useState<MainView>(() => {
     const saved = localStorage.getItem('sl-main-view');
@@ -61,14 +68,18 @@ const AppV2: React.FC = () => {
 
         {/* Center: Global Status (Compact) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--sl-red)' }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-secondary)' }}>1 阻塞</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--sl-green)' }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-secondary)' }}>5 进行中</span>
-          </div>
+          {blockedCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--sl-red)' }} />
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-secondary)' }}>{blockedCount} 阻塞</span>
+            </div>
+          )}
+          {activeCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--sl-green)' }} />
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--sl-text-secondary)' }}>{activeCount} 进行中</span>
+            </div>
+          )}
         </div>
 
         {/* Right: Seat Avatars */}
