@@ -8,7 +8,9 @@
 | status | accepted |
 | author | lyra |
 | date | 2026-05-09 |
-| verdict | **PASS (no-fix)** |
+| verdict | **PROVISIONAL PASS (no-fix) — pending Flux commit-pinned verify** |
+| flux verify packet | `docs/coordination/tasks/flux/FLUX-2026-05-09-sg-a-combined-verification-v1.md` (pending) |
+| correction note | Lyra issued acceptance at commit `a271aa8` before dispatching Flux commit-pinned verify. Mr. Zhang flagged the process miss 2026-05-09. Acceptance is provisional until Flux returns PASS. If Flux returns HOLD, a supplementary HOLD packet supersedes this acceptance. |
 | packet | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-v01-white-screen-diagnosis-v1.md` |
 | delivery | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-v01-white-screen-diagnosis-delivery-v1.md` |
 | depends_on | `docs/coordination/reviews/2026-05-09-aegis-seatloom-tmux-mirror-architecture-v1.md` (commit a5998c1), `docs/coordination/reviews/2026-05-09-aegis-mvp-gap-to-tmux-replacement.md` (commit 0cc401b), Aegis directive 2026-05-09 (A1 self-resolve), Mr. Zhang 2026-05-09 16:21 live-run observation |

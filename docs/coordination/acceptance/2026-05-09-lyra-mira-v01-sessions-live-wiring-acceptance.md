@@ -8,7 +8,9 @@
 | status | accepted |
 | author | lyra |
 | date | 2026-05-09 |
-| verdict | **PASS** |
+| verdict | **PROVISIONAL PASS — pending Flux commit-pinned verify** |
+| flux verify packet | `docs/coordination/tasks/flux/FLUX-2026-05-09-sg-a-combined-verification-v1.md` (pending) |
+| correction note | Lyra issued acceptance at commit `a271aa8` before dispatching Flux commit-pinned verify. Mr. Zhang flagged the process miss 2026-05-09. Acceptance is provisional until Flux returns PASS. Aegis pre-flight review is supervisor-layer, not substitute for Flux verify-layer per SG protocol. If Flux returns HOLD, supplementary HOLD packet supersedes this acceptance. |
 | packet | `docs/coordination/tasks/mira/MIRA-2026-05-09-v01-sessions-live-wiring-v1.md` |
 | delivery | `docs/coordination/tasks/mira/MIRA-2026-05-09-v01-sessions-live-wiring-delivery-v1.md` (factual record by Aegis) |
 | delivery commit | e864392 (v01 factual-record doc) |
