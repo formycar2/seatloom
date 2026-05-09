@@ -201,6 +201,17 @@ export interface InboxPayloadDto {
 
 // --- Live PTY session types (Phase 4) -----------------------------------------
 
+/**
+ * Discovered tmux session info (from cmd_list_tmux_sessions).
+ * Mirrors Rust `crates/seatloom-core/src/pty/mod.rs:114 TmuxSessionInfo`.
+ * No serde rename_all — fields are snake_case on the wire.
+ */
+export interface TmuxSessionInfo {
+  session_name: string;
+  created_at: number;
+  attached: boolean;
+}
+
 export interface LaunchRequest {
   seatId?: string;
   runtime: string;

@@ -1,29 +1,16 @@
 // SessionsWorkspace — main-window workspace listing active tmux mirror sessions.
 //
 // v0.0.1: attach-only mode. Lists available tmux sessions via cmd_list_tmux_sessions
-// (mocked until A3 PASS) and attaches to them. xterm is read-only (display mirror).
+// and attaches to them. xterm is read-only (display mirror).
 
 import React, { useEffect, useState } from 'react';
-import { isTauri } from '../../lib/api';
-import type { LiveSessionDto } from '../../lib/types-dto';
+import { api, isTauri } from '../../lib/api';
+import type { LiveSessionDto, TmuxSessionInfo } from '../../lib/types-dto';
 import { SessionTerminal } from './SessionTerminal';
-
-interface TmuxSessionInfo {
-  session_name: string;
-  created_at: number;
-  attached: boolean;
-}
 
 interface LiveSessionState extends LiveSessionDto {
   label: string;
 }
-
-// TODO(A4-β): replace with real api call after A3 PASS
-const MOCK_TMUX_SESSIONS: TmuxSessionInfo[] = [
-  { session_name: 'Lyra-po-seatloom', created_at: 0, attached: true },
-  { session_name: 'Nimbus-TechArchi-seatloom', created_at: 0, attached: true },
-  { session_name: 'Mira-UX/UED-seatloom', created_at: 0, attached: true },
-];
 
 export const SessionsWorkspace: React.FC = () => {
   const [sessions, setSessions] = useState<LiveSessionState[]>([]);
@@ -34,14 +21,28 @@ export const SessionsWorkspace: React.FC = () => {
   const [selectedTmuxSession, setSelectedTmuxSession] = useState<string>('');
 
   useEffect(() => {
-    // TODO(A4-β): replace with real api call after A3 PASS
-    //   const sessions = await invoke<TmuxSessionInfo[]>('cmd_list_tmux_sessions');
-    //   setTmuxSessions(sessions);
-    setTmuxSessions(MOCK_TMUX_SESSIONS);
-    const interval = setInterval(() => {
-      setTmuxSessions(MOCK_TMUX_SESSIONS);
-    }, 5000);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    const fetchSessions = async () => {
+      if (!isTauri()) {
+        setTmuxSessions([]);
+        return;
+      }
+      try {
+        const list = await api.listTmuxSessions();
+        if (!cancelled) setTmuxSessions(list);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('cmd_list_tmux_sessions failed:', e);
+          setTmuxSessions([]);
+        }
+      }
+    };
+    fetchSessions();
+    const interval = setInterval(fetchSessions, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   const attachToTmux = async (tmuxSessionName: string) => {
@@ -52,25 +53,14 @@ export const SessionsWorkspace: React.FC = () => {
     setLaunching(true);
     setError(null);
     try {
-      const sessionId = `tmux-${Date.now()}`;
-
-      // TODO(A4-β): replace with real api call after A3 PASS
-      //   await invoke('cmd_attach_tmux_session', { sessionId, tmuxSessionName, rows: 24, cols: 80 });
-      console.warn(`A3 not yet available; mock attach for ${tmuxSessionName}`);
-
+      const dto = await api.attachTmuxSession({
+        tmuxSessionName,
+        rows: 30,
+        cols: 120,
+      });
       const label = `tmux: ${tmuxSessionName}`;
-      setSessions((prev) => [...prev, {
-        id: sessionId,
-        seatId: null,
-        runtime: 'tmux',
-        command: tmuxSessionName,
-        args: [],
-        workingDir: '',
-        transcriptPath: '',
-        label,
-      }]);
-
-      setActiveId(sessionId);
+      setSessions((prev) => [...prev, { ...dto, label }]);
+      setActiveId(dto.id);
       setSelectedTmuxSession('');
     } catch (e) {
       setError(`Failed to attach to tmux session: ${String(e)}`);

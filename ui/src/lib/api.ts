@@ -30,6 +30,7 @@ import type {
   SessionDto,
   SessionExitEvent,
   SessionOutputEvent,
+  TmuxSessionInfo,
   WorkItemDto,
 } from './types-dto';
 
@@ -138,6 +139,18 @@ export const api = {
   killSession: (sessionId: string): Promise<void> =>
     invoke('cmd_kill_session', { sessionId }),
   listLiveSessions: (): Promise<string[]> => invoke('cmd_list_live_sessions'),
+
+  // --- tmux-mirror (v0.0.1 A3) ---
+  listTmuxSessions: (): Promise<TmuxSessionInfo[]> =>
+    invoke('cmd_list_tmux_sessions'),
+  attachTmuxSession: (request: {
+    seatId?: string;
+    tmuxSessionName: string;
+    sessionId?: string;
+    rows?: number;
+    cols?: number;
+  }): Promise<LiveSessionDto> =>
+    invoke('cmd_attach_tmux_session', { request }),
 };
 
 // --- Event subscriptions -----------------------------------------------------
