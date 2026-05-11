@@ -204,6 +204,8 @@ CREATE INDEX idx_events_project_occurred  ON canonical_events(project_id, occurr
 
 **Single-project today**: backfill defaults to `'seatloom'`. As soon as a second project lands, the routing logic in `cmd_create_workitem` etc. must take `project_id` from the active context — this is enforced at the API surface, not at the SQL constraint level (the FK only ensures a real project, not the *right* project).
 
+**B1 parallel-clearance (Aegis 2026-05-09 late-evening)**: 008 runs in parallel with B1, not before it. B1's bytes-only scope (`PtySession::write` → `tmux send-keys`) creates no `canonical_events` rows, so the `project_id` column on `canonical_events` is not required for B1 acceptance. 008 still lands in v0.0.2 because B2 onward (supervisor-message append paths, plan-mode approval injection, watcher-derived events) will need it. The arch §7 sequencing diagram remains valid as a *recommended* order, but is not a hard dependency between 008 and B1. (Source: consolidation doc `2026-05-09-lyra-nimbus-joint-review-amendments-v1.md` §A.6 — Aegis APPROVED verbatim, applied by Nimbus 2026-05-11.)
+
 ### Complexity estimate
 
 **Medium-high**. Migration 008 is mechanical. Repository changes touch `workitem_repo`, `session_repo`, `handoff_repo`, `event_repo` (each gains a `project_id` parameter on insert and a `for_project` filter on list). DTOs in `src-tauri/src/dto.rs` gain the field. UI store `projectStore` already has `activeProjectId` per `architecture-design.md` §7.1 — no UI breakage if the backend defaults to it. Estimated 600–900 LOC + migration + tests.
