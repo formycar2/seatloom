@@ -467,3 +467,72 @@ This is roughly 4–6 implementation packets sized like A3.
 ---
 
 *Supplement filed by Nimbus · 2026-05-09 · extends AD-008..013 + architecture-design.md §3/§4/§5/§6/§7/§8/§11/§12 · companion to Lyra's prd-v0.5.md supplement · joint Aegis review pending*
+
+---
+
+## §Review — Lyra cross-point comments (2026-05-09 late-evening, async per Aegis directive)
+
+### Cross-point (a) — Schema numbering: 008 vs 006
+
+**Lyra's product supplement §3** says "schema 006 ALTER" for the multi-project `project_id` migration. **Nimbus's §3** says `008_project_isolation.sql`.
+
+**Lyra's position**: Nimbus's `008` is correct. Lyra's `006` reference was written before the plan-mode authority migration (006) and seats-budget migration (007) were scoped. The correct sequence is:
+
+| Migration | Content |
+|---|---|
+| 006 | `plan_mode_authority` (prompt_kind CHECK + cli_plan subtype) — already in gap review §C3 |
+| 007 | `seats` budget / accepted_input_types / output_types / attached_skills — gap review §D3 |
+| 008 | `project_isolation` — `project_id` FK on workitems / sessions / handoffs / canonical_events |
+
+**Lyra will update product supplement §3** to reference `008` and note that 006 + 007 land first. No change needed in this document.
+
+**Aegis decision needed**: confirm 006 → 007 → 008 ordering is binding before any of these migrations are dispatched as implementation packets.
+
+---
+
+### Cross-point (b) — Realtime tier mapping: T-Live/T-Near/T-Batch ↔ Nimbus §4
+
+**Lyra's product supplement §2** defines three tiers:
+- **T-Live** (≤1s): Tauri event push, no DB roundtrip — `session:output` xterm bytes, own-bubble echo
+- **T-Near** (≤5s): DB write + Tauri event → store update — reconcile delta, Handoff status, IM delivery
+- **T-Batch** (manual): on-demand pull — initial Inbox hydration, document search
+
+**Nimbus's §4** recommends hybrid Option C: in-app `app.emit()` with 16ms throttle + PG `LISTEN/NOTIFY` for cross-process events.
+
+**Lyra's position**: the two models are consistent at different abstraction levels. Mapping:
+
+| Lyra tier | Nimbus mechanism | Notes |
+|---|---|---|
+| T-Live | `app.emit()` with 16ms throttle (§4 throttle policy) | `session:output` is the canonical T-Live surface |
+| T-Near | PG `LISTEN/NOTIFY` → backend re-emits via `app.emit()` | Watcher events, reconcile events, IM delivery status |
+| T-Batch | Manual `cmd_reconcile` / on-demand query | Unchanged from AD-007 fallback |
+
+**One clarification needed**: Nimbus's §4 throttle policy coalesces `session:output` at 16ms. Lyra's T-Live budget is ≤1s. These are compatible (16ms << 1s), but the product supplement should clarify that T-Live is the *user-perceived* budget, not the per-chunk emit interval. The 16ms throttle is the implementation mechanism that keeps T-Live within budget. No conflict — just a framing note.
+
+**No change needed in this document.** Lyra will add a clarifying sentence in product supplement §2.
+
+---
+
+### Cross-point (c) — project_id migration timing vs B1 write path
+
+**Nimbus's §7 sequencing** puts `§3 schema migration 008` first, before §1 (EventType + liveness), §2 (watcher), §4 (realtime), §5 (backfill). This is correct.
+
+**B1 (tmux send-keys write path)** creates new `canonical_events` rows via `cmd_pty_write` → `PtySession::write` → (eventually) `cmd_append_supervisor_message` or a new `SeatResponse` event. If `canonical_events` does not have `project_id` when B1 lands, every write-path event will be unscoped — violating AD-013 v2 backend enforcement.
+
+**Lyra's position**: `008` must land and be accepted **before** B1 delivery. This is the coupling Nimbus flagged in his B1 pre-read reply. Lyra has already noted this in the B1 dispatch packet (`NIMBUS-2026-05-09-b1-pty-write-send-keys-v1.md` §9 dispatch note: "if joint review elevates 006 multi-project schema ahead of B1 landing, PtySession construction may need project_id threading — Nimbus to hold + flag").
+
+**Concrete sequencing implication**:
+
+```
+008 migration packet (Nimbus) → Flux verify → Lyra acceptance
+    ↓
+B1 write path (Nimbus) — may now set project_id on new canonical_events rows
+```
+
+If B1 is already in flight when 008 lands, Nimbus should issue a B1-v2 that adds `project_id` to the `cmd_pty_write` → event path. If 008 lands before B1 delivery, B1 can include `project_id` from the start.
+
+**Aegis decision needed**: confirm that 008 is dispatched as a standalone packet before B1 delivery is accepted. Lyra will not accept B1 if `canonical_events` still lacks `project_id` at the time of B1 delivery.
+
+---
+
+*Lyra cross-point review complete · 2026-05-09 late-evening · Three cross-points addressed: (a) schema 008 confirmed correct, Lyra will update product supplement §3; (b) T-Live/T-Near/T-Batch maps cleanly to Nimbus §4 hybrid, no conflict; (c) 008 must precede B1 delivery — Aegis to confirm sequencing. Nimbus to write reciprocal review in Lyra's product supplement.*

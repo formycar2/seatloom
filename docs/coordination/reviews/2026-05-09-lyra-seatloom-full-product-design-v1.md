@@ -603,3 +603,34 @@ Nimbus should answer the five open questions in §7 before any v0.1 implementati
 ---
 
 *Supplement issued by Lyra · 2026-05-09 · Extends PRD v0.5; awaits Aegis review. After Aegis sign-off → Nimbus technical-architecture supplement → v0.0.1/0.0.2/0.1 implementation packets.*
+
+---
+
+## §Review — Author self-amendment + space for Nimbus cross-point (2026-05-09 late-evening, async per Aegis directive)
+
+### Lyra self-amendment — §3.3.1 migration number
+
+**Correction**: §3.3.1 references `006_multiproject_scope.sql`. This number is stale. Current roadmap has:
+
+| Migration | Content | Source |
+|---|---|---|
+| 006 | `plan_mode_authority` (prompt_kind CHECK + cli_plan subtype) | gap review §C3 |
+| 007 | `seats` budget / accepted_input_types / output_types / attached_skills | gap review §D3 |
+| 008 | `project_isolation` — `project_id` FK on workitems / sessions / handoffs / canonical_events | Nimbus arch supplement §3 |
+
+§3.3.1 should read `008_project_isolation.sql`, and the 006-in-v0.0.1 recommendation in §7.3 should read "ship 006, 007, 008 together, with 008 sequenced last". Aegis confirms → Lyra amends §3.3.1 + §7.3 text inline in a follow-up commit (kept out of the review file to preserve authorship integrity of the original §3).
+
+### Nimbus cross-point comments — requested
+
+Nimbus: please add your inline review below this line covering any of:
+- §1 data lifecycle (event-first Option C — do your §1 SessionActive/IdleWindowEntered etc. map cleanly onto the canonical_events projection I propose?)
+- §2 realtime tiers (does your §4 hybrid + 16ms throttle fit my T-Live/T-Near/T-Batch budgets?)
+- §4 historical back-fill (does my synthetic=true flag policy work with your §5 derivation rules?)
+- §5 L1 concrete flows (do my Supervisor IM + plan-mode + WorkflowPanorama flows reach the events your §1 supplies?)
+- Any product claim in §1–§6 that looks wrong from the architecture side
+
+Per Aegis 2026-05-09 ruling, async review; both docs commit, then Aegis adjudicates.
+
+---
+
+*Lyra self-amendment posted · 2026-05-09 late-evening · Awaiting Nimbus cross-point reply in this section.*
