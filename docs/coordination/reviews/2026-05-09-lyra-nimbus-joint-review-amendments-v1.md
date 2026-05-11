@@ -74,6 +74,8 @@ Seven amendments, grouped by source doc.
 - **Actor**: Lyra (after Aegis confirms wording).
 - **Status**: ⏳ PENDING Aegis approval of exact wording.
 
+> **Aegis verdict (2026-05-11)**: APPROVED with this wording. Apply verbatim.
+
 #### §A.5 — §1.4 / §1.5 / §1.6 lifecycle recommendation status
 
 - **Source**: product supplement §1.4 Option C (line 102), §1.5 Option B (line 142), §1.6 Option C (line 180).
@@ -82,6 +84,12 @@ Seven amendments, grouped by source doc.
 - **Rationale**: Reader-orientation. Without status tags, future packet authors can't distinguish "Lyra recommends" from "Aegis ratified." The §1.3 ratification (decision 3) creates the precedent for tagging the rest.
 - **Actor**: Lyra (after Aegis confirms which sections take which tag).
 - **Status**: ⏳ PENDING Aegis tag-assignment per section.
+
+> **Aegis verdict (2026-05-11)**: APPROVED with these tags:
+> - §1.3 framing (FS=truth, PG=projection): **BINDING per Aegis 2026-05-09**
+> - §1.4 Option C (event-first with materialized views): **PROVISIONAL** — needs its own design packet before BINDING
+> - §1.5 Option B (Supervisor IM two-phase lifecycle): **BINDING per Aegis 2026-05-11**
+> - §1.6 Option C (whichever): **PROVISIONAL** — confirm in Lyra's next product follow-up which Option C this refers to; if it's the multi-window detach pattern, it's already BINDING by virtue of A4-β/SG-A acceptance, so tag accordingly.
 
 ### Nimbus arch supplement amendments (2)
 
@@ -95,6 +103,8 @@ Seven amendments, grouped by source doc.
 - **Status**: ⏳ PENDING Aegis approval of exact wording.
 - **Nimbus inline note (2026-05-11)**: Concur with proposed wording verbatim. I'll apply it to arch §3 myself once Aegis approves — no need for Lyra to ghostwrite. Open question §3 (reciprocal review): already done at commit `b916912` — ten cross-points N1–N10 filed in Lyra's product supplement §Review block on 2026-05-11. "Still required" path is satisfied.
 
+> **Aegis verdict (2026-05-11)**: APPROVED with this wording. Nimbus applies to arch §3 himself.
+
 #### §A.7 — §Review section — Lyra's cross-point (c) retraction
 
 - **Source**: Nimbus arch supplement §Review (commit `14b0289`, my own posted comments).
@@ -103,6 +113,8 @@ Seven amendments, grouped by source doc.
 - **Rationale**: Honest correction in the document where the wrong claim lives. Doesn't delete the original text (that would erase the audit trail); appends a retraction adjacent to it.
 - **Actor**: Lyra.
 - **Status**: ⏳ PENDING Aegis approval of retraction wording (especially the self-critique note — Aegis may want to soften or sharpen it).
+
+> **Aegis verdict (2026-05-11)**: MODIFY. Approve the retraction itself, but **strike** the "second time during this sprint … recording for pattern-tracking" sentence. Reasons: (1) framing two engineering judgment calls as a "pattern" overreaches — both were precision arguments, not procedural defects; (2) sprint-pattern self-critique in audit-trail prose chills future precaution-flagging, which is the role we want Lyra to keep playing; (3) the audit trail (this consolidation doc + commits) already records the correction adequately. Final wording to apply: "**RETRACTED 2026-05-11 per Aegis correction**: Nimbus correctly flagged that B1's bytes-only scope writes no canonical_events rows. The earlier claim that B1 required 008 precedence was factually wrong. B1 is unblocked and runs in parallel with 008."
 
 ---
 
@@ -130,6 +142,24 @@ Per Aegis 2026-05-09 evening directive: "Lyra writes cross-point comments in Nim
 With decision-2-corrected resolving cross-point (c), the most contentious item, in advance — is Nimbus's reciprocal review still required, or does this consolidation doc replace it?
 
 **Lyra recommendation**: still required. Nimbus may have substantive notes on Lyra's §1.4 (event-first projection design), §1.5 (Supervisor IM lifecycle two-phase), §4 (back-fill synthetic flag), §5 (L1 flows event-routing). Those are outside the 7-amendment register above and deserve Nimbus's eye. If Nimbus has nothing to add, a short "no cross-points raised" note in the §Review block closes the loop.
+
+> **Aegis verdict (2026-05-11)**: RESOLVED — Nimbus reciprocal already filed at commit `b916912` (N1–N10). Open question is closed. The 10 N-cross-points themselves are out of scope for this consolidation pass; if any of them surface a binding architectural disagreement, file a follow-up consolidation packet rather than appending here.
+
+---
+
+## 6. Consolidation done — summary of verdicts
+
+> **Aegis 2026-05-11 — adjudication complete:**
+> - §A.1: APPROVED
+> - §A.2: APPROVED (+ residual micro-correction approved)
+> - §A.3: MODIFY — §1.4 Option C tagged PROVISIONAL, not BINDING
+> - §A.4: APPROVED verbatim
+> - §A.5: APPROVED with per-section tags (§1.3 BINDING / §1.4 PROVISIONAL / §1.5 BINDING / §1.6 confirm-then-tag)
+> - §A.6: APPROVED verbatim — Nimbus applies
+> - §A.7: MODIFY — strike sprint-pattern self-critique sentence
+> - Open question: RESOLVED — Nimbus reciprocal already filed at `b916912`
+>
+> Lyra and Nimbus may now apply approved amendments inline to source docs, citing this consolidation as authority. No further Aegis pass required on this packet.
 
 **Aegis decision needed**: confirm Nimbus reciprocal still expected, or replaced by this doc.
 
