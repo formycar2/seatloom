@@ -234,6 +234,14 @@ export interface LiveSessionDto {
   args: string[];
   workingDir: string;
   transcriptPath: string;
+  tmuxSessionName?: string;
+  fifoPath?: string;
+  paneRows?: number;
+  paneCols?: number;
+  /// Base64-encoded snapshot of the tmux pane content at attach time. Written
+  /// to xterm before subscribing to session:output events so idle panes don't
+  /// render as a black screen.
+  initialSnapshotB64?: string;
 }
 
 export interface SessionOutputEvent {

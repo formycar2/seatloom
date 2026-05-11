@@ -56,11 +56,7 @@ export const SessionsWorkspace: React.FC = () => {
     setLaunching(true);
     setError(null);
     try {
-      const dto = await api.attachTmuxSession({
-        tmuxSessionName,
-        rows: 30,
-        cols: 120,
-      });
+      const dto = await api.attachTmuxSession({ tmuxSessionName });
       const label = `tmux: ${tmuxSessionName}`;
       setSessions((prev) => [...prev, { ...dto, label }]);
       setActiveId(dto.id);
@@ -189,7 +185,7 @@ export const SessionsWorkspace: React.FC = () => {
                 ℹ️ Bidirectional mode (v0.0.2). Keystrokes in this terminal are forwarded into the tmux pane. Attach-only: closing the tab leaves the underlying tmux session running.
               </div>
               <div style={{ flex: 1, position: 'relative' }}>
-                <SessionTerminal sessionId={s.id} />
+                <SessionTerminal sessionId={s.id} paneRows={s.paneRows} paneCols={s.paneCols} initialSnapshotB64={s.initialSnapshotB64} />
               </div>
             </div>
           ))}

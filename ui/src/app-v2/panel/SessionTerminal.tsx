@@ -23,6 +23,15 @@ import {
 interface Props {
   sessionId: string;
   onExit?: (code: number | null, signal: string | null) => void;
+  /// Authoritative tmux pane dimensions queried at attach time. When present,
+  /// xterm initialises at this size so output is not re-wrapped at a smaller
+  /// width. Absent for legacy callers; falls back to FitAddon defaults.
+  paneRows?: number;
+  paneCols?: number;
+  /// Base64-encoded snapshot of pane content at attach time. Written to xterm
+  /// once at mount before subscribing so idle panes render their current
+  /// content instead of a black screen.
+  initialSnapshotB64?: string;
 }
 
 const THEME = {
@@ -49,7 +58,7 @@ const THEME = {
   brightWhite: '#f0f6fc',
 };
 
-export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
+export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit, paneRows, paneCols, initialSnapshotB64 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -66,12 +75,18 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
       scrollback: 10000,
       allowProposedApi: true,
       theme: THEME,
+      ...(paneRows && paneCols ? { rows: paneRows, cols: paneCols } : {}),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(containerRef.current);
-    fit.fit();
+    // If tmux authoritative dimensions came in from the backend, keep them —
+    // re-fitting would re-wrap to the container which may be narrower than the
+    // tmux pane. Only call fit() when we're running without explicit sizing.
+    if (!(paneRows && paneCols)) {
+      fit.fit();
+    }
 
     termRef.current = term;
     fitRef.current = fit;
@@ -89,8 +104,12 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
       });
     });
 
-    // Resize observer → cmd_pty_resize.
+    // Resize observer → cmd_pty_resize. Skipped when tmux authoritative
+    // dimensions are in use — re-fitting would re-wrap to the container width
+    // (often narrower than the tmux pane) and re-introduce the double-wrap bug.
+    const hasAuthoritativeSize = !!(paneRows && paneCols);
     const resizeObserver = new ResizeObserver(() => {
+      if (hasAuthoritativeSize) return;
       if (!fitRef.current || !termRef.current) return;
       fitRef.current.fit();
       const { rows, cols } = termRef.current;
@@ -99,6 +118,17 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
       });
     });
     resizeObserver.observe(containerRef.current);
+
+    // Write the historical pane snapshot before subscribing to new output, so
+    // idle panes render their current content instead of a black screen.
+    if (initialSnapshotB64) {
+      try {
+        const bytes = decodeSessionOutput(initialSnapshotB64);
+        if (bytes.length > 0) term.write(bytes);
+      } catch (err) {
+        console.warn('[SessionTerminal] failed to decode initial snapshot:', err);
+      }
+    }
 
     // Subscribe to this session's output stream. We filter by sessionId since
     // the event is global.

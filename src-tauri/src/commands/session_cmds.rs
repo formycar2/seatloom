@@ -124,6 +124,16 @@ pub struct LiveSessionDto {
     /// Path to the pipe-pane FIFO (empty for legacy callers).
     #[serde(default)]
     pub fifo_path: String,
+    /// Actual tmux pane dimensions at attach time (queried via display-message).
+    #[serde(default)]
+    pub pane_rows: u16,
+    #[serde(default)]
+    pub pane_cols: u16,
+    /// Base64-encoded snapshot of the tmux pane at attach time (capture-pane).
+    /// Frontend writes this to xterm before subscribing to session:output events
+    /// so idle panes don't render as a black screen.
+    #[serde(default)]
+    pub initial_snapshot_b64: String,
 }
 
 fn new_session_id() -> String {
@@ -228,6 +238,10 @@ pub async fn cmd_attach_tmux_session(
         transcript_path: session.transcript_path.display().to_string(),
         tmux_session_name: session.tmux_session_name.clone(),
         fifo_path: session.fifo_path.display().to_string(),
+        pane_rows: session.pane_rows,
+        pane_cols: session.pane_cols,
+        initial_snapshot_b64: base64::engine::general_purpose::STANDARD
+            .encode(&session.initial_snapshot),
     };
 
     state.sessions.lock().await.insert(id.clone(), session);

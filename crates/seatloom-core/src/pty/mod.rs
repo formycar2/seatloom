@@ -53,6 +53,14 @@ pub struct PtySession {
     /// Path to a raw transcript log (written alongside the fifo tail), kept
     /// for adapter consumers that expect a file-backed record.
     pub transcript_path: PathBuf,
+    /// Actual pane dimensions queried from tmux at attach time via display-message.
+    pub pane_rows: u16,
+    pub pane_cols: u16,
+    /// Snapshot of pane content captured via `tmux capture-pane -p` at attach
+    /// time. Empty if the pane was empty or capture-pane failed. Consumers
+    /// should write these bytes to their renderer before tail-reading new
+    /// FIFO bytes — fixes the "black screen on idle session" bug.
+    pub initial_snapshot: Vec<u8>,
 }
 
 impl std::fmt::Debug for PtySession {
@@ -63,6 +71,8 @@ impl std::fmt::Debug for PtySession {
             .field("tmux_target", &self.tmux_target)
             .field("fifo_path", &self.fifo_path)
             .field("transcript_path", &self.transcript_path)
+            .field("pane_rows", &self.pane_rows)
+            .field("pane_cols", &self.pane_cols)
             .finish()
     }
 }
@@ -221,6 +231,34 @@ impl PtySession {
 
         let tmux_target = format!("{tmux_session_name}:0");
 
+        // Query real pane dimensions before pipe-pane (§1.1 fix).
+        let dims_out = std::process::Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &tmux_target,
+                "-p",
+                "#{pane_width} #{pane_height}",
+            ])
+            .output()
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux display-message: {e}")))?;
+        if !dims_out.status.success() {
+            return Err(PtyError::Tmux(format!(
+                "tmux display-message {tmux_target}: {}",
+                String::from_utf8_lossy(&dims_out.stderr)
+            )));
+        }
+        let dims_str = String::from_utf8_lossy(&dims_out.stdout);
+        let dims_parts: Vec<&str> = dims_str.trim().split_whitespace().collect();
+        let (pane_cols, pane_rows) = if dims_parts.len() == 2 {
+            let cols = dims_parts[0].parse::<u16>().unwrap_or(120);
+            let rows = dims_parts[1].parse::<u16>().unwrap_or(30);
+            (cols, rows)
+        } else {
+            // Fallback if parse fails (shouldn't happen with valid tmux).
+            (120, 30)
+        };
+
         // Ask tmux to copy pane output to our FIFO. `-o` makes the pipe-pane
         // command invoke only once (so we don't duplicate if attach is called
         // twice), and shell-quoting the fifo path guards against unusual chars.
@@ -237,6 +275,28 @@ impl PtySession {
                 String::from_utf8_lossy(&out.stderr)
             )));
         }
+
+        // Capture historical pane content immediately after pipe-pane (§1.3 fix).
+        // `-e` preserves escape sequences so colors/attributes survive; lines
+        // are joined with `\n`, so we rewrite to `\r\n` for xterm.
+        let capture_out = std::process::Command::new("tmux")
+            .args(["capture-pane", "-t", &tmux_target, "-e", "-p"])
+            .output()
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux capture-pane: {e}")))?;
+        let historical_content = if capture_out.status.success() {
+            // Normalize LF → CRLF for xterm row advancement.
+            let mut out = Vec::with_capacity(capture_out.stdout.len() + 32);
+            for &b in &capture_out.stdout {
+                if b == b'\n' {
+                    out.push(b'\r');
+                }
+                out.push(b);
+            }
+            out
+        } else {
+            // If capture-pane fails, treat as empty (pane might be genuinely empty).
+            Vec::new()
+        };
 
         let (tx, _rx) = broadcast::channel::<PtyEvent>(1024);
         let tx_reader = tx.clone();
@@ -309,6 +369,9 @@ impl PtySession {
             events: tx,
             shutdown,
             transcript_path,
+            pane_rows,
+            pane_cols,
+            initial_snapshot: historical_content,
         })
     }
 
@@ -470,6 +533,9 @@ mod tests {
             events: tx,
             shutdown,
             transcript_path: PathBuf::from("/tmp/nonexistent.log"),
+            pane_rows: 30,
+            pane_cols: 120,
+            initial_snapshot: Vec::new(),
         };
         assert!(sess.write(b"hello").is_ok());
     }
@@ -486,6 +552,9 @@ mod tests {
             events: tx,
             shutdown,
             transcript_path: PathBuf::from("/tmp/nonexistent.log"),
+            pane_rows: 30,
+            pane_cols: 120,
+            initial_snapshot: Vec::new(),
         };
         // Empty slice must return Ok(()) without spawning tmux.
         assert!(sess.write(b"").is_ok());
