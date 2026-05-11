@@ -57,6 +57,7 @@ export interface SessionDto {
   pid: number | null;
   createdAt: string;
   endedAt: string | null;
+  projectId: string;
 }
 
 export interface WorkItemDto {
@@ -69,6 +70,7 @@ export interface WorkItemDto {
   priority: string;
   createdAt: string;
   updatedAt: string;
+  projectId: string;
 }
 
 export interface HandoffDto {
@@ -82,6 +84,7 @@ export interface HandoffDto {
   status: string;
   createdAt: string;
   sentAt: string | null;
+  projectId: string;
 }
 
 export interface ArtifactDto {
@@ -105,6 +108,7 @@ export interface CanonicalEventDto {
   actorRef: string;
   payload: unknown | null;
   createdAt: string;
+  projectId: string;
 }
 
 export interface DocumentDto {

@@ -150,7 +150,8 @@ impl SeatloomDb {
         let rows = client
             .query(
                 "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
-                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at \
+                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
+                 project_id \
                  FROM sessions ORDER BY created_at DESC",
                 &[],
             )
@@ -163,9 +164,29 @@ impl SeatloomDb {
         let rows = client
             .query(
                 "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
-                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at \
+                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
+                 project_id \
                  FROM sessions WHERE seat_id = $1 ORDER BY created_at DESC",
                 &[&seat_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_session).collect())
+    }
+
+    /// Project-mode session list. AD-013 v2 backend invariant: project mode
+    /// SHALL filter by project_id; Global mode SHALL group by project_id.
+    pub async fn list_sessions_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<SessionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
+                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
+                 project_id \
+                 FROM sessions WHERE project_id = $1 ORDER BY created_at DESC",
+                &[&project_id],
             )
             .await?;
         Ok(rows.iter().map(row_to_session).collect())
@@ -180,7 +201,7 @@ impl SeatloomDb {
         let rows = client
             .query(
                 "SELECT id, title, goal, acceptance_criteria, owner_seat_id, \
-                 status, priority, created_at, updated_at \
+                 status, priority, created_at, updated_at, project_id \
                  FROM workitems ORDER BY updated_at DESC",
                 &[],
             )
@@ -193,12 +214,29 @@ impl SeatloomDb {
         let rows = client
             .query(
                 "SELECT id, title, goal, acceptance_criteria, owner_seat_id, \
-                 status, priority, created_at, updated_at \
+                 status, priority, created_at, updated_at, project_id \
                  FROM workitems WHERE id = $1",
                 &[&workitem_id],
             )
             .await?;
         Ok(rows.first().map(row_to_workitem))
+    }
+
+    /// Project-mode workitem list. AD-013 v2 backend invariant.
+    pub async fn list_workitems_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<WorkItemRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, title, goal, acceptance_criteria, owner_seat_id, \
+                 status, priority, created_at, updated_at, project_id \
+                 FROM workitems WHERE project_id = $1 ORDER BY updated_at DESC",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_workitem).collect())
     }
 
     // =========================================================================
@@ -210,9 +248,26 @@ impl SeatloomDb {
         let rows = client
             .query(
                 "SELECT id, from_ref, to_ref, workitem_id, purpose, expected_outcome, \
-                 required_receipt, status, created_at, sent_at \
+                 required_receipt, status, created_at, sent_at, project_id \
                  FROM handoffs ORDER BY created_at DESC",
                 &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_handoff).collect())
+    }
+
+    /// Project-mode handoff list. AD-013 v2 backend invariant.
+    pub async fn list_handoffs_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<HandoffRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, from_ref, to_ref, workitem_id, purpose, expected_outcome, \
+                 required_receipt, status, created_at, sent_at, project_id \
+                 FROM handoffs WHERE project_id = $1 ORDER BY created_at DESC",
+                &[&project_id],
             )
             .await?;
         Ok(rows.iter().map(row_to_handoff).collect())
@@ -294,7 +349,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, project_id \
                  FROM canonical_events ORDER BY occurred_at DESC LIMIT $1",
                 &[&limit],
             )
@@ -309,9 +364,27 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, project_id \
                  FROM canonical_events WHERE event_type = $1 ORDER BY occurred_at DESC",
                 &[&event_type],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_event).collect())
+    }
+
+    /// Project-mode event list. AD-013 v2 backend invariant.
+    pub async fn list_events_for_project(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<CanonicalEventRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, project_id \
+                 FROM canonical_events WHERE project_id = $1 \
+                 ORDER BY occurred_at DESC LIMIT $2",
+                &[&project_id, &limit],
             )
             .await?;
         Ok(rows.iter().map(row_to_event).collect())
@@ -330,7 +403,8 @@ impl SeatloomDb {
         actor_ref: &str,
         target_seat_id: Option<&str>,
         content: &str,
-        event_type: &str, // 'SupervisorMessage' | 'SeatResponse'
+        event_type: &str,
+        project_id: &str,
     ) -> Result<CanonicalEventRow, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let payload = serde_json::json!({
@@ -339,9 +413,10 @@ impl SeatloomDb {
         });
         client
             .execute(
-                "INSERT INTO canonical_events (id, event_type, occurred_at, actor_ref, payload) \
-                 VALUES ($1, $2, NOW(), $3, $4)",
-                &[&event_id, &event_type, &actor_ref, &payload],
+                "INSERT INTO canonical_events \
+                 (id, event_type, occurred_at, actor_ref, payload, project_id) \
+                 VALUES ($1, $2, NOW(), $3, $4, $5)",
+                &[&event_id, &event_type, &actor_ref, &payload, &project_id],
             )
             .await?;
         if let Some(target) = target_seat_id {
@@ -353,10 +428,9 @@ impl SeatloomDb {
                 )
                 .await;
         }
-        // Read back the row we just wrote (captures DB-generated created_at + occurred_at).
         let row = client
             .query_one(
-                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, project_id \
                  FROM canonical_events WHERE id = $1",
                 &[&event_id],
             )
@@ -381,7 +455,8 @@ impl SeatloomDb {
             let actor_ref = format!("seat:{}", seat_id);
             client
                 .query(
-                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
+                     project_id \
                      FROM canonical_events \
                      WHERE actor_ref = $1 \
                         OR payload->>'target_seat_id' = $2 \
@@ -390,10 +465,10 @@ impl SeatloomDb {
                 )
                 .await?
         } else {
-            // Supervisor view: all events in the ledger form the global activity feed.
             client
                 .query(
-                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at \
+                    "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
+                     project_id \
                      FROM canonical_events \
                      ORDER BY occurred_at ASC LIMIT $1",
                     &[&limit],
@@ -1255,6 +1330,7 @@ fn row_to_session(r: &Row) -> SessionRow {
         pid: r.get(9),
         created_at: r.get(10),
         ended_at: r.get(11),
+        project_id: r.get(12),
     }
 }
 
@@ -1269,6 +1345,7 @@ fn row_to_workitem(r: &Row) -> WorkItemRow {
         priority: r.get(6),
         created_at: r.get(7),
         updated_at: r.get(8),
+        project_id: r.get(9),
     }
 }
 
@@ -1284,6 +1361,7 @@ fn row_to_handoff(r: &Row) -> HandoffRow {
         status: r.get(7),
         created_at: r.get(8),
         sent_at: r.get(9),
+        project_id: r.get(10),
     }
 }
 
@@ -1311,6 +1389,7 @@ fn row_to_event(r: &Row) -> CanonicalEventRow {
         actor_ref: r.get(3),
         payload: r.get(4),
         created_at: r.get(5),
+        project_id: r.get(6),
     }
 }
 

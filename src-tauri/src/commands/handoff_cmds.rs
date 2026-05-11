@@ -25,3 +25,17 @@ pub async fn cmd_list_handoff_receipts(
         .map(|rows| rows.into_iter().map(HandoffReceiptDto::from).collect())
         .map_err(|e| e.to_string())
 }
+
+/// Project-mode handoff list. AD-013 v2 backend invariant — schema 008.
+#[tauri::command]
+pub async fn cmd_list_handoffs_for_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<HandoffDto>, String> {
+    state
+        .db
+        .list_handoffs_for_project(&project_id)
+        .await
+        .map(|rows| rows.into_iter().map(HandoffDto::from).collect())
+        .map_err(|e| e.to_string())
+}

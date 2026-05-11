@@ -50,6 +50,20 @@ pub async fn cmd_list_sessions_for_seat(
         .map_err(|e| e.to_string())
 }
 
+/// Project-mode session list. AD-013 v2 backend invariant — schema 008.
+#[tauri::command]
+pub async fn cmd_list_sessions_for_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<SessionDto>, String> {
+    state
+        .db
+        .list_sessions_for_project(&project_id)
+        .await
+        .map(|rows| rows.into_iter().map(SessionDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn cmd_list_checkpoints(
     state: State<'_, AppState>,

@@ -20,7 +20,7 @@ use commands::{
         cmd_get_document, cmd_list_document_associations, cmd_list_document_sections,
         cmd_list_document_versions, cmd_list_documents,
     },
-    handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs},
+    handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs, cmd_list_handoffs_for_project},
     inbox_cmds::cmd_get_inbox,
     project_cmds::{cmd_get_project, cmd_list_projects},
     prompt_cmds::{cmd_list_active_prompts, cmd_list_prompt_actions, cmd_list_prompts_for_session},
@@ -34,15 +34,15 @@ use commands::{
     session_cmds::{
         cmd_attach_tmux_session, cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
         cmd_list_checkpoints_for_session, cmd_list_live_sessions, cmd_list_sessions,
-        cmd_list_sessions_for_seat, cmd_list_tmux_sessions, cmd_pty_resize, cmd_pty_write,
-        cmd_pty_write_bytes,
+        cmd_list_sessions_for_project, cmd_list_sessions_for_seat, cmd_list_tmux_sessions,
+        cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
     supervisor_cmds::{
         cmd_append_supervisor_message, cmd_close_supervisor_window,
         cmd_list_supervisor_messages, cmd_open_supervisor_window, cmd_supervisor_window_status,
     },
-    timeline_cmds::{cmd_list_events, cmd_list_events_by_type},
-    workitem_cmds::{cmd_get_workitem, cmd_list_workitems},
+    timeline_cmds::{cmd_list_events, cmd_list_events_by_type, cmd_list_events_for_project},
+    workitem_cmds::{cmd_get_workitem, cmd_list_workitems, cmd_list_workitems_for_project},
 };
 
 /// Basic connectivity probe exposed to the frontend so the UI can display
@@ -105,15 +105,18 @@ fn main() {
             cmd_get_delegation,
             // workitems
             cmd_list_workitems,
+            cmd_list_workitems_for_project,
             cmd_get_workitem,
             // artifacts
             cmd_list_artifacts,
             cmd_get_artifact,
             // handoffs
             cmd_list_handoffs,
+            cmd_list_handoffs_for_project,
             cmd_list_handoff_receipts,
             // sessions + checkpoints
             cmd_list_sessions,
+            cmd_list_sessions_for_project,
             cmd_list_sessions_for_seat,
             cmd_list_checkpoints,
             cmd_list_checkpoints_for_session,
@@ -140,6 +143,7 @@ fn main() {
             // timeline / events
             cmd_list_events,
             cmd_list_events_by_type,
+            cmd_list_events_for_project,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

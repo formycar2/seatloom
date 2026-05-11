@@ -136,6 +136,7 @@ pub struct SessionDto {
     pub pid: Option<i32>,
     pub created_at: String,
     pub ended_at: Option<String>,
+    pub project_id: String,
 }
 
 impl From<SessionRow> for SessionDto {
@@ -153,6 +154,7 @@ impl From<SessionRow> for SessionDto {
             pid: r.pid,
             created_at: iso(r.created_at),
             ended_at: iso_opt(r.ended_at),
+            project_id: r.project_id,
         }
     }
 }
@@ -169,6 +171,7 @@ pub struct WorkItemDto {
     pub priority: String,
     pub created_at: String,
     pub updated_at: String,
+    pub project_id: String,
 }
 
 impl From<WorkItemRow> for WorkItemDto {
@@ -183,6 +186,7 @@ impl From<WorkItemRow> for WorkItemDto {
             priority: r.priority,
             created_at: iso(r.created_at),
             updated_at: iso(r.updated_at),
+            project_id: r.project_id,
         }
     }
 }
@@ -200,6 +204,7 @@ pub struct HandoffDto {
     pub status: String,
     pub created_at: String,
     pub sent_at: Option<String>,
+    pub project_id: String,
 }
 
 impl From<HandoffRow> for HandoffDto {
@@ -215,6 +220,7 @@ impl From<HandoffRow> for HandoffDto {
             status: r.status,
             created_at: iso(r.created_at),
             sent_at: iso_opt(r.sent_at),
+            project_id: r.project_id,
         }
     }
 }
@@ -262,6 +268,7 @@ pub struct CanonicalEventDto {
     pub actor_ref: String,
     pub payload: Option<serde_json::Value>,
     pub created_at: String,
+    pub project_id: String,
 }
 
 impl From<CanonicalEventRow> for CanonicalEventDto {
@@ -273,6 +280,7 @@ impl From<CanonicalEventRow> for CanonicalEventDto {
             actor_ref: r.actor_ref,
             payload: r.payload,
             created_at: iso(r.created_at),
+            project_id: r.project_id,
         }
     }
 }

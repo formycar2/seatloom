@@ -29,3 +29,18 @@ pub async fn cmd_list_events_by_type(
         .map(|rows| rows.into_iter().map(CanonicalEventDto::from).collect())
         .map_err(|e| e.to_string())
 }
+
+/// Project-mode timeline list. AD-013 v2 backend invariant — schema 008.
+#[tauri::command]
+pub async fn cmd_list_events_for_project(
+    state: State<'_, AppState>,
+    project_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<CanonicalEventDto>, String> {
+    state
+        .db
+        .list_events_for_project(&project_id, limit.unwrap_or(200))
+        .await
+        .map(|rows| rows.into_iter().map(CanonicalEventDto::from).collect())
+        .map_err(|e| e.to_string())
+}

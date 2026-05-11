@@ -60,6 +60,7 @@ pub struct SessionRow {
     pub pid: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,7 @@ pub struct WorkItemRow {
     pub priority: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,7 @@ pub struct HandoffRow {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub sent_at: Option<DateTime<Utc>>,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +115,7 @@ pub struct CanonicalEventRow {
     pub actor_ref: String,
     pub payload: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
+    pub project_id: String,
 }
 
 // =============================================================================
