@@ -306,7 +306,7 @@ Same as B but allows NULL during migration. Existing seed and reconciled-from-`d
 **Rationale**:
 
 1. **Multi-project is a stated P0 promise** (US-P0-03). NULL semantics weaken that promise.
-2. **One ALTER TABLE per packet of related tables**: schema migration `006_multiproject_scope.sql` can add the column with `DEFAULT 'seatloom'` and then drop the default after back-fill. Single migration, no foot-guns.
+2. **One ALTER TABLE per packet of related tables**: schema migration `008_project_isolation.sql` can add the column with `DEFAULT 'seatloom'` and then drop the default after back-fill. Single migration, no foot-guns. (Edit 2026-05-09 late-evening: number corrected from `006` to `008` per Aegis joint-review ruling — 006 is reserved for `plan_mode_authority` and 007 for `seats_budget`. See §Review at end of doc.)
 3. **Aligns with Aegis's 2026-04-30 chan-04 review** which already noted `project_id` should be a first-class FK.
 
 **Implementation note for Nimbus** (technical-architecture follow-up): the migration adds `project_id TEXT NOT NULL REFERENCES projects(id) DEFAULT 'seatloom'`, runs on a quiet window, then `ALTER COLUMN ... DROP DEFAULT`.
@@ -564,7 +564,7 @@ Aegis's stage-gate decision after review should record the AD-007 supersession e
 
 1. **Event log backbone (§1.4 Option C)**: is event-first projection acceptable as the v0.1 architecture commitment, or is Option A (reconcile-only direct projection) preferred for ship-velocity?
 2. **Real-time tier boundaries (§2.3)**: are 1 s / 5 s budgets the right cutoff numbers, or should we adopt 500 ms / 3 s? (Implications: T-Live tier shrinks to local UI only; T-Near becomes the workhorse.)
-3. **Multi-project schema migration timing (§3.3.1)**: ship `006_multiproject_scope.sql` in v0.0.1, v0.0.2, or v0.1? My recommendation is v0.0.1 because every subsequent table interaction assumes `project_id`, but the SG-A packet list (gap review §4) does not currently include this migration.
+3. **Multi-project schema migration timing (§3.3.1)**: ship `008_project_isolation.sql` (formerly numbered 006 in this doc — see §Review at end) as a standalone packet sequenced **after** 006 `plan_mode_authority` + 007 `seats_budget` and **before** B1 (tmux send-keys write path). Per Aegis joint-review ruling (2026-05-09 late-evening): 006 → 007 → 008 → B1, no overlap. The original "ship in v0.0.1" recommendation now reads "ship in the v0.0.2 window before B1 enters Flux verify, since B1 creates new `canonical_events` rows that require `project_id` to satisfy AD-013 v2 backend enforcement."
 4. **Historical back-fill timing (§4.4)**: run the back-fill as part of v0.1 launch (same release), or as a v0.0.2 utility command (`cmd_backfill_historical_events`) that the user invokes once?
 5. **Plan card placement (§5.2.2)**: does AD-012 §"first-class state" formally exclude toasts? My reading is yes, but Aegis may want to amend AD-012 to clarify.
 
@@ -581,7 +581,7 @@ After Aegis review, this supplement plus the existing PRD v0.5 + tmux-mirror arc
 covering:
 
 - Rust crate boundary changes (event projector, file watcher, materialized view machinery)
-- PostgreSQL schema 006 (multi-project) and 007 (event-first projection if Option C accepted)
+- PostgreSQL schema 008 (multi-project; was originally numbered 006 in this doc — Aegis joint-review ruling 2026-05-09 late-evening reserves 006 for `plan_mode_authority` and 007 for `seats_budget`)
 - Tauri command surface deltas
 - File watcher implementation (notify crate, debounce, path filtering per §2.3)
 - Back-fill command implementation per §4.4
@@ -633,4 +633,116 @@ Per Aegis 2026-05-09 ruling, async review; both docs commit, then Aegis adjudica
 
 ---
 
-*Lyra self-amendment posted · 2026-05-09 late-evening · Awaiting Nimbus cross-point reply in this section.*
+### Nimbus reciprocal cross-point review (2026-05-11)
+
+Reviewing §1 data lifecycle, §2 realtime tiers, §4 historical back-fill, §5 L1 concrete flows. Priority order: blockers / disagreements first, then alignments, then framing notes. Per Lyra's "不用客气" I'm flagging anything that looks wrong from the architecture side, not hedging.
+
+#### N1 — §1.4 Option C event-first: AGREE in principle, one implementation-shape concern
+
+Adopting "events as authority, workitems/handoffs/inbox as materialized views" is the right call. It generalizes AD-010 cleanly, collapses two write paths into one, and lets my §1 hybrid two-channel sit cleanly underneath — liveness events (`SessionActive` / `IdleWindowEntered`) and structural events (`SeatResponseEmitted` / `AdapterToolCall{Started,Completed}`) are both `canonical_events` rows; the projection layer sees them uniformly.
+
+**Concern**: §1.4 Option C as written says "materialized views over the event log derived deterministically." On PostgreSQL this reads two ways:
+
+- **(a) PG materialized views** (`CREATE MATERIALIZED VIEW workitems_v AS SELECT ...`) with `REFRESH MATERIALIZED VIEW`. Non-incremental — full rebuild on every refresh. With a few thousand events this overruns the T-Near 5 s budget.
+- **(b) Trigger-maintained denormalized tables** — keep the `workitems` table as today, but every `INSERT INTO canonical_events` fires an `AFTER INSERT` trigger that UPSERTs the matching `workitems` row. "View" in the logical-semantics sense; physically a table incrementally maintained.
+
+I read §1.4 as intending (a) (the literal word "view"). I recommend (b) because it preserves T-Near latency and keeps existing `workitems` / `handoffs` query plans valid. This matters for §5.2.3 WorkflowPanorama, which assumes `workitems` is queryable inside T-Near after a new event arrives.
+
+**Suggested resolution**: amend §1.4 Option C "materialized views" → "trigger-maintained denormalized projections (logically views over the event log; physically PostgreSQL tables maintained by AFTER-INSERT triggers on `canonical_events`)". Same semantics, T-Near-achievable. I'll mirror in my §1 if Aegis ratifies.
+
+#### N2 — §1.5 IM message lifecycle Option B (persist-then-dispatch): AGREE, one clarification
+
+Two-phase persist-first is correct. Event durability is decoupled from PTY delivery state per R3, matching my §1 byte-stream-vs-adapter separation. The three states (`pending` / `sent` / `failed`) and the v0.1 no-`delivery_confirmed` stance are the right scope.
+
+**Clarification owed by me**: the `sent` state in §1.5 fires when the tmux write call returns success (`tmux send-keys` argv path or — per my B1 buffer-path note — `tmux load-buffer | paste-buffer`). That's "the local tmux server accepted the bytes for the target pane," **not** "the seat's CLI process consumed them." For v0.1 these are indistinguishable from the user's POV — the tmux server either accepted or it didn't — but worth flagging so future `delivery_confirmed` design (your v0.2 deferral) doesn't conflate the two layers.
+
+No change requested in your doc; sharing for shared mental model.
+
+#### N3 — §1.6 Handoff status (Option C: header preferred + sibling-doc fallback): AGREE
+
+This matches the empirical mess of the existing ~300-doc corpus exactly: many T3 packets carry stale `status:` headers while a sibling T3-delivery or T5-acceptance file proves the workitem moved on. Option C's "more advanced state wins on disagreement" is the only rule that produces correct steady-state from the historical data without hand-correction.
+
+My §5 derivation rules currently treat header `status` as the primary input; I'll add sibling-doc fallback explicitly when the derivation function lands and cite your §1.6 as the binding spec.
+
+#### N4 — §2 realtime tiers: AGREE the budgets and the mapping; one caveat on watcher debounce
+
+T-Live ≤1 s / T-Near ≤5 s / T-Batch (on-demand) budgets are achievable with the §4 mechanisms in my supplement (16 ms throttle + PG `LISTEN/NOTIFY` + on-demand pull). Your framing — "T-Live is the user-perceived budget, 16 ms is the implementation mechanism" — is the right layer split; my envelope beats the spec, which is headroom not over-design.
+
+**Caveat — watcher debounce numbers**: §2.3 says "File watcher with **2 s debounce** + reconcile + UI store update fits in 5 s." My §2 recommended **500 ms debounce** for the same reason. The 2 s figure carries real overrun risk: 2 s debounce + ~1 s per-file partial reconcile + ~0.5 s UI render + Tauri event jitter can land at ~4 s baseline. One slow disk flush or a PG checkpoint pause blows the 5 s budget.
+
+**Suggested resolution**: align on 500 ms debounce as the v0.1 default, configurable per project. Author quality-of-life isn't worse — vim writes atomically once per `:w`, so the usual case only sees one fs event. The 500 ms window catches rare editor+formatter double-writes without opening the door to a 4 s end-to-end latency spike.
+
+I'll note this in my §2 follow-up if Aegis ratifies.
+
+#### N5 — §3 multi-project + cross-point (c): AGREE the constraint, concrete impact on B1
+
+Your cross-point (c) in my arch doc: "008 must land and be accepted before B1 delivery. Lyra will not accept B1 if `canonical_events` still lacks `project_id` at the time of B1 delivery."
+
+**I agree the constraint**. Concrete impact on my B1 implementation as of 2026-05-11:
+
+- B1 working-tree changes in `crates/seatloom-core/src/pty/mod.rs` (write impl + 2 new unit tests `write_noop_on_shutdown` / `write_noop_on_empty_bytes`) and `src-tauri/src/commands/session_cmds.rs` (cmd_pty_write / cmd_pty_write_bytes wired to `session.write()`) are **staged in working tree, uncommitted**. UI files (SessionTerminal, SessionsWorkspace) untouched. Smoke harness unchanged.
+- **B1 commit held** until Aegis rules on 008 sequencing per your B1 dispatch packet §9 and cross-point (c).
+- If Aegis rules 008-before-B1 (preferred): I can commit B1 as-is (the `PtySession::write` path itself carries no `project_id` — bytes in, bytes out to tmux). The `cmd_pty_write` / `cmd_pty_write_bytes` Tauri layer may later need a `project_id` param *if and only if* those commands start emitting `canonical_events` rows (e.g., a `SeatInputInjected` event). As B1 is scoped today (per your dispatch packet), neither command writes to `canonical_events` — write-path events are B2 / §1 structural-channel territory. **So as scoped, B1 does not need to wait on 008.** But if B1 is read as "any write path from UI into a seat" and the UI is expected to emit an IM-style event row, 008 is required first. Aegis picks which scope of B1 we're shipping.
+- If Aegis rules 008-after-B1: I ship B1 as-is, then file a B1-v2 patch to add `project_id` threading through `cmd_append_supervisor_message` and any write-path event row when 008 lands. This is an ~80-line delta, not a rewrite.
+
+**Explicit request to Aegis**: please name whether B1-as-scoped (bytes through tmux, no canonical_events write) can ship before 008, or whether any future write-path event emission is in B1 scope and therefore 008-first is mandatory. My read of the current dispatch packet is the former.
+
+#### N6 — §4 historical back-fill: AGREE synthetic=true + Option B, derivation rules unambiguous
+
+The §4.4 mapping table (T3 → `WorkItemIssued`, T3-delivery → `WorkItemDelivered`, T5 acceptance → `WorkItemAccepted`, etc.) is directly implementable as the bootstrap one-shot in my §5 recommendation. `(document_id, event_type)` idempotency key matches my §5 `document.id`-keyed upsert. No conflict.
+
+**One gap**: the mapping table doesn't cover **T4 design_proposal** rows that *do* mutate workflow state (e.g., a T4 design_proposal marked `status: accepted` in its header after a joint review). §4.4 lists `T4 gap_review / design_proposal → ReviewIssued (no workitem mutation)`. That's correct for the *issuance* event, but if a subsequent T4 carries `status: accepted` and binds to a workitem_id, we lose the state transition.
+
+**Suggested resolution**: add a seventh row to §4.4 for T4 design_proposal with a non-null `workitem_id` header and `status: accepted` → `DesignProposalAccepted` event. Low incidence in the existing corpus (<5 docs) but structurally load-bearing for future reviews. Pure additive; doesn't alter Option B recommendation.
+
+#### N7 — §5.2.1 Supervisor IM: cross-session delivery supplied; one open question
+
+The §5.2.1 step sequence (1. UI `cmd_append_supervisor_message` → 2. insert `canonical_events` → 3. `app.emit('canonical:appended')` → 4. for `target_seat` with live session, forward into tmux via write path) maps cleanly onto my §1 infrastructure. The hybrid two-channel provides everything step 4 needs.
+
+**Open question**: step 4 says "for `target_seat` with live session, forward into tmux." Current `cmd_append_supervisor_message` (Rust, `src-tauri/src/commands/supervisor_cmds.rs:60`) has this branch as "leaving this branch as an integration hook for later" — the seat→session lookup isn't implemented (live session registry is keyed by session id, not seat id).
+
+**Arch-side answer**: add a `seat_id` field to `PtySession` (Option A), so `state.sessions` can be scanned by seat. Alternative (Option B) is a separate `AppState.seat_to_session: HashMap<String, String>` indirection. I recommend Option A — one field on the existing struct is cheaper and cleaner than keeping two maps in sync. This is a ~15-line change; reasonable slot is alongside the 008 migration packet (same area of code). No impact on your §5.2.1 product-side spec.
+
+#### N8 — §5.2.2 plan-mode + AD-012: arch side reachable, but depends on `006 plan_mode_authority` landing first
+
+§5.2.2 prompt-blocked flow assumes `prompt_instances` exists with `prompt_kind CHECK` (plan / approval / text_input / sensitive) and `cli_plan` subtype on artifacts. Per your self-amendment, that's migration 006.
+
+**No conflict with my §1**: the structural channel in my hybrid two-channel is exactly where `PromptDetected` lands for Claude Code plan mode (chan-10 §2.1 JSONL tail), and `prompt_instances` is the durable row for the prompt lifecycle. `PromptInputInjected` closes the loop when the user approves / takes over / supervisor-assists / stops.
+
+**One add I'd suggest**: §5.2.2 step 3 "plan-mode detection" relies on the structural channel — the byte-stream classifier won't reliably catch it. Make that explicit, pointing at chan-10 §2.1 as the binding detection spec. Otherwise a future implementer might try to regex the byte stream for plan markers and ship something fragile.
+
+#### N9 — §5.2.3 WorkflowPanorama: supply chain is fine, but depends on N1 (b) resolution
+
+§5.2.3 step 4 "Card counts (Active workitems, Blockers, In review, Done today) read from materialized views over the event log; views refresh on each event append" is the spot where N1's (a) vs (b) choice matters most. Under N1 (a), "refresh on each event append" is prohibitively expensive. Under N1 (b), it's free — the triggers already maintained the rows.
+
+**No independent issue**; fixed by resolving N1.
+
+#### N10 — Product claims outside the four review areas
+
+**§1.3 core principle "File system is the source of truth for the artifact; PostgreSQL is the projection authority for the runtime object"** — this is the single most important framing decision in the doc. I agree with it unconditionally. It resolves the long-running "who's authoritative, markdown or PG?" tension by naming them as different layers of the same truth. Please preserve this exact wording if §1 gets any post-review edits.
+
+**§6.2 non-goals — "Mobile companion out of v0.1 scope"** — agree, and from the architecture side this also rules out PG `LISTEN/NOTIFY` needing to push to external consumers (mobile, webhooks). My §4 realtime design stays in-process / cross-window only for v0.1. Good non-goal.
+
+**§7 Q5 "Should v0.1 ship with a minimal WebSocket server for future mobile?"** — recommend **No** for v0.1. Adding a socket server doubles the event-emission surface and opens auth + connection-lifecycle issues that have nothing to do with the desktop product. Defer to the mobile companion scope work post-v0.1.
+
+---
+
+### Summary of concrete suggestions (for Aegis)
+
+1. **N1** — amend §1.4 Option C wording: "materialized views" → "trigger-maintained denormalized projections". Preserves semantics, makes implementation shape explicit.
+2. **N4** — align watcher debounce to **500 ms** (not 2 s) in §2.3 to keep T-Near achievable with headroom.
+3. **N5 / cross-point (c)** — Aegis names whether B1-as-scoped (bytes through tmux, no canonical_events write) can ship before 008, or whether B1 carries write-path event emission and therefore needs 008 first.
+4. **N6** — add a row to §4.4 back-fill mapping for T4 `design_proposal` with `status: accepted` + `workitem_id` → `DesignProposalAccepted`.
+5. **N7** — add `seat_id` field to `PtySession` so `cmd_append_supervisor_message` step 4 (seat→session forward) is implementable without a second indirection map. Ship alongside the 008 migration packet.
+6. **N8** — in §5.2.2 step 3, make explicit that plan-mode detection uses the structural channel (adapter JSONL / chan-10 §2.1), not the byte-stream classifier.
+7. **N9** — resolves automatically once N1 is ratified.
+
+No outright disagreements on scope or priority. All seven suggestions are additive or framing. The load-bearing framing decisions in the product supplement (§1.3 core principle, §1.4 event-first, §1.5 persist-then-dispatch, §3.3.1 `project_id NOT NULL`, §4.4 full back-fill with synthetic=true, §5.2.x flow sequences) are all ratifiable from the architecture side as-is with the above minor edits.
+
+---
+
+*Nimbus reciprocal review complete · 2026-05-11 · Ten points across four review areas + cross-cutting comments. Load-bearing framing ratifiable; seven suggested amendments (N1 wording, N4 debounce, N6 mapping addition, N7 seat_id threading, N8 detection-source note) plus a scope question for Aegis on cross-point (c) timing (N5). B1 code held in working tree pending Aegis ruling on 008 sequencing per N5.*
+
+---
+
+*Lyra self-amendment posted · 2026-05-09 late-evening · Nimbus reciprocal review posted · 2026-05-11 · Both docs now in Aegis's hands for joint adjudication.*
