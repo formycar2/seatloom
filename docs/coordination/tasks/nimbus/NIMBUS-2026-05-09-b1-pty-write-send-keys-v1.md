@@ -7,7 +7,7 @@
 | template | T4 |
 | subtype | implementation |
 | id | NIMBUS-2026-05-09-b1-pty-write-send-keys-v1 |
-| status | **dispatched** (2026-05-09 late-evening, after A4-β acceptance) |
+| status | **dispatched** (restored 2026-05-09 late-evening — Aegis correction to joint-review ruling: B1 bytes-only has no `canonical_events` write, not blocked by 008) |
 | author | lyra |
 | date | 2026-05-09 |
 | version | v1 |
@@ -20,7 +20,7 @@
 | delivery path | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-b1-pty-write-send-keys-delivery-v1.md` |
 | tags | nimbus, B1, SG-B, tmux, send-keys, bidirectional, v0.0.2 |
 
-> **Dispatch note**: Gate cleared 2026-05-09 late-evening. A4-β Flux Layer A verify landed PASS (13/13 static + 5/5 R-rules) and Lyra acceptance is posted at `docs/coordination/acceptance/2026-05-09-lyra-mira-a4b-sessions-real-api-wire-acceptance.md`. **Nimbus is now cleared to begin B1 implementation.** The §9 Timing section's draft caveat is superseded by this dispatch note.
+> **Dispatch note (2026-05-09 late-evening, Aegis-corrected)**: B1 bytes-only scope writes zero `canonical_events` rows — my earlier cross-point (c) claim that B1 required 008 precedence was factually wrong. Nimbus's scope read was correct: B1 touches `PtySession::write` + `cmd_pty_write_bytes` + smoke steps + SessionTerminal.tsx + SessionsWorkspace.tsx, none of which emit events. Aegis final ruling: **B1 unblocked; 008 dispatched in parallel as a standalone packet but does not gate B1 acceptance.** Nimbus cleared to resume B1 implementation. Gate-cleared-by metadata above (A4-β acceptance + Flux Layer A delivery) stands unchanged.
 
 ---
 
