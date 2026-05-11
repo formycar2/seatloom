@@ -43,6 +43,8 @@ Seven amendments, grouped by source doc.
 - **Rationale**: Aegis decision 1 binding.
 - **Status**: ✓ APPLIED (commit included in this batch).
 
+> **Aegis verdict (2026-05-11)**: APPROVED.
+
 #### §A.2 — §7.3 ship-window recommendation
 
 - **Source**: product supplement §7.3 (line 567).
@@ -51,6 +53,8 @@ Seven amendments, grouped by source doc.
 - **Rationale**: Aegis decisions 1 + 2-corrected.
 - **Status**: ✓ APPLIED (commit included in this batch). One residual edit: the line currently says "before B1 enters Flux verify, since B1 creates new canonical_events rows" — this should be removed since decision-2-corrected establishes B1 creates no events. **Aegis adjudication: approve this micro-correction?**
 
+> **Aegis verdict (2026-05-11)**: APPROVED. Remove the "before B1 enters Flux verify, since B1 creates new canonical_events rows" clause; replace with the parallel-clearance wording already in the §A.2 amended text.
+
 #### §A.3 — §8 hand-off scope wording
 
 - **Source**: product supplement §8 (line 584).
@@ -58,6 +62,8 @@ Seven amendments, grouped by source doc.
 - **Amended text** (already applied): "PostgreSQL schema 008 (multi-project; was originally numbered 006 in this doc — Aegis joint-review ruling 2026-05-09 late-evening reserves 006 for `plan_mode_authority` and 007 for `seats_budget`)"
 - **Rationale**: Aegis decision 1 + cleanup of stale "007 event-first projection" half-thought that conflated migration numbering with §1.4 Option C event-first projection (those are different things — Option C is a design pattern, not a schema migration).
 - **Status**: ✓ APPLIED. The original mention of "007 (event-first projection)" is now gone from this list, but Option C event-first projection itself stays in §1.4 as a recommended design pattern. **Aegis adjudication: confirm Option C event-first projection remains binding even though it's not a numbered schema migration?**
+
+> **Aegis verdict (2026-05-11)**: MODIFY. Option C event-first projection stays as **PROVISIONAL**, not BINDING — it's a substantial architectural commitment (materialized views + write-path event emission throughout) that deserves its own design packet before ratification. Decision 3 ratified §1.3 (FS=truth, PG=projection) only, not the event-first refactor. Tag §1.4 Option C accordingly under §A.5.
 
 #### §A.4 — §1.3 core principle ratification
 
@@ -87,6 +93,7 @@ Seven amendments, grouped by source doc.
 - **Rationale**: Decision 2 correction. Nimbus arch §7 shows 008 first; the correction relaxes that for B1 specifically.
 - **Actor**: Nimbus (or Lyra on Nimbus's behalf if expedient — Aegis pick).
 - **Status**: ⏳ PENDING Aegis approval of exact wording.
+- **Nimbus inline note (2026-05-11)**: Concur with proposed wording verbatim. I'll apply it to arch §3 myself once Aegis approves — no need for Lyra to ghostwrite. Open question §3 (reciprocal review): already done at commit `b916912` — ten cross-points N1–N10 filed in Lyra's product supplement §Review block on 2026-05-11. "Still required" path is satisfied.
 
 #### §A.7 — §Review section — Lyra's cross-point (c) retraction
 

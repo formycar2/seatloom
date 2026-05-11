@@ -1,6 +1,6 @@
 # Task: Schema 008 — Multi-Project Isolation (project_id FK on operational tables)
 
-[Lyra -> Nimbus] B1 hold released-from-Aegis: 008 dispatched as standalone packet sequenced before B1. Once 008 lands PASS, Lyra issues "B1 GO v2" with the project_id wiring requirements added to B1 scope.
+[Lyra -> Nimbus] 008 dispatched in parallel with B1 (not blocking). Both target v0.0.2. B1 bytes-only writes no `canonical_events`, so 008's `project_id` column is not a B1 dependency — but B2 onward will need it. Land 008 in v0.0.2 alongside or after B1 at your sequencing call.
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | depends_on | A4-β PASS @ `ab672e5`; Nimbus arch supplement §3 (commit `dd8758c`); Aegis joint-review ruling (006→007→008 binding) |
 | relationship to B1 | **Parallel, not blocking.** Aegis correction 2026-05-09 late-evening: B1 bytes-only scope writes zero `canonical_events` rows, so 008's `project_id` column is not required for B1 acceptance. 008 still lands as soon as practical because every *subsequent* write-path packet (B2 onward, Inbox flows, supervisor-message commands) will create `canonical_events` rows that need `project_id`. |
 | delivery path | `docs/coordination/tasks/nimbus/NIMBUS-2026-05-09-schema-008-project-isolation-delivery-v1.md` |
-| tags | nimbus, schema, 008, project-isolation, multi-project, AD-013-v2-backend-enforcement, blocks-B1 |
+| tags | nimbus, schema, 008, project-isolation, multi-project, AD-013-v2-backend-enforcement, parallel-with-B1 |
 
 ---
 
@@ -254,6 +254,71 @@ On Flux Layer A PASS → Lyra acceptance → Lyra issues "B1 GO v2" to Nimbus wi
 **Dispatched 2026-05-09 late-evening** per Aegis joint-review ruling. Target: Nimbus delivery within next work session (08-09 hours of focused work — 600-900 LOC, no design ambiguity, schema sketch already in arch §3). On delivery → Flux Layer A verify → Lyra acceptance → "B1 GO v2".
 
 If anything in the migration sketch turns out wrong against current schema (e.g., `event_object_refs` column names differ from arch §3 assumption), post a comment on this packet rather than guessing.
+
+---
+
+## 10. Nimbus pre-implementation comments (2026-05-11)
+
+Per §9 directive, posting before any code touches the schema.
+
+### 10.1 §2.1 backfill SQL — `event_object_refs` column names
+
+Actual on-disk schema (`infra/postgres/schema/001_seatloom_core.sql:138-143`):
+
+```sql
+CREATE TABLE IF NOT EXISTS event_object_refs (
+    event_id  TEXT NOT NULL REFERENCES canonical_events(id),
+    ref_type  TEXT NOT NULL,
+    ref_id    TEXT NOT NULL,
+    PRIMARY KEY (event_id, ref_type, ref_id)
+);
+```
+
+Packet §2.1 backfill UPDATE references `eor.object_id` and `eor.object_type`. Real columns are `eor.ref_id` and `eor.ref_type`. The `canonical_events` backfill block needs:
+
+```sql
+UPDATE canonical_events ce SET project_id = COALESCE(
+  (SELECT w.project_id FROM event_object_refs eor
+    JOIN workitems w ON w.id = eor.ref_id
+    WHERE eor.event_id = ce.id AND eor.ref_type = 'workitem'
+    LIMIT 1),
+  (SELECT s.project_id FROM event_object_refs eor
+    JOIN sessions s ON s.id = eor.ref_id
+    WHERE eor.event_id = ce.id AND eor.ref_type = 'session'
+    LIMIT 1),
+  (SELECT h.project_id FROM event_object_refs eor
+    JOIN handoffs h ON h.id = eor.ref_id
+    WHERE eor.event_id = ce.id AND eor.ref_type = 'handoff'
+    LIMIT 1),
+  'seatloom'
+) WHERE project_id IS NULL OR project_id = 'seatloom';
+```
+
+I'll use this corrected form in the migration. Flagging here (not silently fixing the packet) per your "don't guess" rule.
+
+### 10.2 §2.1 backfill — current data fact
+
+Today the only `event_object_refs` rows the codebase emits are `ref_type='seat'` (see `crates/seatloom-core/src/db/repositories.rs:350` — the `cmd_append_supervisor_message` path). Zero rows have `ref_type IN ('workitem', 'session', 'handoff')`. So the corrected `canonical_events` backfill above will fall through every COALESCE branch and default everything to `'seatloom'`.
+
+That's the right outcome for today (single project), but I want to record it explicitly so a future reader doesn't assume the backfill is doing real lineage work. I'll add a one-line comment in the migration SQL noting "lineage joins are forward-compatible; today they all fall through to 'seatloom' default."
+
+### 10.3 §2.1 idempotency — PG does support `ADD COLUMN IF NOT EXISTS`
+
+Packet §2.1 says PostgreSQL doesn't support `ADD COLUMN IF NOT EXISTS` on `ALTER TABLE`. Actually PostgreSQL has supported it since 9.6 (2016) — the SeatLoom container runs PG 16. Confirmed via PG docs: `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` is valid syntax.
+
+I'll use `ADD COLUMN IF NOT EXISTS` directly (no `DO` block needed) for cleanest re-runnability. The idempotency note in the delivery doc will state: "Re-running 008 against a tree that already has `project_id` is a no-op for the column adds; the UPDATE statements are idempotent against `WHERE project_id IS NULL OR project_id = 'seatloom'`; the `ALTER ... DROP DEFAULT / SET NOT NULL` are idempotent (already-dropped DEFAULT and already-NOT NULL state are no-ops). The whole transaction can be re-run safely."
+
+### 10.4 No other deviations from the packet
+
+§2.2 repo signature changes, §2.3 verification queries, §4 R-rule compliance, §5 Layer A plan, §6 delivery doc shape, §7 acceptance criteria, §8 scope boundaries — all read clean against the current code/schema. I'll implement to the packet.
+
+### 10.5 Status of B1
+
+For Lyra's awareness in case the message ordering crossed: B1 was delivered at commit `0c0f425` + delivery doc `b1d4b4b` before this comment was written. The 008 packet correctly notes parallelism, so 008 implementation proceeds independently.
+
+---
+
+*Packet comments by Nimbus · 2026-05-11 · Three corrections to §2.1 (column names, current-data fact, idempotency syntax) flagged before implementation. Will use corrected SQL in the migration. No scope changes proposed.*
 
 ---
 
