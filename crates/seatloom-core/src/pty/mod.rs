@@ -319,9 +319,49 @@ impl PtySession {
         self.events.subscribe()
     }
 
-    /// v0.0.1 read-only mirror: write path is intentionally a no-op here.
-    /// The bidirectional `tmux send-keys` path lands in B1 (v0.0.2).
-    pub fn write(&self, _bytes: &[u8]) -> Result<(), PtyError> {
+    /// Forward bytes into the mirrored tmux pane via the buffer path:
+    ///   tmux load-buffer -b seatloom - ; paste-buffer -b seatloom -t <target>
+    ///
+    /// Single subprocess invocation (`;` chaining) avoids a second fork and
+    /// prevents interleave between concurrent write() calls on the tmux socket.
+    /// Named buffer `-b seatloom` never touches the user's default paste-buffer.
+    /// Arbitrary bytes (NUL, 0x03 Ctrl-C, ANSI sequences) are delivered via
+    /// stdin to load-buffer, bypassing argv length and NUL restrictions.
+    pub fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
+        if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("tmux")
+            .args([
+                "load-buffer", "-b", "seatloom", "-",
+                ";",
+                "paste-buffer", "-b", "seatloom", "-t", &self.tmux_target,
+            ])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux load-buffer: {e}")))?;
+        child
+            .stdin
+            .take()
+            .expect("stdin piped")
+            .write_all(bytes)
+            .map_err(|e| PtyError::Tmux(format!("write to tmux stdin: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| PtyError::Tmux(format!("tmux write wait: {e}")))?;
+        if !out.status.success() {
+            return Err(PtyError::Tmux(format!(
+                "tmux write to {}: {}",
+                self.tmux_target,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
         Ok(())
     }
 
@@ -414,9 +454,40 @@ mod tests {
 
     #[test]
     fn list_tmux_sessions_returns_vec_without_panic() {
-        // Whatever state the host is in, this must not panic. Filtered list
-        // will be non-empty on dev boxes with the <seat>-seatloom sessions
-        // running, empty otherwise.
         let _ = list_tmux_sessions().expect("list_tmux_sessions must not error on happy path");
+    }
+
+    #[test]
+    fn write_noop_on_shutdown() {
+        // When shutdown is set, write() must return Ok(()) without spawning tmux.
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (tx, _rx) = broadcast::channel::<PtyEvent>(1);
+        let sess = PtySession {
+            id: "test".into(),
+            tmux_session_name: "test".into(),
+            tmux_target: "test:0".into(),
+            fifo_path: PathBuf::from("/tmp/nonexistent.fifo"),
+            events: tx,
+            shutdown,
+            transcript_path: PathBuf::from("/tmp/nonexistent.log"),
+        };
+        assert!(sess.write(b"hello").is_ok());
+    }
+
+    #[test]
+    fn write_noop_on_empty_bytes() {
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, _rx) = broadcast::channel::<PtyEvent>(1);
+        let sess = PtySession {
+            id: "test".into(),
+            tmux_session_name: "test".into(),
+            tmux_target: "test:0".into(),
+            fifo_path: PathBuf::from("/tmp/nonexistent.fifo"),
+            events: tx,
+            shutdown,
+            transcript_path: PathBuf::from("/tmp/nonexistent.log"),
+        };
+        // Empty slice must return Ok(()) without spawning tmux.
+        assert!(sess.write(b"").is_ok());
     }
 }

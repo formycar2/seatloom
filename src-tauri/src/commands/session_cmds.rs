@@ -264,26 +264,35 @@ pub async fn cmd_launch_session(
     cmd_attach_tmux_session(state, app, attach).await
 }
 
-/// v0.0.1 read-only mirror: write path is intentionally disabled. B1 (v0.0.2)
-/// will map this to `tmux send-keys`.
+/// v0.0.2 bidirectional write path: routes UTF-8 text into the mirrored tmux
+/// pane via `PtySession::write` (tmux load-buffer|paste-buffer).
 #[tauri::command]
 pub async fn cmd_pty_write(
-    _state: State<'_, AppState>,
-    _session_id: String,
-    _data: String,
+    state: State<'_, AppState>,
+    session_id: String,
+    data: String,
 ) -> Result<(), String> {
-    Ok(())
+    let sessions = state.sessions.lock().await;
+    let sess = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    sess.write(data.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// v0.0.1 read-only mirror: byte-level write path is intentionally disabled.
-/// B1 (v0.0.2) will route keystrokes via `tmux send-keys`.
+/// v0.0.2 bidirectional byte-level write path: routes raw bytes (including
+/// NUL, 0x03 Ctrl-C, ANSI control sequences) through `PtySession::write`.
+/// Used by xterm.js `onData` for arbitrary keystroke / paste payloads.
 #[tauri::command]
 pub async fn cmd_pty_write_bytes(
-    _state: State<'_, AppState>,
-    _session_id: String,
-    _bytes: Vec<u8>,
+    state: State<'_, AppState>,
+    session_id: String,
+    bytes: Vec<u8>,
 ) -> Result<(), String> {
-    Ok(())
+    let sessions = state.sessions.lock().await;
+    let sess = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    sess.write(&bytes).map_err(|e| e.to_string())
 }
 
 /// Resize the mirrored tmux pane (maps to `tmux resize-pane`).

@@ -1,7 +1,10 @@
 // SessionsWorkspace — main-window workspace listing active tmux mirror sessions.
 //
-// v0.0.1: attach-only mode. Lists available tmux sessions via cmd_list_tmux_sessions
-// and attaches to them. xterm is read-only (display mirror).
+// v0.0.2: bidirectional attach-only mode. Lists available tmux sessions via
+// cmd_list_tmux_sessions and attaches to them. xterm is bidirectional —
+// output mirrors pane bytes; input forwards to tmux via cmd_pty_write_bytes
+// (load-buffer|paste-buffer). R1/R3: SeatLoom observes the session, never
+// owns it; closing the tab does not kill the tmux session.
 
 import React, { useEffect, useState } from 'react';
 import { api, isTauri } from '../../lib/api';
@@ -120,7 +123,7 @@ export const SessionsWorkspace: React.FC = () => {
             Attach
           </button>
           <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginTop: 8, lineHeight: 1.4 }}>
-            v0.0.1 attach-only · read-only mirror
+            v0.0.2 attach-only · bidirectional
           </div>
         </div>
 
@@ -182,8 +185,8 @@ export const SessionsWorkspace: React.FC = () => {
                 flexDirection: 'column',
               }}
             >
-              <div style={{ background: '#FEF3C7', padding: '8px', fontSize: 12, color: '#92400E', flexShrink: 0 }}>
-                ⚠️ Read-only mode (v0.0.1). Typing in this terminal is disabled. Use tmux directly to send commands.
+              <div style={{ background: '#DBEAFE', padding: '8px', fontSize: 12, color: '#1E3A8A', flexShrink: 0 }}>
+                ℹ️ Bidirectional mode (v0.0.2). Keystrokes in this terminal are forwarded into the tmux pane. Attach-only: closing the tab leaves the underlying tmux session running.
               </div>
               <div style={{ flex: 1, position: 'relative' }}>
                 <SessionTerminal sessionId={s.id} />
@@ -201,8 +204,8 @@ export const SessionsWorkspace: React.FC = () => {
                 SeatLoom tmux 镜像工作台
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 440 }}>
-                从左侧选择一个现有 tmux 会话并 Attach。v0.0.1 为只读镜像模式，
-                终端显示 tmux pane 的实时输出；输入请直接在 tmux 中进行。
+                从左侧选择一个现有 tmux 会话并 Attach。v0.0.2 为双向镜像模式，
+                终端显示 tmux pane 的实时输出，键盘输入会转发进入对应 pane。
               </div>
             </div>
           )}

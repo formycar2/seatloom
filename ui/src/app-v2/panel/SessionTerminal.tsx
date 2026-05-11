@@ -61,9 +61,8 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: 13,
       lineHeight: 1.2,
-      cursorBlink: false,
+      cursorBlink: true,
       cursorStyle: 'bar',
-      disableStdin: true,
       scrollback: 10000,
       allowProposedApi: true,
       theme: THEME,
@@ -77,7 +76,18 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
     termRef.current = term;
     fitRef.current = fit;
 
-    // TODO(B2): re-enable keystroke forwarding when write path is implemented.
+    // B1 (v0.0.2): forward xterm keystrokes to the tmux pane via the buffer
+    // write path (cmd_pty_write_bytes → PtySession::write → tmux load-buffer
+    // | paste-buffer). onData gives the already-decoded byte stream including
+    // paste, IME composition, and control chords (Ctrl-C = 0x03 etc.) — we
+    // round-trip every byte verbatim so the wrapped CLI sees them as if typed
+    // directly into the tmux pane.
+    const dataDisposable = term.onData((data: string) => {
+      const bytes = new TextEncoder().encode(data);
+      api.ptyWriteBytes(sessionId, Array.from(bytes)).catch((err) => {
+        console.error('[SessionTerminal] ptyWriteBytes failed:', err);
+      });
+    });
 
     // Resize observer → cmd_pty_resize.
     const resizeObserver = new ResizeObserver(() => {
@@ -115,6 +125,7 @@ export const SessionTerminal: React.FC<Props> = ({ sessionId, onExit }) => {
 
     return () => {
       resizeObserver.disconnect();
+      dataDisposable.dispose();
       if (unlistenOutput) unlistenOutput();
       if (unlistenExit) unlistenExit();
       term.dispose();
