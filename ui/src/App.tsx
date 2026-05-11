@@ -22,6 +22,7 @@ import InitDialog from './components/InitDialog';
 import ShortcutHelpDialog from './components/ShortcutHelpDialog';
 import SupervisorCommandBar from './components/SupervisorCommandBar';
 import { SupervisorPanel } from './app-v2/panel/SupervisorPanel';
+import { SessionsWorkspace } from './app-v2/panel/SessionsWorkspace';
 import { IMErrorBoundary } from './supervisor/IMErrorBoundary';
 import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
@@ -32,7 +33,7 @@ import { useAppStore } from './stores/useAppStore';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { ArtifactSubtype, ArtifactTemplate, SelectedObjectType } from './types';
 
-type Tab = 'dashboard' | 'inbox' | 'timeline' | 'workitems' | 'seats' | 'artifacts' | 'playbook' | 'all-projects';
+type Tab = 'dashboard' | 'inbox' | 'timeline' | 'workitems' | 'seats' | 'artifacts' | 'playbook' | 'sessions' | 'all-projects';
 type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress' | 'addSeat';
 type SelectedObject = { type: SelectedObjectType; id: string } | null;
 
@@ -264,6 +265,9 @@ const App: React.FC = () => {
   const renderMainView = () => {
     if (activeTab === 'all-projects') {
       return <AllProjectsView onSelectProject={handleProjectSwitchRequest} />;
+    }
+    if (activeTab === 'sessions') {
+      return <SessionsWorkspace />;
     }
     if (activeTab === 'dashboard') {
       return (

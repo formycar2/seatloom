@@ -10,6 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Folder,
+  Terminal,
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { useDataStore } from '../stores/useDataStore';
@@ -24,7 +25,8 @@ export type NavTab =
   | 'timeline'
   | 'seats'
   | 'artifacts'
-  | 'playbook';
+  | 'playbook'
+  | 'sessions';
 
 interface NavItem {
   id: NavTab;
@@ -61,6 +63,7 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
     { id: 'seats', icon: Users, label: '席位' },
     { id: 'artifacts', icon: Package, label: '产出物' },
     { id: 'playbook', icon: BookOpen, label: 'Playbook' },
+    { id: 'sessions', icon: Terminal, label: '会话' },
   ];
 
   return (
