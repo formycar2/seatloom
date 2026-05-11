@@ -63,6 +63,8 @@ The result: WorkflowPanorama and Inbox show seed-era data, not the live coordina
 
 ### 1.3 Core principle (proposed)
 
+> **BINDING per Aegis 2026-05-09 late-evening**: ratified as **BINDING** architectural principle for v0.1+. Any future packet that contradicts this framing (e.g., proposes UI as a direct writer of `workitems` rows without round-tripping through markdown, or treats PG as authoritative over the file in conflict resolution) must be flagged and reviewed against §1.3 before dispatch. Source: consolidation doc `2026-05-09-lyra-nimbus-joint-review-amendments-v1.md` §A.4.
+
 **File system is the source of truth for the *artifact*. PostgreSQL is the projection authority for the *runtime object*.** Reconcile is the **deterministic mapping** from artifact (markdown) to runtime object (row) using the dual-key `template + subtype` as the discriminator.
 
 This principle does not contradict PRD §6.1 Rule 6 — it operationalizes it.
@@ -99,7 +101,7 @@ Reconcile writes only `canonical_events`. `workitems`, `handoffs`, `inbox` are m
 **Pros**: aligns with AD-010 "review-failure event-first"; single mutation primitive; rebuildable; full audit. Matches `Data Engine Rule 6` ("Every engine action that changes project state must emit an audit record and linked evidence").
 **Cons**: more upfront engineering; view materialization needs careful indexing; SELECT performance must be measured.
 
-#### Recommendation: **Option C — event-first with materialized views**
+#### Recommendation: **Option C — event-first with materialized views**  *(PROVISIONAL — Aegis 2026-05-11: needs its own design packet before BINDING. Source: consolidation §A.5.)*
 
 **Rationale**:
 
@@ -139,7 +141,7 @@ Same as Option B, but in addition the tmux mirror fifo tail watches for the inje
 **Pros**: highest fidelity; confirms the seat actually received the keystrokes.
 **Cons**: complex; echo detection is timing-sensitive and depends on the seat's CLI rendering; over-engineering for v0.1.
 
-#### Recommendation: **Option B — two-phase, with delivery_status on the event row**
+#### Recommendation: **Option B — two-phase, with delivery_status on the event row**  *(BINDING per Aegis 2026-05-11. Source: consolidation §A.5.)*
 
 **Rationale**:
 
@@ -177,7 +179,7 @@ Reconcile reads `status: issued | delivered | accepted | held`, INSERTs a `hando
 
 Use the `status` header when present and valid against the allow-list. Fall back to sibling-document inference when the header is missing. Prefer the more advanced state if they disagree (i.e. acceptance file present implies `accepted` even if the issuance header still says `issued`).
 
-#### Recommendation: **Option C — Hybrid with sibling-document priority on disagreement**
+#### Recommendation: **Option C — Hybrid with sibling-document priority on disagreement**  *(PROVISIONAL — Aegis 2026-05-11: this Option C is the Handoff lifecycle pattern, NOT the §1.4 event-first Option C and NOT the A4-β multi-window detach pattern. Remains provisional until a Handoff-specific design packet ratifies. Source: consolidation §A.5.)*
 
 **Rationale**:
 

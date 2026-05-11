@@ -533,6 +533,8 @@ If B1 is already in flight when 008 lands, Nimbus should issue a B1-v2 that adds
 
 **Aegis decision needed**: confirm that 008 is dispatched as a standalone packet before B1 delivery is accepted. Lyra will not accept B1 if `canonical_events` still lacks `project_id` at the time of B1 delivery.
 
+> **RETRACTED 2026-05-11 per Aegis correction** (consolidation doc `2026-05-09-lyra-nimbus-joint-review-amendments-v1.md` §A.7): Nimbus correctly flagged that B1's bytes-only scope writes no canonical_events rows. The earlier claim that B1 required 008 precedence was factually wrong. B1 is unblocked and runs in parallel with 008.
+
 ---
 
 *Lyra cross-point review complete · 2026-05-09 late-evening · Three cross-points addressed: (a) schema 008 confirmed correct, Lyra will update product supplement §3; (b) T-Live/T-Near/T-Batch maps cleanly to Nimbus §4 hybrid, no conflict; (c) 008 must precede B1 delivery — Aegis to confirm sequencing. Nimbus to write reciprocal review in Lyra's product supplement.*
