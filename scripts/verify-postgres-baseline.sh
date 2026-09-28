@@ -73,12 +73,24 @@ echo "seatloom database ready."
 echo ""
 
 echo "--- Step 2: Apply schema ---"
+# NOTE (ONYX-2026-09-28-runtime-triple-migration-v1): 009 is required here, not
+# optional. Seed 001 now writes seats.default_harness/_agent/_model and
+# sessions.agent/harness/model, so applying the seed without 009 fails with
+# "column ... does not exist". 009 is independent of 008 — it only touches
+# columns created in 001.
+# PRE-EXISTING GAP, deliberately NOT changed by that packet: 008_project_isolation.sql
+# is absent from this list while scripts/bootstrap.sh:138 does apply it. Reported as
+# finding D-4 in docs/coordination/reviews/2026-09-28-onyx-runtime-triple-drift-report-v1.md
+# rather than silently fixed here — adding 008 changes this verifier's behaviour beyond
+# that packet's scope and could not be exercised on the Onyx seat (no docker/compose
+# provider available; see finding D-5).
 for schema_file in \
   001_seatloom_core.sql \
   002_document_authority.sql \
   003_write_ingest_reconcile.sql \
   004_operational_review_and_continuity.sql \
-  005_prompt_and_channel_action_authority.sql
+  005_prompt_and_channel_action_authority.sql \
+  009_runtime_triple.sql
 do
   echo "Applying schema/$schema_file"
   docker cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
