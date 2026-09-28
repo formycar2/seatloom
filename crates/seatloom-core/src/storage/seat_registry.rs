@@ -185,7 +185,7 @@ mod tests {
     use crate::objects::seat::{
         DelegationStatus, ProjectRoleBind, SeatDelegation, SeatIdentity, SeatRole, SeatStatus,
     };
-    use crate::objects::session::Runtime;
+    use crate::objects::session::{Agent, Harness, ModelId};
     use crate::storage::seat_registry::{
         validate_delegation, SeatRegistry, SeatRegistryError, SeatRegistryValidationError,
     };
@@ -242,7 +242,9 @@ mod tests {
         let identity = SeatIdentity {
             id: SeatId::new(),
             name: "nimbus".to_string(),
-            default_runtime: Some(Runtime::Codex),
+            default_harness: Some(Harness::Stepcode),
+            default_agent: Some(Agent::Codex),
+            default_model: Some(ModelId::from("gpt-5-codex")),
             capability_tags: vec!["architecture".to_string(), "rust".to_string()],
             status: SeatStatus::Active,
             created_at: timestamp(),
@@ -258,7 +260,11 @@ mod tests {
         assert_eq!(loaded.id.as_str(), identity.id.as_str());
         assert_eq!(loaded.name, "nimbus");
         assert_eq!(loaded.capability_tags, identity.capability_tags);
-        assert!(matches!(loaded.default_runtime, Some(Runtime::Codex)));
+        // The whole triple must survive the YAML round-trip, not just one
+        // field (packet §2.6).
+        assert_eq!(loaded.default_harness, Some(Harness::Stepcode));
+        assert_eq!(loaded.default_agent, Some(Agent::Codex));
+        assert_eq!(loaded.default_model, Some(ModelId::from("gpt-5-codex")));
         assert!(matches!(loaded.status, SeatStatus::Active));
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
@@ -429,7 +435,9 @@ mod tests {
         let mira = SeatIdentity {
             id: SeatId::new(),
             name: "mira".to_string(),
-            default_runtime: None,
+            default_harness: None,
+            default_agent: None,
+            default_model: None,
             capability_tags: vec![],
             status: SeatStatus::Active,
             created_at: timestamp(),
@@ -437,7 +445,9 @@ mod tests {
         let flux = SeatIdentity {
             id: SeatId::new(),
             name: "flux".to_string(),
-            default_runtime: None,
+            default_harness: None,
+            default_agent: None,
+            default_model: None,
             capability_tags: vec![],
             status: SeatStatus::Active,
             created_at: timestamp(),
