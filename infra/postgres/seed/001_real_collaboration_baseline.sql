@@ -15,13 +15,20 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- Seats (real AI agent seats active during 2026-04-27 to 2026-04-29)
 -- Evidence: docs/coordination/reviews/2026-04-28-process-mapping-review.md §1
+--
+-- 2026-09-28 runtime convergence: every seat now runs the stepcode (stepgo)
+-- Claude Code harness pinned to `claude-opus-5[1m]`. default_runtime was
+-- GeminiCli for lyra/mira and Custom for flux; both were stale relative to the
+-- live tmux sessions. onyx joins as the sixth seat (data), replacing the
+-- ad-hoc Gemini fixture that B1 tmux-attach verification had been using.
 -- =============================================================================
 INSERT INTO seats (id, name, default_runtime, capability_tags, status, created_at) VALUES
   ('seat-aegis-001', 'aegis',  'ClaudeCode',  ARRAY['supervision','product-design','architecture-review','stage-gate'], 'active', '2026-04-24T00:00:00Z'),
-  ('seat-lyra-001',  'lyra',   'GeminiCli',   ARRAY['product-ownership','coordination','acceptance','planning'],          'active', '2026-04-24T00:00:00Z'),
-  ('seat-mira-001',  'mira',   'GeminiCli',   ARRAY['ux-design','react','typescript','component-prototyping'],            'active', '2026-04-24T00:00:00Z'),
+  ('seat-lyra-001',  'lyra',   'ClaudeCode',  ARRAY['product-ownership','coordination','acceptance','planning'],          'active', '2026-04-24T00:00:00Z'),
+  ('seat-mira-001',  'mira',   'ClaudeCode',  ARRAY['ux-design','react','typescript','component-prototyping'],            'active', '2026-04-24T00:00:00Z'),
   ('seat-nimbus-001','nimbus', 'ClaudeCode',  ARRAY['architecture','rust','tauri','infrastructure'],                      'active', '2026-04-24T00:00:00Z'),
-  ('seat-flux-001',  'flux',   'Custom',      ARRAY['qa','verification','ui-audit','ops'],                                'active', '2026-04-24T00:00:00Z')
+  ('seat-flux-001',  'flux',   'ClaudeCode',  ARRAY['qa','verification','ui-audit','ops'],                                'active', '2026-04-24T00:00:00Z'),
+  ('seat-onyx-001',  'onyx',   'ClaudeCode',  ARRAY['data-modeling','postgres','schema-migration','data-quality'],        'active', '2026-09-28T00:00:00Z')
 ON CONFLICT (id) DO NOTHING;
 
 -- =============================================================================
@@ -34,7 +41,8 @@ VALUES
   ('seat-lyra-001',   'seatloom', 'product_owner',  ARRAY['docs/PRODUCT_TRUTH.md','docs/prd-v0.5.md'],                ARRAY['file-first-coordination'],                 NULL, NULL),
   ('seat-mira-001',   'seatloom', 'designer',       ARRAY['docs/ux-spec-v1.1.md','docs/interaction-spec-v1.1.md'],    ARRAY['no-IA-redesign','ui-contract-only'],        NULL, NULL),
   ('seat-nimbus-001', 'seatloom', 'architect',      ARRAY['docs/architecture-design.md','docs/architecture-decisions.md'], ARRAY['no-runtime-widening','infrastructure-only'], NULL, NULL),
-  ('seat-flux-001',   'seatloom', 'verifier',       ARRAY['docs/acceptance-spec-v1.1.md'],                            ARRAY['read-only-by-default','no-ui-redesign'],    NULL, NULL)
+  ('seat-flux-001',   'seatloom', 'verifier',       ARRAY['docs/acceptance-spec-v1.1.md'],                            ARRAY['read-only-by-default','no-ui-redesign'],    NULL, NULL),
+  ('seat-onyx-001',   'seatloom', 'data_engineer',  ARRAY['infra/postgres/schema/001_seatloom_core.sql','docs/architecture-decisions.md'], ARRAY['schema-migration-only','no-product-scope'], NULL, NULL)
 ON CONFLICT (seat_id, project_id) DO NOTHING;
 
 -- =============================================================================
