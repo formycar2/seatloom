@@ -1,0 +1,128 @@
+# SeatLoom CI — quality gates. Policy and rationale: docs/ENGINEERING_STANDARDS.md.
+#
+# Runs on the internal GitLab runner (id 705, docker executor, untagged).
+# Gate classes:
+#   FULL    — checks the whole tree; the baseline is green (verified 2026-09-29).
+#   RATCHET — checks only files changed vs the base ref; pre-existing debt is
+#             grandfathered so the gate never blocks on legacy code/docs.
+# All jobs are hard gates: a red pipeline blocks merge (branch protection + MR).
+
+stages: [lint, test, docs]
+
+variables:
+  GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
+  CARGO_TERM_COLOR: "always"
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  # Put the job and its service containers on a dedicated per-build docker
+  # network so the postgres service is reachable by its alias `postgres`. Without
+  # this the runner falls back to legacy links and the alias does not resolve.
+  FF_NETWORK_PER_BUILD: "true"
+
+workflow:
+  rules:
+    # Run for merge requests...
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # ...and suppress the duplicate branch pipeline while an MR is open for it.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    # Otherwise run on the branch classes from COORDINATION_RULES §13.
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH =~ /^track\//
+    - if: $CI_COMMIT_BRANCH =~ /^packet\//
+    - if: $CI_COMMIT_BRANCH =~ /^hotfix\//
+
+# --------------------------------------------------------------------------
+# lint stage
+# --------------------------------------------------------------------------
+rust:lint:
+  stage: lint
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0
+  cache:
+    - key:
+        files: [Cargo.lock]
+      paths: [.cargo/registry/, .cargo/git/, target/]
+  script:
+    - rustc --version && cargo --version
+    - cargo fmt --all --check # FULL
+    - cargo clippy -p seatloom-core --all-targets -- -D warnings # FULL
+
+frontend:lint:
+  stage: lint
+  image: hub.i.basemind.com/zhangxiaolong/ci/node:22-bookworm
+  cache:
+    key:
+      files: [ui/pnpm-lock.yaml]
+    paths: [ui/node_modules/, .pnpm-store/]
+  before_script:
+    - corepack enable
+    - (cd ui && pnpm install --frozen-lockfile --store-dir "$CI_PROJECT_DIR/.pnpm-store")
+    # Fetch the ratchet base (fork point) so merge-base resolves in scripts.
+    - git fetch -q origin "+refs/heads/track/infra-foundation:refs/remotes/origin/track/infra-foundation" "+refs/heads/${CI_DEFAULT_BRANCH}:refs/remotes/origin/${CI_DEFAULT_BRANCH}" 2>/dev/null || true
+  script:
+    - (cd ui && pnpm typecheck) # FULL — tree passes tsc --noEmit today
+    - bash scripts/lint-changed.sh # RATCHET — eslint + prettier on changed ui/src
+
+# --------------------------------------------------------------------------
+# test stage
+# --------------------------------------------------------------------------
+rust:test:
+  stage: test
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0
+  services:
+    - name: hub.i.basemind.com/zhangxiaolong/ci/postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_DB: "seatloom"
+    POSTGRES_USER: "seatloom"
+    POSTGRES_PASSWORD: "seatloom"
+    DATABASE_URL: "postgresql://seatloom:seatloom@postgres:5432/seatloom"
+  cache:
+    - key:
+        files: [Cargo.lock]
+      paths: [.cargo/registry/, .cargo/git/, target/]
+  before_script:
+    # Toolchain, psql client and Tauri system libs are baked into the image.
+    # Bounded wait for the postgres service (fail fast with a diagnosis instead
+    # of hanging forever if the alias is unreachable).
+    - |
+      for i in $(seq 1 30); do pg_isready -h postgres -U seatloom -q && break; sleep 2; done
+      pg_isready -h postgres -U seatloom || { echo "ERROR: postgres service unreachable at host 'postgres'"; getent hosts postgres || echo "  (hostname 'postgres' does not resolve)"; exit 1; }
+  script:
+    # seatloom-tauri's generate_context! embeds frontendDist (../ui/dist). This
+    # rust-only job doesn't build the frontend, so drop in a minimal stub purely
+    # so the tauri crate COMPILES (verifies its Rust: IPC handlers, DTOs). The
+    # real frontend build happens in the release path, not here.
+    - mkdir -p ui/dist && printf '<!doctype html><title>ci-compile-stub</title>' > ui/dist/index.html
+    - cargo check --workspace # FULL
+    # Canonical apply order (base schema -> seed -> post-seed migrations).
+    - bash scripts/apply-db.sh
+    # Two DB tests need reconcile-produced rows; reconcile uses DATABASE_URL.
+    - cargo run -p seatloom-cli -- reconcile --project seatloom --root "$CI_PROJECT_DIR"
+    # DB integration tests share one database — MUST run single-threaded.
+    - cargo test -p seatloom-core -- --include-ignored --test-threads=1 # FULL
+
+frontend:test:
+  stage: test
+  image: hub.i.basemind.com/zhangxiaolong/ci/node:22-bookworm
+  cache:
+    key:
+      files: [ui/pnpm-lock.yaml]
+    paths: [ui/node_modules/, .pnpm-store/]
+  before_script:
+    - corepack enable
+    - (cd ui && pnpm install --frozen-lockfile --store-dir "$CI_PROJECT_DIR/.pnpm-store")
+  script:
+    - (cd ui && pnpm test) # FULL — vitest, passWithNoTests until suites exist
+
+# --------------------------------------------------------------------------
+# docs stage
+# --------------------------------------------------------------------------
+docs:verify:
+  stage: docs
+  image: hub.i.basemind.com/zhangxiaolong/ci/python:3.12
+  before_script:
+    # python:3.12 (full, buildpack-deps) already ships git; no apt needed.
+    # Fetch the ratchet base (fork point) so merge-base resolves in the script.
+    - git fetch -q origin "+refs/heads/track/infra-foundation:refs/remotes/origin/track/infra-foundation" "+refs/heads/${CI_DEFAULT_BRANCH}:refs/remotes/origin/${CI_DEFAULT_BRANCH}" 2>/dev/null || true
+  script:
+    - bash scripts/verify-docs.sh # RATCHET — header/naming/English on changed docs

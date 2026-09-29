@@ -9,3 +9,15 @@ coverage/
 .local/
 test-results/
 target/
+
+# Local harness / runtime state — machine-specific, never committed.
+# .seatloom/bootstrap/ stays tracked; only live runtime artifacts are ignored.
+.gemini/
+.seatloom/transcripts/
+.seatloom/seat-sessions.tsv
+
+# Cargo cache (CI populates .cargo/registry when CARGO_HOME=$CI_PROJECT_DIR/.cargo);
+# only .cargo/config.toml is tracked.
+.cargo/registry/
+.cargo/git/
+.rustup/

@@ -440,8 +440,10 @@ impl SeatloomDb {
 
     /// List supervisor-flavoured messages + related activity events, optionally
     /// filtered to events relevant to a given seat. A seat-targeted feed shows:
+    ///
     ///   - events authored by the seat         (`actor_ref = 'seat:<seat_id>'`)
     ///   - messages addressed to the seat      (`payload->>'target_seat_id' = <seat_id>`)
+    ///
     /// so both the user's outbound SupervisorMessages and the seat's own
     /// SessionStarted/HandoffSent/etc. events appear in its chat.
     /// Sort: occurred_at ascending (chat-oriented).

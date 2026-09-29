@@ -38,8 +38,8 @@ use commands::{
         cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
     supervisor_cmds::{
-        cmd_append_supervisor_message, cmd_close_supervisor_window,
-        cmd_list_supervisor_messages, cmd_open_supervisor_window, cmd_supervisor_window_status,
+        cmd_append_supervisor_message, cmd_close_supervisor_window, cmd_list_supervisor_messages,
+        cmd_open_supervisor_window, cmd_supervisor_window_status,
     },
     timeline_cmds::{cmd_list_events, cmd_list_events_by_type, cmd_list_events_for_project},
     workitem_cmds::{cmd_get_workitem, cmd_list_workitems, cmd_list_workitems_for_project},

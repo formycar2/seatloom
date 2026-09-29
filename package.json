@@ -2,6 +2,7 @@
   "name": "seatloom",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "tauri": "sh -c '. \"$HOME/.cargo/env\" 2>/dev/null || true; tauri \"$@\"' --",
     "tauri:dev": "sh -c '. \"$HOME/.cargo/env\" 2>/dev/null || true; tauri dev'",
