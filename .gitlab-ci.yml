@@ -78,6 +78,12 @@ rust:test:
       files: [Cargo.lock]
     paths: [.cargo/registry/, .cargo/git/, target/]
   before_script:
+    # Point apt at the company Artifactory Debian mirror; the base image's default
+    # deb.debian.org is the throttled overseas route. Replace sources wholesale so
+    # it works regardless of list vs deb822 format.
+    - |
+      printf 'deb https://artifactory.stepfun-inc.com/artifactory/debian bookworm main\ndeb https://artifactory.stepfun-inc.com/artifactory/debian-security bookworm-security main\n' > /etc/apt/sources.list
+      rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
     - apt-get update -qq && apt-get install -y -qq postgresql-client
     # Wait for the postgres service to accept connections.
     - until pg_isready -h postgres -U seatloom -q; do sleep 1; done
