@@ -1,13 +1,13 @@
-# Route crates.io through the rsproxy.cn domestic mirror. The runner's path to
-# the overseas crates.io/static.crates.io is throttled (~10 KiB/s + ECONNRESET);
-# rsproxy is a China-domestic full mirror (verified 2026-09-29: sparse index +
-# crate download both 200 in <0.5s). replace-with preserves crates.io checksums,
-# so Cargo.lock stays valid.
+# Route crates.io through the company Artifactory (internal, full-speed, saves
+# public egress). Verified anonymous-pullable 2026-09-29: sparse index + crate
+# download both 200 in <0.15s. replace-with preserves crates.io checksums, so
+# Cargo.lock stays valid. Falls back requires editing here (rsproxy.cn is the
+# public-mirror alternative if Artifactory is ever unreachable).
 [source.crates-io]
-replace-with = "rsproxy-sparse"
+replace-with = "artifactory"
 
-[source.rsproxy-sparse]
-registry = "sparse+https://rsproxy.cn/index/"
+[source.artifactory]
+registry = "sparse+https://artifactory.stepfun-inc.com/artifactory/api/cargo/cargo-remote/index/"
 
 [net]
 git-fetch-with-cli = true
