@@ -97,6 +97,11 @@ rust:test:
       for i in $(seq 1 30); do pg_isready -h postgres -U seatloom -q && break; sleep 2; done
       pg_isready -h postgres -U seatloom || { echo "ERROR: postgres service unreachable at host 'postgres'"; getent hosts postgres || echo "  (hostname 'postgres' does not resolve)"; exit 1; }
   script:
+    # seatloom-tauri's generate_context! embeds frontendDist (../ui/dist). This
+    # rust-only job doesn't build the frontend, so drop in a minimal stub purely
+    # so the tauri crate COMPILES (verifies its Rust: IPC handlers, DTOs). The
+    # real frontend build happens in the release path, not here.
+    - mkdir -p ui/dist && printf '<!doctype html><title>ci-compile-stub</title>' > ui/dist/index.html
     - cargo check --workspace # FULL
     # Canonical apply order (base schema -> seed -> post-seed migrations).
     - bash scripts/apply-db.sh
