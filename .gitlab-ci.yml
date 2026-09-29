@@ -1,0 +1,110 @@
+# SeatLoom CI — quality gates. Policy and rationale: docs/ENGINEERING_STANDARDS.md.
+#
+# Runs on the internal GitLab runner (id 705, docker executor, untagged).
+# Gate classes:
+#   FULL    — checks the whole tree; the baseline is green (verified 2026-09-29).
+#   RATCHET — checks only files changed vs the base ref; pre-existing debt is
+#             grandfathered so the gate never blocks on legacy code/docs.
+# All jobs are hard gates: a red pipeline blocks merge (branch protection + MR).
+
+stages: [lint, test, docs]
+
+variables:
+  GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
+  CARGO_TERM_COLOR: "always"
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "track/infra-foundation"
+    - if: $CI_COMMIT_BRANCH =~ /^track\//
+    - if: $CI_COMMIT_BRANCH =~ /^packet\//
+    - if: $CI_COMMIT_BRANCH =~ /^hotfix\//
+
+# --------------------------------------------------------------------------
+# lint stage
+# --------------------------------------------------------------------------
+rust:lint:
+  stage: lint
+  image: rust:bookworm
+  cache:
+    key:
+      files: [Cargo.lock]
+    paths: [.cargo/registry/, .cargo/git/, target/]
+  script:
+    - rustc --version && cargo --version
+    - cargo fmt --all --check # FULL
+    - cargo clippy -p seatloom-core --all-targets -- -D warnings # FULL
+
+frontend:lint:
+  stage: lint
+  image: node:22-bookworm
+  cache:
+    key:
+      files: [ui/pnpm-lock.yaml]
+    paths: [ui/node_modules/, .pnpm-store/]
+  before_script:
+    - corepack enable
+    - (cd ui && pnpm install --frozen-lockfile --store-dir "$CI_PROJECT_DIR/.pnpm-store")
+    - git fetch -q origin "$CI_DEFAULT_BRANCH" 2>/dev/null || true
+  script:
+    - (cd ui && pnpm typecheck) # FULL — tree passes tsc --noEmit today
+    - bash scripts/lint-changed.sh # RATCHET — eslint + prettier on changed ui/src
+
+# --------------------------------------------------------------------------
+# test stage
+# --------------------------------------------------------------------------
+rust:test:
+  stage: test
+  image: rust:bookworm
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_DB: "seatloom"
+    POSTGRES_USER: "seatloom"
+    POSTGRES_PASSWORD: "seatloom"
+    DATABASE_URL: "postgresql://seatloom:seatloom@postgres:5432/seatloom"
+  cache:
+    key:
+      files: [Cargo.lock]
+    paths: [.cargo/registry/, .cargo/git/, target/]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq postgresql-client
+    # Wait for the postgres service to accept connections.
+    - until pg_isready -h postgres -U seatloom -q; do sleep 1; done
+  script:
+    - cargo check --workspace # FULL
+    # Canonical apply order (base schema -> seed -> post-seed migrations).
+    - bash scripts/apply-db.sh
+    # Two DB tests need reconcile-produced rows; reconcile uses DATABASE_URL.
+    - cargo run -p seatloom-cli -- reconcile --project seatloom --root "$CI_PROJECT_DIR"
+    # DB integration tests share one database — MUST run single-threaded.
+    - cargo test -p seatloom-core -- --include-ignored --test-threads=1 # FULL
+
+frontend:test:
+  stage: test
+  image: node:22-bookworm
+  cache:
+    key:
+      files: [ui/pnpm-lock.yaml]
+    paths: [ui/node_modules/, .pnpm-store/]
+  before_script:
+    - corepack enable
+    - (cd ui && pnpm install --frozen-lockfile --store-dir "$CI_PROJECT_DIR/.pnpm-store")
+  script:
+    - (cd ui && pnpm test) # FULL — vitest, passWithNoTests until suites exist
+
+# --------------------------------------------------------------------------
+# docs stage
+# --------------------------------------------------------------------------
+docs:verify:
+  stage: docs
+  image: python:3.12-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - git fetch -q origin "$CI_DEFAULT_BRANCH" 2>/dev/null || true
+  script:
+    - bash scripts/verify-docs.sh # RATCHET — header/naming/English on changed docs
