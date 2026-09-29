@@ -13,6 +13,10 @@ variables:
   GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
   CARGO_TERM_COLOR: "always"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  # Install the toolchain inside the project dir so the runner cache can keep it
+  # (default /usr/local/rustup is a system path the cache can't reach, forcing a
+  # re-download every cold job). Cached separately below with a static key.
+  RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
   # Put the job and its service containers on a dedicated per-build docker
   # network so the postgres service is reachable by its alias `postgres`. Without
   # this the runner falls back to legacy links and the alias does not resolve.
@@ -39,9 +43,11 @@ rust:lint:
   stage: lint
   image: hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
   cache:
-    key:
-      files: [Cargo.lock]
-    paths: [.cargo/registry/, .cargo/git/, target/]
+    - key:
+        files: [Cargo.lock]
+      paths: [.cargo/registry/, .cargo/git/, target/]
+    - key: rustup-toolchain-1.95.0
+      paths: [.rustup/]
   script:
     - rustc --version && cargo --version
     - cargo fmt --all --check # FULL
@@ -78,9 +84,11 @@ rust:test:
     POSTGRES_PASSWORD: "seatloom"
     DATABASE_URL: "postgresql://seatloom:seatloom@postgres:5432/seatloom"
   cache:
-    key:
-      files: [Cargo.lock]
-    paths: [.cargo/registry/, .cargo/git/, target/]
+    - key:
+        files: [Cargo.lock]
+      paths: [.cargo/registry/, .cargo/git/, target/]
+    - key: rustup-toolchain-1.95.0
+      paths: [.rustup/]
   before_script:
     # Point apt at the company Artifactory Debian mirror; the base image's default
     # deb.debian.org is the throttled overseas route. Replace sources wholesale so

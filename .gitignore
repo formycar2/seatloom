@@ -20,3 +20,4 @@ target/
 # only .cargo/config.toml is tracked.
 .cargo/registry/
 .cargo/git/
+.rustup/
