@@ -74,6 +74,22 @@ Naming rule:
 
 ## 5. Role-specific persistence contract
 
+## 5.0 Aegis (Supervisor)
+
+Must persist:
+
+- architecture / product-form decision records
+- stage-gate decision file with entry criteria and verdict
+- process and architecture review documents
+
+Required sections:
+
+1. Decision and rationale
+2. Evidence basis
+3. Affected authority docs
+4. Gate impact
+5. Follow-ups and owners
+
 ## 5.1 Lyra (PO)
 
 Must persist:
@@ -113,6 +129,14 @@ Must persist:
 - acceptance report with severity
 - reproducible runbook
 - evidence links (screenshots/logs/commands)
+
+## 5.5 Onyx (Data)
+
+Must persist:
+
+- migration file with up-path and a verification query
+- seed changes with a per-row evidence comment
+- drift report when file-backed stores and PostgreSQL disagree
 
 ---
 
@@ -212,7 +236,9 @@ Lyra is responsible for driving the next owner directly when the owner is alread
 
 Rules:
 
-- If the next action belongs to Mira, Nimbus, or Flux, Lyra should dispatch the packet or decision to that seat directly instead of asking the human to relay it.
+- If the next action belongs to Mira, Nimbus, Flux, or Onyx, Lyra should dispatch the packet or decision to that seat directly instead of asking the human to relay it.
+- Aegis is dispatched to only for escalation: unresolved product truth, architecture arbitration, or a stage-gate verdict. Aegis is not a routine work queue.
+- Every seat is reachable at tmux session `<Name>-<Role>-seatloom`. The `-seatloom` suffix is load-bearing — `crates/seatloom-core/src/pty/mod.rs` filters discoverable sessions on it.
 - Direct seat-to-seat messages in tmux / PTY / seat chat must be written in English and must reference the governing artifact path(s).
 - Human-facing terminal summaries should report the dispatch status after the seat has been notified.
 - Ask the human for a decision only when product truth is still unresolved or when an explicit override is required.
