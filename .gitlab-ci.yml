@@ -20,9 +20,13 @@ variables:
 
 workflow:
   rules:
-    - if: $CI_MERGE_REQUEST_IID
+    # Run for merge requests...
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # ...and suppress the duplicate branch pipeline while an MR is open for it.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    # Otherwise run on the branch classes from COORDINATION_RULES §13.
     - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "track/infra-foundation"
     - if: $CI_COMMIT_BRANCH =~ /^track\//
     - if: $CI_COMMIT_BRANCH =~ /^packet\//
     - if: $CI_COMMIT_BRANCH =~ /^hotfix\//

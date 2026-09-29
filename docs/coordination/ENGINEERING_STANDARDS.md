@@ -43,6 +43,50 @@ and runs on the internal runner (id 705, docker executor, untagged).
 Push flow: push to both remotes. GitHub's `.github/workflows/rust-foundation.yml`
 is retained as a fast redundant fmt/clippy/test check; GitLab CI is authoritative.
 
+`main` and `track/infra-foundation` are protected (maintainer push/merge, no
+force-push). Project settings enforce **pipeline must succeed** and **all
+discussions resolved** before merge, with auto-cancel of redundant pipelines.
+
+## Build environment — everything resolves internally
+
+The runner reaches the public internet but the overseas route is throttled
+(measured 2026-09-29: npmjs.org at 10–23 KiB/s with ECONNRESET;
+`registry-1.docker.io` refused outright; rustup on static.rust-lang.org hung
+~700s). Every dependency source is therefore pointed at an internal or domestic
+mirror. Do not reintroduce a direct overseas fetch.
+
+| What | Source |
+|---|---|
+| Base images | `hub.i.basemind.com/zhangxiaolong/ci/*` (Harbor, project is public so CI pulls anonymously) |
+| Rust jobs' image | `rust-seatloom:1.95.0` — pinned toolchain + rustfmt/clippy + `postgresql-client` + Tauri v2 Linux libs, all baked in |
+| npm | `artifactory.stepfun-inc.com/.../api/npm/npm-public/` (`ui/.npmrc`) |
+| crates | Artifactory `cargo-remote` sparse index (`.cargo/config.toml`) |
+| apt (image build only) | Artifactory `debian` / `debian-security` |
+| rustc toolchain (image build only) | `rsproxy.cn` — Artifactory mirrors crates but not toolchains |
+
+Lockfiles are unaffected by mirror choice: `pnpm-lock.yaml` stores
+registry-agnostic integrity hashes, and Cargo's `replace-with` preserves
+crates.io checksums. `rsproxy.cn` / `registry.npmmirror.com` are the documented
+public fallbacks if Artifactory is ever unreachable.
+
+### Rebuilding the CI image
+
+Build on the amd64 sponsor workspace (native — the laptop is arm64 and qemu
+emulation is impractically slow), then push to Harbor:
+
+```
+ssh -CAXY buildthoughtonly.zhangxiaolong.shai-core.ws@platform.shaipower.com
+# Dockerfile: FROM hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
+#   + Artifactory apt sources, Tauri deps, psql client
+#   + rustup toolchain install 1.95.0 --profile minimal -c rustfmt -c clippy
+docker build -t hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0 .
+docker push hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0
+```
+
+Rebuild when `rust-toolchain.toml` or the Tauri system-dep set changes; bump the
+tag to the new toolchain version rather than overwriting.
+
+
 ## Rust
 
 - **Toolchain**: pinned to `1.95.0` in `rust-toolchain.toml` (rustfmt + clippy
@@ -139,16 +183,30 @@ Non-obvious CI facts, all verified 2026-09-29 against a fresh database:
   them with `--test-threads=1`.
 - Two tests require a `reconcile` run to have populated document rows first.
 - The postgres service is reached at host `postgres` via `DATABASE_URL`, which
-  `create_pool` reads (`db/connection.rs`).
+  `create_pool` reads (`db/connection.rs`). This needs `FF_NETWORK_PER_BUILD:
+  "true"`; without it the runner uses legacy container links and the `postgres`
+  alias does not resolve — the symptom is a hang, not an error.
+- The service wait loop is bounded (60s) and prints a DNS diagnosis on failure.
+  Never use an unbounded `until pg_isready` — an unreachable service then burns
+  the whole job timeout (observed: 24 minutes).
+- `cargo check --workspace` builds `seatloom-tauri`, whose `generate_context!`
+  macro embeds `frontendDist` (`../ui/dist`). The rust-only job writes a minimal
+  `ui/dist/index.html` stub so the crate compiles; the real frontend build is a
+  release concern, not a gate concern.
+- The ratchet base is `merge-base(HEAD, origin/track/infra-foundation)`, not
+  `origin/main`: GitLab's `main` is an unrelated empty Initial commit, and
+  diffing against it marks every file changed. Both verifier scripts resolve the
+  base the same way and CI fetches that ref explicitly.
 
 ## Follow-ups (not in this packet)
 
 1. **Nimbus** — per-seat `git worktree` so packet branches don't collide.
 2. **Onyx** — real migration runner + separate idempotent seed; refit
-   `verify-postgres-baseline.sh` / `ingest-documents.sh` off hardcoded docker.
+   `verify-postgres-baseline.sh` / `ingest-documents.sh` off hardcoded docker
+   (they are stale: they stop at schema 005 and never apply 008).
 3. **Any seat** — burn down `.gitlab/docs-grandfather.txt` (207) and the ~143
    eslint errors, then flip those gates from RATCHET toward FULL.
 4. **Governance** — add `engineering_standards` to the T7 subtype allow-list and
    de-duplicate the two Rust allow-list copies.
-5. **Ops** — GitLab branch protection + "MR must be green" requires an `api`-scope
-   PAT (the browser session cookie only authorizes GET); configure once available.
+5. **Ops** — `src-tauri` / `src-cli` are not yet clippy-gated (pre-existing
+   dead-code warnings); bring them under `-D warnings` once cleaned.
