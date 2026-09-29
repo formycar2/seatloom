@@ -13,6 +13,11 @@ variables:
   GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
   CARGO_TERM_COLOR: "always"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  # rust-toolchain.toml pins 1.95.0; the base image's default toolchain differs,
+  # so rustup fetches 1.95.0 components. Route that through rsproxy.cn (domestic)
+  # instead of the throttled overseas static.rust-lang.org.
+  RUSTUP_DIST_SERVER: "https://rsproxy.cn"
+  RUSTUP_UPDATE_ROOT: "https://rsproxy.cn/rustup"
 
 workflow:
   rules:
