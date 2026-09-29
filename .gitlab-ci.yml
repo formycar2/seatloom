@@ -13,6 +13,10 @@ variables:
   GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
   CARGO_TERM_COLOR: "always"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  # Put the job and its service containers on a dedicated per-build docker
+  # network so the postgres service is reachable by its alias `postgres`. Without
+  # this the runner falls back to legacy links and the alias does not resolve.
+  FF_NETWORK_PER_BUILD: "true"
   # rust-toolchain.toml pins 1.95.0; the base image's default toolchain differs,
   # so rustup fetches 1.95.0 components. Route that through rsproxy.cn (domestic)
   # instead of the throttled overseas static.rust-lang.org.
@@ -85,8 +89,11 @@ rust:test:
       printf 'deb https://artifactory.stepfun-inc.com/artifactory/debian bookworm main\ndeb https://artifactory.stepfun-inc.com/artifactory/debian-security bookworm-security main\n' > /etc/apt/sources.list
       rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
     - apt-get update -qq && apt-get install -y -qq postgresql-client
-    # Wait for the postgres service to accept connections.
-    - until pg_isready -h postgres -U seatloom -q; do sleep 1; done
+    # Bounded wait for the postgres service (fail fast with a diagnosis instead
+    # of hanging forever if the alias is unreachable).
+    - |
+      for i in $(seq 1 30); do pg_isready -h postgres -U seatloom -q && break; sleep 2; done
+      pg_isready -h postgres -U seatloom || { echo "ERROR: postgres service unreachable at host 'postgres'"; getent hosts postgres || echo "  (hostname 'postgres' does not resolve)"; exit 1; }
   script:
     - cargo check --workspace # FULL
     # Canonical apply order (base schema -> seed -> post-seed migrations).
