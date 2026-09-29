@@ -9,3 +9,9 @@ coverage/
 .local/
 test-results/
 target/
+
+# Local harness / runtime state — machine-specific, never committed.
+# .seatloom/bootstrap/ stays tracked; only live runtime artifacts are ignored.
+.gemini/
+.seatloom/transcripts/
+.seatloom/seat-sessions.tsv
