@@ -28,7 +28,7 @@ workflow:
 # --------------------------------------------------------------------------
 rust:lint:
   stage: lint
-  image: rust:bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
   cache:
     key:
       files: [Cargo.lock]
@@ -40,7 +40,7 @@ rust:lint:
 
 frontend:lint:
   stage: lint
-  image: node:22-bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/node:22-bookworm
   cache:
     key:
       files: [ui/pnpm-lock.yaml]
@@ -58,9 +58,9 @@ frontend:lint:
 # --------------------------------------------------------------------------
 rust:test:
   stage: test
-  image: rust:bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
   services:
-    - name: postgres:16
+    - name: hub.i.basemind.com/zhangxiaolong/ci/postgres:16
       alias: postgres
   variables:
     POSTGRES_DB: "seatloom"
@@ -86,7 +86,7 @@ rust:test:
 
 frontend:test:
   stage: test
-  image: node:22-bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/node:22-bookworm
   cache:
     key:
       files: [ui/pnpm-lock.yaml]
@@ -102,9 +102,9 @@ frontend:test:
 # --------------------------------------------------------------------------
 docs:verify:
   stage: docs
-  image: python:3.12-slim
+  image: hub.i.basemind.com/zhangxiaolong/ci/python:3.12
   before_script:
-    - apt-get update -qq && apt-get install -y -qq git
+    # python:3.12 (full, buildpack-deps) already ships git; no apt needed.
     - git fetch -q origin "$CI_DEFAULT_BRANCH" 2>/dev/null || true
   script:
     - bash scripts/verify-docs.sh # RATCHET — header/naming/English on changed docs
