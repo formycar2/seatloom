@@ -13,19 +13,10 @@ variables:
   GIT_DEPTH: "0" # full history so ratchet diffs against the base ref resolve
   CARGO_TERM_COLOR: "always"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  # Install the toolchain inside the project dir so the runner cache can keep it
-  # (default /usr/local/rustup is a system path the cache can't reach, forcing a
-  # re-download every cold job). Cached separately below with a static key.
-  RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
   # Put the job and its service containers on a dedicated per-build docker
   # network so the postgres service is reachable by its alias `postgres`. Without
   # this the runner falls back to legacy links and the alias does not resolve.
   FF_NETWORK_PER_BUILD: "true"
-  # rust-toolchain.toml pins 1.95.0; the base image's default toolchain differs,
-  # so rustup fetches 1.95.0 components. Route that through rsproxy.cn (domestic)
-  # instead of the throttled overseas static.rust-lang.org.
-  RUSTUP_DIST_SERVER: "https://rsproxy.cn"
-  RUSTUP_UPDATE_ROOT: "https://rsproxy.cn/rustup"
 
 workflow:
   rules:
@@ -41,13 +32,11 @@ workflow:
 # --------------------------------------------------------------------------
 rust:lint:
   stage: lint
-  image: hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0
   cache:
     - key:
         files: [Cargo.lock]
       paths: [.cargo/registry/, .cargo/git/, target/]
-    - key: rustup-toolchain-1.95.0
-      paths: [.rustup/]
   script:
     - rustc --version && cargo --version
     - cargo fmt --all --check # FULL
@@ -74,7 +63,7 @@ frontend:lint:
 # --------------------------------------------------------------------------
 rust:test:
   stage: test
-  image: hub.i.basemind.com/zhangxiaolong/ci/rust:bookworm
+  image: hub.i.basemind.com/zhangxiaolong/ci/rust-seatloom:1.95.0
   services:
     - name: hub.i.basemind.com/zhangxiaolong/ci/postgres:16
       alias: postgres
@@ -87,18 +76,8 @@ rust:test:
     - key:
         files: [Cargo.lock]
       paths: [.cargo/registry/, .cargo/git/, target/]
-    - key: rustup-toolchain-1.95.0
-      paths: [.rustup/]
   before_script:
-    # Point apt at the company Artifactory Debian mirror; the base image's default
-    # deb.debian.org is the throttled overseas route. Replace sources wholesale so
-    # it works regardless of list vs deb822 format.
-    - |
-      printf 'deb https://artifactory.stepfun-inc.com/artifactory/debian bookworm main\ndeb https://artifactory.stepfun-inc.com/artifactory/debian-security bookworm-security main\n' > /etc/apt/sources.list
-      rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
-    - apt-get update -qq && apt-get install -y -qq postgresql-client
-      pkg-config libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+    # Toolchain, psql client and Tauri system libs are baked into the image.
     # Bounded wait for the postgres service (fail fast with a diagnosis instead
     # of hanging forever if the alias is unreachable).
     - |
