@@ -174,8 +174,12 @@ pub fn list_tmux_sessions() -> Result<Vec<TmuxSessionInfo>, PtyError> {
     for line in stdout.lines() {
         let mut parts = line.splitn(3, ':');
         let Some(name) = parts.next() else { continue };
-        let Some(created) = parts.next() else { continue };
-        let Some(attached) = parts.next() else { continue };
+        let Some(created) = parts.next() else {
+            continue;
+        };
+        let Some(attached) = parts.next() else {
+            continue;
+        };
         if !name.ends_with("-seatloom") {
             continue;
         }
@@ -249,7 +253,7 @@ impl PtySession {
             )));
         }
         let dims_str = String::from_utf8_lossy(&dims_out.stdout);
-        let dims_parts: Vec<&str> = dims_str.trim().split_whitespace().collect();
+        let dims_parts: Vec<&str> = dims_str.split_whitespace().collect();
         let (pane_cols, pane_rows) = if dims_parts.len() == 2 {
             let cols = dims_parts[0].parse::<u16>().unwrap_or(120);
             let rows = dims_parts[1].parse::<u16>().unwrap_or(30);
@@ -401,9 +405,16 @@ impl PtySession {
         use std::process::{Command, Stdio};
         let mut child = Command::new("tmux")
             .args([
-                "load-buffer", "-b", "seatloom", "-",
+                "load-buffer",
+                "-b",
+                "seatloom",
+                "-",
                 ";",
-                "paste-buffer", "-b", "seatloom", "-t", &self.tmux_target,
+                "paste-buffer",
+                "-b",
+                "seatloom",
+                "-t",
+                &self.tmux_target,
             ])
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
