@@ -15,3 +15,8 @@ target/
 .gemini/
 .seatloom/transcripts/
 .seatloom/seat-sessions.tsv
+
+# Cargo cache (CI populates .cargo/registry when CARGO_HOME=$CI_PROJECT_DIR/.cargo);
+# only .cargo/config.toml is tracked.
+.cargo/registry/
+.cargo/git/

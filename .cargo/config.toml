@@ -1,0 +1,13 @@
+# Route crates.io through the rsproxy.cn domestic mirror. The runner's path to
+# the overseas crates.io/static.crates.io is throttled (~10 KiB/s + ECONNRESET);
+# rsproxy is a China-domestic full mirror (verified 2026-09-29: sparse index +
+# crate download both 200 in <0.5s). replace-with preserves crates.io checksums,
+# so Cargo.lock stays valid.
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
