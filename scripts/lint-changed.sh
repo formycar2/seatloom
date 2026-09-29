@@ -14,9 +14,24 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-BASE="${1:-${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_DEFAULT_BRANCH:+origin/$CI_DEFAULT_BRANCH}}}"
-BASE="${BASE:-origin/main}"
-git rev-parse --verify --quiet "$BASE" >/dev/null || BASE="$(git hash-object -t tree /dev/null)"
+# Resolve the base to diff against. An explicit arg wins (local use). In CI,
+# prefer the merge-request base; otherwise use the merge-base with the packet's
+# fork point (track/infra-foundation), falling back to the default branch. Bare
+# origin/main is NOT usable here: GitLab's main is an unrelated empty Initial
+# commit, so diffing against it marks every file "changed". merge-base against a
+# real ancestor gives exactly this branch's own changes.
+BASE="${1:-}"
+if [ -z "$BASE" ]; then
+  if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+    BASE="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+  else
+    for cand in origin/track/infra-foundation "origin/${CI_DEFAULT_BRANCH:-main}"; do
+      git rev-parse --verify -q "$cand" >/dev/null 2>&1 || continue
+      mb=$(git merge-base HEAD "$cand" 2>/dev/null) && [ -n "$mb" ] && { BASE="$mb"; break; }
+    done
+  fi
+fi
+git rev-parse --verify -q "${BASE:-}^{object}" >/dev/null 2>&1 || BASE="$(git hash-object -t tree /dev/null)"
 
 # Changed ui/src TS files (committed vs base + unstaged + untracked), path
 # relative to ui/ so eslint/prettier (run in ui/) resolve them. Use a directory

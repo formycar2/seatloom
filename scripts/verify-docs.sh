@@ -90,9 +90,22 @@ if [ "${1:-}" = "--audit" ]; then
 fi
 
 # --- Gate mode ---
-BASE="${1:-${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_DEFAULT_BRANCH:+origin/$CI_DEFAULT_BRANCH}}}"
-BASE="${BASE:-origin/main}"
-git rev-parse --verify --quiet "$BASE" >/dev/null || BASE="$(git hash-object -t tree /dev/null)"
+# Resolve the base to diff against (see lint-changed.sh for the rationale):
+# explicit arg > MR base > merge-base with track/infra-foundation > merge-base
+# with the default branch > empty tree. Bare origin/main is unusable (GitLab's
+# main is an unrelated empty Initial commit).
+BASE="${1:-}"
+if [ -z "$BASE" ]; then
+  if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+    BASE="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+  else
+    for cand in origin/track/infra-foundation "origin/${CI_DEFAULT_BRANCH:-main}"; do
+      git rev-parse --verify -q "$cand" >/dev/null 2>&1 || continue
+      mb=$(git merge-base HEAD "$cand" 2>/dev/null) && [ -n "$mb" ] && { BASE="$mb"; break; }
+    done
+  fi
+fi
+git rev-parse --verify -q "${BASE:-}^{object}" >/dev/null 2>&1 || BASE="$(git hash-object -t tree /dev/null)"
 
 CHANGED="$( {
   git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- docs 2>/dev/null

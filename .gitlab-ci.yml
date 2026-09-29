@@ -48,7 +48,8 @@ frontend:lint:
   before_script:
     - corepack enable
     - (cd ui && pnpm install --frozen-lockfile --store-dir "$CI_PROJECT_DIR/.pnpm-store")
-    - git fetch -q origin "$CI_DEFAULT_BRANCH" 2>/dev/null || true
+    # Fetch the ratchet base (fork point) so merge-base resolves in scripts.
+    - git fetch -q origin "+refs/heads/track/infra-foundation:refs/remotes/origin/track/infra-foundation" "+refs/heads/${CI_DEFAULT_BRANCH}:refs/remotes/origin/${CI_DEFAULT_BRANCH}" 2>/dev/null || true
   script:
     - (cd ui && pnpm typecheck) # FULL — tree passes tsc --noEmit today
     - bash scripts/lint-changed.sh # RATCHET — eslint + prettier on changed ui/src
@@ -105,6 +106,7 @@ docs:verify:
   image: hub.i.basemind.com/zhangxiaolong/ci/python:3.12
   before_script:
     # python:3.12 (full, buildpack-deps) already ships git; no apt needed.
-    - git fetch -q origin "$CI_DEFAULT_BRANCH" 2>/dev/null || true
+    # Fetch the ratchet base (fork point) so merge-base resolves in the script.
+    - git fetch -q origin "+refs/heads/track/infra-foundation:refs/remotes/origin/track/infra-foundation" "+refs/heads/${CI_DEFAULT_BRANCH}:refs/remotes/origin/${CI_DEFAULT_BRANCH}" 2>/dev/null || true
   script:
     - bash scripts/verify-docs.sh # RATCHET — header/naming/English on changed docs
