@@ -78,7 +78,7 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
     use crate::objects::id::{SeatId, SessionId};
-    use crate::objects::session::{Runtime, Session, SessionStatus};
+    use crate::objects::session::{Agent, Harness, ModelId, Session, SessionStatus};
     use crate::storage::session_store::SessionStore;
     use crate::storage::yaml_io::write_yaml;
 
@@ -100,7 +100,9 @@ mod tests {
         Session {
             id: id.clone(),
             seat_id: seat_id.clone(),
-            runtime: Runtime::ClaudeCode,
+            harness: Some(Harness::Stepcode),
+            agent: Agent::ClaudeCode,
+            model: Some(ModelId::from("claude-opus-5[1m]")),
             native_session_id: None,
             workspace_path: PathBuf::from("/tmp/test"),
             branch: None,

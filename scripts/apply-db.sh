@@ -2,19 +2,49 @@
 # apply-db.sh — apply SeatLoom's schema + seed to a database in the canonical
 # order, using $DATABASE_URL (CI-compatible; no docker/podman exec).
 #
-# Canonical order (verified 2026-09-29, AEGIS-2026-09-29 build-standards packet):
-#   1. base schema  001–005  — create the tables the seed inserts into
-#   2. seed         001–004  — real-collaboration baseline data
-#   3. post-seed migrations ≥006 (currently 008 project-isolation; 009 runtime
-#      triple when merged) — these ADD COLUMN, backfill from seeded rows, then
-#      SET NOT NULL, so they MUST run AFTER seed. Applying all schema before
-#      seed fails: 008 sets sessions.project_id NOT NULL but seed 001 has no
-#      project_id.
+# =============================================================================
+# ORDERING CONTRACT — every migration is classified BY RULE, not by its number.
+# =============================================================================
+# A migration's placement follows from its relationship to the seed:
 #
-# This ordering is a stopgap: SeatLoom has no migration runner, and the split
-# "001–005 pre-seed vs ≥006 post-seed" is convention, not enforced structure.
-# A proper ordered-migration + separate-idempotent-seed system is tracked as an
-# Onyx follow-up (see docs/ENGINEERING_STANDARDS.md §Migrations).
+#   PRE-SEED   the seed writes columns that this migration creates.
+#              The seed physically cannot insert into a column that does not
+#              exist yet.
+#
+#   POST-SEED  this migration constrains columns the seed does not provide —
+#              typically ADD COLUMN, backfill from seeded rows, SET NOT NULL.
+#              It needs the seeded rows to already exist.
+#
+# A future migration could in principle need BOTH (creating a column the seed
+# writes AND constraining a column the seed omits). None does today. If one
+# ever does, SPLIT it into a pre-seed part and a post-seed part. Do not try to
+# satisfy both halves with a single placement, and do not reorder the seed.
+#
+# WHY AN EXPLICIT LIST AND NOT A NUMBER RANGE
+# The previous rule was "001-005 pre-seed, >=006 post-seed". That is a number
+# heuristic standing in for the rule above, and the two agree only while every
+# column-adding migration happens to be numbered <=005. It broke as soon as one
+# was not: 009_runtime_triple adds seats.default_harness/_agent/_model and
+# sessions.harness/agent/model, all of which seed 001 writes, so the >=006
+# bucket scheduled it AFTER the seed that depends on it:
+#
+#   --- seed (001-004) ---
+#     infra/postgres/seed/001_real_collaboration_baseline.sql
+#   ERROR:  column "default_harness" of relation "seats" does not exist
+#   --- apply-db.sh exit code: 3 ---
+#
+# (Flux commit-pinned gate 2026-09-30 —
+#  docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-delivery-v2.md)
+#
+# docs/ENGINEERING_STANDARDS.md (Migrations) already recorded the bucket as
+# "convention, not enforced structure". This replaces the heuristic with the
+# rule it was approximating, and states the reason per entry so the next
+# migration is classified by rule rather than by number. A proper
+# ordered-migration + separate-idempotent-seed runner stays a tracked Onyx
+# follow-up; this only makes the stopgap honest about why each file sits where
+# it does.
+#
+# Fixed by ONYX-2026-09-30-apply-db-ordering-fix-v1.
 #
 # Usage: DATABASE_URL=postgresql://user:pass@host:port/db scripts/apply-db.sh
 # Needs: psql on PATH. Exit nonzero on first SQL error.
@@ -28,23 +58,83 @@ SEED_DIR="infra/postgres/seed"
 
 psql_f() { psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$1"; }
 
-echo "apply-db: target=$DATABASE_URL"
+# --- Ordering lists: "<filename>|<why it sits in this group>" -----------------
 
-echo "--- base schema (001–005) ---"
-for n in 001 002 003 004 005; do
-  f=$(ls "$SCHEMA_DIR/${n}_"*.sql 2>/dev/null | head -1) || true
-  [ -n "${f:-}" ] && [ -f "$f" ] && { echo "  $f"; psql_f "$f"; }
+# PRE-SEED: the seed writes columns these create.
+PRE_SEED_SCHEMA=(
+  "001_seatloom_core.sql|creates projects/seats/sessions/workitems/handoffs/artifacts/canonical_events — every table the seed inserts into"
+  "002_document_authority.sql|creates documents/document_sections; seed 002 inserts document rows"
+  "003_write_ingest_reconcile.sql|creates reconcile_runs/reconcile_items/document_versions written by reconcile and seed 002"
+  "004_operational_review_and_continuity.sql|creates checkpoints/review_threads/review_comments; seed 003 inserts into them"
+  "005_prompt_and_channel_action_authority.sql|creates prompt_instances/prompt_actions/channel_action_receipts; seed 004 targets them (zero-row baseline)"
+  "009_runtime_triple.sql|ADDS seats.default_harness/_agent/_model and sessions.harness/agent/model, which seed 001 WRITES — must exist before the seed runs. Safe here: it only touches columns created in 001 and constrains nothing the seed omits (its sole SET NOT NULL is on sessions.agent, which the seed supplies)."
+)
+
+# POST-SEED: these constrain columns the seed does not provide.
+POST_SEED_SCHEMA=(
+  "008_project_isolation.sql|backfills project_id on workitems/sessions/handoffs/canonical_events from seeded rows, then SET NOT NULL. Seed 001 supplies no project_id, so running this before the seed makes the seed fail: 'null value in column \"project_id\" violates not-null constraint'."
+)
+
+# --- Completeness guard ------------------------------------------------------
+# A migration present on disk but absent from both lists would be silently
+# skipped — a worse failure than the one this script just fixed, because the
+# database would come up quietly incomplete. Fail loudly instead.
+classified=""
+for entry in ${PRE_SEED_SCHEMA[@]+"${PRE_SEED_SCHEMA[@]}"} ${POST_SEED_SCHEMA[@]+"${POST_SEED_SCHEMA[@]}"}; do
+  classified="$classified ${entry%%|*}"
 done
 
-echo "--- seed (001–004) ---"
+unclassified=0
+for path in "$SCHEMA_DIR"/*.sql; do
+  [ -f "$path" ] || continue
+  base="$(basename "$path")"
+  case " $classified " in
+    *" $base "*) ;;
+    *)
+      if [ "$unclassified" -eq 0 ]; then
+        echo "ERROR: unclassified migration(s) in $SCHEMA_DIR — refusing to apply a partial schema." >&2
+        echo "Add each to PRE_SEED_SCHEMA or POST_SEED_SCHEMA in this script, with a reason:" >&2
+        echo "  PRE-SEED  if the seed writes columns the migration creates." >&2
+        echo "  POST-SEED if the migration constrains columns the seed does not provide." >&2
+      fi
+      echo "  unclassified: $base" >&2
+      unclassified=1
+      ;;
+  esac
+done
+[ "$unclassified" -eq 0 ] || exit 2
+
+# --- Apply -------------------------------------------------------------------
+apply_group() {
+  label="$1"; shift
+  echo "--- $label ---"
+  for entry in "$@"; do
+    file="${entry%%|*}"
+    reason="${entry#*|}"
+    path="$SCHEMA_DIR/$file"
+    if [ -f "$path" ]; then
+      echo "  $path"
+      echo "      why: $reason"
+      psql_f "$path"
+    else
+      # Listed but absent: expected when this script runs on a branch that does
+      # not carry the migration yet. Announced, never silent.
+      echo "  SKIP $file — not present on this branch"
+    fi
+  done
+}
+
+echo "apply-db: target=$DATABASE_URL"
+
+apply_group "pre-seed schema (seed writes columns these create)" \
+  ${PRE_SEED_SCHEMA[@]+"${PRE_SEED_SCHEMA[@]}"}
+
+echo "--- seed (001-004) ---"
 for f in "$SEED_DIR"/*.sql; do
   [ -f "$f" ] && { echo "  $f"; psql_f "$f"; }
 done
 
-echo "--- post-seed migrations (>=006) ---"
-for f in "$SCHEMA_DIR"/*.sql; do
-  n=$(basename "$f" | grep -oE '^[0-9]+' || echo 0)
-  if [ "$((10#$n))" -ge 6 ]; then echo "  $f"; psql_f "$f"; fi
-done
+apply_group "post-seed schema (constrains columns the seed does not provide)" \
+  ${POST_SEED_SCHEMA[@]+"${POST_SEED_SCHEMA[@]}"}
 
 echo "apply-db: done."

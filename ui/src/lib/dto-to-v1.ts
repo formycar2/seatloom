@@ -172,7 +172,10 @@ export function sessionFromDto(d: SessionDto): Session {
   return {
     id: d.id,
     seat_id: d.seatId,
-    runtime: coerceRuntime(d.runtime),
+    // The V1 display model still carries a single `runtime`; the backend now
+    // sends the harness/agent/model triple. Map the agent dimension onto it —
+    // surfacing harness and model is an L2 change, deferred until L1 ships.
+    runtime: coerceRuntime(d.agent),
     native_session_id: d.nativeSessionId ?? undefined,
     workspace_path: d.workspacePath,
     branch: d.branch ?? undefined,

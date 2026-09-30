@@ -16,7 +16,14 @@ pub struct ProjectRow {
 pub struct SeatRow {
     pub id: String,
     pub name: String,
-    pub default_runtime: Option<String>,
+    /// Runtime triple, mirrored verbatim from `seats.default_harness` /
+    /// `default_agent` / `default_model` (schema 009). String passthrough: the
+    /// row struct stays a faithful mirror of the SQL columns. Values are
+    /// validated against `Harness` / `Agent` at the hydration boundary in
+    /// `db::repositories::row_to_seat`.
+    pub default_harness: Option<String>,
+    pub default_agent: Option<String>,
+    pub default_model: Option<String>,
     pub capability_tags: Vec<String>,
     pub status: String,
     pub created_at: DateTime<Utc>,
@@ -50,7 +57,14 @@ pub struct SeatDelegationRow {
 pub struct SessionRow {
     pub id: String,
     pub seat_id: String,
-    pub runtime: String,
+    /// Runtime triple, mirrored verbatim from `sessions.harness` / `agent` /
+    /// `model` (schema 009). `harness` and `model` are nullable — `NULL` means
+    /// *not recorded*, never *direct* / *default*. Validated against
+    /// `Harness` / `Agent` at the hydration boundary in
+    /// `db::repositories::row_to_session`.
+    pub harness: Option<String>,
+    pub agent: String,
+    pub model: Option<String>,
     pub native_session_id: Option<String>,
     pub workspace_path: String,
     pub branch: Option<String>,
