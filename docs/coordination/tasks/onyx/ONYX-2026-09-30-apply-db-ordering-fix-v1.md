@@ -14,6 +14,7 @@ verified remedy.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | onyx |
 | priority | P0 (blocks the runtime-triple merge, which blocks P0 step 1) |
 | depends_on | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-delivery-v2.md` (FAIL) |

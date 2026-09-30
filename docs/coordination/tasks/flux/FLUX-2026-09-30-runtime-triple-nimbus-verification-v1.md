@@ -12,6 +12,7 @@ the runtime triple is complete on `track`.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | flux |
 | verifies | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-28-runtime-triple-refactor-v1.md` |
 | delivery under test | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-28-runtime-triple-refactor-delivery-v1.md` |

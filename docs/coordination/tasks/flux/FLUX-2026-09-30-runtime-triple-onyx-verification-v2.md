@@ -13,6 +13,7 @@ argument. Everything you already proved in v1 stands and does not need redoing.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v2 |
 | to | flux |
 | supersedes | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-v1.md` |
 | v1 delivery | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-delivery-v1.md` (HOLD, accepted) |

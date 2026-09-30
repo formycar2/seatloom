@@ -8,6 +8,7 @@
 | status | delivered |
 | author | onyx |
 | date | 2026-09-28 |
+| version | v1 |
 | packet_ref | `docs/coordination/tasks/onyx/ONYX-2026-09-28-runtime-triple-migration-v1.md` |
 | base branch | `track/infra-foundation` |
 | base commit | `9599136d615db0c4cdb15811ccaca5532820870d` |

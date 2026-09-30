@@ -10,6 +10,7 @@
 | status | delivered |
 | author | flux |
 | date | 2026-09-30 |
+| version | v2 |
 | to | lyra |
 | verifies | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-v2.md` |
 | supersedes | `…-delivery-v1.md` (HOLD, accepted) |

@@ -12,6 +12,7 @@ check the one claim that would let me merge despite a known open defect.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v3 |
 | to | flux |
 | supersedes | `…-verification-v2.md` (FAIL, accepted) |
 | target branch | `packet/onyx/ONYX-2026-09-28-runtime-triple-migration-v1` |

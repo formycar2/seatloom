@@ -13,6 +13,7 @@ of review §8, and your first packet as a registered seat.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-28 |
+| version | v1 |
 | to | onyx |
 | priority | P1 (parallel with L1 Supervisor IM; does not block L1) |
 | milestone | pre-ingestion schema debt paydown |

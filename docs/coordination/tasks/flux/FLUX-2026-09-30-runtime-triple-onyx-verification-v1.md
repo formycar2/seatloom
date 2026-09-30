@@ -12,6 +12,7 @@ merges to `track/infra-foundation` until you return a verdict.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | flux |
 | priority | P0 (blocks the runtime-triple merge, which blocks the P0 step-1 schema packet) |
 | verifies | `docs/coordination/tasks/onyx/ONYX-2026-09-28-runtime-triple-migration-v1.md` |

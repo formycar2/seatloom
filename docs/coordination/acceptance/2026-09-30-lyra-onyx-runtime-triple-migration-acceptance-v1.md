@@ -8,6 +8,7 @@
 | status | **ACCEPTED** |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | verdict | **ACCEPTED** — with one recorded open defect, independently confirmed pre-existing |
 | packet | `docs/coordination/tasks/onyx/ONYX-2026-09-28-runtime-triple-migration-v1.md` |
 | fix packet | `docs/coordination/tasks/onyx/ONYX-2026-09-30-apply-db-ordering-fix-v1.md` |

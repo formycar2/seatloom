@@ -10,6 +10,7 @@
 | status | delivered |
 | author | flux |
 | date | 2026-09-30 |
+| version | v1 |
 | to | lyra |
 | verifies | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-nimbus-verification-v1.md` |
 | delivery under test | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-28-runtime-triple-refactor-delivery-v1.md` |

@@ -8,6 +8,7 @@
 | status | **ACCEPTED** |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | verdict | **ACCEPTED** — with one boundary exception ruled below |
 | packet | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-28-runtime-triple-refactor-v1.md` |
 | **accepted commit** | **`92234bcfe8800abd139dc408254fa5ba3feda4fa`** |

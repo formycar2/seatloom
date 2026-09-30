@@ -8,6 +8,7 @@
 | status | delivered |
 | author | onyx |
 | date | 2026-09-30 |
+| version | v1 |
 | packet_ref | `docs/coordination/tasks/onyx/ONYX-2026-09-30-apply-db-ordering-fix-v1.md` |
 | clears | `docs/coordination/tasks/flux/FLUX-2026-09-30-runtime-triple-onyx-verification-delivery-v2.md` (FAIL) |
 | base (packet branch) | `580bcf483e0ca9af293367e0602a802226ce1590` |
