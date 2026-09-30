@@ -41,6 +41,12 @@ next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges t
 
 ## 2. Phases
 
+> **Governing principle (Mr. Zhang, 2026-09-30):** every milestone ships a
+> **user-perceivable capability**. Pure-plumbing steps (schema, write API, MCP) are
+> sub-tasks *inside* a milestone, never milestones themselves. Every milestone's
+> acceptance carries a "the user can now see / do X" clause. §2b is the acceptance lens;
+> §3's engineering steps are the scaffolding beneath it.
+
 | Phase | What it is | Solves | Done when | Status |
 |---|---|---|---|---|
 | **0. Workbench** | CI, quality gates, 6 seats on one harness | collaboration safety | hard gate green, red=no-merge enforced | ✅ done |
@@ -48,6 +54,23 @@ next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges t
 | **P0. Capture loop** | take over the live agent loop; record it into one harness-agnostic data model | "the record, not the harness, holds the truth" | one real event exists because an agent did something, filed under project+topic, linked, retrievable, harness-independent (see §3) | 🔵 in progress (step 1) |
 | **P1. Compounding** | richer capture + capability assets | reasoning/search/RAG traces; published Playbook/Skill/Tool; auto topic-segmentation | (scoped when P0 lands) | ⏳ queued |
 | **P2. History & cost** | ingest the ~16 GB corpus; budget/token accounting | findability of past work; cost discipline | (scoped later) | ⏳ deferred |
+
+## 2b. User-perceivable milestones (the acceptance lens)
+
+Each rung is something the user can **see or do** that they could not before. Engineering
+steps (§3) slot beneath a rung; a rung is "done" only when the capability is perceivable.
+
+| Milestone | What the user can now do (couldn't before) | Backed by | Status |
+|---|---|---|---|
+| **UM0 — one screen for the whole team** | open SeatLoom, watch all 6 seats' live terminals + IM in one window, instead of attaching 6 tmux sessions | existing tmux mirror + viewer | **available now — not yet switched on** |
+| **UM1 — work leaves a clickable trace** | when a seat produces an artifact, a structured, clickable record appears in the timeline (filed under project + commit), not just terminal scroll | step 1 ✅ + steps 2, 4, 5 | step 1 done |
+| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "进展如何" | step 6 governed dispatch + capture generalized | queued |
+| **UM3 — find & replay** | "show me everything about topic X across sessions/harnesses"; deterministic search + T1→T2→T3 zoomable replay | P1 | not started |
+| **UM4 — capability library** | see and reuse the team's published Playbooks / Skills / Tools | P1 | not started |
+| **UM5 — history & cost** | the ~16 GB of past work is findable; per-project token spend is visible | P2 | deferred |
+
+Interim reality until UM2: this ROADMAP (a markdown file) + Aegis are the "progress view";
+the destination is the SeatLoom UI rendering it from the captured event model.
 
 ## 3. P0 build — the six steps
 
