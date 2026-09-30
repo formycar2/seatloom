@@ -315,7 +315,10 @@ mod tests {
             // The bare tag is the shape already in sessions.runtime for
             // ses-flux-verify-001 (seed/001:67 at base commit 9599136).
             ("Custom", Agent::Custom(String::new())),
-            ("Custom(OpenCode-DSV4Pro)", Agent::Custom("OpenCode-DSV4Pro".into())),
+            (
+                "Custom(OpenCode-DSV4Pro)",
+                Agent::Custom("OpenCode-DSV4Pro".into()),
+            ),
         ] {
             assert_eq!(Agent::try_from(s).expect("in-domain"), v);
             assert_eq!(v.to_string(), s, "Display must invert FromStr");

@@ -179,7 +179,10 @@ mod tests {
             SeatRole::try_from("custom(scribe)").expect("in-domain"),
             SeatRole::Custom("scribe".to_string())
         );
-        assert_eq!(SeatRole::Custom("scribe".to_string()).to_string(), "custom(scribe)");
+        assert_eq!(
+            SeatRole::Custom("scribe".to_string()).to_string(),
+            "custom(scribe)"
+        );
     }
 
     /// The serde representation is snake_case, deliberately opposite to the

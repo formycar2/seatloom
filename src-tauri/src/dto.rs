@@ -591,6 +591,10 @@ impl From<HandoffReceiptRow> for HandoffReceiptDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Scaffolding: read-model DTO for a pipeline-run list/get command not yet wired.
+// Pre-existing at track 4c13ffc; surfaced by the clippy -D warnings gate. Wire or
+// remove when the pipeline command lands (tracked in MR !4 reconcile notes).
+#[allow(dead_code)]
 pub struct PipelineRunDto {
     pub id: String,
     pub pipeline_id: String,
@@ -629,6 +633,10 @@ impl From<PipelineRunRow> for PipelineRunDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Scaffolding: read-model DTO for a review-thread list/get command not yet wired.
+// Pre-existing at track 4c13ffc; surfaced by the clippy -D warnings gate. Wire or
+// remove when the review command lands (tracked in MR !4 reconcile notes).
+#[allow(dead_code)]
 pub struct ReviewThreadDto {
     pub id: String,
     pub project_id: String,
@@ -673,6 +681,10 @@ impl From<ReviewThreadRow> for ReviewThreadDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Scaffolding: read-model DTO for a review-comment list/get command not yet wired.
+// Pre-existing at track 4c13ffc; surfaced by the clippy -D warnings gate. Wire or
+// remove when the review command lands (tracked in MR !4 reconcile notes).
+#[allow(dead_code)]
 pub struct ReviewCommentDto {
     pub id: String,
     pub thread_id: String,

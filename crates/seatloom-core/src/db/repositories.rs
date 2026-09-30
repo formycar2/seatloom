@@ -1303,12 +1303,14 @@ where
     let Some(raw) = value else {
         return Ok(());
     };
-    raw.parse::<T>().map(|_| ()).map_err(|source| DbError::ValueDomain {
-        table,
-        row_id: row_id.to_string(),
-        column,
-        source,
-    })
+    raw.parse::<T>()
+        .map(|_| ())
+        .map_err(|source| DbError::ValueDomain {
+            table,
+            row_id: row_id.to_string(),
+            column,
+            source,
+        })
 }
 
 /// Validate the seat runtime triple. Split out from [`row_to_seat`] so the
@@ -1327,11 +1329,7 @@ fn check_seat_domains(
 
 /// Validate the session runtime triple. Split out from [`row_to_session`] for
 /// the same reason as [`check_seat_domains`].
-fn check_session_domains(
-    id: &str,
-    harness: Option<&str>,
-    agent: &str,
-) -> Result<(), DbError> {
+fn check_session_domains(id: &str, harness: Option<&str>, agent: &str) -> Result<(), DbError> {
     check_domain::<Harness>("sessions", id, "harness", harness)?;
     check_domain::<Agent>("sessions", id, "agent", Some(agent))?;
     Ok(())
@@ -1378,7 +1376,12 @@ fn row_to_role_binding(r: &Row) -> Result<ProjectRoleBindingRow, DbError> {
     };
     // Composite key; the seat_id side identifies the row for a human reading
     // the error.
-    check_domain::<SeatRole>("project_role_bindings", &row.seat_id, "role", Some(&row.role))?;
+    check_domain::<SeatRole>(
+        "project_role_bindings",
+        &row.seat_id,
+        "role",
+        Some(&row.role),
+    )?;
     Ok(row)
 }
 
@@ -1834,7 +1837,10 @@ mod tests {
             .expect_err("out-of-domain harness must be rejected");
         assert!(matches!(
             err,
-            DbError::ValueDomain { column: "harness", .. }
+            DbError::ValueDomain {
+                column: "harness",
+                ..
+            }
         ));
     }
 
@@ -1844,7 +1850,10 @@ mod tests {
             .expect_err("out-of-domain default_agent must be rejected");
         match err {
             DbError::ValueDomain {
-                table, row_id, column, ..
+                table,
+                row_id,
+                column,
+                ..
             } => {
                 assert_eq!(table, "seats");
                 assert_eq!(row_id, "seat-onyx-001");
