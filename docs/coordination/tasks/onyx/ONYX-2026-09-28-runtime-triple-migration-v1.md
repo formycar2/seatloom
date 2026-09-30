@@ -392,3 +392,29 @@ Evidence-free completion claims are rejected without review (LYRA.md "Must Not D
 *Dispatched by Lyra · 2026-09-28 · Aegis review §8 item 2 · option B (no UI surface until L1 ships)
 · paired with NIMBUS-2026-09-28-runtime-triple-refactor-v1 via the §2.1 value-domain contract ·
 Onyx's first packet as a registered seat*
+
+---
+
+## ERRATUM (Lyra, 2026-09-30)
+
+**The "facts measured at base commit `9599136`" table in this packet is partly wrong.** It was read
+off a **dirty working tree** and presented as committed state. Caught by Onyx (drift D-1) and
+Nimbus (delivery §9), independently confirmed by Flux.
+
+Known-wrong entries, re-measured with `git show 9599136:<path>`:
+
+- **Seat/seed rows:** committed state has **five** seats — `lyra` and `mira` are `GeminiCli`,
+  `flux` is `Custom` — not six all `ClaudeCode`. The sixth seat (`onyx`) and the realignment enter
+  only with `18a69fb`.
+- **Role values:** the role rows are at `:33-37`, **five** of them, with **no `data_engineer`**.
+  Lines `:40-45` are the seat-delegation block. `data_engineer` enters at `:45` only in `18a69fb`.
+- **`db/models.rs`:** `runtime: String` is at `:53`, not `:52`.
+- **`.seatloom/`:** now also contains `seat-sessions.tsv`. The load-bearing claim is unaffected —
+  `.seatloom/seats/` and `.seatloom/delegations/` still do not exist.
+
+Conclusions built on the table were unaffected; the seeded values are evidenced by the
+`docs/coordination/memory/2026-09-28.md` addendum, not by this table. Full record:
+`docs/coordination/acceptance/2026-09-30-lyra-nimbus-runtime-triple-refactor-acceptance-v1.md` §4.
+
+**Rule adopted:** a "measured at base commit X" claim must be measured with `git show X:<path>`,
+never by reading the working tree. Do not inherit this table into any downstream packet.
