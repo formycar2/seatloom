@@ -1814,6 +1814,20 @@ mod tests {
         );
     }
 
+    /// Pins the exact operator-facing text a malformed row produces, so the
+    /// message cannot silently lose the table, row id, column or value.
+    #[test]
+    fn rendered_error_names_table_row_column_and_value() {
+        let err = check_session_domains("ses-flux-verify-001", None, "Bogus")
+            .expect_err("out-of-domain agent must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "sessions row \"ses-flux-verify-001\": column agent is out of domain: \
+             \"Bogus\" is not a valid Agent value (expected one of: ClaudeCode, Codex, \
+             CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>))"
+        );
+    }
+
     #[test]
     fn out_of_domain_harness_fails_loudly() {
         let err = check_session_domains("ses-aegis-supervisor-001", Some("Podman"), "ClaudeCode")
