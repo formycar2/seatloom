@@ -113,6 +113,24 @@ Critical path: 1 → 2 → 4 → 6 → 3 → 5 (step 6 rides on 2+4; step 5 is t
 | G17 | Historical corpus ingestion (~16 GB) | P2 | deferred |
 | G18 | Interposition proxies / egress gateway | P2 | deferred |
 
+## 4b. Dev-velocity TODO (iteration-speed optimizations)
+
+Running list — any optimization that speeds the build/test/coordinate loop is logged here as it
+is observed (Mr. Zhang, 2026-09-30). These are dev-ergonomics, not product gaps; none blocks a
+milestone, each pays back time on every cycle.
+
+| # | Optimization | Bottleneck it kills | Effort | Status |
+|---|---|---|---|---|
+| DV1 | **Shared compile cache** — `sccache` (`RUSTC_WRAPPER`, per-crate cache, concurrency-safe) across all worktrees + CI; or `CARGO_TARGET_DIR` (simpler, but serializes concurrent builds on a target lock) | each worktree cold-compiles ~450 deps from zero (Nimbus's `Checking crypto-common/rand/…`); repeated per worktree and per CI pipeline | S | todo |
+| DV2 | **Local pre-push gate dry-run** — `scripts/preflight.sh` = `cargo fmt --check` + `clippy` + `verify-docs.sh` + `cargo test` before push | red-pipeline round-trips on reconcile (MR !4 took 2) | S | todo |
+| DV3 | **Doc-header conformance at source** — seat pre-commit hook running `verify-docs.sh`, and/or `version` baked into the doc template seats copy | every reconcile Aegis hand-fixes seat docs missing the `version` header (recurring tax) | S | todo |
+| DV4 | **Worktree bootstrap script** — `scripts/seat-worktree.sh <seat>` creates the worktree + wires `node_modules` + shared target in one step | manual per-seat `git worktree add` + `pnpm install` each time | S | todo |
+| DV5 | **Parallel DB tests** — per-test transaction/schema isolation to drop the `--test-threads=1` serial constraint | DB integration tests run serially (race avoidance) | M | todo |
+| DV6 | **CI cargo cache** — cache registry + incremental `target` across pipelines (GitLab cache key), beyond the baked image | CI rebuilds from cold each pipeline | S–M | todo |
+
+Related but tracked elsewhere: coordination routing latency (Aegis→Lyra→worker takes minutes per
+hop) is addressed by **G19 governed dispatch** (§4, P0 step 6), not duplicated here.
+
 ## 5. Coordination model (so escalations don't evaporate)
 
 - **Aegis is the supervisor session** (Mr. Zhang's assistant), **not a tmux seat.** There is
