@@ -30,14 +30,16 @@ gap register is now superseded by §4 below as the living list).
 
 | Layer | State |
 |---|---|
-| Workbench (CI, gates, 6 seats) | **DONE** — hard gate green on GitLab `track` (`b6de097`); lint/test/docs stages |
-| runtime-triple (harness/agent/model split) | **DONE** — both sides merged + reconciled to GitLab `b6de097` |
-| **P0 step 1 — schema foundation (Onyx, migration 010)** | **IN FLIGHT** — delivered (`bc526ba`), Aegis signed off (vocab=12), Onyx applied the vocab edit (`7226333`). **Next actor: Flux** (verify against `rust:test` + `docs:verify`) → Lyra merge → Aegis reconcile to GitLab |
-| P0 steps 2–6 | **QUEUED** — serialize behind step 1 on the one shared working tree |
+| Workbench (CI, gates, 6 seats) | **DONE** — hard gate green on GitLab `track` |
+| runtime-triple (harness/agent/model split) | **DONE** — reconciled to GitLab |
+| **P0 step 1 — schema foundation (010)** | **DONE** — Flux PASS, merged, Lyra accepted, reconciled to GitLab (`231d0a5`) |
+| **P0 step 2 — write API (A1)** | **DONE** — Flux PASS, merged, Lyra accepted, reconciled to GitLab (`b691ca4`). `append(event)→projections`, projections rebuildable from ledger |
+| **A — live mirror (UM0)** | **DELIVERED, BLOCKED** — Mira's UI proven correct; blocked by a backend bug: `pty/mod.rs` uses `tmux pipe-pane -o` (a toggle), so re-attach kills the mirror. Fix dispatched to Nimbus (drop `-o`). Reliable UM0 = A + fix both merged, then Aegis restarts the shared UI |
+| P0 steps 4 (MCP), 6 (dispatch), 5 (first event) | **QUEUED** |
 | P1 / P2 | not started |
 
-**Blocked-on-whom right now:** nobody is blocked on a decision. Loop is with the seats —
-next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges to local `track`.
+**Blocked-on-whom right now:** UM0 waits on Nimbus (pipe-pane `-o` re-attach fix); A (Mira) is
+delivered and in Flux's queue. No decision is blocked on Mr. Zhang or Aegis.
 
 ## 2. Phases
 
