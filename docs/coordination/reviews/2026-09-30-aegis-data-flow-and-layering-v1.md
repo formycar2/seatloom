@@ -318,26 +318,52 @@ Interpose only where **(a) capture is otherwise impossible or untrusted AND
 |---|---|---|
 | **git** | observe, do not interpose | git-observe is already reliable; a managed git remote adds little |
 | **tmux** | managed session (already largely built) | `pipe-pane`/`send-keys`/attach exist; launching through SeatLoom is a small extension that also pins session identity (`external_ref`) |
-| **ssh / remote exec** | **interpose — the top candidate** | exactly the "no external store, high audit" gap; ssh proxies are a proven pattern (bastion / Teleport) |
+| **ssh / remote exec** | **interpose — the top candidate** | exactly the "no external store, high audit" gap; captured at the terminal choke point (§9.2), not per-tool |
 | **browser** | interpose (foundation exists) | high value (screenshots, web actions); a browser-automation capability already exists |
-| **arbitrary CLI / HTTP** | emit + tool-call capture + T3 | infinite surface; proxying is infeasible |
+| **arbitrary CLI / HTTP** | recording shell (§9.2) + T3 | the terminal choke point captures the whole CLI category faithfully; only non-shell tools fall back to emit |
 
 ### 9.2 Prefer the lightest interposition that works
 
-- **MCP action broker (lightest, unifies with the emit architecture).** Instead
-  of a transparent ssh proxy, give the agent an MCP tool like
-  `run_on_host(host, cmd)` that executes *through* SeatLoom (records, manages
-  credentials, returns structured results). The agent uses it because it is the
-  easiest path (no credential handling, structured output); capture is a side
-  effect. Carrot before stick: make the managed path the path of least
-  resistance, tighten later (locked-down env, no raw shell). Here **the MCP tool
-  is the proxy.**
-- **Egress gateway / sandbox (possibly highest ROI).** Rather than wrapping N
-  CLIs, control the network egress: the agent runs in a controlled environment
-  where all outbound ssh/http passes a recording gateway. One choke point
-  captures all network I/O, and it doubles as the isolation and budget
-  enforcement the PRD already wants. Cost: sandboxing the agent environment — a
-  heavier step than wrapping existing tmux.
+Nearly all world-actions go through the shell (ssh, git, curl, tests, deploys),
+so **the terminal is the natural single choke point for the whole CLI category**
+— one point instead of N tool-proxies, and unlike emit or an MCP broker it does
+not depend on the agent choosing a special tool: it captures even a raw-Bash ssh.
+For the CLI category this beats both per-tool proxies and the MCP broker on
+completeness.
+
+**One precise requirement decides whether it works: capture at the execution
+shell / PTY, not the display pane.** The existing tmux mirror (`pipe-pane`)
+captures the harness's *UI rendering*, which is lossy — Claude Code's Bash tool
+captures command I/O internally and shows a collapsed block, so `pipe-pane` on a
+seat's pane never sees the raw ssh command and its output. Faithful capture needs
+the agent's commands to run through a **recording shell** (a shell shim as
+`$SHELL`, or a recorded PTY). "Managed iTerm + tmux" is the delivery vehicle; the
+recording shell is the actual capture point. This is a natural *upgrade* of the
+tmux bridge that already exists — from display mirror to execution capture — not
+a new foundation.
+
+What it covers, measured on the 8.8 MB sample: `Bash` was 307 of ~409 tool calls,
+so the recording shell captures the large majority of tool activity completely.
+`Edit`/`Write` (direct harness file ops), `Read`, and reasoning bypass the shell
+and are covered by git-observe and emit respectively. So the terminal is the
+complete solution for the *CLI-action* category, not for all data.
+
+**It does not replace emit; it makes emit trustworthy.** The recording gives
+complete, faithful raw capture (every command + output) = the T3 ground truth.
+Turning "ran `systemctl restart x`" into a T1 semantic "restarted service X"
+still needs a lift (parse or emit). So: recording = complete, non-repudiable
+T2/T3; emit = T1 semantic labelling. And the recording is exactly the ground
+truth §8.1 named for reconciling emit against — this mechanizes that
+reconciliation rather than leaving it to discipline.
+
+Two lighter/heavier companions remain:
+
+- **MCP action broker.** Still useful for *structured* actions (`run_on_host`
+  returns structured results, manages credentials), but completeness is backed by
+  the recording shell, not by the agent remembering to use the tool.
+- **Egress gateway / sandbox.** The network-level variant for the sandboxed end
+  state: one choke point captures all outbound I/O and doubles as isolation and
+  budget enforcement, at the cost of sandboxing the agent environment.
 
 ### 9.3 Reconciling with "mirror, not replacement"
 
@@ -362,9 +388,10 @@ interposition is not a new foundation — it feeds one already laid.
 
 - **P0** — no proxies. Emit (semantic events) + git-observe (files) + managed
   tmux (mostly built). Enough to make the data flow real.
-- **P1** — MCP action broker (`run_on_host` and peers): the lightest
-  interposition, closing the world-action capture gap and feeding
-  `channel_action_receipts`.
+- **P1** — the recording shell delivered via managed tmux/iTerm: the terminal
+  choke point that captures the whole CLI-action category faithfully (§9.2),
+  upgrading the existing display mirror to execution capture, plus the MCP action
+  broker for structured actions; both feed `channel_action_receipts`.
 - **P2** — transparent ssh proxy / egress gateway / sandbox: the end state for
   capture completeness, carrying isolation and policy enforcement with it.
 
