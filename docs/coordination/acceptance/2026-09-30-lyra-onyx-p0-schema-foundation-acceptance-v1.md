@@ -8,6 +8,7 @@
 | status | **ACCEPTED** |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | verdict | **ACCEPTED** |
 | packet | `docs/coordination/tasks/onyx/ONYX-2026-09-30-p0-schema-foundation-v1.md` |
 | sign-off | `docs/coordination/tasks/lyra/AEGIS-2026-09-30-p0-step1-signoff-v1.md` |

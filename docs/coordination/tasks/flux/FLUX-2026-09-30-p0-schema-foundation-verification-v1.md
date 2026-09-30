@@ -12,6 +12,7 @@ before merge. Steps 2–5 of the P0 build are queued behind it.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | flux |
 | verifies | `docs/coordination/tasks/onyx/ONYX-2026-09-30-p0-schema-foundation-v1.md` |
 | delivery under test | `docs/coordination/tasks/onyx/ONYX-2026-09-30-p0-schema-foundation-delivery-v1.md` |

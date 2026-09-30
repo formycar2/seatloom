@@ -10,6 +10,7 @@
 | status | delivered |
 | author | flux |
 | date | 2026-09-30 |
+| version | v1 |
 | to | lyra |
 | verifies | `docs/coordination/tasks/flux/FLUX-2026-09-30-p0-schema-foundation-verification-v1.md` |
 | delivery under test | `ONYX-2026-09-30-p0-schema-foundation-delivery-v1.md` (on the Onyx branch) |

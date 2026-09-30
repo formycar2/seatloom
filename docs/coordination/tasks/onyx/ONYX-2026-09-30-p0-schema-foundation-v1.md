@@ -17,6 +17,7 @@ that record expressible.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | onyx |
 | priority | P0 (critical path — blocks steps 2–5) |
 | milestone | P0 capture loop — one real captured event |
