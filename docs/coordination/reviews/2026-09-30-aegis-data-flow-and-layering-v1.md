@@ -167,15 +167,69 @@ The P0 event vocabulary starts from the ten types already present in seed:
 `ReviewVerdictIssued`, `SeatDelegationIssued`/`SeatDelegationClosed`. The skill
 (P0 scope §7) instructs the agent to emit at exactly these points.
 
-## 7. Open questions for Mr. Zhang and Lyra
+## 7. File modifications — reference git, do not duplicate it
+
+A file the agent edits via a tool is not one kind of data; it spans three
+layers, each with a different home. Getting this wrong (copying every file
+version into the database) is a large, avoidable mistake.
+
+| Facet | What it is | Home |
+|---|---|---|
+| **The act** | each `Edit`/`Write` call — how the file evolved during the session | **T2 process trace** (fine-grained, deferred) |
+| **The durable result** | the file's content now, usually fixed by a commit | **git** — the authoritative store; bytes are not copied |
+| **The work-graph fact** | "seat X produced/changed artifact Y" | **T1 event** referencing `(commit_sha, path, content_digest)` |
+
+### 7.1 Principles
+
+1. **Do not duplicate git; reference it.** Source file truth lives in git.
+   SeatLoom stores a reference — `(path, content_digest, commit_sha)` — not the
+   bytes as truth. Same "observe, do not own" as the tmux mirror. Copying every
+   source version into PostgreSQL is both enormous and redundant with git.
+2. **One existing exception.** Documents that SeatLoom itself renders, reviews,
+   or searches (the markdown coordination docs) *do* have their bodies ingested —
+   `documents` / `document_versions` already store `body_text` + `body_digest` +
+   `revision` + `run_id` provenance. The boundary: **PostgreSQL is canonical for
+   the work graph and the document bodies SeatLoom renders; git is canonical for
+   source-file content; the two are joined by digest.** This does not contradict
+   AD-011, which is about structured project data, not source bytes.
+3. **Content addressing is identity.** Reference a file by `content_digest`
+   (sha256 of bytes), not by path alone. `body_digest` already exists; extend it
+   to every file-bearing event. The same artifact then stays identifiable across
+   harnesses and re-emissions, giving dedup and integrity for free.
+4. **The commit is the natural T1 granularity.** Measured: one session made 62
+   `Edit`/`Write` calls but 23 commits. The edit stream is T2; the commit is the
+   durable, linkable unit. One git commit maps cleanly to one `ArtifactChanged`
+   event carrying `(commit_sha, changed paths + digests)`.
+5. **For files, capture-by-observation is reliable — and this strengthens the
+   emit model.** Note the asymmetry: semantic events (handoff, verdict, decision)
+   have no structured source and must be self-reported via MCP emit; **file
+   changes have a structured source — git itself.** So SeatLoom can *observe*
+   git (a post-commit hook or repo watch) and derive `FileCommitted` /
+   `ArtifactChanged` events reliably, without trusting a seat to self-report
+   them. The highest-volume, most-verifiable change type is thus guaranteed by
+   observation; only genuinely semantic events depend on the agent's emit
+   discipline. This retires the "emit trust" concern for the file case.
+
+### 7.2 The consistent picture
+
+SeatLoom's relationship to git equals its relationship to tmux: **observe,
+reference, do not copy.** tmux is the execution plane for the terminal (mirrored
+via `pipe-pane`); git is the durable plane for files (observed via commits).
+Both are referenced by identity — a session/pane for tmux, a `(commit_sha,
+digest)` for git — never duplicated as a second source of truth.
+
+## 8. Open questions for Mr. Zhang and Lyra
 
 1. **T2 storage substrate.** When T2 is built, does it live in PostgreSQL
    (queryable, joins to T1 cheaply) or in object/file storage indexed by the
    join key (cheaper for 98%-volume data, JOINs are lookups)? The choice can be
    deferred, but the join key (§5.3) cannot.
-2. **Emit trust.** The agent self-reports T1 events. Do we cross-check emitted
-   events against the raw transcript (T3) to catch a seat that forgot to emit, or
-   trust the skill's discipline in P0 and reconcile later?
-3. **Content addressing.** Artifacts are files today. Should T1's `subject` for a
-   produced artifact carry a content digest so the same artifact is identifiable
-   across harnesses and re-emissions (dedup, integrity), rather than by path?
+2. **Uncommitted deliverables.** The clean P0 path makes a commit the T1
+   checkpoint (§7.1.4). For a deliverable a seat produces but does not commit,
+   does the agent emit `ArtifactProduced` with a digest and optional body
+   snapshot (the documents-ingestion path), or is "commit it" a required
+   discipline for P0?
+3. **Search over source.** SeatLoom can index git blobs for retrieval (§P0
+   capability 5) without storing them as source of truth. Is a git-backed search
+   index in P0 scope, or is P0 retrieval limited to the work graph and rendered
+   documents?
