@@ -218,7 +218,81 @@ via `pipe-pane`); git is the durable plane for files (observed via commits).
 Both are referenced by identity — a session/pane for tmux, a `(commit_sha,
 digest)` for git — never duplicated as a second source of truth.
 
-## 8. Open questions for Mr. Zhang and Lyra
+## 8. Actions on the world — the receipt pattern already exists
+
+Beyond producing files, agents *act on external systems*: open a browser,
+authenticate, operate, test, screenshot, SSH to a host, run a command, verify,
+observe. This is a distinct category, and most of its schema already exists —
+`channel_action_receipts` and the AD-012 prompt tables (schema 005). Do not
+reinvent them.
+
+`channel_action_receipts` already carries the right shape: `target_kind`,
+`target_id`, `action_kind`, `actor_ref`, `source_channel`, `evidence_refs`,
+`policy_summary`, `idempotency_key`, `expected_revision`, `applied_revision`,
+`receipt_status`, `result_event_id` — an action on a target, with evidence,
+policy, safe-retry, optimistic concurrency, and a link to its canonical event.
+It was shaped for supervisor channel-actions; agent world-actions either
+generalize it or take a sibling, but the pattern is proven. (As everywhere: it
+is seed-only today; nothing live writes to it.)
+
+### 8.1 The decisive difference from files: no external store to observe
+
+| | File modification | World action |
+|---|---|---|
+| External structured store | **git** | **none** |
+| Capture | **observe** (reliable) | **emit / from tool call** only |
+| Audit fallback | git history | **T3 raw transcript** — the only record of what the agent actually ran |
+
+"SSH to prod and restart a service" leaves no structured external ledger SeatLoom
+can observe. So world-actions depend on capture more than files do, and their
+audit stakes are higher. This makes the emit-trust question sharpest here, and
+its answer concrete: **reconcile emitted action-events against the raw transcript
+(T3)**, which is the ground truth of what tools were actually invoked.
+
+### 8.2 Three facets (parallel to file modifications)
+
+| Facet | What | Home |
+|---|---|---|
+| **Mechanics** | the exact command / HTTP request / screenshot bytes | T2 tool call + Content (a screenshot is content-addressed like a file) |
+| **Effect** | external state changed | **T1 action event / receipt**: `target` + `action_kind` + outcome + `policy` + `idempotency_key` |
+| **Observation** | evidence gathered about external state | **evidence linked to a claim** (`evidence_refs`) |
+
+Observation is evidence, and it connects directly to existing product contracts:
+acceptance-spec §7 requires evidence packages (screenshots/recordings). `test`,
+`verify`, `screenshot`, `observe` all produce evidence attached to a claim (a
+WorkItem verdict, an acceptance). High-risk effects (`deploy`, `restart`) use the
+`idempotency_key` and `expected/applied_revision` columns already present for
+destructive-action safety.
+
+### 8.3 The risk axis and a security rule
+
+World-actions carry a risk dimension nothing else does, and it is already
+modeled: read-only observation (low), external effect (high), credential use
+(sensitive) flow through `policy_summary` / AD-012 classification / US-P0-11
+(classify → policy → approve or take over). One hard rule: **credentials never
+enter the data model.** An authentication action records "authenticated to
+service X at time T" as an audit fact; the secret is never stored — the same
+discipline as gitignored secrets referenced but never committed.
+
+### 8.4 The T1/T2 split still governs
+
+Routine operations (`ls`, `grep`, a read-only check) are T2 mechanics. A
+world-action becomes a T1 event only when it has a work-graph consequence: a
+deploy, a gating test verdict, evidence captured for an acceptance. The test is
+the same as everywhere — does it change the work graph.
+
+### 8.5 The capture-reliability spectrum
+
+Pulling §7 and §8 together, the three change categories differ by how reliably
+they can be captured, which dictates the mechanism:
+
+- **Files** — external store is git → **observe** (most reliable).
+- **World actions** — no external store, high audit value → **emit + tool-call
+  capture + T3 reconciliation** (the hard middle).
+- **Pure semantic events** (handoff, verdict, decision) — no source at all →
+  **emit only**.
+
+## 9. Open questions for Mr. Zhang and Lyra
 
 1. **T2 storage substrate.** When T2 is built, does it live in PostgreSQL
    (queryable, joins to T1 cheaply) or in object/file storage indexed by the
