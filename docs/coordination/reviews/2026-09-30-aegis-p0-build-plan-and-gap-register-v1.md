@@ -64,7 +64,7 @@ budget, historical ingestion, new L2 surfaces.
 | 2 | **Write API (G1/A1)**: one `append(event) → projects` path; no repository mutates a projection directly | Nimbus | a projection table can be rebuilt from `canonical_events` alone (the A1 success test) |
 | 3 | **`external_ref` (G4)**: table + pin seat sessions launched via SeatLoom | Onyx + Nimbus | seat sessions `pinned`; a session resolves to its object harness-agnostically |
 | 4 | **MCP emit server (G7)**: minimal `emit_event(type, payload, refs)`, schema-validated | Nimbus | a seat's `--mcp-config` points at it; a malformed event is rejected |
-| 5 | **First slice**: one seat emits one real `ArtifactProduced` (with `(commit, digest)` per G8), it lands via the write API, links to a workitem + topic + project, and is retrievable | Nimbus + Flux verify | a human can query the event and traverse to the artifact and back — a record that satisfies the P0 acceptance (§2), which zero records do today |
+| 5 | **First slice**: one seat emits one real `ArtifactCreated` (with `(commit, digest)` per G8), it lands via the write API, links to a workitem + topic + project, and is retrievable | Nimbus + Flux verify | a human can query the event and traverse to the artifact and back — a record that satisfies the P0 acceptance (§2), which zero records do today |
 
 Steps 1–2 are the critical path; 3–5 make it real and harness-agnostic.
 
