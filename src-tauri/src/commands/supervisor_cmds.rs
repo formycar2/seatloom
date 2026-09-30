@@ -44,7 +44,9 @@ pub async fn cmd_append_supervisor_message(
     let event_type = request
         .event_type
         .unwrap_or_else(|| "SupervisorMessage".to_string());
-    let actor_ref = request.actor_ref.unwrap_or_else(|| "human:user".to_string());
+    let actor_ref = request
+        .actor_ref
+        .unwrap_or_else(|| "human:user".to_string());
     let project_id = request
         .project_id
         .unwrap_or_else(|| state.default_project_id.clone());

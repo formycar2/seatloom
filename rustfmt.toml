@@ -1,0 +1,10 @@
+# SeatLoom rustfmt configuration.
+#
+# These values restate rustfmt's stable defaults explicitly so formatting is
+# pinned to intent rather than to whatever the toolchain default happens to be.
+# The toolchain itself is pinned to 1.95.0 in rust-toolchain.toml; CI runs
+# `cargo fmt --all --check` as a full hard gate (the tree is fmt-clean as of
+# the AEGIS-2026-09-29 build-standards packet).
+edition = "2021"
+max_width = 100
+newline_style = "Unix"

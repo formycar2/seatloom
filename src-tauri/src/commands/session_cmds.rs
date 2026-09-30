@@ -356,9 +356,7 @@ pub async fn cmd_kill_session(
 }
 
 #[tauri::command]
-pub async fn cmd_list_live_sessions(
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+pub async fn cmd_list_live_sessions(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let sessions = state.sessions.lock().await;
     Ok(sessions.keys().cloned().collect())
 }
