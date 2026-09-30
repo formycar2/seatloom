@@ -13,9 +13,15 @@
 /// Reconcile:  seatloom reconcile  OR  scripts/verify-postgres-reconcile.sh
 pub mod connection;
 pub mod document_parser;
+/// Closed value domains for the P0 event ledger (schema 010).
+pub mod event_domain;
 pub mod models;
 pub mod reconcile;
 pub mod repositories;
+/// P0 step 2 write primitive: `append(event) -> projections`.
+pub mod write_api;
 
 pub use connection::{create_pool, DbPool};
+pub use event_domain::{EventType, RefRole, RefType};
 pub use repositories::SeatloomDb;
+pub use write_api::{AppendOutcome, EventDraft, ObjectRefDraft, ProjectionEffect, WriteError};
