@@ -117,6 +117,15 @@ pub enum PtyError {
     Io(#[from] std::io::Error),
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    /// `tmux pipe-pane` exited 0 but the pane is not actually piped. Returned
+    /// rather than handing back a session that looks live and produces no bytes
+    /// — the silent dead mirror is the real user harm
+    /// (NIMBUS-2026-09-30-pipe-pane-reattach-fix-v1 §2.3).
+    #[error(
+        "tmux mirror did not open for {target}: pipe-pane exited 0 but pane_pipe={pane_pipe} \
+         (expected 1). The mirror would have reported success and produced no output."
+    )]
+    MirrorNotOpen { target: String, pane_pipe: String },
 }
 
 /// Metadata for a discovered tmux session.
@@ -199,11 +208,18 @@ impl PtySession {
     ///
     /// Steps:
     ///   1. Create a named FIFO at `/tmp/seatloom-mirror/<session_id>.fifo`.
-    ///   2. Run `tmux pipe-pane -t <name>:0 -o 'cat >> <fifo>'` so tmux
+    ///   2. Run `tmux pipe-pane -t <name>:0 'cat >> <fifo>'` so tmux
     ///      appends pane output to the FIFO (and keeps doing so even if
-    ///      SeatLoom dies — R3 failure isolation).
-    ///   3. Spawn a std::thread that opens the FIFO read-side, tail-reads
+    ///      SeatLoom dies — R3 failure isolation). Deliberately **no `-o`**:
+    ///      that flag toggles, so a second attach would close the pipe.
+    ///   3. Verify `#{pane_pipe}` is `1`; a zero exit from `pipe-pane` does
+    ///      not mean the pipe opened. Returns [`PtyError::MirrorNotOpen`]
+    ///      rather than a session that looks live and emits nothing.
+    ///   4. Spawn a std::thread that opens the FIFO read-side, tail-reads
     ///      it, and broadcasts `PtyEvent::Output` chunks.
+    ///
+    /// **Re-attach is safe and idempotent.** Calling this twice on the same
+    /// pane replaces the pipe and leaves the mirror open.
     ///
     /// `opts.rows` / `opts.cols` are currently informational; callers that
     /// want to resize the pane should invoke `PtySession::resize`, which maps
@@ -263,12 +279,32 @@ impl PtySession {
             (120, 30)
         };
 
-        // Ask tmux to copy pane output to our FIFO. `-o` makes the pipe-pane
+        // Ask tmux to copy pane output to our FIFO.
+        //
+        // NO `-o`. An earlier comment here claimed `-o` "makes the pipe-pane
         // command invoke only once (so we don't duplicate if attach is called
-        // twice), and shell-quoting the fifo path guards against unusual chars.
+        // twice)". That reading is wrong: `-o` TOGGLES. Measured on a throwaway
+        // tmux session (tmux 3.x), reading `#{pane_pipe}` at each step:
+        //
+        //     initial pane_pipe  = 0
+        //     after 1st  -o call = 1
+        //     after 2nd  -o call = 0      <- the pipe CLOSED
+        //     after plain (no -o)= 1
+        //     after 2nd plain    = 1      <- replaces, stays open
+        //
+        // So with `-o` the SECOND attach silently killed the mirror: pane_pipe=0,
+        // zero bytes, and attach still returned a successful session. Any page
+        // reload, second viewer, or already-mirrored seat hit it. Plain
+        // `pipe-pane <cmd>` replaces an existing pipe unconditionally, which is
+        // exactly re-attach semantics.
+        //
+        // Do not "restore" `-o`. Reported by Mira from UM0, reproduced by Lyra
+        // and again here; see NIMBUS-2026-09-30-pipe-pane-reattach-fix-v1 §1.
+        //
+        // Shell-quoting the fifo path guards against unusual chars.
         let cat_cmd = format!("cat >> {}", shell_quote(&fifo_path.to_string_lossy()));
         let out = std::process::Command::new("tmux")
-            .args(["pipe-pane", "-t", &tmux_target, "-o", &cat_cmd])
+            .args(["pipe-pane", "-t", &tmux_target, &cat_cmd])
             .output()
             .map_err(|e| PtyError::Tmux(format!("spawn tmux pipe-pane: {e}")))?;
         if !out.status.success() {
@@ -278,6 +314,26 @@ impl PtySession {
                 "tmux pipe-pane {tmux_target}: {}",
                 String::from_utf8_lossy(&out.stderr)
             )));
+        }
+
+        // A zero exit from `pipe-pane` does NOT mean the pipe is open — that is
+        // precisely how the `-o` bug stayed invisible: the command "succeeded"
+        // while leaving pane_pipe=0, and attach reported a live session that
+        // produced no bytes forever. Verify the flag and fail loudly instead.
+        let pipe_state = std::process::Command::new("tmux")
+            .args(["display-message", "-t", &tmux_target, "-p", "#{pane_pipe}"])
+            .output()
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux display-message: {e}")))?;
+        let pane_pipe_raw = String::from_utf8_lossy(&pipe_state.stdout);
+        if let Err(e) = verify_pipe_open(&tmux_target, pipe_state.status.success(), &pane_pipe_raw)
+        {
+            // Stop any half-open pipe, then unlink the FIFO, so a failed attach
+            // leaves no named pipe and no dangling tmux redirection behind.
+            let _ = std::process::Command::new("tmux")
+                .args(["pipe-pane", "-t", &tmux_target])
+                .output();
+            let _ = std::fs::remove_file(&fifo_path);
+            return Err(e);
         }
 
         // Capture historical pane content immediately after pipe-pane (§1.3 fix).
@@ -467,12 +523,31 @@ impl PtySession {
     /// Detach the mirror: stop the tmux pipe-pane, let the tail-reader hit
     /// EOF, remove the FIFO. **Does NOT kill the tmux session itself** — R3
     /// failure isolation. Safe to call multiple times.
+    ///
+    /// # Known limitation: the pipe is per-pane, not per-client
+    ///
+    /// `pipe-pane` with no shell-command unconditionally disables output
+    /// copying for the pane. tmux keeps **one** pipe per pane, not one per
+    /// consumer, so if two SeatLoom clients mirror the same pane, whichever
+    /// detaches first **stops the mirror for both**. The survivor keeps a
+    /// `PtySession` whose reader simply goes quiet — the same silent-dead-mirror
+    /// shape that [`PtyError::MirrorNotOpen`] now catches at attach time, but
+    /// arriving later, so attach-time verification cannot detect it.
+    ///
+    /// This is a property of tmux, not a bug in this function: disabling is the
+    /// correct behaviour for a single-client detach, and no per-client pipe
+    /// exists to disable instead. Fixing it needs an ownership model
+    /// (ref-counting attachers, or per-client FIFOs fanned out from one pipe),
+    /// which is deliberately **out of scope** for
+    /// NIMBUS-2026-09-30-pipe-pane-reattach-fix-v1 §3 and is recommended as a
+    /// follow-up packet in that delivery doc.
     pub fn kill(&self) -> Result<(), PtyError> {
         self.shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // Ask tmux to stop copying pane output (no `-o` means toggle off if
-        // enabled; passing no shell-command disables further copies).
+        // Ask tmux to stop copying pane output. Passing no shell-command
+        // disables copying unconditionally — correct for detach, and NOT a
+        // toggle (unlike `-o`, which is why the attach path must not use it).
         let _ = std::process::Command::new("tmux")
             .args(["pipe-pane", "-t", &self.tmux_target])
             .output();
@@ -483,6 +558,53 @@ impl PtySession {
         }
         Ok(())
     }
+}
+
+/// Decide whether `tmux pipe-pane` actually opened the pipe.
+///
+/// Split out as a pure function so the FAILURE path is unit-testable: reaching
+/// it through `attach_tmux` needs a live tmux pane whose pipe command fails
+/// while `pipe-pane` itself exits 0, which cannot be synthesised reliably in a
+/// test. See NIMBUS-2026-09-30-pipe-pane-reattach-fix-delivery-v1 §5 PROOF 4.
+///
+/// # What this catches, and what it does not
+///
+/// It catches a pipe that **never opened**: `pipe-pane` exits 0 but the pane is
+/// not piped (empty command, or a target tmux accepted without piping).
+///
+/// It does **not** catch a pipe whose command starts and then dies, because
+/// tmux keeps `pane_pipe=1` until it first tries to WRITE to the dead pipe.
+/// Measured on tmux 3.x:
+///
+/// ```text
+/// $ tmux pipe-pane -t <s> "cat >> /nonexistent-dir-xyz/x.fifo"
+///   +300ms pane_pipe=1      <- child already dead, flag still 1
+///   +900ms pane_pipe=1
+/// $ tmux send-keys -t <s> "echo hello" Enter     # forces a write
+///   +300ms pane_pipe=0      <- only NOW does tmux clear it
+/// ```
+///
+/// So the attach-time probe runs too early to see that case, and closing the
+/// gap would mean writing to the user's pane to force a flush — unacceptable on
+/// a live seat. A dying pipe therefore still surfaces only as "no bytes
+/// arriving", which is a liveness concern for a follow-up, recorded in the
+/// delivery doc alongside the multi-client issue. This check is a strict
+/// improvement over reporting success unconditionally, not a complete one.
+fn verify_pipe_open(target: &str, status_ok: bool, pane_pipe_raw: &str) -> Result<(), PtyError> {
+    let pane_pipe = pane_pipe_raw.trim();
+    if status_ok && pane_pipe == "1" {
+        return Ok(());
+    }
+    Err(PtyError::MirrorNotOpen {
+        target: target.to_string(),
+        pane_pipe: if !status_ok {
+            "<display-message failed>".to_string()
+        } else if pane_pipe.is_empty() {
+            "<empty>".to_string()
+        } else {
+            pane_pipe.to_string()
+        },
+    })
 }
 
 /// Minimal single-quote shell quoter for the FIFO path embedded in the
@@ -503,6 +625,68 @@ fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{verify_pipe_open, PtyError};
+
+    /// The only accepting case: display-message succeeded AND the pane reports
+    /// pane_pipe=1.
+    #[test]
+    fn verify_pipe_open_accepts_only_an_open_pipe() {
+        assert!(verify_pipe_open("s:0", true, "1").is_ok());
+        assert!(
+            verify_pipe_open("s:0", true, "1\n").is_ok(),
+            "trailing newline is normal"
+        );
+        assert!(verify_pipe_open("s:0", true, " 1 ").is_ok());
+    }
+
+    /// THE case this check exists for: `pipe-pane` exits 0 while the pane is
+    /// not piped. Before this check that produced a session which reported
+    /// success and emitted nothing for its whole lifetime.
+    #[test]
+    fn verify_pipe_open_rejects_exit_zero_with_closed_pipe() {
+        let err = verify_pipe_open("throwaway:0", true, "0")
+            .expect_err("pane_pipe=0 must not be treated as an open mirror");
+        match &err {
+            PtyError::MirrorNotOpen { target, pane_pipe } => {
+                assert_eq!(target, "throwaway:0");
+                assert_eq!(pane_pipe, "0");
+            }
+            other => panic!("expected MirrorNotOpen, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("throwaway:0"), "must name the target: {msg}");
+        assert!(
+            msg.contains("pane_pipe=0"),
+            "must report what it saw: {msg}"
+        );
+    }
+
+    /// Garbage or absent output must not be read as success either.
+    #[test]
+    fn verify_pipe_open_rejects_unreadable_pane_pipe() {
+        for raw in ["", "   ", "\n", "banana", "2", "01"] {
+            assert!(
+                verify_pipe_open("s:0", true, raw).is_err(),
+                "pane_pipe={raw:?} must not be accepted"
+            );
+        }
+        match verify_pipe_open("s:0", true, "") {
+            Err(PtyError::MirrorNotOpen { pane_pipe, .. }) => assert_eq!(pane_pipe, "<empty>"),
+            other => panic!("expected MirrorNotOpen with <empty>, got {other:?}"),
+        }
+    }
+
+    /// A failed `display-message` is also a failure, not a pass-through.
+    #[test]
+    fn verify_pipe_open_rejects_a_failed_probe_even_if_stdout_says_one() {
+        match verify_pipe_open("s:0", false, "1") {
+            Err(PtyError::MirrorNotOpen { pane_pipe, .. }) => {
+                assert_eq!(pane_pipe, "<display-message failed>");
+            }
+            other => panic!("expected MirrorNotOpen, got {other:?}"),
+        }
+    }
+
     use super::*;
 
     #[test]
