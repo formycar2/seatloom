@@ -16,6 +16,7 @@ live path genuinely live, and makes the mock unmistakably mock.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | mira |
 | priority | P0-parallel (runs alongside Nimbus step 2; disjoint) |
 | milestone | **UM0 — one screen for the whole team, made real** |

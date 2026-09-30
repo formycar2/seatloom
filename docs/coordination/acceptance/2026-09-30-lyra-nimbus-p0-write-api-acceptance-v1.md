@@ -8,6 +8,7 @@
 | status | **ACCEPTED** |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | verdict | **ACCEPTED** — three disclosed findings, none blocking |
 | packet | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-30-p0-write-api-v1.md` |
 | **accepted commit** | **`47360b5df90b2b709865a92dd61843c78fb11a7e`** |

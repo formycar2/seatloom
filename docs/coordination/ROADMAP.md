@@ -64,7 +64,7 @@ steps (§3) slot beneath a rung; a rung is "done" only when the capability is pe
 |---|---|---|---|
 | **UM0 — one screen for the whole team** | open SeatLoom, watch all 6 seats' live terminals + IM in one window, instead of attaching 6 tmux sessions | existing tmux mirror + viewer | **available now — not yet switched on** |
 | **UM1 — work leaves a clickable trace** | when a seat produces an artifact, a structured, clickable record appears in the timeline (filed under project + commit), not just terminal scroll | step 1 ✅ + steps 2, 4, 5 | step 1 done |
-| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "进展如何" | step 6 governed dispatch + capture generalized | queued |
+| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "how is progress?" at a glance | step 6 governed dispatch + capture generalized | queued |
 | **UM3 — find & replay** | "show me everything about topic X across sessions/harnesses"; deterministic search + T1→T2→T3 zoomable replay | P1 | not started |
 | **UM4 — capability library** | see and reuse the team's published Playbooks / Skills / Tools | P1 | not started |
 | **UM5 — history & cost** | the ~16 GB of past work is findable; per-project token spend is visible | P2 | deferred |

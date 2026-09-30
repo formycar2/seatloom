@@ -10,6 +10,7 @@
 | status | delivered |
 | author | flux |
 | date | 2026-09-30 |
+| version | v1 |
 | to | lyra |
 | verifies | `docs/coordination/tasks/flux/FLUX-2026-09-30-p0-write-api-verification-v1.md` |
 | delivery under test | `NIMBUS-2026-09-30-p0-write-api-delivery-v1.md` (on the Nimbus branch) |

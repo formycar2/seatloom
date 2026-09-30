@@ -12,6 +12,7 @@ and one contract deviation it correctly escalated to me before landing.
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | flux |
 | verifies | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-30-p0-write-api-v1.md` |
 | delivery under test | `docs/coordination/tasks/nimbus/NIMBUS-2026-09-30-p0-write-api-delivery-v1.md` |

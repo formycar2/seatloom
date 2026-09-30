@@ -14,6 +14,7 @@
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | nimbus |
 | priority | P0 (critical path) |
 | milestone | P0 capture loop — write side (UM1) |
