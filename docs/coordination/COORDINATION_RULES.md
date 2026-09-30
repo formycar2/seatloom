@@ -238,7 +238,8 @@ Rules:
 
 - If the next action belongs to Mira, Nimbus, Flux, or Onyx, Lyra should dispatch the packet or decision to that seat directly instead of asking the human to relay it.
 - Aegis is dispatched to only for escalation: unresolved product truth, architecture arbitration, or a stage-gate verdict. Aegis is not a routine work queue.
-- Every seat is reachable at tmux session `<Name>-<Role>-seatloom`. The `-seatloom` suffix is load-bearing — `crates/seatloom-core/src/pty/mod.rs` filters discoverable sessions on it.
+- Every **worker seat** is reachable at tmux session `<Name>-<Role>-seatloom`. The `-seatloom` suffix is load-bearing — `crates/seatloom-core/src/pty/mod.rs` filters discoverable sessions on it.
+- **Aegis is a supervisor *session*, not a worker seat, and has no `Aegis-*-seatloom` tmux session by design.** The empty seat was retired on 2026-09-30. Do not treat its absence as a broken invariant and do not wait on a nonexistent Aegis seat. To escalate: park the question in `docs/coordination/memory/YYYY-MM-DD.md` and/or raise it to Mr. Zhang. Aegis observes the track and the daily log and dispatches decisions back as artifacts under `docs/coordination/tasks/lyra/`.
 - Direct seat-to-seat messages in tmux / PTY / seat chat must be written in English and must reference the governing artifact path(s).
 - Human-facing terminal summaries should report the dispatch status after the seat has been notified.
 - Ask the human for a decision only when product truth is still unresolved or when an explicit override is required.
