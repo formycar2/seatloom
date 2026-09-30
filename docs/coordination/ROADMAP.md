@@ -32,12 +32,12 @@ gap register is now superseded by §4 below as the living list).
 |---|---|
 | Workbench (CI, gates, 6 seats) | **DONE** — hard gate green on GitLab `track` (`b6de097`); lint/test/docs stages |
 | runtime-triple (harness/agent/model split) | **DONE** — both sides merged + reconciled to GitLab `b6de097` |
-| **P0 step 1 — schema foundation (Onyx, migration 010)** | **IN FLIGHT** — delivered (`bc526ba`), Aegis signed off (vocab=12). **Next actor: Onyx** (one-line vocab edit) → Flux verify → Lyra merge → Aegis reconcile to GitLab |
+| **P0 step 1 — schema foundation (Onyx, migration 010)** | **IN FLIGHT** — delivered (`bc526ba`), Aegis signed off (vocab=12), Onyx applied the vocab edit (`7226333`). **Next actor: Flux** (verify against `rust:test` + `docs:verify`) → Lyra merge → Aegis reconcile to GitLab |
 | P0 steps 2–6 | **QUEUED** — serialize behind step 1 on the one shared working tree |
 | P1 / P2 | not started |
 
-**Blocked-on-whom right now:** nobody is blocked on a decision. Loop is with the seats
-(Onyx → Flux → Lyra). Aegis's next action fires when 010 merges to local `track`.
+**Blocked-on-whom right now:** nobody is blocked on a decision. Loop is with the seats —
+next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges to local `track`.
 
 ## 2. Phases
 
@@ -57,7 +57,7 @@ touched, retrievable, and independent of which harness produced it.
 
 | Step | Work | Owner | Done when | Status |
 |---|---|---|---|---|
-| 1 | **Schema foundation** — event envelope (G2), ref roles (G3), G5 verify, topics (G6), turn key (G12) | Onyx | migration idempotent; value-domain contract enforced; seed still loads | 🔵 delivered, in verify |
+| 1 | **Schema foundation** — event envelope (G2), ref roles (G3), G5 verify, topics (G6), turn key (G12) | Onyx | migration idempotent; value-domain contract enforced; seed still loads | 🔵 vocab edit done, awaiting Flux verify |
 | 2 | **Write API (A1/G1)** — `append(event)→projections`, single txn | Nimbus | a projection rebuildable from `canonical_events` alone | ⏳ queued |
 | 3 | **`external_ref` (G4)** — pin seat sessions, harness-agnostic identity | Onyx+Nimbus | a session resolves to its object regardless of harness | ⏳ queued |
 | 4 | **MCP emit server (G7)** — `emit_event(type, payload, refs)`, schema-validated | Nimbus | a seat's `--mcp-config` points at it; malformed event rejected | ⏳ queued |
