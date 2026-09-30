@@ -128,8 +128,15 @@ BEGIN
   --      would make this CHECK break Supervisor IM at runtime the first time a
   --      message is sent. They appear in NO seed row, so a vocabulary derived
   --      from data alone would have missed them.
-  --  (c) REQUIRED BY THE P0 FIRST SLICE — 1 value. 'ArtifactProduced' is what
-  --      build plan §3 step 5 emits.
+  --
+  -- There is deliberately NO third group for a P0-first-slice value. An earlier
+  -- draft of this migration added 'ArtifactProduced'; it was dropped on Lyra's
+  -- sign-off (AEGIS-2026-09-30-p0-step1-signoff-v1, ratified by Mr. Zhang). The
+  -- first slice REUSES the existing 'ArtifactCreated' rather than introducing a
+  -- near-synonym into an append-only table, where two words for one meaning can
+  -- never be withdrawn once rows carry both. 'ArtifactCreated' is already in
+  -- committed data (seed 001, rows ev-050 through ev-055), so capture needs no
+  -- new value. Do not re-add one without the same sign-off.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
                   WHERE conname = 'canonical_events_event_type_vocab') THEN
     ALTER TABLE canonical_events
@@ -148,9 +155,7 @@ BEGIN
         'SeatDelegationClosed',
         -- (b) inserted by live code, in no row yet
         'SupervisorMessage',
-        'SeatResponse',
-        -- (c) required by the P0 first slice
-        'ArtifactProduced'
+        'SeatResponse'
       ));
   END IF;
 END $$;

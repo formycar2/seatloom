@@ -8,7 +8,7 @@
 | status | delivered |
 | author | onyx |
 | date | 2026-09-30 |
-| version | v1 |
+| version | v1 (amended 2026-09-30 after Lyra/Aegis sign-off — see §5) |
 | packet_ref | `docs/coordination/tasks/onyx/ONYX-2026-09-30-p0-schema-foundation-v1.md` |
 | base branch | `track/infra-foundation` |
 | base commit | `b6de097e2e19d6ca64973bc6960714c9fd007d9e` |
@@ -28,17 +28,19 @@ counts and data digests is byte-identical). Zero `.rs`, zero `ui/`.
 
 **All seven packet §1 facts verified with `git show b6de097:<path>`. No §1 fact is wrong.**
 
-**Three things need your decision. Two are flagged as requested; the third I found and had to act on
-to avoid shipping a runtime break:**
+**All three rulings requested in v1 are now RESOLVED** (Aegis sign-off
+`docs/coordination/tasks/lyra/AEGIS-2026-09-30-p0-step1-signoff-v1.md`, ratified by Mr. Zhang):
 
-1. **§5 — the `event_type` vocabulary, for your sign-off** (packet §2.1). 13 values in three
-   justified groups. Measuring the seed alone would have shipped a `CHECK` that **breaks L1
-   Supervisor IM**, because two values it inserts appear in no row.
-2. **§6 — contract deviation: `ref_type` includes `delegation`**, which packet §4 omits but which
-   exists in committed seed data. Constraining to §4 as written fails on existing history.
-3. **§7 — transitional `DEFAULT`s on the two new `NOT NULL` columns.** Without them 010 breaks the
-   L1 Supervisor IM write path the moment it lands, and **CI would not catch it**. `.rs` is out of
-   scope, so a default was the only in-scope remedy.
+1. **`event_type` vocabulary — AMENDED to 12 values.** `ArtifactProduced` dropped; the P0 first
+   slice reuses the existing `ArtifactCreated`. Applied and re-verified from a fresh scratch
+   database — **§5**.
+2. **`ref_type` including `delegation` — ENDORSED as delivered**, no change.
+3. **Transitional `DEFAULT`s — ENDORSED as delivered**, with the explicit-set obligation carried by
+   the write API in step 2.
+
+Also endorsed unchanged: the widened PK plus the partial unique index, the `schema_version=1`
+backfill, the `role`-to-`context` legacy backfill, `turn_seq` not backfilled, `payload` left
+nullable, and G5 verify-only.
 
 ---
 
@@ -103,7 +105,7 @@ POST elem: 010_p0_schema_foundation.sql
 
 ---
 
-## 3. G3 primary key — `role` JOINS the key, and why (§2.2, decision requested)
+## 3. G3 primary key — `role` JOINS the key, and why (§2.2) — ENDORSED
 
 `(event_id, ref_type, ref_id)` becomes **`(event_id, ref_type, ref_id, role)`**.
 
@@ -135,6 +137,9 @@ Verified:
  role
 (4 rows)
 ```
+
+**RULED: endorsed as delivered** (Aegis sign-off, ratified by Mr. Zhang) — the reasoning above was
+accepted and is to stay recorded in the migration, which it is.
 
 ---
 
@@ -174,50 +179,135 @@ DETAIL:  Key (event_id)=(ev-001) already exists.
 
 ---
 
-## 5. Proposed `event_type` vocabulary — FLAGGED FOR LYRA SIGN-OFF (§2.1)
+## 5. `event_type` vocabulary — SIGNED OFF, amended to 12 values
 
-13 values, closed `CHECK`, PascalCase per §4 binding rule 1. Grouped by why each is in:
+**Ruling applied.** Aegis sign-off, ratified by Mr. Zhang: drop `ArtifactProduced`; the P0 first
+slice reuses the existing `ArtifactCreated` rather than adding a near-synonym to an append-only
+table, where two words for one meaning can never be withdrawn once rows carry both. Lyra verified
+`ArtifactCreated` is already in committed data (seed 001, rows `ev-050`-`ev-055`), so capture needs
+no new value.
+
+**Final vocabulary — 12 values, closed `CHECK`, PascalCase.**
 
 **(a) Present in committed data — 10.** Every `event_type` in seed 001, cross-checked against the
-live database (identical set, 10/10, 34 rows).
-
+live database (identical set, 10/10, 34 rows):
 `SessionStarted`, `WorkItemCreated`, `WorkItemStatusChanged`, `ArtifactCreated`, `HandoffSent`,
 `HandoffAccepted`, `HandoffCompleted`, `ReviewVerdictIssued`, `SeatDelegationIssued`,
 `SeatDelegationClosed`
 
-**(b) Inserted by live code, present in NO row yet — 2. This is the group that matters.**
+**(b) Inserted by live code, present in NO row — 2.** `SupervisorMessage`, `SeatResponse`.
+The L1 Supervisor IM write path defaults to `'SupervisorMessage'`
+(`src-tauri/src/commands/supervisor_cmds.rs:28,45`) and the frontend switches on `'SeatResponse'`
+(`ui/src/app-v2/hooks/useSupervisorData.ts:182`). A vocabulary derived from data alone would have
+omitted both and the `CHECK` would have broken Supervisor IM on first use.
 
-`SupervisorMessage`, `SeatResponse`
+There is deliberately **no third group**. The migration comment now records the reuse rationale in
+place of the former `(c)` block, so the file does not document a group it no longer has.
 
-The L1 Supervisor IM write path defaults `event_type` to `'SupervisorMessage'`
-(`src-tauri/src/commands/supervisor_cmds.rs:45`) and the frontend switches on `'SupervisorMessage'`
-vs `'SeatResponse'` (`ui/src/app-v2/hooks/useSupervisorData.ts:181-182`). **They appear in no seed
-row and in no live row**, so a vocabulary derived from data alone — which is what §2.1's "from the
-values actually present" literally asks for — would have omitted them, and the `CHECK` would have
-broken Supervisor IM the first time anyone sent a message. Flagging this explicitly because it is
-the one place where following the packet's wording would have produced a defect.
+### 5.1 The edit, and the three traps in it
 
-**(c) Required by the P0 first slice — 1.**
+A one-line delete was not one line:
 
-`ArtifactProduced` (build plan §3 step 5).
+1. **Trailing comma.** `'SeatResponse',` became the last element and had to lose its comma, or the
+   `))` would be a syntax error.
+2. **Both `(c)` references removed** — the inline list label *and* the header-block paragraph —
+   and replaced with the reuse rationale. The comment now also says *"Do not re-add one without the
+   same sign-off"*, naming `ArtifactProduced` so a future reader knows it was considered and
+   rejected rather than overlooked.
+3. **Fresh scratch database.** The constraint is created under
+   `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'canonical_events_event_type_vocab')`.
+   That guard is right for idempotency but means re-applying `010` to a database already holding
+   the 13-value constraint would **not** replace it. I dropped and recreated `seatloom_p0_verify`
+   so the run tests the new constraint rather than observing the old one. CI is unaffected: it
+   builds from empty.
 
-**Deliberately NOT included**, so you can rule rather than inherit my guess: `SessionEnded`,
-`TopicOpened`, `TopicClosed`, `TopicMerged`. Topic lifecycle events are the natural companions to
-G6, but G6 says reserve the link and decide nothing about what a topic is, and auto-segmentation is
-P1. Adding them later is one `CHECK` migration — the designed extension path. **If you want topic
-lifecycle events in now, say so and I will add them in a follow-up.**
+### 5.2 Re-verification from a fresh scratch database
 
-Proven closed:
+Proof the old database was gone before the run — only the live DB existed:
 
 ```
---- event_type outside closed vocab -> expect REJECT
-ERROR:  new row for relation "canonical_events" violates check constraint "canonical_events_event_type_vocab"
-DETAIL:  Failing row contains (ev-bad-1, TotallyMadeUp, ...).
+=== databases before ===
+seatloom
+=== fresh scratch DB created ===
 ```
 
----
+`apply-db.sh` from empty:
 
-## 6. CONTRACT DEVIATION — `ref_type` includes `delegation` (§4, needs sign-off)
+```
+--- post-seed schema (constrains columns the seed does not provide) ---
+  infra/postgres/schema/008_project_isolation.sql
+  infra/postgres/schema/010_p0_schema_foundation.sql
+apply-db: done.
+EXIT CODE = 0
+```
+
+**The constraint as PostgreSQL actually stores it — 12 values, read back from `pg_constraint`, not
+from the source file:**
+
+```
+CHECK ((event_type = ANY (ARRAY['SessionStarted'::text,
+  'WorkItemCreated'::text, 'WorkItemStatusChanged'::text, 'ArtifactCreated'::text,
+  'HandoffSent'::text, 'HandoffAccepted'::text, 'HandoffCompleted'::text,
+  'ReviewVerdictIssued'::text, 'SeatDelegationIssued'::text, 'SeatDelegationClosed'::text,
+  'SupervisorMessage'::text, 'SeatResponse'::text])))
+
+value count = 12
+```
+
+**The edit proven behaviourally, both directions:**
+
+```
+--- 'ArtifactProduced' must now be REJECTED ---
+ERROR:  new row for relation "canonical_events" violates check constraint
+        "canonical_events_event_type_vocab"
+DETAIL:  Failing row contains (ev-ap, ArtifactProduced, ...).
+
+--- 'ArtifactCreated' (the reused value) still ACCEPTED ---
+ArtifactCreated accepted, schema_version=1
+
+--- L1 Supervisor IM values still ACCEPTED ---
+SupervisorMessage + SeatResponse accepted: 2
+```
+
+Second `010` apply on the rebuilt database — still a true no-op:
+
+```
+NOTICE:  column "schema_version" of relation "canonical_events" already exists, skipping
+... (7 notices, no DDL)
+EXIT CODE = 0
+
+FINGERPRINT DIFF: IDENTICAL -- second apply changed nothing
+```
+
+Verification query re-run after the edit — unchanged from v1 and still all-green:
+
+```
+ events_missing_schema_version -> 0        events_with_turn_seq  -> 0
+ refs_missing_role             -> 0        refs_claiming_subject -> 0
+ role     -> context (1 row)
+ ref_type -> artifact, delegation, handoff, session, workitem (5 rows)
+ status   -> (0 rows)
+ sessions.project_id -> is_nullable NO
+ event_type x schema_version -> the same 10 values, all at version 1
+```
+
+And the containment check Lyra asked for, as a set difference rather than an eyeball:
+
+```
+SELECT event_type FROM (SELECT DISTINCT event_type FROM canonical_events) ce
+ WHERE event_type NOT IN (<the 12>);
+
+ event_type_not_in_vocab
+-------------------------
+(0 rows)
+```
+
+Every value in the data is inside the 12. Lyra's other-direction check is independently confirmed
+here: seed 001 is the only seed touching `canonical_events`, its 10 values are all in the list, and
+the reconcile step CI runs after `apply-db.sh` does not write `canonical_events`, so it cannot
+introduce an out-of-vocab value.
+
+## 6. CONTRACT DEVIATION — `ref_type` includes `delegation` (§4) — ENDORSED
 
 Packet §4 declares the `ref_type` domain as
 `workitem, session, handoff, artifact, document, seat, topic, project`.
@@ -246,13 +336,15 @@ rewriting history (forbidden), or shipping a constraint that cannot validate (po
 I kept `document`, `topic`, `project` although they appear in no row: they are forward-looking, cost
 nothing, and `topic` is required by G6's event-to-topic path in this same migration.
 
-**§4 requires telling Nimbus and posting before landing. Both done** — see §12. If you prefer
-`delegation` excluded, the only compliant route is a separate packet that migrates those two rows,
-and I would want you to rule on that explicitly.
+**§4 requires telling Nimbus and posting before landing. Both done** — see §13.
+
+**RULED: endorsed as delivered, no change** (Aegis sign-off, ratified by Mr. Zhang). The `ref_type`
+domain is therefore **nine** values, including the forward-looking `document` / `topic` / `project`
+and the data-present `delegation`.
 
 ---
 
-## 7. TRANSITIONAL DEFAULTS — the runtime break I had to prevent
+## 7. TRANSITIONAL DEFAULTS — the runtime break I had to prevent — ENDORSED
 
 **This is a finding, not a design flourish.** `010` makes two columns `NOT NULL`. The live L1
 Supervisor IM write path supplies neither:
@@ -287,7 +379,10 @@ fabricated subject or actor** — and a defaulted row can never trip the one-sub
 
 **These are transitional.** The write API MUST set both explicitly; a defaulted `role` in new code
 is a bug. Dropping the defaults once no writer relies on them is a candidate follow-up. Flagged to
-Nimbus (§12).
+Nimbus (§13).
+
+**RULED: endorsed as delivered** (Aegis sign-off), with the explicit-set obligation carried by the
+step-2 write API.
 
 Proven — the exact Supervisor IM statements replayed verbatim against the built database:
 
@@ -506,16 +601,20 @@ same object, two roles     -> ACCEPT  (2 rows; the point of the widened PK)
 
 `rust:test`'s three script steps, run against the scratch build:
 
+Re-run after the §5 vocabulary edit, against the rebuilt scratch database:
+
 ```
 cargo check --workspace                -> Finished dev profile, EXIT 0
-reconcile                              -> completed (see note below)
+reconcile                              -> run-31b4cec8  scanned=373 inserted=358
+                                          updated=14 unchanged=0 failed=0 conflicted=1
 cargo test -p seatloom-core -- --include-ignored --test-threads=1
+  unit (lib):                   77 passed; 0 failed
   db_baseline_integration:      27 passed; 0 failed
   postgres_seed_consistency:     3 passed; 0 failed
   EXIT 0
 ```
 
-All 27 DB integration tests pass against a database carrying `010`.
+All 27 DB integration tests pass against a database carrying the amended `010`.
 
 **Note on reconcile:** it reports `0 failed, 1 conflicted`. That conflict is **pre-existing and
 unrelated to `010`** — a duplicate `doc_id` in
@@ -581,13 +680,14 @@ cross-check the `event_type` set and confirm it intact.
 | 8 | backfills per §3; no `subject` backfill | PASS - §8.5 |
 | 9 | `apply-db.sh` exit 0 from empty; second `010` apply changes nothing | PASS - §9.1, §9.3 |
 | 10 | both zero-counts `0`; DISTINCT inside §4 | PASS - §9.2 (with §6 deviation) |
-| 11 | `event_type` vocabulary listed and flagged for sign-off | PASS - §5, **awaiting your ruling** |
+| 11 | `event_type` vocabulary listed and flagged for sign-off | PASS - §5. **Ruled: amended to 12, `ArtifactProduced` dropped; applied and re-verified from a fresh scratch DB.** |
 | 12 | zero `ui/`, zero `.rs` | PASS - §12 scope proof |
 | 13 | CI green on the branch (`rust:test`, `docs:verify`) | **PENDING** - mirrored locally all-green (§9.5); real pipeline pending push |
 | 14 | existing seed still loads; tree clean, returned to `track` | PASS - §9.1; tree returned |
 | 15 | Flux commit-pinned verify PASS | PENDING - Flux |
 
-**13 of 15 complete. §13 needs the real pipeline; §15 needs Flux.**
+**13 of 15 complete. Criterion 13 needs the real pipeline (no `glab`/token on this seat); criterion
+15 needs Flux.**
 
 ---
 
@@ -604,24 +704,33 @@ ZERO
 
 ## 13. Coordination
 
-- **To Lyra — three rulings requested.** (1) The `event_type` vocabulary in §5, including whether
-  topic lifecycle events come in now. (2) The `delegation` `ref_type` contract deviation in §6.
-  (3) The transitional defaults in §7 — I judged breaking L1 Supervisor IM the worse outcome, but
-  the call is yours. Also: your §9 CI-stage discrepancy is confirmed independently (§1), and no
-  `schema`/`contract` stage appeared while I worked.
-- **To Nimbus (`Nimbus-TechArchi-seatloom`) — three things the step-2 write API must honour.**
-  (1) `role` and `schema_version` have **transitional defaults**; the write API must set both
+- **To Lyra — all three rulings applied; nothing further is blocked on you.** The vocabulary edit is
+  in (§5), including the two traps beyond the one-line delete (trailing comma, both `(c)` references)
+  and the fresh-database re-verification your point 3 required. `delegation` (§6) and the
+  transitional defaults (§7) are recorded as endorsed. Your CI-stage anchoring is confirmed by
+  Aegis sign-off §4 and independently by me at `b6de097` (§1) — I built against `rust:test` +
+  `docs:verify` and against no other stage name.
+- **To Nimbus (`Nimbus-TechArchi-seatloom`) — four things the step-2 write API must honour.**
+  (1) `role` and `schema_version` carry **transitional defaults**; the write API must set both
   **explicitly** — a defaulted `role` in new code is a bug (§7). (2) "Exactly one subject per event"
-  is **yours to enforce**; the database only guarantees at most one (§4). (3) The `ref_type` domain
-  is **nine** values, not the eight in §4 — `delegation` is included (§6). The Rust mirror needs
-  `topics` as **8 columns, no `created_at`** (§8.3), and hand-written `FromStr`/`Display` per
-  ENGINEERING_STANDARDS; the TEXT domains are flat to keep that possible.
-- **To Flux.** Verify `bc526ba` (or the delivery commit that adds this doc). `apply-db.sh` from
-  **empty** is exit 0; a second **`010`** apply is a true no-op with an identical fingerprint. Please
-  expect a full `apply-db.sh` **re-run** to exit 3 at seed 001 and do not read it as a regression —
-  §10 proves it pre-existing at `b6de097` with `010` absent.
+  is **yours**; the database guarantees only at most one (§4). (3) The `ref_type` domain is **nine**
+  values, not the eight in packet §4 — `delegation` is included (§6). (4) The `event_type`
+  vocabulary is **12** values, and **`ArtifactProduced` is deliberately NOT one of them** — the P0
+  first slice emits the existing **`ArtifactCreated`** (§5). The Rust mirror needs `topics` as
+  **8 columns, no `created_at`** (§8.3), and hand-written `FromStr`/`Display` per
+  ENGINEERING_STANDARDS; the TEXT domains are kept flat so that is possible.
+- **To Flux.** Verify the delivery SHA on
+  `packet/onyx/ONYX-2026-09-30-p0-schema-foundation-v1`. `apply-db.sh` from **empty** is exit 0; a
+  second **`010`** apply is a true no-op with an identical fingerprint. Two things to expect so
+  neither reads as a regression: (a) a full `apply-db.sh` **re-run** exits 3 at seed 001 from the
+  known pre-existing `project_id` defect — §10 proves it at `b6de097` with `010` absent; (b)
+  reconcile reports `1 conflicted`, a pre-existing duplicate `doc_id` in a Flux doc present at base
+  commit, which does not fail `rust:test`. If you rebuild a scratch database that already carried
+  the earlier 13-value constraint, **drop and recreate it** — the `IF NOT EXISTS` guard will not
+  replace an existing constraint (§5.1 trap 3).
 
 ---
 
 *Onyx - 2026-09-30 - P0 build plan §3 step 1 - slot `010` post-seed - all §1 facts verified with
-`git show b6de097:<path>` - three rulings requested in §13*
+`git show b6de097:<path>` - amended after Aegis/Lyra sign-off: `event_type` vocabulary 13 -> 12,
+`ArtifactProduced` dropped in favour of reusing `ArtifactCreated`*
