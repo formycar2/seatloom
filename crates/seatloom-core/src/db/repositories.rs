@@ -2,6 +2,7 @@
 /// Uses tokio-postgres (via deadpool-postgres) for async Postgres access.
 /// Sort orders are deterministic and documented inline.
 use deadpool_postgres::Pool;
+use std::str::FromStr;
 use thiserror::Error;
 use tokio_postgres::Row;
 
@@ -12,6 +13,8 @@ use crate::db::models::{
     ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
     SeatRow, SessionRow, WorkItemRow,
 };
+use crate::objects::seat::SeatRole;
+use crate::objects::session::{Agent, Harness, ParseValueError};
 
 pub struct SeatloomDb {
     pool: Pool,
@@ -68,24 +71,26 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, default_runtime, capability_tags, status, created_at \
+                "SELECT id, name, default_harness, default_agent, default_model, \
+                 capability_tags, status, created_at \
                  FROM seats ORDER BY name ASC",
                 &[],
             )
             .await?;
-        Ok(rows.iter().map(row_to_seat).collect())
+        rows.iter().map(row_to_seat).collect()
     }
 
     pub async fn get_seat(&self, seat_id: &str) -> Result<Option<SeatRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, default_runtime, capability_tags, status, created_at \
+                "SELECT id, name, default_harness, default_agent, default_model, \
+                 capability_tags, status, created_at \
                  FROM seats WHERE id = $1",
                 &[&seat_id],
             )
             .await?;
-        Ok(rows.first().map(row_to_seat))
+        rows.first().map(row_to_seat).transpose()
     }
 
     // =========================================================================
@@ -105,7 +110,7 @@ impl SeatloomDb {
                 &[&project_id],
             )
             .await?;
-        Ok(rows.iter().map(row_to_role_binding).collect())
+        rows.iter().map(row_to_role_binding).collect()
     }
 
     // =========================================================================
@@ -149,28 +154,28 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
-                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
-                 project_id \
+                "SELECT id, seat_id, harness, agent, model, native_session_id, workspace_path, \
+                 branch, status, launch_pack_ref, last_checkpoint_id, pid, created_at, \
+                 ended_at, project_id \
                  FROM sessions ORDER BY created_at DESC",
                 &[],
             )
             .await?;
-        Ok(rows.iter().map(row_to_session).collect())
+        rows.iter().map(row_to_session).collect()
     }
 
     pub async fn list_sessions_for_seat(&self, seat_id: &str) -> Result<Vec<SessionRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
-                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
-                 project_id \
+                "SELECT id, seat_id, harness, agent, model, native_session_id, workspace_path, \
+                 branch, status, launch_pack_ref, last_checkpoint_id, pid, created_at, \
+                 ended_at, project_id \
                  FROM sessions WHERE seat_id = $1 ORDER BY created_at DESC",
                 &[&seat_id],
             )
             .await?;
-        Ok(rows.iter().map(row_to_session).collect())
+        rows.iter().map(row_to_session).collect()
     }
 
     /// Project-mode session list. AD-013 v2 backend invariant: project mode
@@ -182,14 +187,14 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, seat_id, runtime, native_session_id, workspace_path, branch, \
-                 status, launch_pack_ref, last_checkpoint_id, pid, created_at, ended_at, \
-                 project_id \
+                "SELECT id, seat_id, harness, agent, model, native_session_id, workspace_path, \
+                 branch, status, launch_pack_ref, last_checkpoint_id, pid, created_at, \
+                 ended_at, project_id \
                  FROM sessions WHERE project_id = $1 ORDER BY created_at DESC",
                 &[&project_id],
             )
             .await?;
-        Ok(rows.iter().map(row_to_session).collect())
+        rows.iter().map(row_to_session).collect()
     }
 
     // =========================================================================
@@ -1269,17 +1274,86 @@ impl SeatloomDb {
 
 // =============================================================================
 // Row mapping helpers
+//
+// The runtime-triple value domains (`Harness`, `Agent`, `SeatRole`) are parsed
+// in exactly ONE place: `check_domain` below, reached only from
+// `row_to_seat`, `row_to_session` and `row_to_role_binding`. Nothing else in
+// the codebase turns a database string into one of those enums. A value outside
+// its domain fails here, naming the table, the row id, the column and the
+// offending string — it is never absorbed into `Custom(...)` and never panics
+// (Aegis review 2026-09-28 §5).
+//
+// The row structs themselves stay faithful `String` mirrors of the SQL columns;
+// this boundary validates them rather than retyping them, so the wire DTOs keep
+// their flat string shape.
 // =============================================================================
 
-fn row_to_seat(r: &Row) -> SeatRow {
-    SeatRow {
+/// Parse `value` as `T` purely to prove it is inside `T`'s declared domain,
+/// discarding the parsed value. `None` is always accepted: a `NULL` column means
+/// *not recorded*, which is a legitimate state (review §2).
+fn check_domain<T>(
+    table: &'static str,
+    row_id: &str,
+    column: &'static str,
+    value: Option<&str>,
+) -> Result<(), DbError>
+where
+    T: FromStr<Err = ParseValueError>,
+{
+    let Some(raw) = value else {
+        return Ok(());
+    };
+    raw.parse::<T>().map(|_| ()).map_err(|source| DbError::ValueDomain {
+        table,
+        row_id: row_id.to_string(),
+        column,
+        source,
+    })
+}
+
+/// Validate the seat runtime triple. Split out from [`row_to_seat`] so the
+/// failure path is unit-testable without constructing a `tokio_postgres::Row`.
+fn check_seat_domains(
+    id: &str,
+    default_harness: Option<&str>,
+    default_agent: Option<&str>,
+) -> Result<(), DbError> {
+    check_domain::<Harness>("seats", id, "default_harness", default_harness)?;
+    check_domain::<Agent>("seats", id, "default_agent", default_agent)?;
+    // default_model is deliberately unvalidated: model ids are free-form text
+    // (§2.1 rule 2). There is no domain to check it against.
+    Ok(())
+}
+
+/// Validate the session runtime triple. Split out from [`row_to_session`] for
+/// the same reason as [`check_seat_domains`].
+fn check_session_domains(
+    id: &str,
+    harness: Option<&str>,
+    agent: &str,
+) -> Result<(), DbError> {
+    check_domain::<Harness>("sessions", id, "harness", harness)?;
+    check_domain::<Agent>("sessions", id, "agent", Some(agent))?;
+    Ok(())
+}
+
+fn row_to_seat(r: &Row) -> Result<SeatRow, DbError> {
+    let row = SeatRow {
         id: r.get(0),
         name: r.get(1),
-        default_runtime: r.get(2),
-        capability_tags: r.get(3),
-        status: r.get(4),
-        created_at: r.get(5),
-    }
+        default_harness: r.get(2),
+        default_agent: r.get(3),
+        default_model: r.get(4),
+        capability_tags: r.get(5),
+        status: r.get(6),
+        created_at: r.get(7),
+    };
+    check_seat_domains(
+        &row.id,
+        row.default_harness.as_deref(),
+        row.default_agent.as_deref(),
+    )?;
+    Ok(row)
 }
 
 fn row_to_project(r: &Row) -> ProjectRow {
@@ -1292,8 +1366,8 @@ fn row_to_project(r: &Row) -> ProjectRow {
     }
 }
 
-fn row_to_role_binding(r: &Row) -> ProjectRoleBindingRow {
-    ProjectRoleBindingRow {
+fn row_to_role_binding(r: &Row) -> Result<ProjectRoleBindingRow, DbError> {
+    let row = ProjectRoleBindingRow {
         seat_id: r.get(0),
         project_id: r.get(1),
         role: r.get(2),
@@ -1301,7 +1375,11 @@ fn row_to_role_binding(r: &Row) -> ProjectRoleBindingRow {
         constraints: r.get(4),
         collaboration_template_ref: r.get(5),
         active_delegation_id: r.get(6),
-    }
+    };
+    // Composite key; the seat_id side identifies the row for a human reading
+    // the error.
+    check_domain::<SeatRole>("project_role_bindings", &row.seat_id, "role", Some(&row.role))?;
+    Ok(row)
 }
 
 fn row_to_delegation(r: &Row) -> SeatDelegationRow {
@@ -1318,22 +1396,26 @@ fn row_to_delegation(r: &Row) -> SeatDelegationRow {
     }
 }
 
-fn row_to_session(r: &Row) -> SessionRow {
-    SessionRow {
+fn row_to_session(r: &Row) -> Result<SessionRow, DbError> {
+    let row = SessionRow {
         id: r.get(0),
         seat_id: r.get(1),
-        runtime: r.get(2),
-        native_session_id: r.get(3),
-        workspace_path: r.get(4),
-        branch: r.get(5),
-        status: r.get(6),
-        launch_pack_ref: r.get(7),
-        last_checkpoint_id: r.get(8),
-        pid: r.get(9),
-        created_at: r.get(10),
-        ended_at: r.get(11),
-        project_id: r.get(12),
-    }
+        harness: r.get(2),
+        agent: r.get(3),
+        model: r.get(4),
+        native_session_id: r.get(5),
+        workspace_path: r.get(6),
+        branch: r.get(7),
+        status: r.get(8),
+        launch_pack_ref: r.get(9),
+        last_checkpoint_id: r.get(10),
+        pid: r.get(11),
+        created_at: r.get(12),
+        ended_at: r.get(13),
+        project_id: r.get(14),
+    };
+    check_session_domains(&row.id, row.harness.as_deref(), &row.agent)?;
+    Ok(row)
 }
 
 fn row_to_workitem(r: &Row) -> WorkItemRow {
@@ -1664,4 +1746,120 @@ pub enum DbError {
     Postgres(#[from] tokio_postgres::Error),
     #[error("connection pool error: {0}")]
     Pool(deadpool_postgres::PoolError),
+    /// A stored string is outside the value domain its Rust type declares.
+    /// Raised only at the row-hydration parse boundary (see `check_domain`).
+    #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
+    ValueDomain {
+        table: &'static str,
+        row_id: String,
+        column: &'static str,
+        #[source]
+        source: ParseValueError,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_seat_domains, check_session_domains, DbError};
+
+    /// Happy path: every value the seed writes for the six converged seats and
+    /// the five historical sessions must hydrate.
+    #[test]
+    fn seeded_values_hydrate() {
+        check_seat_domains("seat-nimbus-001", Some("Stepcode"), Some("ClaudeCode"))
+            .expect("converged seat triple must hydrate");
+        check_session_domains("ses-lyra-coord-001", None, "GeminiCli")
+            .expect("historical session with unrecorded harness must hydrate");
+        // seed/001:75 stores the bare tag `Custom` with no payload.
+        check_session_domains("ses-flux-verify-001", None, "Custom")
+            .expect("bare Custom tag must hydrate");
+    }
+
+    /// §2.4.5 negative path. Hydrating a session row whose `agent` is out of
+    /// domain must fail with a typed error naming the table, the row id, the
+    /// column and the offending string — not a `Custom(...)` fallback and not a
+    /// panic.
+    #[test]
+    fn out_of_domain_agent_fails_loudly_naming_the_row() {
+        let err = check_session_domains("ses-flux-verify-001", None, "Bogus")
+            .expect_err("out-of-domain agent must be rejected at the hydration boundary");
+
+        match &err {
+            DbError::ValueDomain {
+                table,
+                row_id,
+                column,
+                source,
+            } => {
+                assert_eq!(*table, "sessions");
+                assert_eq!(row_id, "ses-flux-verify-001");
+                assert_eq!(*column, "agent");
+                assert_eq!(source.domain, "Agent");
+                assert_eq!(source.value, "Bogus");
+            }
+            other => panic!("expected DbError::ValueDomain, got {other:?}"),
+        }
+
+        let rendered = err.to_string();
+        for needle in ["sessions", "ses-flux-verify-001", "agent"] {
+            assert!(
+                rendered.contains(needle),
+                "error message must contain {needle:?}: {rendered}"
+            );
+        }
+        assert!(
+            format!("{}", std::error::Error::source(&err).expect("has source"))
+                .contains("\"Bogus\""),
+            "source must name the offending value: {rendered}"
+        );
+    }
+
+    /// Pins the exact operator-facing text a malformed row produces, so the
+    /// message cannot silently lose the table, row id, column or value.
+    #[test]
+    fn rendered_error_names_table_row_column_and_value() {
+        let err = check_session_domains("ses-flux-verify-001", None, "Bogus")
+            .expect_err("out-of-domain agent must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "sessions row \"ses-flux-verify-001\": column agent is out of domain: \
+             \"Bogus\" is not a valid Agent value (expected one of: ClaudeCode, Codex, \
+             CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>))"
+        );
+    }
+
+    #[test]
+    fn out_of_domain_harness_fails_loudly() {
+        let err = check_session_domains("ses-aegis-supervisor-001", Some("Podman"), "ClaudeCode")
+            .expect_err("out-of-domain harness must be rejected");
+        assert!(matches!(
+            err,
+            DbError::ValueDomain { column: "harness", .. }
+        ));
+    }
+
+    #[test]
+    fn out_of_domain_seat_default_agent_fails_loudly() {
+        let err = check_seat_domains("seat-onyx-001", Some("Stepcode"), Some("Bogus"))
+            .expect_err("out-of-domain default_agent must be rejected");
+        match err {
+            DbError::ValueDomain {
+                table, row_id, column, ..
+            } => {
+                assert_eq!(table, "seats");
+                assert_eq!(row_id, "seat-onyx-001");
+                assert_eq!(column, "default_agent");
+            }
+            other => panic!("expected DbError::ValueDomain, got {other:?}"),
+        }
+    }
+
+    /// `NULL` is not an error. Review §2: an unrecorded harness/model is a
+    /// legitimate state, distinct from a wrong one.
+    #[test]
+    fn null_harness_and_agent_are_accepted() {
+        check_seat_domains("seat-unrecorded", None, None).expect("NULL columns are legitimate");
+        check_session_domains("ses-unrecorded", None, "ClaudeCode")
+            .expect("NULL harness is legitimate");
+    }
 }

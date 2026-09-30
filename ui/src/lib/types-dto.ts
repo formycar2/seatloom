@@ -16,7 +16,10 @@ export interface ProjectDto {
 export interface SeatDto {
   id: string;
   name: string;
-  defaultRuntime: string | null;
+  // Runtime triple (schema 009). `null` means not recorded, not "default".
+  defaultHarness: string | null;
+  defaultAgent: string | null;
+  defaultModel: string | null;
   capabilityTags: string[];
   status: string;
   createdAt: string;
@@ -47,7 +50,10 @@ export interface DelegationDto {
 export interface SessionDto {
   id: string;
   seatId: string;
-  runtime: string;
+  // Runtime triple (schema 009). `harness`/`model` null means not recorded.
+  harness: string | null;
+  agent: string;
+  model: string | null;
   nativeSessionId: string | null;
   workspacePath: string;
   branch: string | null;

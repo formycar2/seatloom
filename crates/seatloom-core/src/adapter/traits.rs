@@ -1,7 +1,7 @@
 // AgentAdapter trait and supporting types.
-// Defines the capability boundary between SeatLoom core and individual runtime adapters.
+// Defines the capability boundary between SeatLoom core and individual agent adapters.
 
-use crate::objects::session::Runtime;
+use crate::objects::session::Agent;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -28,7 +28,9 @@ pub struct TranscriptEntry {
 
 #[async_trait]
 pub trait AgentAdapter: Send + Sync {
-    fn runtime(&self) -> Runtime;
+    /// The agent dimension of the runtime triple this adapter drives.
+    /// Harness and model are session-level facts, not adapter-level ones.
+    fn agent(&self) -> Agent;
     fn capabilities(&self) -> AdapterCapabilities;
 
     async fn launch(
