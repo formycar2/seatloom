@@ -14,6 +14,13 @@
 
 ## 0. Purpose and method
 
+> **Priority note (2026-09-30):** the measured analysis below stands, but its
+> priority framing is superseded by
+> `docs/coordination/reviews/2026-09-30-aegis-p0-scope-takeover-and-capture-v1.md`.
+> That document is authoritative on P0 scope: the first milestone is *capturing*
+> a live agent session (§6 here is reframed), historical ingestion and A7 budget
+> are P2, and A4 `external_ref` moves onto the P0 critical path.
+
 The workbench is built: quality gates are mechanical, CI is green, the six seats
 run one harness. This document answers the next question — what the platform is
 *for*, what real work it carries, and whether the data abstraction can hold that
