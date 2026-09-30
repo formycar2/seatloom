@@ -25,6 +25,13 @@ impl SeatloomDb {
         Self { pool }
     }
 
+    /// Checked-out pooled client. `pub(crate)` because the write path
+    /// (`db::write_api`) needs `&mut` access to open a transaction, and the pool
+    /// itself stays private. Not part of the public API.
+    pub(crate) async fn pool_client(&self) -> Result<deadpool_postgres::Object, DbError> {
+        self.pool.get().await.map_err(DbError::Pool)
+    }
+
     // =========================================================================
     // Health check
     // =========================================================================

@@ -41,6 +41,12 @@ next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges t
 
 ## 2. Phases
 
+> **Governing principle (Mr. Zhang, 2026-09-30):** every milestone ships a
+> **user-perceivable capability**. Pure-plumbing steps (schema, write API, MCP) are
+> sub-tasks *inside* a milestone, never milestones themselves. Every milestone's
+> acceptance carries a "the user can now see / do X" clause. §2b is the acceptance lens;
+> §3's engineering steps are the scaffolding beneath it.
+
 | Phase | What it is | Solves | Done when | Status |
 |---|---|---|---|---|
 | **0. Workbench** | CI, quality gates, 6 seats on one harness | collaboration safety | hard gate green, red=no-merge enforced | ✅ done |
@@ -48,6 +54,23 @@ next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges t
 | **P0. Capture loop** | take over the live agent loop; record it into one harness-agnostic data model | "the record, not the harness, holds the truth" | one real event exists because an agent did something, filed under project+topic, linked, retrievable, harness-independent (see §3) | 🔵 in progress (step 1) |
 | **P1. Compounding** | richer capture + capability assets | reasoning/search/RAG traces; published Playbook/Skill/Tool; auto topic-segmentation | (scoped when P0 lands) | ⏳ queued |
 | **P2. History & cost** | ingest the ~16 GB corpus; budget/token accounting | findability of past work; cost discipline | (scoped later) | ⏳ deferred |
+
+## 2b. User-perceivable milestones (the acceptance lens)
+
+Each rung is something the user can **see or do** that they could not before. Engineering
+steps (§3) slot beneath a rung; a rung is "done" only when the capability is perceivable.
+
+| Milestone | What the user can now do (couldn't before) | Backed by | Status |
+|---|---|---|---|
+| **UM0 — one screen for the whole team** | open SeatLoom, watch all 6 seats' live terminals + IM in one window, instead of attaching 6 tmux sessions | existing tmux mirror + viewer | **available now — not yet switched on** |
+| **UM1 — work leaves a clickable trace** | when a seat produces an artifact, a structured, clickable record appears in the timeline (filed under project + commit), not just terminal scroll | step 1 ✅ + steps 2, 4, 5 | step 1 done |
+| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "how is progress?" at a glance | step 6 governed dispatch + capture generalized | queued |
+| **UM3 — find & replay** | "show me everything about topic X across sessions/harnesses"; deterministic search + T1→T2→T3 zoomable replay | P1 | not started |
+| **UM4 — capability library** | see and reuse the team's published Playbooks / Skills / Tools | P1 | not started |
+| **UM5 — history & cost** | the ~16 GB of past work is findable; per-project token spend is visible | P2 | deferred |
+
+Interim reality until UM2: this ROADMAP (a markdown file) + Aegis are the "progress view";
+the destination is the SeatLoom UI rendering it from the captured event model.
 
 ## 3. P0 build — the six steps
 
@@ -89,6 +112,24 @@ Critical path: 1 → 2 → 4 → 6 → 3 → 5 (step 6 rides on 2+4; step 5 is t
 | G16 | Budget as first-class object (A7) | P2 | deferred |
 | G17 | Historical corpus ingestion (~16 GB) | P2 | deferred |
 | G18 | Interposition proxies / egress gateway | P2 | deferred |
+
+## 4b. Dev-velocity TODO (iteration-speed optimizations)
+
+Running list — any optimization that speeds the build/test/coordinate loop is logged here as it
+is observed (Mr. Zhang, 2026-09-30). These are dev-ergonomics, not product gaps; none blocks a
+milestone, each pays back time on every cycle.
+
+| # | Optimization | Bottleneck it kills | Effort | Status |
+|---|---|---|---|---|
+| DV1 | **Shared compile cache** — `sccache` (`RUSTC_WRAPPER`, per-crate cache, concurrency-safe) across all worktrees + CI; or `CARGO_TARGET_DIR` (simpler, but serializes concurrent builds on a target lock) | each worktree cold-compiles ~450 deps from zero (Nimbus's `Checking crypto-common/rand/…`); repeated per worktree and per CI pipeline | S | todo |
+| DV2 | **Local pre-push gate dry-run** — `scripts/preflight.sh` = `cargo fmt --check` + `clippy` + `verify-docs.sh` + `cargo test` before push | red-pipeline round-trips on reconcile (MR !4 took 2) | S | todo |
+| DV3 | **Doc-header conformance at source** — seat pre-commit hook running `verify-docs.sh`, and/or `version` baked into the doc template seats copy | every reconcile Aegis hand-fixes seat docs missing the `version` header (recurring tax) | S | todo |
+| DV4 | **Worktree bootstrap script** — `scripts/seat-worktree.sh <seat>` creates the worktree + wires `node_modules` + shared target in one step | manual per-seat `git worktree add` + `pnpm install` each time | S | todo |
+| DV5 | **Parallel DB tests** — per-test transaction/schema isolation to drop the `--test-threads=1` serial constraint | DB integration tests run serially (race avoidance) | M | todo |
+| DV6 | **CI cargo cache** — cache registry + incremental `target` across pipelines (GitLab cache key), beyond the baked image | CI rebuilds from cold each pipeline | S–M | todo |
+
+Related but tracked elsewhere: coordination routing latency (Aegis→Lyra→worker takes minutes per
+hop) is addressed by **G19 governed dispatch** (§4, P0 step 6), not duplicated here.
 
 ## 5. Coordination model (so escalations don't evaporate)
 
