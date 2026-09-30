@@ -15,14 +15,63 @@ ON CONFLICT (id) DO NOTHING;
 -- =============================================================================
 -- Seats (real AI agent seats active during 2026-04-27 to 2026-04-29)
 -- Evidence: docs/coordination/reviews/2026-04-28-process-mapping-review.md §1
+--
+-- 2026-09-28 runtime convergence: every seat now runs the stepcode (stepgo)
+-- Claude Code harness pinned to `claude-opus-5[1m]`. default_runtime was
+-- GeminiCli for lyra/mira and Custom for flux; both were stale relative to the
+-- live tmux sessions. onyx joins as the sixth seat (data), replacing the
+-- ad-hoc Gemini fixture that B1 tmux-attach verification had been using.
+--
+-- -----------------------------------------------------------------------------
+-- Runtime triple (schema 009) — SHARED EVIDENCE FOR ALL SIX SEAT ROWS BELOW.
+-- Added by ONYX-2026-09-28-runtime-triple-migration-v1 §2.3.
+--
+-- One shared evidence block covers all six rows because the evidence is
+-- identical for all six — stated explicitly here rather than left implied.
+--
+--   default_harness = 'Stepcode'
+--     Evidence: docs/coordination/memory/2026-09-28.md
+--               Addendum — Seat Harness Convergence (Aegis, 2026-09-28),
+--               section "Seat state after convergence" — the harness column
+--               reads `stepcode claude` for all six seats
+--               (aegis, flux, lyra, mira, nimbus, onyx).
+--
+--   default_agent = 'ClaudeCode'
+--     Evidence: same Addendum, same "Seat state after convergence" table —
+--               the agent driven under stepcode is Claude Code for all six.
+--
+--   default_model = 'claude-opus-5[1m]'
+--     Evidence: same Addendum, section "Launch contract":
+--               `stepcode claude --model "claude-opus-5[1m]"`.
+--               The `[1m]` suffix is NOT optional — `--model claude-opus-5`
+--               boots a 200k window, `--model "claude-opus-5[1m]"` boots 1M.
+--               Verified by probe: banner `Opus 5 (1M context) with high
+--               effort`, status line `0k/1M`. Also confirmed by the same
+--               Addendum's "Seat state after convergence" model column.
+--
+-- Value casing is PascalCase per the §2.1 value-domain contract, matching the
+-- existing PascalCase `default_runtime` values. Legacy `default_runtime` is
+-- left as-is on every row — schema 009 retains it as a deprecated column.
+-- -----------------------------------------------------------------------------
 -- =============================================================================
-INSERT INTO seats (id, name, default_runtime, capability_tags, status, created_at) VALUES
-  ('seat-aegis-001', 'aegis',  'ClaudeCode',  ARRAY['supervision','product-design','architecture-review','stage-gate'], 'active', '2026-04-24T00:00:00Z'),
-  ('seat-lyra-001',  'lyra',   'GeminiCli',   ARRAY['product-ownership','coordination','acceptance','planning'],          'active', '2026-04-24T00:00:00Z'),
-  ('seat-mira-001',  'mira',   'GeminiCli',   ARRAY['ux-design','react','typescript','component-prototyping'],            'active', '2026-04-24T00:00:00Z'),
-  ('seat-nimbus-001','nimbus', 'ClaudeCode',  ARRAY['architecture','rust','tauri','infrastructure'],                      'active', '2026-04-24T00:00:00Z'),
-  ('seat-flux-001',  'flux',   'Custom',      ARRAY['qa','verification','ui-audit','ops'],                                'active', '2026-04-24T00:00:00Z')
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO seats (id, name, default_runtime, default_harness, default_agent, default_model, capability_tags, status, created_at) VALUES
+  ('seat-aegis-001', 'aegis',  'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['supervision','product-design','architecture-review','stage-gate'], 'active', '2026-04-24T00:00:00Z'),
+  ('seat-lyra-001',  'lyra',   'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['product-ownership','coordination','acceptance','planning'],          'active', '2026-04-24T00:00:00Z'),
+  ('seat-mira-001',  'mira',   'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['ux-design','react','typescript','component-prototyping'],            'active', '2026-04-24T00:00:00Z'),
+  ('seat-nimbus-001','nimbus', 'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['architecture','rust','tauri','infrastructure'],                      'active', '2026-04-24T00:00:00Z'),
+  ('seat-flux-001',  'flux',   'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['qa','verification','ui-audit','ops'],                                'active', '2026-04-24T00:00:00Z'),
+  ('seat-onyx-001',  'onyx',   'ClaudeCode', 'Stepcode', 'ClaudeCode', 'claude-opus-5[1m]', ARRAY['data-modeling','postgres','schema-migration','data-quality'],        'active', '2026-09-28T00:00:00Z')
+-- Upsert scoped to the THREE NEW schema-009 columns only.
+-- Rationale (packet §5 seed-path decision): the original `ON CONFLICT (id) DO
+-- NOTHING` makes a re-apply a silent no-op, so the six pre-existing seat rows
+-- would never receive the triple. `DO UPDATE SET` limited to the three new
+-- columns converges them on every apply while leaving every pre-existing
+-- column (name, default_runtime, capability_tags, status, created_at) untouched
+-- — additive by construction, no historical value rewritten.
+ON CONFLICT (id) DO UPDATE SET
+  default_harness = EXCLUDED.default_harness,
+  default_agent   = EXCLUDED.default_agent,
+  default_model   = EXCLUDED.default_model;
 
 -- =============================================================================
 -- Project Role Bindings (per-project, seatloom project)
@@ -34,7 +83,8 @@ VALUES
   ('seat-lyra-001',   'seatloom', 'product_owner',  ARRAY['docs/PRODUCT_TRUTH.md','docs/prd-v0.5.md'],                ARRAY['file-first-coordination'],                 NULL, NULL),
   ('seat-mira-001',   'seatloom', 'designer',       ARRAY['docs/ux-spec-v1.1.md','docs/interaction-spec-v1.1.md'],    ARRAY['no-IA-redesign','ui-contract-only'],        NULL, NULL),
   ('seat-nimbus-001', 'seatloom', 'architect',      ARRAY['docs/architecture-design.md','docs/architecture-decisions.md'], ARRAY['no-runtime-widening','infrastructure-only'], NULL, NULL),
-  ('seat-flux-001',   'seatloom', 'verifier',       ARRAY['docs/acceptance-spec-v1.1.md'],                            ARRAY['read-only-by-default','no-ui-redesign'],    NULL, NULL)
+  ('seat-flux-001',   'seatloom', 'verifier',       ARRAY['docs/acceptance-spec-v1.1.md'],                            ARRAY['read-only-by-default','no-ui-redesign'],    NULL, NULL),
+  ('seat-onyx-001',   'seatloom', 'data_engineer',  ARRAY['infra/postgres/schema/001_seatloom_core.sql','docs/architecture-decisions.md'], ARRAY['schema-migration-only','no-product-scope'], NULL, NULL)
 ON CONFLICT (seat_id, project_id) DO NOTHING;
 
 -- =============================================================================
@@ -58,14 +108,51 @@ VALUES (
 -- Sessions (one representative session per seat, Apr 27-29)
 -- Evidence: process-mapping-review §3, MEMORY.md
 -- Approximated timestamps from first/last evidence entries
+--
+-- -----------------------------------------------------------------------------
+-- Runtime triple (schema 009) — EVIDENCE FOR THE FIVE HISTORICAL SESSION ROWS.
+-- Added by ONYX-2026-09-28-runtime-triple-migration-v1 §2.3.
+--
+--   agent  = a straight copy of this row's existing `runtime` value.
+--     Evidence: the §2.1 value-domain contract keeps the agent domain
+--     byte-identical to the legacy runtime domain (both PascalCase:
+--     ClaudeCode / GeminiCli / Custom), so the legacy column's content was
+--     always the agent dimension and nothing else. This is a rename-in-place,
+--     not a new assertion — no new fact is introduced.
+--
+--   harness = NULL  and  model = NULL  — DELIBERATE, and NOT a default.
+--     These five sessions are historical (2026-04-27 → 2026-04-29), from
+--     BEFORE the 2026-09-28 stepcode convergence recorded in
+--     docs/coordination/memory/2026-09-28.md Addendum — Seat Harness
+--     Convergence. No harness or model was recorded for them at the time, and
+--     no evidence exists to recover one.
+--
+--     Writing 'Stepcode' or 'claude-opus-5[1m]' onto an April session would be
+--     a FABRICATION: it would assert a September harness for an April run and
+--     corrupt exactly the attribution layer that Aegis review §3.2 step 3
+--     depends on. Per the §2.1 contract rule 3, NULL means *not recorded* —
+--     never "direct" and never "default". A NULL is recoverable later; a
+--     fabricated 'Stepcode' is indistinguishable from a real one forever.
+--
+--     Note the deliberate asymmetry with the seat rows above, which DO carry
+--     'Stepcode' / 'claude-opus-5[1m]': the seats describe present-day launch
+--     configuration with live evidence; these sessions describe past runs with
+--     none. Same contract, opposite outcome, because the evidence differs.
+-- -----------------------------------------------------------------------------
 -- =============================================================================
-INSERT INTO sessions (id, seat_id, runtime, workspace_path, branch, status, created_at, ended_at) VALUES
-  ('ses-aegis-supervisor-001', 'seat-aegis-001', 'ClaudeCode', '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T08:00:00Z', '2026-04-29T23:59:00Z'),
-  ('ses-lyra-coord-001',       'seat-lyra-001',  'GeminiCli',  '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T09:00:00Z', '2026-04-29T23:59:00Z'),
-  ('ses-mira-ui-001',          'seat-mira-001',  'GeminiCli',  '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T10:00:00Z', '2026-04-29T20:00:00Z'),
-  ('ses-nimbus-infra-001',     'seat-nimbus-001','ClaudeCode', '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-28T08:00:00Z', '2026-04-29T23:59:00Z'),
-  ('ses-flux-verify-001',      'seat-flux-001',  'Custom',     '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T11:00:00Z', '2026-04-29T22:00:00Z')
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO sessions (id, seat_id, runtime, agent, harness, model, workspace_path, branch, status, created_at, ended_at) VALUES
+  ('ses-aegis-supervisor-001', 'seat-aegis-001', 'ClaudeCode', 'ClaudeCode', NULL, NULL, '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T08:00:00Z', '2026-04-29T23:59:00Z'),
+  ('ses-lyra-coord-001',       'seat-lyra-001',  'GeminiCli',  'GeminiCli',  NULL, NULL, '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T09:00:00Z', '2026-04-29T23:59:00Z'),
+  ('ses-mira-ui-001',          'seat-mira-001',  'GeminiCli',  'GeminiCli',  NULL, NULL, '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T10:00:00Z', '2026-04-29T20:00:00Z'),
+  ('ses-nimbus-infra-001',     'seat-nimbus-001','ClaudeCode', 'ClaudeCode', NULL, NULL, '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-28T08:00:00Z', '2026-04-29T23:59:00Z'),
+  ('ses-flux-verify-001',      'seat-flux-001',  'Custom',     'Custom',     NULL, NULL, '/Users/jyxc-dz-0100609/Documents/GitHub/seatloom', 'main', 'completed', '2026-04-27T11:00:00Z', '2026-04-29T22:00:00Z')
+-- Upsert scoped to `agent` ONLY (packet §5 seed-path decision). `harness` and
+-- `model` are deliberately NOT in the SET list: they must stay whatever the
+-- database already holds rather than being re-asserted as NULL on every apply,
+-- so that if a later evidence-backed packet fills them in, re-running this seed
+-- does not wipe that value. Every pre-existing column is left untouched.
+ON CONFLICT (id) DO UPDATE SET
+  agent = EXCLUDED.agent;
 
 -- =============================================================================
 -- WorkItems (real collaboration lanes from process-mapping-review §2)
