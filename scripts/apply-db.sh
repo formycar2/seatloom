@@ -72,7 +72,12 @@ PRE_SEED_SCHEMA=(
 
 # POST-SEED: these constrain columns the seed does not provide.
 POST_SEED_SCHEMA=(
+  # Order within this group is significant: 008 BEFORE 010.
+  # 010's G5 guard RAISES if sessions.project_id is missing or still nullable,
+  # and 008:51 / 008:106-107 is what creates and tightens it. Reversing these
+  # two makes 010 abort by design rather than silently proceed.
   "008_project_isolation.sql|backfills project_id on workitems/sessions/handoffs/canonical_events from seeded rows, then SET NOT NULL. Seed 001 supplies no project_id, so running this before the seed makes the seed fail: 'null value in column \"project_id\" violates not-null constraint'."
+  "010_p0_schema_foundation.sql|adds canonical_events.schema_version NOT NULL and event_object_refs.role NOT NULL, then backfills both from existing rows. Seed 001 inserts into BOTH tables and supplies NEITHER column, so pre-seed would break the seed exactly as 008 would have. Also widens the event_object_refs primary key to include role and adds a partial unique index scoped so legacy rows cannot violate it — both need the seeded rows present."
 )
 
 # --- Completeness guard ------------------------------------------------------
