@@ -16,9 +16,15 @@ const StatusBar: React.FC<StatusBarProps> = ({ onInitProject, isTerminalOpen, on
           <Github size={10} />
           <span className="truncate opacity-80">~/Documents/GitHub/seatloom</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <RefreshCw size={10} className="text-status-active" />
-          <span className="tracking-tight opacity-80">对账完成</span>
+        {/* This indicator was hard-coded to a green "reconcile complete" and was
+            the one thing in the shell that read as live. It is a placeholder
+            until a real reconcile result is wired, so it now says so. */}
+        <div
+          className="flex items-center gap-1.5"
+          title="静态占位符：尚未接入真实对账结果，不代表任何一次实际对账"
+        >
+          <RefreshCw size={10} className="text-status-warning" />
+          <span className="tracking-tight opacity-80">对账状态 · 示例</span>
         </div>
         <button onClick={onInitProject} className="flex items-center gap-1 hover:text-primary transition-colors focus:outline-none focus:ring-1 focus:ring-primary rounded" tabIndex={0}>
           <FolderSync size={10} />

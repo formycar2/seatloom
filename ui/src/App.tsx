@@ -8,6 +8,7 @@ import SeatsView from './views/SeatsView';
 import ArtifactsView from './views/ArtifactsView';
 import PlaybookView from './views/PlaybookView';
 import AllProjectsView from './views/AllProjectsView';
+import LiveSeatsView from './views/LiveSeatsView';
 import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import SessionDetail from './components/SessionDetail';
@@ -31,14 +32,17 @@ import SwitchProtectionDialog from './components/SwitchProtectionDialog';
 import { useDataStore } from './stores/useDataStore';
 import { useAppStore } from './stores/useAppStore';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
+import { ProvenanceFrame } from './components/ProvenanceBanner';
+import { provenanceForTab } from './lib/provenance';
 import { ArtifactSubtype, ArtifactTemplate, SelectedObjectType } from './types';
 
-type Tab = 'dashboard' | 'inbox' | 'timeline' | 'workitems' | 'seats' | 'artifacts' | 'playbook' | 'sessions' | 'all-projects';
+type Tab = 'live-seats' | 'dashboard' | 'inbox' | 'timeline' | 'workitems' | 'seats' | 'artifacts' | 'playbook' | 'sessions' | 'all-projects';
 type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress' | 'addSeat';
 type SelectedObject = { type: SelectedObjectType; id: string } | null;
 
 const App: React.FC = () => {
-  const { projectData, activeProjectId, setActiveProject, addWorkItem, hydrateFromBackend } = useDataStore();
+  const { projectData, activeProjectId, setActiveProject, addWorkItem, hydrateFromBackend, backendHydrated } =
+    useDataStore();
   const { projectUIStates, updateProjectUIState } = useAppStore();
   const projectUIStatesRef = useRef(projectUIStates);
   useEffect(() => { projectUIStatesRef.current = projectUIStates; });
@@ -49,7 +53,8 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  // UM0: open on the live mirror, the one surface that proves itself.
+  const [activeTab, setActiveTab] = useState<Tab>('live-seats');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
@@ -127,7 +132,7 @@ const App: React.FC = () => {
   const [protectionType, setProtectionType] = useState<'session' | 'form' | null>(null);
 
   useEffect(() => {
-    if (!activeProjectId && activeTab !== 'all-projects') {
+    if (!activeProjectId && activeTab !== 'all-projects' && activeTab !== 'live-seats') {
       setIsInitOpen(true);
     }
   }, [activeProjectId, activeTab]);
@@ -266,6 +271,9 @@ const App: React.FC = () => {
     if (activeTab === 'all-projects') {
       return <AllProjectsView onSelectProject={handleProjectSwitchRequest} />;
     }
+    if (activeTab === 'live-seats') {
+      return <LiveSeatsView />;
+    }
     if (activeTab === 'sessions') {
       return <SessionsWorkspace />;
     }
@@ -321,7 +329,18 @@ const App: React.FC = () => {
         isTerminalOpen={isTerminalOpen}
         onTerminalToggle={() => setIsTerminalOpen(!isTerminalOpen)}
       >
-        {renderMainView()}
+        {/* Every surface declares its provenance here, in exactly one place, so
+            no view can silently read as live. See lib/provenance.ts. */}
+        <ProvenanceFrame
+          provenance={provenanceForTab(activeTab, backendHydrated)}
+          onNavigateToLive={() => {
+            setActiveTab('live-seats');
+            setSelectedObject(null);
+            setActiveForm('none');
+          }}
+        >
+          {renderMainView()}
+        </ProvenanceFrame>
       </AppShell>
 
       <InitDialog isOpen={isInitOpen} onClose={() => setIsInitOpen(false)} onInitialize={() => { setActiveProject('p-1'); setIsInitOpen(false); }} />

@@ -11,14 +11,18 @@ import {
   PanelLeftOpen,
   Folder,
   Terminal,
+  Radio,
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { useDataStore } from '../stores/useDataStore';
 import { useResponsive } from '../hooks/useResponsive';
 import ProjectSwitcher from './ProjectSwitcher';
 import { SeatLoomLogo } from '../app-v2/components/Avatar';
+import { ProvenanceDot } from './ProvenanceBanner';
+import { provenanceForTab } from '../lib/provenance';
 
 export type NavTab =
+  | 'live-seats'
   | 'dashboard'
   | 'inbox'
   | 'workitems'
@@ -43,7 +47,7 @@ interface NavRailProps {
 
 const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProject }) => {
   const { navCollapsed, toggleNav } = useAppStore();
-  const { activeProjectId, projectData } = useDataStore();
+  const { activeProjectId, projectData, backendHydrated } = useDataStore();
   const { isMobile, isCompact, isTablet } = useResponsive();
 
   // Force collapsed at compact/tablet breakpoints
@@ -56,6 +60,8 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
   const inboxCount = currentData?.inboxItems.length || 0;
 
   const navItems: NavItem[] = [
+    // Live mirror first: opening the app should land on verifiable truth.
+    { id: 'live-seats', icon: Radio, label: '实时席位' },
     { id: 'dashboard', icon: BarChart3, label: '监督概览' },
     { id: 'inbox', icon: Inbox, label: '收件箱', badge: inboxCount > 0 ? inboxCount : undefined },
     { id: 'workitems', icon: ClipboardList, label: '工作项' },
@@ -121,9 +127,16 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
 
               <item.icon size={18} className="shrink-0" />
 
+              {effectiveCollapsed && (
+                <span className="absolute bottom-0.5 right-0.5">
+                  <ProvenanceDot provenance={provenanceForTab(item.id, backendHydrated)} />
+                </span>
+              )}
+
               {!effectiveCollapsed && (
                 <>
                   <span className="text-[13px] truncate">{item.label}</span>
+                  <ProvenanceDot provenance={provenanceForTab(item.id, backendHydrated)} />
                   {item.badge !== undefined && (
                     <span className="ml-auto text-[10px] font-semibold bg-primary text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
                       {item.badge > 99 ? '99+' : item.badge}
