@@ -18,16 +18,8 @@ pub struct InboxPayloadDto {
 
 #[tauri::command]
 pub async fn cmd_get_inbox(state: State<'_, AppState>) -> Result<InboxPayloadDto, String> {
-    let workitems = state
-        .db
-        .list_workitems()
-        .await
-        .map_err(|e| e.to_string())?;
-    let handoffs = state
-        .db
-        .list_handoffs()
-        .await
-        .map_err(|e| e.to_string())?;
+    let workitems = state.db.list_workitems().await.map_err(|e| e.to_string())?;
+    let handoffs = state.db.list_handoffs().await.map_err(|e| e.to_string())?;
 
     let blocked: Vec<WorkItemDto> = workitems
         .iter()

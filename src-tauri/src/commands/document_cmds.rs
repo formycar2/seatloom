@@ -1,8 +1,6 @@
 // Document commands — read, filter, and search the document authority layer.
 
-use crate::dto::{
-    DocumentAssociationDto, DocumentDto, DocumentSectionDto, DocumentVersionDto,
-};
+use crate::dto::{DocumentAssociationDto, DocumentDto, DocumentSectionDto, DocumentVersionDto};
 use crate::state::AppState;
 use tauri::State;
 

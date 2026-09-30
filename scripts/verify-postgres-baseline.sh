@@ -37,6 +37,27 @@ if [ -z "$CARGO" ] || [ ! -x "$CARGO" ]; then
   exit 1
 fi
 
+# --- Container runtime detection ---
+# Ported from scripts/bootstrap.sh (same precedence and error text) so this script
+# runs on a podman-only seat. Detection only: what this script asserts, its step
+# order and its exit semantics are unchanged.
+# Override with: CONTAINER=podman bash scripts/verify-postgres-baseline.sh
+if [ -n "${CONTAINER:-}" ]; then
+  if ! command -v "$CONTAINER" >/dev/null 2>&1; then
+    echo "ERROR: CONTAINER=$CONTAINER but that binary is not on PATH." >&2
+    exit 1
+  fi
+elif command -v docker >/dev/null 2>&1; then
+  CONTAINER="docker"
+elif command -v podman >/dev/null 2>&1; then
+  CONTAINER="podman"
+else
+  echo "ERROR: neither docker nor podman found on PATH." >&2
+  echo "Install Docker Desktop OR Podman (https://podman.io/docs/installation)." >&2
+  exit 1
+fi
+echo "container runtime: $CONTAINER"
+
 INFRA_DIR="$REPO_ROOT/infra/postgres"
 export DATABASE_URL="postgresql://seatloom:seatloom@localhost:5432/seatloom"
 
@@ -56,15 +77,15 @@ echo ""
 
 echo "--- Step 1: Teardown stale volume + start clean container ---"
 echo "(destructive reset — ensures deterministic schema + seed state)"
-(cd "$INFRA_DIR" && docker compose down -v --remove-orphans 2>&1 || true)
-(cd "$INFRA_DIR" && docker compose up -d)
+(cd "$INFRA_DIR" && "$CONTAINER" compose down -v --remove-orphans 2>&1 || true)
+(cd "$INFRA_DIR" && "$CONTAINER" compose up -d)
 
 echo "Waiting for seatloom database to be queryable (timeout: ${PG_READY_TIMEOUT}s) ..."
 deadline=$(( $(date +%s) + PG_READY_TIMEOUT ))
-until docker exec seatloom-postgres psql -U seatloom -d seatloom -c "SELECT 1" -q >/dev/null 2>&1; do
+until "$CONTAINER" exec seatloom-postgres psql -U seatloom -d seatloom -c "SELECT 1" -q >/dev/null 2>&1; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
     echo "ERROR: seatloom database not queryable within ${PG_READY_TIMEOUT}s." >&2
-    docker logs seatloom-postgres --tail 40 >&2
+    "$CONTAINER" logs seatloom-postgres --tail 40 >&2
     exit 1
   fi
   sleep 1
@@ -73,16 +94,28 @@ echo "seatloom database ready."
 echo ""
 
 echo "--- Step 2: Apply schema ---"
+# NOTE (ONYX-2026-09-28-runtime-triple-migration-v1): 009 is required here, not
+# optional. Seed 001 now writes seats.default_harness/_agent/_model and
+# sessions.agent/harness/model, so applying the seed without 009 fails with
+# "column ... does not exist". 009 is independent of 008 — it only touches
+# columns created in 001.
+# PRE-EXISTING GAP, deliberately NOT changed by that packet: 008_project_isolation.sql
+# is absent from this list while scripts/bootstrap.sh:138 does apply it. Reported as
+# finding D-4 in docs/coordination/reviews/2026-09-28-onyx-runtime-triple-drift-report-v1.md
+# rather than silently fixed here — adding 008 changes this verifier's behaviour beyond
+# that packet's scope and could not be exercised on the Onyx seat (no docker/compose
+# provider available; see finding D-5).
 for schema_file in \
   001_seatloom_core.sql \
   002_document_authority.sql \
   003_write_ingest_reconcile.sql \
   004_operational_review_and_continuity.sql \
-  005_prompt_and_channel_action_authority.sql
+  005_prompt_and_channel_action_authority.sql \
+  009_runtime_triple.sql
 do
   echo "Applying schema/$schema_file"
-  docker cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
-  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
+  "$CONTAINER" cp "$INFRA_DIR/schema/$schema_file" "seatloom-postgres:/tmp/$schema_file"
+  "$CONTAINER" exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
     -f "/tmp/$schema_file"
 done
 echo ""
@@ -95,8 +128,8 @@ for seed_file in \
   004_prompt_and_channel_action_seed.sql
 do
   echo "Applying seed/$seed_file"
-  docker cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"
-  docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
+  "$CONTAINER" cp "$INFRA_DIR/seed/$seed_file" "seatloom-postgres:/tmp/$seed_file"
+  "$CONTAINER" exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom \
     -f "/tmp/$seed_file"
 done
 echo "Seed complete."
@@ -109,7 +142,7 @@ echo "--- Step 4: Schema-005 zero-row baseline proof ---"
 # before any mutating Rust integration test, so global zero-row state is
 # observable. Any non-zero count here means seed 004 has drifted from the
 # honest zero-row policy or an earlier step inserted unauthorized rows.
-docker exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom <<'SQL'
+"$CONTAINER" exec seatloom-postgres psql -v ON_ERROR_STOP=1 -U seatloom -d seatloom <<'SQL'
 DO $$
 DECLARE
   pi_count   INT;

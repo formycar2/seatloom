@@ -24,14 +24,22 @@ use seatloom_core::pty::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let target = std::env::args().nth(1).unwrap_or_else(|| "test-seatloom".to_string());
+    let target = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "test-seatloom".to_string());
     eprintln!("[smoke] target tmux session = {target}");
 
     // Step 3: list-sessions filter behaviour.
     let all = list_tmux_sessions()?;
-    eprintln!("[smoke] list_tmux_sessions() returned {} sessions (filtered by -seatloom suffix)", all.len());
+    eprintln!(
+        "[smoke] list_tmux_sessions() returned {} sessions (filtered by -seatloom suffix)",
+        all.len()
+    );
     for s in &all {
-        eprintln!("  - {} (created_at={}, attached={})", s.session_name, s.created_at, s.attached);
+        eprintln!(
+            "  - {} (created_at={}, attached={})",
+            s.session_name, s.created_at, s.attached
+        );
     }
 
     // Step 4: attach to target.
@@ -48,8 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let session = PtySession::attach_tmux("smoke-001", &target, opts)?;
-    eprintln!("[smoke] attached: id={}, fifo={}, tmux_target={}",
-        session.id, session.fifo_path.display(), session.tmux_target);
+    eprintln!(
+        "[smoke] attached: id={}, fifo={}, tmux_target={}",
+        session.id,
+        session.fifo_path.display(),
+        session.tmux_target
+    );
 
     // Assert: fifo exists.
     if !session.fifo_path.exists() {
@@ -66,7 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for cmd in ["ls -la", "printf 'SEATLOOM_MIRROR_PROBE_%s\\n' ok"] {
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", &format!("{target_for_typing}:0"), cmd, "C-m"])
+                .args([
+                    "send-keys",
+                    "-t",
+                    &format!("{target_for_typing}:0"),
+                    cmd,
+                    "C-m",
+                ])
                 .output();
         }
     });
@@ -85,7 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Ok(Ok(PtyEvent::Exited { exit_code, signal })) => {
-                eprintln!("[smoke] unexpected early Exited: exit_code={exit_code:?} signal={signal:?}");
+                eprintln!(
+                    "[smoke] unexpected early Exited: exit_code={exit_code:?} signal={signal:?}"
+                );
                 break;
             }
             Ok(Err(e)) => {
@@ -104,7 +124,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let received_text = String::from_utf8_lossy(&received);
     let found_probe = received_text.contains("SEATLOOM_MIRROR_PROBE_");
     let found_ls = received_text.contains("ls -la") || received_text.contains("total ");
-    eprintln!("[smoke] probe_marker_seen={} ls_output_seen={}", found_probe, found_ls);
+    eprintln!(
+        "[smoke] probe_marker_seen={} ls_output_seen={}",
+        found_probe, found_ls
+    );
 
     // Step 8: resize the pane.
     session.resize(24, 120)?;
@@ -134,7 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Ok(Ok(PtyEvent::Exited { exit_code, signal })) => {
-                eprintln!("[smoke] B1 unexpected Exited: exit_code={exit_code:?} signal={signal:?}");
+                eprintln!(
+                    "[smoke] B1 unexpected Exited: exit_code={exit_code:?} signal={signal:?}"
+                );
                 break false;
             }
             Ok(Err(_)) | Err(_) => break false,
@@ -223,7 +248,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[smoke] R3 OK: tmux session {target} still running after kill (direct has-session check)");
     }
 
-    println!("SMOKE_PASS probe={} ls={} bytes={}", found_probe, found_ls, received.len());
+    println!(
+        "SMOKE_PASS probe={} ls={} bytes={}",
+        found_probe,
+        found_ls,
+        received.len()
+    );
     println!("SMOKE_B1_PASS round_trip=true ctrl_c=true");
     Ok(())
 }

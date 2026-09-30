@@ -135,7 +135,8 @@ for schema_file in \
   003_write_ingest_reconcile.sql \
   004_operational_review_and_continuity.sql \
   005_prompt_and_channel_action_authority.sql \
-  008_project_isolation.sql
+  008_project_isolation.sql \
+  009_runtime_triple.sql
 do
   echo "Applying schema/$schema_file"
   "$CONTAINER" cp "$INFRA_DIR/schema/$schema_file" "${CONTAINER_NAME}:/tmp/$schema_file"
