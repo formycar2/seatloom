@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default capabilities for SeatLoom main window","local":true,"windows":["main","supervisor"],"permissions":["core:default","core:event:allow-listen","core:event:allow-emit","core:window:allow-create","core:window:allow-close","core:window:allow-set-focus"]}}
