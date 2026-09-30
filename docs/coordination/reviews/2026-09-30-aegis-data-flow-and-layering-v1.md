@@ -14,6 +14,12 @@
 
 ## 0. What this document does
 
+> **Companion (2026-09-30):** this document settles *capture* (emit/observe/
+> interpose) and *fidelity* (tiers T1/T2/T3). How the objects compose — the
+> entity hierarchy, the **topic** semantic layer, the three data *kinds*
+> (activity/object/context), and the replay/traceability use case — is in
+> `docs/coordination/reviews/2026-09-30-aegis-object-model-and-traceability-v1.md`.
+
 Designs the data flow, then tests it against real data: does the proposed
 structure actually hold the information a live agent produces? It also introduces
 the **layering** the work requires — the governed work graph is a thin spine on
