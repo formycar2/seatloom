@@ -292,7 +292,86 @@ they can be captured, which dictates the mechanism:
 - **Pure semantic events** (handoff, verdict, decision) — no source at all →
   **emit only**.
 
-## 9. Open questions for Mr. Zhang and Lyra
+## 9. Capture strategy — emit, observe, or interpose
+
+Where does capture happen? Three positions, in increasing strength and cost:
+
+| Position | Mechanism | Reliability |
+|---|---|---|
+| **Emit** | agent calls MCP to report what it did | trust / discipline dependent |
+| **Observe** | watch the artifacts (git, tmux output) | reliable with a structured store (git), brittle without |
+| **Interpose** | SeatLoom *is* the tool (managed tmux, git, ssh proxy); all I/O flows through a choke point | structural — capture cannot be skipped |
+
+Interposition's precise value: **it converts a "must-trust-emit" channel into an
+"observe" channel** — wherever you interpose, you manufacture the external
+structured store that §8.1 found missing. It is also *control*, not just capture:
+a SeatLoom ssh proxy can block destructive commands and force approval on prod
+(US-P0-11), so capture and governance become one mechanism. It is the eventual
+answer to capture completeness — but "wrap everything" is wrong.
+
+### 9.1 What to interpose — by principle, not by ambition
+
+Interpose only where **(a) capture is otherwise impossible or untrusted AND
+(b) the stakes are high.** Applied:
+
+| Tool | Position | Why |
+|---|---|---|
+| **git** | observe, do not interpose | git-observe is already reliable; a managed git remote adds little |
+| **tmux** | managed session (already largely built) | `pipe-pane`/`send-keys`/attach exist; launching through SeatLoom is a small extension that also pins session identity (`external_ref`) |
+| **ssh / remote exec** | **interpose — the top candidate** | exactly the "no external store, high audit" gap; ssh proxies are a proven pattern (bastion / Teleport) |
+| **browser** | interpose (foundation exists) | high value (screenshots, web actions); a browser-automation capability already exists |
+| **arbitrary CLI / HTTP** | emit + tool-call capture + T3 | infinite surface; proxying is infeasible |
+
+### 9.2 Prefer the lightest interposition that works
+
+- **MCP action broker (lightest, unifies with the emit architecture).** Instead
+  of a transparent ssh proxy, give the agent an MCP tool like
+  `run_on_host(host, cmd)` that executes *through* SeatLoom (records, manages
+  credentials, returns structured results). The agent uses it because it is the
+  easiest path (no credential handling, structured output); capture is a side
+  effect. Carrot before stick: make the managed path the path of least
+  resistance, tighten later (locked-down env, no raw shell). Here **the MCP tool
+  is the proxy.**
+- **Egress gateway / sandbox (possibly highest ROI).** Rather than wrapping N
+  CLIs, control the network egress: the agent runs in a controlled environment
+  where all outbound ssh/http passes a recording gateway. One choke point
+  captures all network I/O, and it doubles as the isolation and budget
+  enforcement the PRD already wants. Cost: sandboxing the agent environment — a
+  heavier step than wrapping existing tmux.
+
+### 9.3 Reconciling with "mirror, not replacement"
+
+Interposition (a mandatory choke point) does conflict with "kill SeatLoom and
+tmux survives." Resolve it **per channel by risk**, not globally:
+
+- **Common channels** (tmux, git) → observe / fail-open: if SeatLoom is down,
+  direct access still works. Non-destructive, as today.
+- **High-risk channels** (prod ssh) → interpose / fail-closed is *desirable*: no
+  SeatLoom means no prod access. Here control is the point.
+
+"Observe, do not own" is thus not absolute — it is graded by stakes.
+
+### 9.4 It activates schema that already exists
+
+The interposing proxy is the missing *live writer* for `channel_action_receipts`
+(§8): that table's `target` / `action_kind` / `evidence_refs` / `policy_summary`
+/ `idempotency_key` / `result_event_id` shape was built for exactly this. So
+interposition is not a new foundation — it feeds one already laid.
+
+### 9.5 Sequencing
+
+- **P0** — no proxies. Emit (semantic events) + git-observe (files) + managed
+  tmux (mostly built). Enough to make the data flow real.
+- **P1** — MCP action broker (`run_on_host` and peers): the lightest
+  interposition, closing the world-action capture gap and feeding
+  `channel_action_receipts`.
+- **P2** — transparent ssh proxy / egress gateway / sandbox: the end state for
+  capture completeness, carrying isolation and policy enforcement with it.
+
+The direction is sound and eventually necessary, but it is the roadmap for
+*capture completeness*, not the P0 starting point.
+
+## 10. Open questions for Mr. Zhang and Lyra
 
 1. **T2 storage substrate.** When T2 is built, does it live in PostgreSQL
    (queryable, joins to T1 cheaply) or in object/file storage indexed by the
