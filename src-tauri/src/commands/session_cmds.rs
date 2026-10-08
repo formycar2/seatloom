@@ -323,7 +323,14 @@ pub async fn cmd_pty_write_bytes(
     sess.write(&bytes).map_err(|e| e.to_string())
 }
 
-/// Resize the mirrored tmux pane (maps to `tmux resize-pane`).
+/// Resize the mirrored tmux terminal to `rows` x `cols`.
+///
+/// Maps to `tmux resize-window` (not `resize-pane`, which exits 0 while
+/// silently doing nothing on a single-pane window — every seat session is
+/// single-pane). The underlying `PtySession::resize` reads the pane geometry
+/// back and returns an error if the resize did not take, so a success here
+/// means the pane was actually sized
+/// (NIMBUS-2026-10-08-pty-resize-window-v1).
 #[tauri::command]
 pub async fn cmd_pty_resize(
     state: State<'_, AppState>,
