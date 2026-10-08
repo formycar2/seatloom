@@ -184,13 +184,18 @@ terminal mirror. So:
   mirror fix. Then begin the reprioritized critical path (step 4 MCP).
 
 **UPDATE 2026-10-09 (resume after compaction):**
-- **End-state capture chain progress:** step 4 MCP emit MERGED (9a2a6af, Aegis hand-merged — Lyra
-  dropped the merge hop). step 6 governed dispatch (G19) IN FLIGHT: schema 012 MERGED (f5e86ca);
-  Nimbus scheduler CORE delivered+green (d7aab53, pure, 13 tests) but PARTIAL — 3 blockers (7-A
-  vocab widen, 7-B 012-landed, 7-C atomic append) ALL resolved by Aegis sign-off (2f5c2da). Nimbus
-  (PI/opus, worktree seatloom-worktrees/nimbus) is ACTIVELY wiring the 3 MCP tools (enqueue /
-  get_next_dispatch / complete_dispatch) + `append_event_in_tx` after rebasing onto 012. Loop did
-  NOT drop this time (Lyra routed correctly). Monitor armed on packet branch + track merge.
+- **CAPTURE CHAIN COMPLETE — step 4 + step 6 both LANDED on track.** step 4 MCP emit MERGED
+  (9a2a6af). **step 6 governed dispatch (G19) MERGED (`04e9033`, Aegis)** — `enqueue_dispatch` /
+  `get_next_dispatch` / `complete_dispatch` on seatloom-mcp-emit; A1 gained `append_event_in_tx`
+  (single append impl, 7-C) + 3 dispatch EventTypes & Dispatch RefType (7-A). Nimbus wiring 9b96ee8
+  + COMPLETE 4938545. Independently verified by Aegis on a FRESH scratch DB (001-012 canonical,
+  never live): all 13 proof points green + Layer A (fmt/clippy -D warnings/tests) on core+mcp-emit;
+  seatloom-tauri untouched. Lyra dropped the merge hop AGAIN; Aegis hand-merged (as step4/012). Also
+  unwedged Nimbus's pi git-rebase vi-hang (core.editor=true, durable). **So governed dispatch now
+  exists; the loop can self-run via MCP-pull (get_next_dispatch) instead of manual nudging.**
+- **NEXT = step 5 (first REAL captured event):** drive one emit_event through the real MCP stdio
+  path into LIVE canonical_events (live DB is 001-012 ready; 34 events baseline). Prove it lands +
+  projection + retrievable. Then structured UI (UM2 timeline).
 - **Live DB reconciled to 001–012 (DONE, step 5 unblocked).** The 10-day podman `seatloom-postgres`
   was stale: had 001-005/008(partial)/009/011 but NOT 010 and NOT a full 008 (`sessions.project_id`
   missing → 010's G5 premise failed). Applied 008→010→012 idempotently in-container via
