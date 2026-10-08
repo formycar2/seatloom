@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/seatloom-core",
+    "crates/seatloom-mcp-emit",
     "src-tauri",
     "src-cli",
 ]

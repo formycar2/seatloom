@@ -1,0 +1,26 @@
+[package]
+name = "seatloom-mcp-emit"
+version = "0.1.0"
+edition = "2021"
+
+# P0 step 4 — the MCP emit server. A SEPARATE binary (does not bloat src-tauri
+# or seatloom-core) that depends on seatloom-core for the write API (A1,
+# `SeatloomDb::append_event`) rather than re-implementing it. See
+# NIMBUS-2026-10-08-p0-step4-mcp-emit-v1.
+
+[[bin]]
+name = "seatloom-mcp-emit"
+path = "src/main.rs"
+
+[dependencies]
+seatloom-core = { path = "../seatloom-core" }
+# Hand-rolled JSON-RPC 2.0 over stdio (the packet §2.7 sanctioned fallback).
+# No MCP framework crate: rmcp 3.5.1 DID resolve through the internal
+# Artifactory (recorded in the delivery), but a one-tool stdio server routing
+# to an already-proven write API is a small, auditable surface, so the
+# dependency surface is kept minimal.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+nanoid = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
