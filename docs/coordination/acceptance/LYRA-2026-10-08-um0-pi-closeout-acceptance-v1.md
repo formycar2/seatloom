@@ -68,10 +68,12 @@ None outstanding. Aegis resolved HOLD-1 and HOLD-2 by ruling; Mira closed HOLD-3
 
 Recorded verbatim at merge time in this checkout (branch `track/infra-foundation`):
 
-| Step | Branch | Commit | Result |
-|---|---|---|---|
-| Mira merge | `packet/mira/MIRA-2026-09-30-live-mirror-um0-v1` | `0390003497ad6257e1b1420f780d85edc05a0978` | merged `--no-ff`; conflicts in `docs/coordination/MEMORY.md` and `docs/coordination/memory/2026-10-08.md` resolved by retaining both seats' writeback; no code conflicts |
-| Nimbus merge | `packet/nimbus/NIMBUS-2026-09-30-pipe-pane-reattach-fix-v1` | `63cfaeb980ab92a7ca23634a087548266e03d50c` (code `abe4245`) | merged into `track/infra-foundation` |
+| Step | Branch | Commit | Result | Merge commit |
+|---|---|---|---|---|
+| Mira merge | `packet/mira/MIRA-2026-09-30-live-mirror-um0-v1` | `0390003497ad6257e1b1420f780d85edc05a0978` | merged `--no-ff`; conflicts in `docs/coordination/MEMORY.md` and `docs/coordination/memory/2026-10-08.md` resolved by retaining both seats' writeback; no code conflicts | `feffcb7` |
+| Nimbus merge | `packet/nimbus/NIMBUS-2026-09-30-pipe-pane-reattach-fix-v1` | `63cfaeb980ab92a7ca23634a087548266e03d50c` (code `abe4245`) | merged into `track/infra-foundation`, clean | `1a34007` |
+
+Both target commits are confirmed ancestors of `track/infra-foundation` after the merges (`git merge-base --is-ancestor` for `0390003` and `abe4245` both return 0).
 
 Scope proof on the Mira delta (`5132875..0390003`): 14 files, +2030/−71, all under `ui/` and `docs/`; zero `crates/`, `src-tauri/`, `infra/`, `.sql`, `types-dto.ts`, `dto-to-v1.ts`.
 
@@ -87,4 +89,4 @@ Scope proof on the Mira delta (`5132875..0390003`): 14 files, +2030/−71, all u
 
 ---
 
-*Accepted by Lyra · 2026-10-08 · UM0 GO on the migrated PI team · Mira UM0 @ `0390003` + Nimbus pipe-pane @ `abe4245` merged into `track/infra-foundation` · Flux PASS at `faec42a`*
+*Accepted by Lyra · 2026-10-08 · UM0 GO on the migrated PI team · Mira UM0 merged at `feffcb7` (`0390003`) + Nimbus pipe-pane merged at `1a34007` (`abe4245`) into `track/infra-foundation` · Flux PASS at `faec42a`*
