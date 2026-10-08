@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use commands::{
     artifact_cmds::{cmd_get_artifact, cmd_list_artifacts},
+    dispatch_cmds::cmd_list_dispatches,
     document_cmds::{
         cmd_get_document, cmd_list_document_associations, cmd_list_document_sections,
         cmd_list_document_versions, cmd_list_documents,
@@ -144,6 +145,8 @@ fn main() {
             cmd_list_events,
             cmd_list_events_by_type,
             cmd_list_events_for_project,
+            // governed dispatch (G19) — seat inboxes
+            cmd_list_dispatches,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

@@ -7,11 +7,11 @@ use thiserror::Error;
 use tokio_postgres::Row;
 
 use crate::db::models::{
-    ArtifactRow, CanonicalEventRow, ChannelActionReceiptRow, CheckpointRow, DocumentAssociationRow,
-    DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow,
-    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
-    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
-    SeatRow, SessionRow, WorkItemRow,
+    ArtifactRow, CanonicalEventRow, ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow,
+    DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow,
+    HandoffReceiptRow, HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow,
+    PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use crate::objects::seat::SeatRole;
 use crate::objects::session::{Agent, Harness, ParseValueError};
@@ -400,6 +400,52 @@ impl SeatloomDb {
             )
             .await?;
         Ok(rows.iter().map(row_to_event).collect())
+    }
+
+    // =========================================================================
+    // Governed dispatch (G19) read model — schema 012
+    // =========================================================================
+
+    /// List a project's dispatches, ordered for an inbox view: grouped by seat,
+    /// then in_flight → ready → blocked → done, highest priority first, oldest
+    /// first within a tier.
+    pub async fn list_dispatches_for_project(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<DispatchRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, target_seat_id, issued_by, project_id, title, payload, status, \
+                        priority, issued_at, started_at, completed_at \
+                 FROM dispatches WHERE project_id = $1 \
+                 ORDER BY target_seat_id, \
+                   CASE status WHEN 'in_flight' THEN 0 WHEN 'ready' THEN 1 \
+                               WHEN 'blocked' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, \
+                   priority DESC, issued_at ASC LIMIT $2",
+                &[&project_id, &limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_dispatch).collect())
+    }
+
+    /// All dependency edges for a project's dispatches (joined via dispatch).
+    pub async fn list_dispatch_dependencies_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<DispatchDependencyRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT dd.dispatch_id, dd.dep_kind, dd.dep_value \
+                 FROM dispatch_dependencies dd \
+                 JOIN dispatches d ON d.id = dd.dispatch_id \
+                 WHERE d.project_id = $1",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_dispatch_dep).collect())
     }
 
     // =========================================================================
@@ -1484,6 +1530,30 @@ fn row_to_event(r: &Row) -> CanonicalEventRow {
         payload: r.get(4),
         created_at: r.get(5),
         project_id: r.get(6),
+    }
+}
+
+fn row_to_dispatch(r: &Row) -> DispatchRow {
+    DispatchRow {
+        id: r.get(0),
+        target_seat_id: r.get(1),
+        issued_by: r.get(2),
+        project_id: r.get(3),
+        title: r.get(4),
+        payload: r.get(5),
+        status: r.get(6),
+        priority: r.get(7),
+        issued_at: r.get(8),
+        started_at: r.get(9),
+        completed_at: r.get(10),
+    }
+}
+
+fn row_to_dispatch_dep(r: &Row) -> DispatchDependencyRow {
+    DispatchDependencyRow {
+        dispatch_id: r.get(0),
+        dep_kind: r.get(1),
+        dep_value: r.get(2),
     }
 }
 

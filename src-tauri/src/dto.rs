@@ -4,10 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
-    ArtifactRow, CanonicalEventRow, CheckpointRow, DocumentAssociationRow, DocumentRow,
-    DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow,
-    ProjectRoleBindingRow, ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
-    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    ArtifactRow, CanonicalEventRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
+    DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
+    HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, ReconcileItemRow,
+    ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow,
+    WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -289,6 +290,63 @@ impl From<CanonicalEventRow> for CanonicalEventDto {
             payload: r.payload,
             created_at: iso(r.created_at),
             project_id: r.project_id,
+        }
+    }
+}
+
+/// One dependency edge of a dispatch (schema 012).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchDependencyDto {
+    pub dispatch_id: String,
+    pub dep_kind: String,
+    pub dep_value: String,
+}
+
+impl From<DispatchDependencyRow> for DispatchDependencyDto {
+    fn from(r: DispatchDependencyRow) -> Self {
+        Self {
+            dispatch_id: r.dispatch_id,
+            dep_kind: r.dep_kind,
+            dep_value: r.dep_value,
+        }
+    }
+}
+
+/// A governed-dispatch inbox row (schema 012), with its dependency edges
+/// embedded so the UI renders a seat's queue in one pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchDto {
+    pub id: String,
+    pub target_seat_id: String,
+    pub issued_by: String,
+    pub project_id: String,
+    pub title: String,
+    pub payload: serde_json::Value,
+    pub status: String,
+    pub priority: i32,
+    pub issued_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub deps: Vec<DispatchDependencyDto>,
+}
+
+impl DispatchDto {
+    pub fn from_row(r: DispatchRow, deps: Vec<DispatchDependencyDto>) -> Self {
+        Self {
+            id: r.id,
+            target_seat_id: r.target_seat_id,
+            issued_by: r.issued_by,
+            project_id: r.project_id,
+            title: r.title,
+            payload: r.payload,
+            status: r.status,
+            priority: r.priority,
+            issued_at: iso(r.issued_at),
+            started_at: iso_opt(r.started_at),
+            completed_at: iso_opt(r.completed_at),
+            deps,
         }
     }
 }

@@ -423,3 +423,34 @@ pub struct ChannelActionReceiptRow {
     pub result_event_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
+
+// =============================================================================
+// Schema 012: Governed dispatch (G19)
+// Mirrors infra/postgres/schema/012_governed_dispatch.sql
+// =============================================================================
+
+/// A per-seat dispatch (the governed-dispatch inbox row). Read model for the
+/// dispatch-inbox UI. One row = one task routed to a seat.
+#[derive(Debug, Clone)]
+pub struct DispatchRow {
+    pub id: String,
+    pub target_seat_id: String,
+    pub issued_by: String,
+    pub project_id: String,
+    pub title: String,
+    pub payload: serde_json::Value,
+    pub status: String, // 'ready'|'blocked'|'in_flight'|'done'
+    pub priority: i32,
+    pub issued_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// One dependency edge of a dispatch (readiness is an existence query over the
+/// referent; no FK, per 012).
+#[derive(Debug, Clone)]
+pub struct DispatchDependencyRow {
+    pub dispatch_id: String,
+    pub dep_kind: String, // 'event'|'artifact'|'dispatch'
+    pub dep_value: String,
+}

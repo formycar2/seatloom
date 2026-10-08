@@ -1,5 +1,6 @@
 pub mod artifact_cmds;
 pub mod delegation_cmds;
+pub mod dispatch_cmds;
 pub mod document_cmds;
 pub mod handoff_cmds;
 pub mod inbox_cmds;
