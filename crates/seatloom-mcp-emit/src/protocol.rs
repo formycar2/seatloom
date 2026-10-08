@@ -88,12 +88,19 @@ pub fn initialize_result(client_params: &Value) -> Value {
     })
 }
 
-/// `tools/list` result: exactly one tool, `emit_event`, with its JSON Schema.
-/// The description carries the value-domain contract verbatim so a seat reading
-/// the tool sees the same rules every artifact states.
+/// `tools/list` result: the step-4 `emit_event` tool plus the three step-6
+/// governed-dispatch tools, each with its JSON Schema. Descriptions carry the
+/// relevant contract rules so a seat reading the tool sees the same rules every
+/// artifact states.
 pub fn tools_list_result() -> Value {
     json!({
-        "tools": [ emit_event_tool() ] })
+        "tools": [
+            emit_event_tool(),
+            enqueue_dispatch_tool(),
+            get_next_dispatch_tool(),
+            complete_dispatch_tool(),
+        ]
+    })
 }
 
 fn emit_event_tool() -> Value {
@@ -170,6 +177,83 @@ fn emit_event_tool() -> Value {
     })
 }
 
+/// Shared enum of the dependency kinds, for the dispatch tools' schemas.
+const DEP_KIND_ENUM: [&str; 3] = ["event", "artifact", "dispatch"];
+
+fn enqueue_dispatch_tool() -> Value {
+    json!({
+        "name": "enqueue_dispatch",
+        "description": "Enqueue a governed dispatch into a seat's inbox (issuer: Aegis / Lyra). \
+            Inserts the dispatches row + its dependency rows and appends SeatDispatchIssued in ONE \
+            transaction. The dispatch is 'ready' iff every dependency's referent already exists, \
+            else 'blocked' (blocked is NOT an error). Delivery is by PULL only (get_next_dispatch); \
+            there is no mid-turn injection.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target_seat_id", "title", "payload"],
+            "properties": {
+                "target_seat_id": { "type": "string", "minLength": 1, "description": "The seat that must act (seats.id)." },
+                "title": { "type": "string", "minLength": 1, "description": "One-line routing summary." },
+                "payload": { "type": "object", "description": "Packet path + instructions, e.g. {\"packet\": \"docs/.../X.md\"}." },
+                "priority": { "type": "integer", "description": "Higher pulls first; ties by issued_at. Default 0." },
+                "project_id": { "type": "string", "description": "Optional; defaults to SEATLOOM_PROJECT_ID env." },
+                "id": { "type": "string", "description": "Optional dispatch id; generated when absent." },
+                "dependencies": {
+                    "type": "array",
+                    "description": "Graph edges AS DATA. The dispatch is ready iff every referent exists.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["dep_kind", "dep_value"],
+                        "properties": {
+                            "dep_kind": { "type": "string", "enum": DEP_KIND_ENUM },
+                            "dep_value": { "type": "string", "minLength": 1, "description": "canonical_events.id | artifacts.id | dispatches.id" }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn get_next_dispatch_tool() -> Value {
+    json!({
+        "name": "get_next_dispatch",
+        "description": "Pull THIS seat's next ready, highest-priority dispatch when idle (end of turn), \
+            mark it in_flight, and append SeatDispatchDelivered in ONE transaction. Blocked items are \
+            SKIPPED (never head-of-line-block). If the seat already holds an in_flight dispatch, the \
+            SAME one is returned (one in_flight per seat is a database fact). A cross-seat cycle or an \
+            all-blocked stall is detected and escalated (SupervisorMessage + daily-log line), never hung. \
+            IDENTITY IS NOT A PARAMETER: the calling seat is resolved from the server's SEATLOOM_ACTOR_REF; \
+            there is no seat_id input to spoof.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "description": "Optional; defaults to SEATLOOM_PROJECT_ID env." }
+            }
+        }
+    })
+}
+
+fn complete_dispatch_tool() -> Value {
+    json!({
+        "name": "complete_dispatch",
+        "description": "Mark THIS seat's in_flight dispatch done and append SeatDispatchCompleted in ONE \
+            transaction. The seat can only complete its own in_flight dispatch (identity from \
+            SEATLOOM_ACTOR_REF, ownership + in_flight state checked in SQL).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1, "description": "The in_flight dispatch to complete." }
+            }
+        }
+    })
+}
+
 /// A `tools/call` result carrying one text block. `is_error` maps to the MCP
 /// `isError` flag so a rejection is a tool error, not a transport error.
 pub fn tool_call_result(text: &str, is_error: bool) -> Value {
@@ -232,11 +316,23 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_exactly_one_tool_named_emit_event() {
+    fn tools_list_advertises_the_four_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "emit_event");
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "emit_event",
+                "enqueue_dispatch",
+                "get_next_dispatch",
+                "complete_dispatch"
+            ]
+        );
+        // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
+        let get_next = &tools[2]["inputSchema"]["properties"];
+        assert!(get_next.get("seat_id").is_none());
+        assert!(get_next.get("target_seat_id").is_none());
     }
 
     #[test]

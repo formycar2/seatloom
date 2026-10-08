@@ -35,24 +35,8 @@
 //! by FK — Onyx's migration has no FK on `dep_value` by design. This module
 //! consumes the *result* of that evaluation as [`DispatchView::status`].
 //!
-//! # Status: built, tested, awaiting its consumer (two sequenced dependencies)
-//!
-//! The DB/MCP integration layer that *calls* these functions
-//! (`enqueue_dispatch` / `get_next_dispatch` / `complete_dispatch`) is NOT in
-//! this commit because it has two prerequisites outside this packet's write set,
-//! both reported in the delivery doc:
-//!   1. the three new `EventType` values (`SeatDispatchIssued` /
-//!      `SeatDispatchDelivered` / `SeatDispatchCompleted`) and the `dispatch`
-//!      `RefType` value in `seatloom-core`'s `event_domain.rs` — A1's accepted
-//!      file, which packet §4 says to flag for Lyra to sequence, not edit here;
-//!   2. Onyx's `012_governed_dispatch.sql`, not yet landed.
-//!
-//! Until the consumer lands, these items are intentionally unused. They are
-//! `#[allow(dead_code)]` so the workspace stays green under `-D warnings`; the
-//! allow is removed the moment the DB layer wires them (that change is a
-//! one-line deletion, tracked in the delivery doc). Every item is fully unit
-//! tested now, so the algorithm is proven independent of its blocked glue.
-#![allow(dead_code)]
+//! Consumed by [`crate::dispatch`], which supplies live readiness (existence
+//! queries) and the atomic row+event write.
 
 use std::collections::{HashMap, HashSet};
 

@@ -5,10 +5,12 @@
 //! one tool, `emit_event`, routed through the A1 write API. See
 //! NIMBUS-2026-10-08-p0-step4-mcp-emit-v1.
 
+mod dispatch;
 mod emit;
 mod protocol;
 mod scheduler;
 
+use deadpool_postgres::Pool;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -37,8 +39,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // (never the live `seatloom` DB when under test — the operator points it at
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
-    let db = SeatloomDb::new(pool);
-    eprintln!("seatloom-mcp-emit: ready (one tool: emit_event)");
+    let db = SeatloomDb::new(pool.clone());
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -48,7 +50,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if line.trim().is_empty() {
             continue;
         }
-        let response = handle_line(&db, &line).await;
+        let response = handle_line(&db, &pool, &line).await;
         if let Some(resp) = response {
             let mut bytes = serde_json::to_vec(&resp)?;
             bytes.push(b'\n');
@@ -61,7 +63,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Handle one inbound line. Returns `Some(response)` for a request, `None` for a
 /// notification (which must never be answered).
-async fn handle_line(db: &SeatloomDb, line: &str) -> Option<Value> {
+async fn handle_line(db: &SeatloomDb, pool: &Pool, line: &str) -> Option<Value> {
     match classify(line) {
         Inbound::Notification { method } => {
             eprintln!("seatloom-mcp-emit: notification {method} (no response)");
@@ -69,37 +71,50 @@ async fn handle_line(db: &SeatloomDb, line: &str) -> Option<Value> {
         }
         Inbound::Malformed { id, message } => Some(error(id, INVALID_REQUEST, &message)),
         Inbound::Request { id, method, params } => {
-            Some(handle_request(db, id, &method, params).await)
+            Some(handle_request(db, pool, id, &method, params).await)
         }
     }
 }
 
-async fn handle_request(db: &SeatloomDb, id: Value, method: &str, params: Value) -> Value {
+async fn handle_request(
+    db: &SeatloomDb,
+    pool: &Pool,
+    id: Value,
+    method: &str,
+    params: Value,
+) -> Value {
     match method {
         "initialize" => success(id, initialize_result(&params)),
         "ping" => success(id, serde_json::json!({})),
         "tools/list" => success(id, tools_list_result()),
-        "tools/call" => handle_tools_call(db, id, params).await,
+        "tools/call" => handle_tools_call(db, pool, id, params).await,
         other => error(id, METHOD_NOT_FOUND, &format!("method not found: {other}")),
     }
 }
 
-/// `tools/call` dispatch. Only `emit_event` exists; any other name is a
-/// method-not-found-style tool error. A rejection (parse or `WriteError`) is a
-/// tool error with `isError: true`, carrying the typed message verbatim — never
-/// a transport error, and never a partial write.
-async fn handle_tools_call(db: &SeatloomDb, id: Value, params: Value) -> Value {
+/// `tools/call` dispatch. Four tools: `emit_event` (step 4) and the three
+/// governed-dispatch tools (step 6). Any other name is a tool error. A rejection
+/// is a tool error with `isError: true`, carrying the typed message verbatim —
+/// never a transport error, and never a partial write.
+async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    if name != "emit_event" {
-        return success(
+    let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+    match name {
+        "emit_event" => call_emit(db, id, arguments).await,
+        "enqueue_dispatch" => call_enqueue(pool, id, arguments).await,
+        "get_next_dispatch" => call_get_next(pool, id, arguments).await,
+        "complete_dispatch" => call_complete(pool, id, arguments).await,
+        other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {name:?} (only emit_event exists)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch)"),
                 true,
             ),
-        );
+        ),
     }
-    let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+}
+
+async fn call_emit(db: &SeatloomDb, id: Value, arguments: Value) -> Value {
     let args: emit::EmitArgs = match serde_json::from_value(arguments) {
         Ok(a) => a,
         Err(e) => {
@@ -109,7 +124,6 @@ async fn handle_tools_call(db: &SeatloomDb, id: Value, params: Value) -> Value {
             )
         }
     };
-
     match emit::emit(db, args).await {
         Ok(summary) => success(
             id,
@@ -122,6 +136,57 @@ async fn handle_tools_call(db: &SeatloomDb, id: Value, params: Value) -> Value {
             ),
         ),
         Err(message) => success(id, tool_call_result(&message, true)),
+    }
+}
+
+async fn call_enqueue(pool: &Pool, id: Value, arguments: Value) -> Value {
+    let args: dispatch::EnqueueArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("enqueue_dispatch rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::enqueue(pool, args).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+async fn call_get_next(pool: &Pool, id: Value, arguments: Value) -> Value {
+    // The only accepted argument is an optional project_id; identity is NEVER a
+    // parameter (non-forgeable seat identity).
+    let project_id = arguments
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    match dispatch::get_next(pool, project_id).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+async fn call_complete(pool: &Pool, id: Value, arguments: Value) -> Value {
+    let args: dispatch::CompleteArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("complete_dispatch rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::complete(pool, args).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }
 }
 
