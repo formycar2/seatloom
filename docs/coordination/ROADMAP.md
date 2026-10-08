@@ -182,3 +182,25 @@ terminal mirror. So:
 - **Pending Aegis tasks:** (1) merge mirror fix (nudge Lyra), (2) reconcile local track (~30 ahead)
   → GitLab, (3) rebuild stale local DB (001→011; running DB lacks 008/010), (4) restart UI after
   mirror fix. Then begin the reprioritized critical path (step 4 MCP).
+
+## Parked research conclusions — verified durable (2026-10-08 sweep)
+
+Confirmed already durable (committed review docs + §4 gap register), NOT lost on compaction:
+data-layer 4-types + T1/T2/T3, object hierarchy project→topic→workitem→event, topic semantic layer,
+external_ref, capture strategy emit/observe/interpose, "signal→derived revisable attribution" rule,
+capability assets published-not-forked (G11), recurring-task object (G14), SUT-version dim (G15),
+recording-shell (G13), T2 traces (G12), AND the **data-use goal** — workflow optimization +
+training vertical models from `(context, reasoning, result)` triples (data-flow review §"what T2 is
+for").
+
+**Added (was only in conversation, now recorded) — provider-proxy for model-I/O capture (refines
+G18):** to capture model reasoning/prompts+completions and to absorb value from ANY harness
+(including closed ones), SeatLoom runs **its own provider-proxy** in front of the model endpoints.
+Now concrete post-migration: the PI seats route through `stepplan`/`modelproxy`/`subworker`
+(`~/.pi/agent/models.json`) — point those baseURLs at a SeatLoom-local proxy and every seat's model
+I/O becomes a captured T2/T3 stream, harness-agnostically. This is the model-I/O capture channel
+(complements step-4 MCP emit, which captures seat ACTIONS). P1/P2.
+
+**Flagged, NOT fabricated:** an "AD for runtime-vs-knowledge separation" was mentioned earlier but
+its exact content is not in any durable doc — reconstruct/confirm when G11 (capability assets) is
+designed; do not invent it.
