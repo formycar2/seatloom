@@ -8,6 +8,7 @@ import SeatsView from './views/SeatsView';
 import ArtifactsView from './views/ArtifactsView';
 import PlaybookView from './views/PlaybookView';
 import AllProjectsView from './views/AllProjectsView';
+import LiveSeatsView from './views/LiveSeatsView';
 import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import SessionDetail from './components/SessionDetail';
@@ -30,18 +31,43 @@ import ReconcileNotification from './components/ReconcileNotification';
 import SwitchProtectionDialog from './components/SwitchProtectionDialog';
 import { useDataStore } from './stores/useDataStore';
 import { useAppStore } from './stores/useAppStore';
+import { useLiveSessionsStore } from './stores/useLiveSessionsStore';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
+import { ProvenanceFrame } from './components/ProvenanceBanner';
+import { provenanceForTab } from './lib/provenance';
 import { ArtifactSubtype, ArtifactTemplate, SelectedObjectType } from './types';
 
-type Tab = 'dashboard' | 'inbox' | 'timeline' | 'workitems' | 'seats' | 'artifacts' | 'playbook' | 'sessions' | 'all-projects';
+type Tab =
+  | 'live-seats'
+  | 'dashboard'
+  | 'inbox'
+  | 'timeline'
+  | 'workitems'
+  | 'seats'
+  | 'artifacts'
+  | 'playbook'
+  | 'sessions'
+  | 'all-projects';
 type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress' | 'addSeat';
 type SelectedObject = { type: SelectedObjectType; id: string } | null;
 
 const App: React.FC = () => {
-  const { projectData, activeProjectId, setActiveProject, addWorkItem, hydrateFromBackend } = useDataStore();
+  const {
+    projectData,
+    activeProjectId,
+    setActiveProject,
+    addWorkItem,
+    hydrateFromBackend,
+    backendHydrated,
+  } = useDataStore();
+  // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
+  // claim LIVE while tmux discovery is empty or has failed.
+  const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
   const { projectUIStates, updateProjectUIState } = useAppStore();
   const projectUIStatesRef = useRef(projectUIStates);
-  useEffect(() => { projectUIStatesRef.current = projectUIStates; });
+  useEffect(() => {
+    projectUIStatesRef.current = projectUIStates;
+  });
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -49,12 +75,13 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  // UM0: open on the live mirror, the one surface that proves itself.
+  const [activeTab, setActiveTab] = useState<Tab>('live-seats');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
-  const [showSupervisorIM, setShowSupervisorIM] = useState(() =>
-    localStorage.getItem('seatloom.supervisor.open') === 'true'
+  const [showSupervisorIM, setShowSupervisorIM] = useState(
+    () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
   const [supervisorDetached, setSupervisorDetached] = useState(false);
 
@@ -67,7 +94,8 @@ const App: React.FC = () => {
   // embedded panel next to the detached window.
   useEffect(() => {
     if (!isTauri()) return;
-    api.supervisorWindowStatus()
+    api
+      .supervisorWindowStatus()
       .then((s) => setSupervisorDetached(s.detached))
       .catch(() => {});
     let offDetached: (() => void) | null = null;
@@ -75,10 +103,14 @@ const App: React.FC = () => {
     onSupervisorDetached(() => {
       setSupervisorDetached(true);
       setShowSupervisorIM(false);
-    }).then((fn) => { offDetached = fn; });
+    }).then((fn) => {
+      offDetached = fn;
+    });
     onSupervisorReembedded(() => {
       setSupervisorDetached(false);
-    }).then((fn) => { offReembed = fn; });
+    }).then((fn) => {
+      offReembed = fn;
+    });
     return () => {
       if (offDetached) offDetached();
       if (offReembed) offReembed();
@@ -110,7 +142,7 @@ const App: React.FC = () => {
   const [showReconcileSummary, setShowReconcileSummary] = useState(false);
   const currentProjectData = activeProjectId ? projectData[activeProjectId] : null;
   const reconcileIssueCount = useMemo(
-    () => currentProjectData?.workItems.filter(w => w.status === 'Blocked').length ?? 0,
+    () => currentProjectData?.workItems.filter((w) => w.status === 'Blocked').length ?? 0,
     [currentProjectData?.workItems],
   );
 
@@ -121,13 +153,20 @@ const App: React.FC = () => {
     artifactTemplate: ArtifactTemplate | null;
     artifactSubtype: ArtifactSubtype | null;
     timeRange: string;
-  }>({ seatId: null, workItemId: null, eventType: null, artifactTemplate: null, artifactSubtype: null, timeRange: '24h' });
+  }>({
+    seatId: null,
+    workItemId: null,
+    eventType: null,
+    artifactTemplate: null,
+    artifactSubtype: null,
+    timeRange: '24h',
+  });
 
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
   const [protectionType, setProtectionType] = useState<'session' | 'form' | null>(null);
 
   useEffect(() => {
-    if (!activeProjectId && activeTab !== 'all-projects') {
+    if (!activeProjectId && activeTab !== 'all-projects' && activeTab !== 'live-seats') {
       setIsInitOpen(true);
     }
   }, [activeProjectId, activeTab]);
@@ -175,10 +214,20 @@ const App: React.FC = () => {
       return;
     }
     const currentData = activeProjectId ? projectData[activeProjectId] : null;
-    const hasRunningSessions = currentData?.sessions.some((s) => s.status === 'Running' || s.status === 'InputRequired');
+    const hasRunningSessions = currentData?.sessions.some(
+      (s) => s.status === 'Running' || s.status === 'InputRequired',
+    );
     const hasUnsavedInput = activeForm !== 'none' && activeForm !== 'pipelineProgress';
-    if (hasRunningSessions) { setPendingProjectId(id); setProtectionType('session'); return; }
-    if (hasUnsavedInput) { setPendingProjectId(id); setProtectionType('form'); return; }
+    if (hasRunningSessions) {
+      setPendingProjectId(id);
+      setProtectionType('session');
+      return;
+    }
+    if (hasUnsavedInput) {
+      setPendingProjectId(id);
+      setProtectionType('form');
+      return;
+    }
     performSwitch(id);
   };
 
@@ -191,14 +240,22 @@ const App: React.FC = () => {
 
   // ─── Object selection ───
   const handleSelectObject = (type: string, data: any) => {
-    if (type === 'Action' && data === 'AddSeat') { setActiveForm('addSeat'); return; }
-    if (type === 'Action' && data === 'AddWorkItem') { setActiveForm('createWorkItem'); return; }
+    if (type === 'Action' && data === 'AddSeat') {
+      setActiveForm('addSeat');
+      return;
+    }
+    if (type === 'Action' && data === 'AddWorkItem') {
+      setActiveForm('createWorkItem');
+      return;
+    }
     const id = typeof data === 'string' ? data : data.id;
     setSelectedObject({ type: type as any, id });
     setActiveForm('none');
     if (type === 'Session') {
-      const session = typeof data === 'string' ? currentProjectData?.sessions.find(s => s.id === data) : data;
-      if (session && (session.status === 'Running' || session.status === 'InputRequired')) setIsTerminalOpen(true);
+      const session =
+        typeof data === 'string' ? currentProjectData?.sessions.find((s) => s.id === data) : data;
+      if (session && (session.status === 'Running' || session.status === 'InputRequired'))
+        setIsTerminalOpen(true);
     }
   };
 
@@ -211,12 +268,47 @@ const App: React.FC = () => {
     const current = activeProjectId ? projectData[activeProjectId] : null;
     if (!current) return;
     const ref = item.object_ref?.toLowerCase() || '';
-    if (ref.startsWith('ho-')) { const h = current.handoffs.find((e: any) => e.id.toLowerCase() === ref); if (h) { setSelectedObject({ type: 'Handoff', id: h.id }); setActiveForm('none'); return; } }
-    if (ref.startsWith('wi-')) { const w = current.workItems.find((e: any) => e.id.toLowerCase() === ref); if (w) { setSelectedObject({ type: 'WorkItem', id: w.id }); setActiveForm('none'); return; } }
-    if (ref.startsWith('ses-')) { const s = current.sessions.find((e: any) => e.id.toLowerCase() === ref); if (s) { setSelectedObject({ type: 'Session', id: s.id }); setActiveForm('none'); if (s.status === 'Running' || s.status === 'InputRequired') setIsTerminalOpen(true); return; } }
-    if (ref.startsWith('ar-')) { const a = current.artifacts.find((e: any) => e.id.toLowerCase() === ref); if (a) { setSelectedObject({ type: 'Artifact', id: a.id }); setActiveForm('none'); return; } }
-    const linkedId = item.linked_artifact_ids?.find((id: string) => current.artifacts.some((a: any) => a.id === id));
-    if (linkedId) { setSelectedObject({ type: 'Artifact', id: linkedId }); setActiveForm('none'); return; }
+    if (ref.startsWith('ho-')) {
+      const h = current.handoffs.find((e: any) => e.id.toLowerCase() === ref);
+      if (h) {
+        setSelectedObject({ type: 'Handoff', id: h.id });
+        setActiveForm('none');
+        return;
+      }
+    }
+    if (ref.startsWith('wi-')) {
+      const w = current.workItems.find((e: any) => e.id.toLowerCase() === ref);
+      if (w) {
+        setSelectedObject({ type: 'WorkItem', id: w.id });
+        setActiveForm('none');
+        return;
+      }
+    }
+    if (ref.startsWith('ses-')) {
+      const s = current.sessions.find((e: any) => e.id.toLowerCase() === ref);
+      if (s) {
+        setSelectedObject({ type: 'Session', id: s.id });
+        setActiveForm('none');
+        if (s.status === 'Running' || s.status === 'InputRequired') setIsTerminalOpen(true);
+        return;
+      }
+    }
+    if (ref.startsWith('ar-')) {
+      const a = current.artifacts.find((e: any) => e.id.toLowerCase() === ref);
+      if (a) {
+        setSelectedObject({ type: 'Artifact', id: a.id });
+        setActiveForm('none');
+        return;
+      }
+    }
+    const linkedId = item.linked_artifact_ids?.find((id: string) =>
+      current.artifacts.some((a: any) => a.id === id),
+    );
+    if (linkedId) {
+      setSelectedObject({ type: 'Artifact', id: linkedId });
+      setActiveForm('none');
+      return;
+    }
     setActiveForm('none');
   };
 
@@ -236,28 +328,49 @@ const App: React.FC = () => {
   const resolvedData = useMemo(() => {
     if (!selectedObject || !currentProjectData) return null;
     switch (selectedObject.type) {
-      case 'Seat': return currentProjectData.seats.find((s) => s.id === selectedObject.id) ?? null;
-      case 'Session': return currentProjectData.sessions.find((s) => s.id === selectedObject.id) ?? null;
-      case 'WorkItem': return currentProjectData.workItems.find((w) => w.id === selectedObject.id) ?? null;
-      case 'Artifact': return currentProjectData.artifacts.find((a) => a.id === selectedObject.id) ?? null;
-      case 'Handoff': return currentProjectData.handoffs.find((h) => h.id === selectedObject.id) ?? null;
-      default: return null;
+      case 'Seat':
+        return currentProjectData.seats.find((s) => s.id === selectedObject.id) ?? null;
+      case 'Session':
+        return currentProjectData.sessions.find((s) => s.id === selectedObject.id) ?? null;
+      case 'WorkItem':
+        return currentProjectData.workItems.find((w) => w.id === selectedObject.id) ?? null;
+      case 'Artifact':
+        return currentProjectData.artifacts.find((a) => a.id === selectedObject.id) ?? null;
+      case 'Handoff':
+        return currentProjectData.handoffs.find((h) => h.id === selectedObject.id) ?? null;
+      default:
+        return null;
     }
   }, [selectedObject, currentProjectData]);
 
   // ─── Detail content renderer ───
   const renderDetailContent = () => {
     if (activeForm === 'pipelineProgress') return <PipelineProgress />;
-    if (activeForm === 'createWorkItem') return <WorkItemForm onClose={() => setActiveForm('none')} />;
-    if (activeForm === 'createHandoff') return <HandoffForm onClose={() => setActiveForm('none')} workItemId={selectedObject?.type === 'WorkItem' ? selectedObject.id : undefined} />;
+    if (activeForm === 'createWorkItem')
+      return <WorkItemForm onClose={() => setActiveForm('none')} />;
+    if (activeForm === 'createHandoff')
+      return (
+        <HandoffForm
+          onClose={() => setActiveForm('none')}
+          workItemId={selectedObject?.type === 'WorkItem' ? selectedObject.id : undefined}
+        />
+      );
     if (!selectedObject || !resolvedData) return <ProjectOverview />;
     switch (selectedObject.type) {
-      case 'Seat': return <SeatDetail seat={resolvedData as any} />;
-      case 'Session': return <SessionDetail session={resolvedData as any} onOpenArtifact={handleOpenArtifact} />;
-      case 'WorkItem': return <WorkItemDetail workItem={resolvedData as any} onOpenArtifact={handleOpenArtifact} />;
-      case 'Artifact': return <ArtifactDetail artifact={resolvedData as any} />;
-      case 'Handoff': return <HandoffDetail handoff={resolvedData as any} onOpenArtifact={handleOpenArtifact} />;
-      default: return null;
+      case 'Seat':
+        return <SeatDetail seat={resolvedData as any} />;
+      case 'Session':
+        return <SessionDetail session={resolvedData as any} onOpenArtifact={handleOpenArtifact} />;
+      case 'WorkItem':
+        return (
+          <WorkItemDetail workItem={resolvedData as any} onOpenArtifact={handleOpenArtifact} />
+        );
+      case 'Artifact':
+        return <ArtifactDetail artifact={resolvedData as any} />;
+      case 'Handoff':
+        return <HandoffDetail handoff={resolvedData as any} onOpenArtifact={handleOpenArtifact} />;
+      default:
+        return null;
     }
   };
 
@@ -266,13 +379,19 @@ const App: React.FC = () => {
     if (activeTab === 'all-projects') {
       return <AllProjectsView onSelectProject={handleProjectSwitchRequest} />;
     }
+    if (activeTab === 'live-seats') {
+      return <LiveSeatsView />;
+    }
     if (activeTab === 'sessions') {
       return <SessionsWorkspace />;
     }
     if (activeTab === 'dashboard') {
       return (
         <SupervisionDashboard
-          onNavigateToInbox={() => { setActiveTab('inbox'); setSelectedObject(null); }}
+          onNavigateToInbox={() => {
+            setActiveTab('inbox');
+            setSelectedObject(null);
+          }}
           onSelectInboxItem={handleInboxSelect}
         />
       );
@@ -284,17 +403,50 @@ const App: React.FC = () => {
     const listContent = (() => {
       switch (activeTab) {
         case 'inbox':
-          return <InboxView onSelectObject={handleInboxSelect} selectedObjectId={selectedObject?.id} />;
+          return (
+            <InboxView onSelectObject={handleInboxSelect} selectedObjectId={selectedObject?.id} />
+          );
         case 'timeline':
-          return <TimelineView onSelectObject={handleSelectObject} onOpenArtifact={handleOpenArtifact} filters={timelineFilters} onFiltersChange={setTimelineFilters} />;
+          return (
+            <TimelineView
+              onSelectObject={handleSelectObject}
+              onOpenArtifact={handleOpenArtifact}
+              filters={timelineFilters}
+              onFiltersChange={setTimelineFilters}
+            />
+          );
         case 'workitems':
-          return <WorkItemsView onSelectWI={(wi) => wi === ('Action:AddWorkItem' as any) ? handleSelectObject('Action', 'AddWorkItem') : handleSelectObject('WorkItem', wi)} />;
+          return (
+            <WorkItemsView
+              onSelectWI={(wi) =>
+                wi === ('Action:AddWorkItem' as any)
+                  ? handleSelectObject('Action', 'AddWorkItem')
+                  : handleSelectObject('WorkItem', wi)
+              }
+            />
+          );
         case 'seats':
-          return <SeatsView onSelectSeat={(s) => handleSelectObject('Seat', s)} onSelectSession={(s) => handleSelectObject('Session', s)} selectedId={selectedObject?.id} />;
+          return (
+            <SeatsView
+              onSelectSeat={(s) => handleSelectObject('Seat', s)}
+              onSelectSession={(s) => handleSelectObject('Session', s)}
+              selectedId={selectedObject?.id}
+            />
+          );
         case 'artifacts':
-          return <ArtifactsView onSelectArtifact={(a) => handleSelectObject('Artifact', a)} selectedId={selectedObject?.id} />;
+          return (
+            <ArtifactsView
+              onSelectArtifact={(a) => handleSelectObject('Artifact', a)}
+              selectedId={selectedObject?.id}
+            />
+          );
         case 'playbook':
-          return <PlaybookView onSelectArtifact={(a) => handleSelectObject('Artifact', a)} selectedId={selectedObject?.id} />;
+          return (
+            <PlaybookView
+              onSelectArtifact={(a) => handleSelectObject('Artifact', a)}
+              selectedId={selectedObject?.id}
+            />
+          );
         default:
           return null;
       }
@@ -314,20 +466,50 @@ const App: React.FC = () => {
     <>
       <AppShell
         activeTab={activeTab}
-        onTabChange={(tab) => { setActiveTab(tab as Tab); setSelectedObject(null); setActiveForm('none'); }}
+        onTabChange={(tab) => {
+          setActiveTab(tab as Tab);
+          setSelectedObject(null);
+          setActiveForm('none');
+        }}
         onSelectProject={handleProjectSwitchRequest}
         onInitProject={() => setIsInitOpen(true)}
         onShowHelp={() => setShowHelp(true)}
         isTerminalOpen={isTerminalOpen}
         onTerminalToggle={() => setIsTerminalOpen(!isTerminalOpen)}
       >
-        {renderMainView()}
+        {/* Every surface declares its provenance here, in exactly one place, so
+            no view can silently read as live. See lib/provenance.ts. */}
+        <ProvenanceFrame
+          provenance={provenanceForTab(activeTab, backendHydrated, seatDiscovery)}
+          onNavigateToLive={
+            activeTab === 'live-seats'
+              ? undefined
+              : () => {
+                  setActiveTab('live-seats');
+                  setSelectedObject(null);
+                  setActiveForm('none');
+                }
+          }
+        >
+          {renderMainView()}
+        </ProvenanceFrame>
       </AppShell>
 
-      <InitDialog isOpen={isInitOpen} onClose={() => setIsInitOpen(false)} onInitialize={() => { setActiveProject('p-1'); setIsInitOpen(false); }} />
+      <InitDialog
+        isOpen={isInitOpen}
+        onClose={() => setIsInitOpen(false)}
+        onInitialize={() => {
+          setActiveProject('p-1');
+          setIsInitOpen(false);
+        }}
+      />
       <AddSeatDialog isOpen={activeForm === 'addSeat'} onClose={() => setActiveForm('none')} />
       <ShortcutHelpDialog isOpen={showHelp} onClose={() => setShowHelp(false)} />
-      <SupervisorCommandBar isOpen={showCommandBar} onClose={() => setShowCommandBar(false)} onConfirmProposal={handleConfirmProposal} />
+      <SupervisorCommandBar
+        isOpen={showCommandBar}
+        onClose={() => setShowCommandBar(false)}
+        onConfirmProposal={handleConfirmProposal}
+      />
 
       {/* Supervisor IM (V2 floating panel) — embedded by default; ⌘K opens;
           Detach opens it in its own OS-level Tauri window (R3). Note: the V2
@@ -339,19 +521,36 @@ const App: React.FC = () => {
               component itself stays untouched. Fixed top-right of viewport. */}
           <button
             onClick={async () => {
-              if (!isTauri()) { setSupervisorDetached(true); setShowSupervisorIM(false); return; }
-              try { await api.openSupervisorWindow(); }
-              catch (e) { console.error('openSupervisorWindow failed', e); }
+              if (!isTauri()) {
+                setSupervisorDetached(true);
+                setShowSupervisorIM(false);
+                return;
+              }
+              try {
+                await api.openSupervisorWindow();
+              } catch (e) {
+                console.error('openSupervisorWindow failed', e);
+              }
             }}
             title="Open Supervisor in its own window"
             style={{
-              position: 'fixed', top: 12, right: 18, zIndex: 10000,
-              padding: '4px 12px', fontSize: 12, fontWeight: 600,
-              background: 'var(--sl-surface)', color: 'var(--sl-text-primary)',
-              border: '1px solid var(--sl-border)', borderRadius: 6,
-              cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+              position: 'fixed',
+              top: 12,
+              right: 18,
+              zIndex: 10000,
+              padding: '4px 12px',
+              fontSize: 12,
+              fontWeight: 600,
+              background: 'var(--sl-surface)',
+              color: 'var(--sl-text-primary)',
+              border: '1px solid var(--sl-border)',
+              borderRadius: 6,
+              cursor: 'pointer',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
             }}
-          >↗ Detach Supervisor</button>
+          >
+            ↗ Detach Supervisor
+          </button>
         </IMErrorBoundary>
       )}
 
@@ -360,7 +559,10 @@ const App: React.FC = () => {
           isOpen={!!protectionType}
           type={protectionType}
           onConfirm={() => performSwitch(pendingProjectId!)}
-          onCancel={() => { setPendingProjectId(null); setProtectionType(null); }}
+          onCancel={() => {
+            setPendingProjectId(null);
+            setProtectionType(null);
+          }}
           onClose={() => setProtectionType(null)}
         />
       )}
@@ -369,7 +571,10 @@ const App: React.FC = () => {
         <ReconcileNotification
           count={reconcileIssueCount || 0}
           onClose={() => setShowReconcileSummary(false)}
-          onViewInbox={() => { setActiveTab('inbox'); setShowReconcileSummary(false); }}
+          onViewInbox={() => {
+            setActiveTab('inbox');
+            setShowReconcileSummary(false);
+          }}
         />
       )}
     </>
