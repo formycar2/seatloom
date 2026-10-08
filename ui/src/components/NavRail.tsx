@@ -12,6 +12,7 @@ import {
   Folder,
   Terminal,
   Radio,
+  Send,
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { useDataStore } from '../stores/useDataStore';
@@ -28,6 +29,7 @@ export type NavTab =
   | 'inbox'
   | 'workitems'
   | 'timeline'
+  | 'dispatches'
   | 'seats'
   | 'artifacts'
   | 'playbook'
@@ -70,6 +72,7 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
     { id: 'inbox', icon: Inbox, label: '收件箱', badge: inboxCount > 0 ? inboxCount : undefined },
     { id: 'workitems', icon: ClipboardList, label: '工作项' },
     { id: 'timeline', icon: Calendar, label: '时间线' },
+    { id: 'dispatches', icon: Send, label: '派单' },
     { id: 'seats', icon: Users, label: '席位' },
     { id: 'artifacts', icon: Package, label: '产出物' },
     { id: 'playbook', icon: BookOpen, label: 'Playbook' },

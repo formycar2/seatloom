@@ -117,6 +117,27 @@ export interface CanonicalEventDto {
   projectId: string;
 }
 
+export interface DispatchDependencyDto {
+  dispatchId: string;
+  depKind: string;
+  depValue: string;
+}
+
+export interface DispatchDto {
+  id: string;
+  targetSeatId: string;
+  issuedBy: string;
+  projectId: string;
+  title: string;
+  payload: unknown | null;
+  status: string; // 'ready' | 'blocked' | 'in_flight' | 'done'
+  priority: number;
+  issuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  deps: DispatchDependencyDto[];
+}
+
 export interface DocumentDto {
   id: string;
   projectId: string;

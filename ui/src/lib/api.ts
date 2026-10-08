@@ -18,6 +18,7 @@ import type {
   DocumentAssociationDto,
   DocumentDto,
   DocumentSectionDto,
+  DispatchDto,
   HandoffDto,
   InboxPayloadDto,
   LaunchRequest,
@@ -105,6 +106,10 @@ export const api = {
     invoke('cmd_list_events', { limit }),
   listEventsByType: (eventType: string): Promise<CanonicalEventDto[]> =>
     invoke('cmd_list_events_by_type', { eventType }),
+
+  // --- Governed dispatch (G19) — seat inboxes ---
+  listDispatches: (projectId?: string, limit?: number): Promise<DispatchDto[]> =>
+    invoke('cmd_list_dispatches', { projectId, limit }),
 
   // --- Supervisor IM ---
   listSupervisorMessages: (

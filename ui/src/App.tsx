@@ -3,6 +3,7 @@ import AppShell from './layouts/AppShell';
 import MasterDetail from './layouts/MasterDetail';
 import InboxView from './views/InboxView';
 import TimelineView from './views/TimelineView';
+import DispatchInboxView from './views/DispatchInboxView';
 import WorkItemsView from './views/WorkItemsView';
 import SeatsView from './views/SeatsView';
 import ArtifactsView from './views/ArtifactsView';
@@ -42,6 +43,7 @@ type Tab =
   | 'dashboard'
   | 'inbox'
   | 'timeline'
+  | 'dispatches'
   | 'workitems'
   | 'seats'
   | 'artifacts'
@@ -415,6 +417,8 @@ const App: React.FC = () => {
               onFiltersChange={setTimelineFilters}
             />
           );
+        case 'dispatches':
+          return <DispatchInboxView />;
         case 'workitems':
           return (
             <WorkItemsView
