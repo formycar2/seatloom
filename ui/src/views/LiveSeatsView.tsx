@@ -70,6 +70,7 @@ const LiveSeatsView: React.FC = () => {
 
   const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
   const clearSession = useLiveSessionsStore((s) => s.clearSession);
+  const setSeatDiscovery = useLiveSessionsStore((s) => s.setSeatDiscovery);
 
   // Raw event counters land here first and are flushed on the tick, so a chatty
   // pane cannot trigger a React render per chunk.
@@ -77,21 +78,28 @@ const LiveSeatsView: React.FC = () => {
   const autoAttachedRef = useRef(false);
 
   // ── Discovery ──────────────────────────────────────────────────────────────
+  // Each poll publishes the discovery outcome to the shared store so the
+  // provenance banner above this view (and the nav-rail dot) can refuse to say
+  // LIVE when there is nothing live behind it (UM0 HOLD-3).
   const refresh = useCallback(async () => {
     if (!isTauri()) {
+      // No Tauri backend → no tmux IPC → provably no live seats here.
       setDiscovered(true);
+      setSeatDiscovery('empty');
       return;
     }
     try {
       const list = await api.listTmuxSessions();
       setSeats(sortSeats(list.map(parseSeatSession)));
       setDiscovered(true);
+      setSeatDiscovery(list.length > 0 ? 'ok' : 'empty');
       setError(null);
     } catch (e) {
       setError(`会话发现失败 (cmd_list_tmux_sessions): ${String(e)}`);
       setDiscovered(true);
+      setSeatDiscovery('failed');
     }
-  }, []);
+  }, [setSeatDiscovery]);
 
   useEffect(() => {
     let cancelled = false;

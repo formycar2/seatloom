@@ -8,16 +8,30 @@
 // provenance cannot be derived per row. It is a property of the *view*, and it
 // is declared here so there is exactly one list to keep honest.
 //
-// Three states, deliberately distinguished:
-//   'live'    mirrored from a real tmux pane right now (tmux-mirror path)
-//   'seed'    read from Postgres for real, but the rows are seed fixtures
-//   'fixture' in-memory mock — the backend was not reachable at all
+// Five states, deliberately distinguished:
+//   'live'             mirrored from a real tmux pane right now (tmux-mirror path)
+//   'seed'             read from Postgres for real, but the rows are seed fixtures
+//   'fixture'          in-memory mock — the backend was not reachable at all
+//   'no-live'          the live mirror ran discovery and it returned zero seats
+//   'discovery-failed' the live mirror's discovery call itself threw
 //
 // 'seed' and 'fixture' are both "not real". We still separate them because the
 // operator's next action differs: 'seed' means the capture pipeline has not
 // filled this surface yet, 'fixture' means the app never reached the backend.
+// The two discovery states exist so the live mirror cannot claim LIVE when
+// there is provably nothing live behind it (UM0 HOLD-3).
 
-export type Provenance = 'live' | 'seed' | 'fixture';
+export type Provenance = 'live' | 'seed' | 'fixture' | 'no-live' | 'discovery-failed';
+
+/**
+ * Live seat discovery status, published by LiveSeatsView while it polls
+ * `cmd_list_tmux_sessions`:
+ *   'unknown' the first discovery is still in flight (transient)
+ *   'ok'      discovery returned at least one `-seatloom` seat
+ *   'empty'   discovery returned zero seats
+ *   'failed'  the IPC call itself threw
+ */
+export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
 
 /**
  * Tabs whose content is mirrored from a live tmux pane. Everything not listed
@@ -25,11 +39,29 @@ export type Provenance = 'live' | 'seed' | 'fixture';
  */
 export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions']);
 
+/** The live-mirror tab: the one surface whose LIVE claim depends on discovery. */
+export const LIVE_MIRROR_TAB = 'live-seats';
+
 /**
  * Provenance of a tab. `backendHydrated` comes from useDataStore and tells us
- * whether the Postgres read actually succeeded.
+ * whether the Postgres read actually succeeded. `discovery` is the live seat
+ * discovery status from useLiveSessionsStore.
+ *
+ * HOLD-3: the live mirror may only wear the LIVE badge once discovery has
+ * actually returned seats. An empty or failed discovery renders an explicit
+ * no-live / discovery-failed state instead — a green LIVE bar sitting above an
+ * error message is exactly the false-live read UM0 exists to kill.
  */
-export function provenanceForTab(tab: string, backendHydrated: boolean): Provenance {
+export function provenanceForTab(
+  tab: string,
+  backendHydrated: boolean,
+  discovery: SeatDiscovery = 'unknown',
+): Provenance {
+  if (tab === LIVE_MIRROR_TAB) {
+    if (discovery === 'empty') return 'no-live';
+    if (discovery === 'failed') return 'discovery-failed';
+    return 'live';
+  }
   if (LIVE_TABS.has(tab)) return 'live';
   return backendHydrated ? 'seed' : 'fixture';
 }
@@ -82,5 +114,25 @@ export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
     fg: '#8A6100',
     bg: 'var(--sl-amber-subtle)',
     border: 'var(--sl-amber)',
+  },
+  'no-live': {
+    badge: 'NO LIVE SEATS',
+    headline: 'No live seats found — discovery returned empty',
+    detail:
+      'The mirror asked the backend for tmux sessions ending in -seatloom and none came back. ' +
+      'Nothing on this surface is live. Start the worker seats, then press 重新发现.',
+    fg: '#8A6100',
+    bg: 'var(--sl-amber-subtle)',
+    border: 'var(--sl-amber)',
+  },
+  'discovery-failed': {
+    badge: 'DISCOVERY FAILED',
+    headline: 'Live seat discovery failed',
+    detail:
+      'cmd_list_tmux_sessions did not answer, so this surface cannot claim to be live. ' +
+      'Check the Tauri backend, then press 重新发现 to retry.',
+    fg: 'var(--sl-red)',
+    bg: 'var(--sl-red-subtle)',
+    border: 'var(--sl-red)',
   },
 };

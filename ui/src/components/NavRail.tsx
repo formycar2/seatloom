@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { useDataStore } from '../stores/useDataStore';
+import { useLiveSessionsStore } from '../stores/useLiveSessionsStore';
 import { useResponsive } from '../hooks/useResponsive';
 import ProjectSwitcher from './ProjectSwitcher';
 import { SeatLoomLogo } from '../app-v2/components/Avatar';
@@ -48,6 +49,9 @@ interface NavRailProps {
 const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProject }) => {
   const { navCollapsed, toggleNav } = useAppStore();
   const { activeProjectId, projectData, backendHydrated } = useDataStore();
+  // Mirrors the banner in App.tsx: the live-seats dot must not read as LIVE
+  // while tmux discovery is empty or has failed (UM0 HOLD-3).
+  const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
   const { isMobile, isCompact, isTablet } = useResponsive();
 
   // Force collapsed at compact/tablet breakpoints
@@ -78,10 +82,20 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
       style={{ width: effectiveCollapsed ? 48 : 180 }}
     >
       {/* Brand logo */}
-      <div className="p-2 border-b border-border-subtle flex items-center gap-2" style={{ minHeight: 48 }}>
+      <div
+        className="p-2 border-b border-border-subtle flex items-center gap-2"
+        style={{ minHeight: 48 }}
+      >
         <SeatLoomLogo size={effectiveCollapsed ? 32 : 40} />
         {!effectiveCollapsed && (
-          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--sl-text-primary)', letterSpacing: '-0.01em' }}>
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: 'var(--sl-text-primary)',
+              letterSpacing: '-0.01em',
+            }}
+          >
             SeatLoom
           </span>
         )}
@@ -114,9 +128,10 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
               className={`
                 w-full flex items-center gap-2.5 rounded-md transition-all duration-150 relative
                 ${effectiveCollapsed ? 'justify-center px-0 py-2' : 'px-3 py-2'}
-                ${isActive
-                  ? 'bg-primary/10 text-primary font-semibold'
-                  : 'text-ink-secondary hover:bg-panel hover:text-ink'
+                ${
+                  isActive
+                    ? 'bg-primary/10 text-primary font-semibold'
+                    : 'text-ink-secondary hover:bg-panel hover:text-ink'
                 }
               `}
             >
@@ -129,14 +144,18 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
 
               {effectiveCollapsed && (
                 <span className="absolute bottom-0.5 right-0.5">
-                  <ProvenanceDot provenance={provenanceForTab(item.id, backendHydrated)} />
+                  <ProvenanceDot
+                    provenance={provenanceForTab(item.id, backendHydrated, seatDiscovery)}
+                  />
                 </span>
               )}
 
               {!effectiveCollapsed && (
                 <>
                   <span className="text-[13px] truncate">{item.label}</span>
-                  <ProvenanceDot provenance={provenanceForTab(item.id, backendHydrated)} />
+                  <ProvenanceDot
+                    provenance={provenanceForTab(item.id, backendHydrated, seatDiscovery)}
+                  />
                   {item.badge !== undefined && (
                     <span className="ml-auto text-[10px] font-semibold bg-primary text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
                       {item.badge > 99 ? '99+' : item.badge}
