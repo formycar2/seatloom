@@ -80,7 +80,7 @@ impl std::fmt::Debug for PtySession {
 /// Preserved for source-level compatibility with older call sites. Under the
 /// tmux-mirror architecture, most of these fields are ignored — only
 /// `transcripts_dir`, `rows`, and `cols` carry meaning (rows/cols feed
-/// `tmux resize-pane` when `PtySession::resize` is invoked).
+/// `tmux resize-window` when `PtySession::resize` is invoked).
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub command: String,
@@ -126,6 +126,23 @@ pub enum PtyError {
          (expected 1). The mirror would have reported success and produced no output."
     )]
     MirrorNotOpen { target: String, pane_pipe: String },
+    /// `tmux resize-window` exited 0 but the pane geometry does not match the
+    /// requested size. Returned rather than reporting success for a resize that
+    /// did nothing — the same silent-success defect class as [`PtyError::MirrorNotOpen`]
+    /// (NIMBUS-2026-10-08-pty-resize-window-v1 §2). `resize-pane -x/-y` on a
+    /// single-pane window is precisely this case: exit 0, no effect.
+    #[error(
+        "tmux resize did not take for {target}: requested {want_cols}x{want_rows} but pane is \
+         {got_cols}x{got_rows} after resize-window. A zero exit from resize does not mean the \
+         pane was sized."
+    )]
+    ResizeNotApplied {
+        target: String,
+        want_cols: u16,
+        want_rows: u16,
+        got_cols: String,
+        got_rows: String,
+    },
 }
 
 /// Metadata for a discovered tmux session.
@@ -223,7 +240,8 @@ impl PtySession {
     ///
     /// `opts.rows` / `opts.cols` are currently informational; callers that
     /// want to resize the pane should invoke `PtySession::resize`, which maps
-    /// to `tmux resize-pane`.
+    /// to `tmux resize-window` (not `resize-pane`, which is a silent no-op on
+    /// single-pane windows — NIMBUS-2026-10-08-pty-resize-window-v1 §1).
     pub fn attach_tmux(
         id: &str,
         tmux_session_name: &str,
@@ -495,12 +513,30 @@ impl PtySession {
         Ok(())
     }
 
-    /// Resize the underlying tmux pane (maps to `tmux resize-pane`). Safe to
-    /// call whenever the mirroring xterm container resizes in the UI.
+    /// Resize the mirrored terminal to `rows` x `cols`.
+    ///
+    /// Maps to `tmux resize-window -t <session>:<window> -x <cols> -y <rows>`,
+    /// **not** `resize-pane`. Measured on tmux 3.6a: `resize-pane -x/-y` exits 0
+    /// and silently changes nothing on a single-pane window — which is what
+    /// every seat session is — while `resize-window -x/-y` actually sizes the
+    /// pane (and is not clamped at small sizes). Using `resize-pane` here made
+    /// `cmd_pty_resize` a silent no-op: the pane stayed frozen at its launch
+    /// geometry while the xterm viewport moved, which is the garbled-mirror
+    /// misalignment (NIMBUS-2026-10-08-pty-resize-window-v1 §1).
+    ///
+    /// A zero exit is **not** evidence the resize took — §1 is exactly a case
+    /// where exit 0 meant nothing happened. After resizing, the pane geometry
+    /// is read back via `#{pane_width}`/`#{pane_height}` and
+    /// [`PtyError::ResizeNotApplied`] is returned on mismatch, mirroring the
+    /// `verify_pipe_open` pattern: a silent dead resize is the user harm.
+    ///
+    /// Targets the **window** index of `self.tmux_target` (`<session>:0`), so a
+    /// multi-pane window is sized as a whole rather than silently breaking the
+    /// contract on one pane.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), PtyError> {
         let out = std::process::Command::new("tmux")
             .args([
-                "resize-pane",
+                "resize-window",
                 "-t",
                 &self.tmux_target,
                 "-x",
@@ -509,15 +545,35 @@ impl PtySession {
                 &rows.to_string(),
             ])
             .output()
-            .map_err(|e| PtyError::Tmux(format!("spawn tmux resize-pane: {e}")))?;
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux resize-window: {e}")))?;
         if !out.status.success() {
             return Err(PtyError::Tmux(format!(
-                "tmux resize-pane {}: {}",
+                "tmux resize-window {}: {}",
                 self.tmux_target,
                 String::from_utf8_lossy(&out.stderr)
             )));
         }
-        Ok(())
+
+        // Verify the resize actually took — the exit code above is not evidence
+        // (resize-pane exits 0 while doing nothing; resize-window can also be
+        // bounded by the tmux server). Read back the pane geometry and compare.
+        let geo = std::process::Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &self.tmux_target,
+                "-p",
+                "#{pane_width} #{pane_height}",
+            ])
+            .output()
+            .map_err(|e| PtyError::Tmux(format!("spawn tmux display-message: {e}")))?;
+        verify_resize_applied(
+            &self.tmux_target,
+            cols,
+            rows,
+            geo.status.success(),
+            &String::from_utf8_lossy(&geo.stdout),
+        )
     }
 
     /// Detach the mirror: stop the tmux pipe-pane, let the tail-reader hit
@@ -607,6 +663,48 @@ fn verify_pipe_open(target: &str, status_ok: bool, pane_pipe_raw: &str) -> Resul
     })
 }
 
+/// Verify that a `resize-window` actually sized the pane. The exit code of the
+/// resize command is not evidence — `resize-pane -x/-y` exits 0 while doing
+/// nothing on a single-pane window, and even `resize-window` can be bounded by
+/// the server — so we read back `#{pane_width} #{pane_height}` and compare.
+///
+/// `geo_raw` is the stdout of `display-message -p "#{pane_width} #{pane_height}"`:
+/// two space-separated integers. Anything else (probe failed, unparsable) is a
+/// mismatch, not a pass-through.
+fn verify_resize_applied(
+    target: &str,
+    want_cols: u16,
+    want_rows: u16,
+    status_ok: bool,
+    geo_raw: &str,
+) -> Result<(), PtyError> {
+    let mut parts = geo_raw.split_whitespace();
+    let got_cols = parts.next().unwrap_or("");
+    let got_rows = parts.next().unwrap_or("");
+    if status_ok
+        && got_cols.parse::<u16>() == Ok(want_cols)
+        && got_rows.parse::<u16>() == Ok(want_rows)
+    {
+        return Ok(());
+    }
+    let describe = |s: &str| {
+        if !status_ok {
+            "<display-message failed>".to_string()
+        } else if s.is_empty() {
+            "<empty>".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    Err(PtyError::ResizeNotApplied {
+        target: target.to_string(),
+        want_cols,
+        want_rows,
+        got_cols: describe(got_cols),
+        got_rows: describe(got_rows),
+    })
+}
+
 /// Minimal single-quote shell quoter for the FIFO path embedded in the
 /// `tmux pipe-pane` shell snippet. tmux runs the command via `/bin/sh -c`.
 fn shell_quote(s: &str) -> String {
@@ -625,7 +723,7 @@ fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{verify_pipe_open, PtyError};
+    use super::{verify_pipe_open, verify_resize_applied, PtyError};
 
     /// The only accepting case: display-message succeeded AND the pane reports
     /// pane_pipe=1.
@@ -684,6 +782,99 @@ mod tests {
                 assert_eq!(pane_pipe, "<display-message failed>");
             }
             other => panic!("expected MirrorNotOpen, got {other:?}"),
+        }
+    }
+
+    /// The only accepting case: the probe succeeded AND the pane geometry read
+    /// back equals exactly what was requested. Whitespace/newline variants of
+    /// `display-message -p "#{pane_width} #{pane_height}"` are normal.
+    #[test]
+    fn verify_resize_applied_accepts_exact_match() {
+        assert!(verify_resize_applied("s:0", 120, 40, true, "120 40").is_ok());
+        assert!(
+            verify_resize_applied("s:0", 120, 40, true, "120 40\n").is_ok(),
+            "trailing newline is normal"
+        );
+        assert!(
+            verify_resize_applied("s:0", 80, 24, true, " 80 24 ").is_ok(),
+            "leading/trailing spaces are normal"
+        );
+    }
+
+    /// THE case this check exists for: the resize command exited 0 but the pane
+    /// did not move — exactly what `resize-pane -x/-y` does on a single-pane
+    /// window (measured on tmux 3.6a). A no-op must not be reported as success.
+    #[test]
+    fn verify_resize_applied_rejects_a_no_op_resize() {
+        let err = verify_resize_applied("throwaway:0", 120, 40, true, "220 50")
+            .expect_err("a pane that stayed at 220x50 must not be treated as resized to 120x40");
+        match &err {
+            PtyError::ResizeNotApplied {
+                target,
+                want_cols,
+                want_rows,
+                got_cols,
+                got_rows,
+            } => {
+                assert_eq!(target, "throwaway:0");
+                assert_eq!(*want_cols, 120);
+                assert_eq!(*want_rows, 40);
+                assert_eq!(got_cols, "220");
+                assert_eq!(got_rows, "50");
+            }
+            other => panic!("expected ResizeNotApplied, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("throwaway:0"), "must name the target: {msg}");
+        assert!(msg.contains("120x40"), "must report what it wanted: {msg}");
+        assert!(msg.contains("220x50"), "must report what it saw: {msg}");
+    }
+
+    /// A partial match (one axis right, one wrong) is still a mismatch.
+    #[test]
+    fn verify_resize_applied_rejects_partial_match() {
+        assert!(
+            verify_resize_applied("s:0", 120, 40, true, "120 50").is_err(),
+            "height wrong must fail even though width is right"
+        );
+        assert!(
+            verify_resize_applied("s:0", 120, 40, true, "100 40").is_err(),
+            "width wrong must fail even though height is right"
+        );
+    }
+
+    /// Unreadable or absent geometry must not be read as success.
+    #[test]
+    fn verify_resize_applied_rejects_unparsable_geometry() {
+        for raw in ["", "   ", "\n", "banana", "120", "120 banana", "-1 40"] {
+            assert!(
+                verify_resize_applied("s:0", 120, 40, true, raw).is_err(),
+                "geometry={raw:?} must not be accepted"
+            );
+        }
+        match verify_resize_applied("s:0", 120, 40, true, "") {
+            Err(PtyError::ResizeNotApplied {
+                got_cols, got_rows, ..
+            }) => {
+                assert_eq!(got_cols, "<empty>");
+                assert_eq!(got_rows, "<empty>");
+            }
+            other => panic!("expected ResizeNotApplied with <empty>, got {other:?}"),
+        }
+    }
+
+    /// A failed `display-message` probe is a failure, not a pass-through —
+    /// even if stdout happens to look like the requested size.
+    #[test]
+    fn verify_resize_applied_rejects_a_failed_probe() {
+        match verify_resize_applied("s:0", 120, 40, false, "120 40") {
+            Err(PtyError::ResizeNotApplied {
+                got_cols, got_rows, ..
+            }) => {
+                assert_eq!(got_cols, "<display-message failed>");
+                assert_eq!(got_rows, "<display-message failed>");
+            }
+            other => panic!("expected ResizeNotApplied, got {other:?}"),
         }
     }
 
