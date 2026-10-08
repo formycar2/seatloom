@@ -3189,6 +3189,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "seatloom-mcp-emit"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nanoid",
+ "seatloom-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "seatloom-tauri"
 version = "0.1.0"
 dependencies = [
