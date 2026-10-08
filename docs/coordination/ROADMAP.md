@@ -232,3 +232,22 @@ I/O becomes a captured T2/T3 stream, harness-agnostically. This is the model-I/O
 **Flagged, NOT fabricated:** an "AD for runtime-vs-knowledge separation" was mentioned earlier but
 its exact content is not in any durable doc — reconstruct/confirm when G11 (capability assets) is
 designed; do not invent it.
+
+---
+
+## 晨间简报 — 2026-10-09 夜间自主驱动结果(给张先生)
+
+**今晚已落地并验证(硬核机械部分,无需你拍板):**
+1. **Live DB 对齐到 001–012**(之前缺 010、008 半应用)。在 live app 运行中幂等补迁移,数据零丢(含 271 归档 / 14GB)。step5 的 live 阻塞清除。
+2. **P0 step 6 治理派单(G19)合入 track `04e9033`**。Nimbus 接线 enqueue/get_next/complete + A1 的 append_event_in_tx(单一 append 实现)+ 词表加 3 个 dispatch 事件/1 个 ref。我在全新 scratch DB 独立验证:**13 点行为 proof 全绿 + Layer A(fmt/clippy/test)绿**。Lyra 又掉了合并跳,我手工合(并解了 Nimbus 的 vi 卡死,永久 `core.editor=true`)。
+3. **P0 step 5 首个真实捕获事件 — 在 LIVE 库达成**。经真 MCP binary 把"step6 交付"作为真实工作捕获:WorkItemCreated→WorkItemStatusChanged(done),canonical_events 34→36,**projection 同事务写入 + 可按 subject 重建时间线**。
+4. App 健康(vite:1420 200,DB 连通)。全程留痕(daily log + 本快照 + memory)。
+
+**→ 捕获脊柱完整:step4(MCP emit)+ step6(治理派单)+ step5(live 首事件)全部打通并验证。SeatLoom 现在真的在把真实工作捕获进真实库。**
+
+**需要你拍板才动的收尾(我没擅自做,避免返工/碰你依赖的东西):**
+- **A. 把 get_next_dispatch 接进各 seat 的 pi MCP**(= 让"Aegis 派单→seat 自拉执行"真正自运行,永久消除掉跳税——你的核心目标)。需编辑每个 seat 的 `~/.pi/agent/models.json` 加 MCP server 条目 + 约定 seat 回合末调用。**风险:动你正依赖的 seat pi 配置、可能需重启其 pi 会话(丢上下文)。建议醒来一起选一个 seat 先试。**
+- **B. 监督 IM UI(L1,可拆独立窗)+ UM2 时间线 UI**。数据层已就绪(canonical_events / dispatches)。但 UI 必须贴合你已定方向(V1 AppShell 参照、IM 独立 WebviewWindow、L1 先于 L2)——想先跟你确认第一刀范围再建,免得做了不合你预期的。
+- **C. 本地 track → GitLab 对账**:需要 `api` scope 的 **PAT**(现仅会话 cookie);data 永不上库。给我 PAT 即推 code/schema/docs 过 CI 门禁。
+
+**安全的下一步(可不等你、我在心跳里推):** 事件/派单的只读查询层(时间线 + 派单收件箱查询)——UI 必需、纯增量、可测、不涉 UI 外观设计,不会返工。若确认是干净缺口我就建。
