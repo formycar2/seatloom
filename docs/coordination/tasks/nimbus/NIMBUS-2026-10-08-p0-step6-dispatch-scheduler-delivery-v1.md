@@ -2,28 +2,167 @@
 
 [Nimbus -> Lyra / Flux] Delivery for `NIMBUS-2026-10-08-p0-step6-dispatch-scheduler-v1`.
 
-> **Status: PARTIAL — scheduler core delivered and green; DB/MCP wiring BLOCKED on
-> two sequenced prerequisites outside this packet's write set. This is a STOP-and-report
-> per packet §4, not a completed packet.** Read §7 first.
+> **Status: COMPLETE — all three blockers resolved per `LYRA-2026-10-08-p0-step6-unblock-v1`,
+> the three MCP tools wired through the single A1 append, and the FULL 13-point scratch-DB
+> proof green. §0 is the resolution summary; §7 is kept verbatim as history with each item
+> marked resolved.**
 
 | Field | Value |
 |---|---|
 | template | T3 |
-| subtype | implementation-delivery (partial / blocked) |
+| subtype | implementation-delivery |
 | id | NIMBUS-2026-10-08-p0-step6-dispatch-scheduler-delivery-v1 |
 | author | nimbus |
-| date | 2026-10-08 |
+| date | 2026-10-08 (v1 partial) → 2026-10-08 (completed after unblock) |
 | version | v1 |
 | responds to | `docs/coordination/tasks/nimbus/NIMBUS-2026-10-08-p0-step6-dispatch-scheduler-v1.md` |
+| unblock decision | `docs/coordination/tasks/lyra/LYRA-2026-10-08-p0-step6-unblock-v1.md` |
 | shared contract | `docs/coordination/tasks/lyra/VALUE-DOMAIN-2026-10-08-governed-dispatch-v1.md` (verbatim) |
 | parallel packet | `docs/coordination/tasks/onyx/ONYX-2026-10-08-p0-step6-dispatch-schema-v1.md` |
 | base branch | `track/infra-foundation` |
-| base commit | `b200cd3b894d792292188c6de9c7ca3140006ccf` |
+| base commit (rebased) | `2f5c2da355a27467108e2b3a4d2236a743703244` (was `b200cd3`; rebased onto landed `012`) |
 | delivery branch | `packet/nimbus/NIMBUS-2026-10-08-p0-step6-dispatch-scheduler-v1` |
-| delivery commit (core) | `d7aab53ea7a15977005120bd11ef599e7bc1dd2d` |
+| delivery commit (final) | `9b96ee89eb8863bb62ee734f1378e4af03a11423` |
+| delivery commit (scheduler core) | `0672f82ce6639c1b151c6b48695c76c52f136d45` (pure core, pre-wiring) |
 | worktree | `/Users/jyxc-dz-0100609/Documents/GitHub/seatloom-worktrees/nimbus` |
-| scratch database | (none run yet — proof blocked, see §6/§7) |
-| status | **PARTIAL / BLOCKED** — awaiting enum sequencing + landed `012` |
+| scratch database | `seatloom_mcp_step6_nimbus` (schema 001–012; NEVER live `seatloom`) |
+| status | **COMPLETE** — Layer A green, 13-point proof green; awaiting Flux full verify |
+
+---
+
+## 0. Resolution (completed after `LYRA-2026-10-08-p0-step6-unblock-v1`)
+
+All three §7 blockers resolved; the partial is now complete.
+
+### Rebase (packet §3 / 7-B)
+
+**DONE.** Rebased `packet/nimbus/NIMBUS-2026-10-08-p0-step6-dispatch-scheduler-v1`
+from `b200cd3` onto `track/infra-foundation` @ `2f5c2da` (which carries Onyx's
+`012` at `f5e86ca` + the `011` `apply-db.sh` registration). Only conflict was in
+`docs/coordination/MEMORY.md` (coordination log, resolved by keeping both track's
+entries and my writeback); the scheduler-core code commit applied clean.
+
+### 7-A — vocabulary widening (AUTHORIZED)
+
+**DONE** in `crates/seatloom-core/src/db/event_domain.rs`, the authorized additive
+change only: `EventType` += `SeatDispatchIssued`/`SeatDispatchDelivered`/
+`SeatDispatchCompleted` (→15), `RefType` += `Dispatch` → `"dispatch"` (→10). Updated
+the enum, `ALL`, `as_str`, hand-written `FromStr`, the `*_EXPECTED` strings, and the
+exhaustiveness test (renamed `..._010_and_012_checks`, pinned **verbatim** to the
+widened CHECKs, not loosened). Hand-written `FromStr`/`Display` kept; no derive.
+**All 104 `seatloom-core` tests pass unchanged.**
+
+### 7-C — atomic append (OPTION b APPROVED)
+
+**DONE** in `write_api.rs`. `append_event_in_tx(&Transaction, &EventDraft)` is now
+**the single** append implementation (event + refs + `apply_projection`);
+`append_event` is a thin wrapper that validates-before-tx, opens a transaction,
+delegates, and commits — its public signature and observable behaviour unchanged,
+validation still before the tx, ref insert still has no `ON CONFLICT`. Made `pub`
+(re-exported from `db`) so the scheduler composes a `dispatches` row change and its
+lifecycle event in **one** transaction. Two `#[ignore]` DB tests prove commit-with-
+caller and rollback-with-caller (run `--include-ignored` against the scratch DB:
+both pass). **All 104 existing tests unchanged** (now 104 + 2 ignored).
+
+### The wiring (packet §1 / unblock §2.2)
+
+`crates/seatloom-mcp-emit/src/dispatch.rs` — `enqueue_dispatch`,
+`get_next_dispatch`, `complete_dispatch`, each routing every status transition
+through `append_event_in_tx` in the **same transaction** as the row change. The
+`#[allow(dead_code)]` is deleted from `scheduler.rs` (the consumer exists). `tools/list`
+now advertises four tools. Three issues surfaced and fixed during the proof, each a
+real correctness point, not a workaround:
+
+1. **Live readiness vs stored status.** `select_next` decides on *live* readiness
+   (existence query), but the delivery `UPDATE` first guarded on stored `status='ready'`,
+   so a row stored `blocked` whose dependency had since landed could not be delivered
+   (proof Point 6 failed first run). Fixed: the guard is `status IN ('ready','blocked')`,
+   excluding only `in_flight`/`done`; the partial unique index remains the race backstop.
+2. **One-in-flight is GLOBAL per seat.** Onyx's index is `(target_seat_id) WHERE
+   status='in_flight'` with no project scope, but `load_views` is project-scoped, so a
+   seat holding an in_flight in another project would hit the index with an opaque
+   rollback. Fixed: `get_next_dispatch` checks the seat's in_flight across **all**
+   projects up front and returns it, honouring rule 1 globally.
+3. **Cycle detection must not block unrelated work, nor spam.** Running cycle detection
+   project-wide before the pull made one cycle escalate on every seat's pull. Fixed:
+   only a cycle involving the **calling seat's** dispatches is surfaced, it does not
+   block delivery of that seat's independent ready work, and it is deduped against an
+   already-emitted `SupervisorMessage` for the same ring.
+
+See §4–§6 (originally written pre-wiring) for the design these implement; §7 for the
+blocker history.
+
+### Layer A (verbatim, on `9b96ee8`)
+
+```
+cargo check --workspace            -> Finished (ok)
+cargo test --workspace             -> seatloom-core 104 (+2 ignored); seatloom-mcp-emit 35
+                                      (13 scheduler + 19 emit + 3 dispatch); seed-consistency 3;
+                                      others 0; all ok
+cargo clippy --workspace --all-targets -- -D warnings  -> Finished (no warnings)
+cargo fmt --all --check            -> clean
+# 7-C in-tx behaviour, against the scratch DB:
+DATABASE_URL=...seatloom_mcp_step6_nimbus cargo test -p seatloom-core --lib -- --ignored append_event_in_tx
+  -> append_event_in_tx_commits_with_the_callers_transaction ... ok
+     append_event_in_tx_rolls_back_with_the_callers_transaction ... ok
+```
+
+### The full 13-point proof (scratch DB `seatloom_mcp_step6_nimbus`, 001–012)
+
+Driver: `crates/seatloom-mcp-emit/proof/step6_dispatch_proof.sh`, driving the REAL
+binary over stdio. All 13 green (verbatim results):
+
+```
+tools/list: four tools; get_next_dispatch exposes NO seat param (non-forgeable)
+ 1 enqueue ready + blocked(on missing event) -> both SeatDispatchIssued (2)
+ 2 nimbus pull -> disp-ready delivered, disp-blocked SKIPPED despite priority 99; SeatDispatchDelivered=1
+ 3 second pull -> SAME in_flight item; no new delivery
+ 4 mira pull -> its OWN item delivered (one-in-flight is per seat)
+ 5 complete -> done; SeatDispatchCompleted=1
+ 6 the awaited event lands (emit_event) -> disp-blocked becomes ready and is delivered
+ 7 every transition is an event: Issued/Delivered/Completed rows with subject=dispatch:… actor=seat:…
+ 8 atomicity: rejected transition writes no event (before==after); forced FK failure rolls back
+   row+event together (disp-badseat rows=0, events unchanged; sqlstate 23503 shown)
+ 9 cross-seat cycle (onyx<->lyra) detected -> +1 SupervisorMessage (subject=dispatch:disp-cycle-A)
+   + daily-log line parked; a 2nd pull does NOT re-escalate (deduped)
+10 stall (flux: only blocked, nothing ready) -> +1 SupervisorMessage, not hung
+11 one-in-flight is a DB fact: a 2nd in_flight for a seat rejected by
+   uq_dispatches_one_in_flight_per_seat (sqlstate 23505); in_flight count stays 1
+12 identity cannot be forged: a spoofed seat_id/target_seat_id arg is ignored
+   (additionalProperties:false; identity stays the env seat)
+13 the dispatches row is REBUILDABLE from the ledger alone: Issued->Delivered replays to
+   'in_flight', equal to the live row
+```
+
+Daily-log parking writes to the **UTC**-dated `docs/coordination/memory/YYYY-MM-DD.md`
+(matching `Utc::now()` in code); the proof's auto-parked lines are test artifacts and
+are stripped from the committed human daily log.
+
+### Done-definition (unblock §2) — all met
+
+1. three tools wired through the single A1 append, same transaction — **DONE**.
+2. `scheduler.rs` consumed; `#[allow(dead_code)]` deleted — **DONE**.
+3. full 13-point scratch-DB proof, never live `seatloom` — **DONE** (above).
+4. this artifact updated, §7 history kept, each item marked resolved — **DONE**.
+5. Layer A green verbatim — **DONE**.
+
+### Changed files (final — `git show --stat 9b96ee8`)
+
+```
+ Cargo.lock                                         |   2 +
+ crates/seatloom-core/src/db/event_domain.rs        |  52 +   (7-A: +3 EventType, +1 RefType, tests)
+ crates/seatloom-core/src/db/mod.rs                 |   4 +   (re-export append_event_in_tx)
+ crates/seatloom-core/src/db/write_api.rs           | 280 +   (7-C: append_event_in_tx + 2 ignored tests)
+ crates/seatloom-mcp-emit/Cargo.toml                |   4 +   (deadpool/tokio-postgres for the scheduler tx)
+ crates/seatloom-mcp-emit/proof/step6_dispatch_proof.sh | 173 +  (13-point proof driver)
+ crates/seatloom-mcp-emit/src/dispatch.rs           | 775 +   (the three tools + escalation)
+ crates/seatloom-mcp-emit/src/main.rs               | 101 +   (route 4 tools; keep pool for dispatch)
+ crates/seatloom-mcp-emit/src/protocol.rs           | 110 +   (3 new tool schemas)
+ crates/seatloom-mcp-emit/src/scheduler.rs          |  20 +   (dead_code allow removed)
+```
+
+Zero `.tsx`. The only `.sql`/A1 touches are the authorized 7-A (`event_domain.rs`) and
+7-C (`write_api.rs`/`mod.rs`) edits; no migration file changed (Onyx owns `012`).
 
 ---
 
@@ -219,9 +358,12 @@ I can run a **PROVISIONAL** version of this against Onyx's unmerged `012` branch
 de-risk ahead of acceptance, but it is PROVISIONAL per §14 and does not close the
 gate; say the word and I will and attach the output to a v2.
 
-## 7. BLOCKERS — STOP and report (packet §4)
+## 7. BLOCKERS — STOP and report (packet §4) — ALL RESOLVED (see §0)
 
-**7-A. The three new `EventType` values + the `dispatch` `RefType` value are not in
+> History, kept verbatim. Each item is now **RESOLVED** by
+> `LYRA-2026-10-08-p0-step6-unblock-v1`; the resolution is in §0.
+
+**7-A. [RESOLVED — AUTHORIZED]** The three new `EventType` values + the `dispatch` `RefType` value are not in
 `crates/seatloom-core/src/db/event_domain.rs`.** That is A1's accepted file. Packet
 §4: *"that file is A1's accepted file, so flag it to me and I will sequence the
 change; do not edit it unilaterally."* The daily log (2026-10-08) records Lyra
@@ -235,10 +377,10 @@ Needed, matching Onyx's `012` CHECK verbatim:
 Once sequenced (either Lyra authorises me to make this exact additive change on a
 branch, or it lands separately), the DB/MCP layer in §2 compiles.
 
-**7-B. Onyx's `012` is not landed on `track`.** The proof (§6) and the required
+**7-B. [RESOLVED — CONFIRMED]** Onyx's `012` is not landed on `track`.** The proof (§6) and the required
 rebase (§5) both wait on it.
 
-**7-C. The atomic-append integration question (§4)** needs a Lyra decision —
+**7-C. [RESOLVED — OPTION b APPROVED]** The atomic-append integration question (§4)** needs a Lyra decision —
 recommended option (b), a sequenced additive `append_event_in_tx` in A1.
 
 None of these is worked around. The scheduler core (§1) is the maximum correct work
