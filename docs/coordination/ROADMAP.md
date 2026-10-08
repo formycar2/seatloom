@@ -251,3 +251,27 @@ designed; do not invent it.
 - **C. 本地 track → GitLab 对账**:需要 `api` scope 的 **PAT**(现仅会话 cookie);data 永不上库。给我 PAT 即推 code/schema/docs 过 CI 门禁。
 
 **安全的下一步(可不等你、我在心跳里推):** 事件/派单的只读查询层(时间线 + 派单收件箱查询)——UI 必需、纯增量、可测、不涉 UI 外观设计,不会返工。若确认是干净缺口我就建。
+
+### 晨间简报 · 补充勘误 — UI 比预想完整得多(2026-10-09 夜巡发现)
+
+夜间巡检实读 UI 代码,修正前面"UI 需从头建"的判断。**大量终态 UI 其实已建好并接到 live 后端:**
+- **UM2 时间线 = 已完成且可用。** `ui/src/views/TimelineView.tsx` + `EventRow` + NavRail「时间线」入口;
+  `App.tsx` 启动 `useEffect` 调 `hydrateFromBackend()`,Tauri 下 `api.listEvents(400)`→`cmd_list_events`→
+  用真实后端数据重建 store。**用户点「时间线」就能看 live 的 canonical_events(含 step5 捕获,app 重载后)。**
+  后端查询层(`repositories.list_events*`)、`timeline_cmds`、`CanonicalEventDto` 都在。
+- **监督 IM 也已建:** `cmd_append_supervisor_message`(把监督消息写进 ledger 为 SupervisorMessage 事件)+
+  `cmd_list_supervisor_messages` + `SupervisorCommandBar.tsx` + **可拆独立窗 `supervisor/SupervisorApp.tsx`**
+  + `cmd_open_supervisor_window`。符合已固化方向(IM 独立 WebviewWindow、V1 AppShell 参照)。
+
+**→ 真正的、唯一的终态缺口 = "指令投递链"(IM/Aegis 发话 → seat 真正收到并执行):**
+1. **IM→派单未接:** `cmd_append_supervisor_message` 目前只写 ledger + 一个 **stubbed** 的 PTY 注入 hook
+   ("integration hook for later",按 session-id 非 seat-id)。需把它接到 step6 的 `enqueue_dispatch`
+   (把监督指令变成 dispatches 行)。这是纯增量的后端接线,不涉 UI 外观,低返工风险。
+2. **seat 未自拉:** 各 seat 的 pi 还没接 `get_next_dispatch` MCP 工具,所以不会自动拉派单执行。
+   = **seat-MCP 接入**(编辑各 seat `~/.pi/agent/models.json` 加 MCP server + 约定回合末拉取)。
+   **敏感**(动你依赖的 seat pi、可能需重启其会话)——建议醒来一起先拿一个 seat 验证闭环。
+3. 新表 `dispatches`(012)暂无 UI 视图(派单收件箱/依赖图)——待 IM→派单链通后再加可视化。
+
+**结论:你离"经 UI 经 Aegis 指挥 seat"只差这一条投递链,且两端(enqueue_dispatch / get_next_dispatch)
+都已建好并验证。** 醒来定两件事即可一口气接通:(1) 准我把 IM→enqueue_dispatch 接上(我可自主做,安全);
+(2) 选一个 seat 做 MCP 接入试闭环(需你在场,因动 seat 配置)。
