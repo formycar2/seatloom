@@ -183,6 +183,29 @@ terminal mirror. So:
   → GitLab, (3) rebuild stale local DB (001→011; running DB lacks 008/010), (4) restart UI after
   mirror fix. Then begin the reprioritized critical path (step 4 MCP).
 
+**UPDATE 2026-10-09 (resume after compaction):**
+- **End-state capture chain progress:** step 4 MCP emit MERGED (9a2a6af, Aegis hand-merged — Lyra
+  dropped the merge hop). step 6 governed dispatch (G19) IN FLIGHT: schema 012 MERGED (f5e86ca);
+  Nimbus scheduler CORE delivered+green (d7aab53, pure, 13 tests) but PARTIAL — 3 blockers (7-A
+  vocab widen, 7-B 012-landed, 7-C atomic append) ALL resolved by Aegis sign-off (2f5c2da). Nimbus
+  (PI/opus, worktree seatloom-worktrees/nimbus) is ACTIVELY wiring the 3 MCP tools (enqueue /
+  get_next_dispatch / complete_dispatch) + `append_event_in_tx` after rebasing onto 012. Loop did
+  NOT drop this time (Lyra routed correctly). Monitor armed on packet branch + track merge.
+- **Live DB reconciled to 001–012 (DONE, step 5 unblocked).** The 10-day podman `seatloom-postgres`
+  was stale: had 001-005/008(partial)/009/011 but NOT 010 and NOT a full 008 (`sessions.project_id`
+  missing → 010's G5 premise failed). Applied 008→010→012 idempotently in-container via
+  `podman exec -i … psql < schema/0NN.sql` (NOT apply-db.sh — it re-runs seeds; and psql isn't on
+  the host PATH). Gotcha: order matters — 008 (adds sessions.project_id) BEFORE 010; 012 lands
+  independent of 010 (own DROP+reADD of the vocab CHECK). Verified: schema_version/turn_seq/role/
+  one-subject-idx/dispatches/one-in-flight-idx all present; data preserved (34 events, 41 refs,
+  **271 archived / 13.7GB intact**); double-apply of 010+012 = clean no-op COMMIT. So the LIVE app
+  DB can now accept a real emit_event → canonical_events write (step 5).
+- **14GB history backup CONFIRMED whole:** archived_sessions = 271 rows / 14,708,064,001 bytes.
+- **Remaining Aegis tasks:** reconcile local track → GitLab (needs PAT; CODE/SCHEMA/DOCS only, never
+  data); after step 6 merges → step 5 first real captured event (live DB now ready) → structured UI
+  (UM2 timeline / UM3 history-replay / structured supervisor-IM). Aegis migration to PI deferred per
+  Mr. Zhang (stay Claude Code; handoff brief /tmp/aegis-pi-handoff.md).
+
 ## Parked research conclusions — verified durable (2026-10-08 sweep)
 
 Confirmed already durable (committed review docs + §4 gap register), NOT lost on compaction:
