@@ -30,14 +30,16 @@ gap register is now superseded by §4 below as the living list).
 
 | Layer | State |
 |---|---|
-| Workbench (CI, gates, 6 seats) | **DONE** — hard gate green on GitLab `track` (`b6de097`); lint/test/docs stages |
-| runtime-triple (harness/agent/model split) | **DONE** — both sides merged + reconciled to GitLab `b6de097` |
-| **P0 step 1 — schema foundation (Onyx, migration 010)** | **IN FLIGHT** — delivered (`bc526ba`), Aegis signed off (vocab=12), Onyx applied the vocab edit (`7226333`). **Next actor: Flux** (verify against `rust:test` + `docs:verify`) → Lyra merge → Aegis reconcile to GitLab |
-| P0 steps 2–6 | **QUEUED** — serialize behind step 1 on the one shared working tree |
+| Workbench (CI, gates, 6 seats) | **DONE** — hard gate green on GitLab `track` |
+| runtime-triple (harness/agent/model split) | **DONE** — reconciled to GitLab |
+| **P0 step 1 — schema foundation (010)** | **DONE** — Flux PASS, merged, Lyra accepted, reconciled to GitLab (`231d0a5`) |
+| **P0 step 2 — write API (A1)** | **DONE** — Flux PASS, merged, Lyra accepted, reconciled to GitLab (`b691ca4`). `append(event)→projections`, projections rebuildable from ledger |
+| **A — live mirror (UM0)** | **DELIVERED, BLOCKED** — Mira's UI proven correct; blocked by a backend bug: `pty/mod.rs` uses `tmux pipe-pane -o` (a toggle), so re-attach kills the mirror. Fix dispatched to Nimbus (drop `-o`). Reliable UM0 = A + fix both merged, then Aegis restarts the shared UI |
+| P0 steps 4 (MCP), 6 (dispatch), 5 (first event) | **QUEUED** |
 | P1 / P2 | not started |
 
-**Blocked-on-whom right now:** nobody is blocked on a decision. Loop is with the seats —
-next actor is **Flux** (verify 010). Aegis's next action fires when 010 merges to local `track`.
+**Blocked-on-whom right now:** UM0 waits on Nimbus (pipe-pane `-o` re-attach fix); A (Mira) is
+delivered and in Flux's queue. No decision is blocked on Mr. Zhang or Aegis.
 
 ## 2. Phases
 
@@ -64,7 +66,7 @@ steps (§3) slot beneath a rung; a rung is "done" only when the capability is pe
 |---|---|---|---|
 | **UM0 — one screen for the whole team** | open SeatLoom, watch all 6 seats' live terminals + IM in one window, instead of attaching 6 tmux sessions | existing tmux mirror + viewer | **available now — not yet switched on** |
 | **UM1 — work leaves a clickable trace** | when a seat produces an artifact, a structured, clickable record appears in the timeline (filed under project + commit), not just terminal scroll | step 1 ✅ + steps 2, 4, 5 | step 1 done |
-| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "进展如何" | step 6 governed dispatch + capture generalized | queued |
+| **UM2 — progress at a glance** | dispatches / handoffs / verdicts render as a live work-graph: who's doing what, who's blocked on whom, what's queued — the UI answers "how is progress?" at a glance | step 6 governed dispatch + capture generalized | queued |
 | **UM3 — find & replay** | "show me everything about topic X across sessions/harnesses"; deterministic search + T1→T2→T3 zoomable replay | P1 | not started |
 | **UM4 — capability library** | see and reuse the team's published Playbooks / Skills / Tools | P1 | not started |
 | **UM5 — history & cost** | the ~16 GB of past work is findable; per-project token spend is visible | P2 | deferred |
@@ -112,6 +114,24 @@ Critical path: 1 → 2 → 4 → 6 → 3 → 5 (step 6 rides on 2+4; step 5 is t
 | G16 | Budget as first-class object (A7) | P2 | deferred |
 | G17 | Historical corpus ingestion (~16 GB) | P2 | deferred |
 | G18 | Interposition proxies / egress gateway | P2 | deferred |
+
+## 4b. Dev-velocity TODO (iteration-speed optimizations)
+
+Running list — any optimization that speeds the build/test/coordinate loop is logged here as it
+is observed (Mr. Zhang, 2026-09-30). These are dev-ergonomics, not product gaps; none blocks a
+milestone, each pays back time on every cycle.
+
+| # | Optimization | Bottleneck it kills | Effort | Status |
+|---|---|---|---|---|
+| DV1 | **Shared compile cache** — `sccache` (`RUSTC_WRAPPER`, per-crate cache, concurrency-safe) across all worktrees + CI; or `CARGO_TARGET_DIR` (simpler, but serializes concurrent builds on a target lock) | each worktree cold-compiles ~450 deps from zero; repeated per worktree and per CI pipeline | S | **proven recipe (no infra): `cp -Rc <shared>/target ./target` in a fresh worktree — APFS copy-on-write, 18s + ~0 disk; then `tauri dev` rebuilt 2/452 and ran in 36s. Verify backend identical first (`git diff --stat`). sccache/CI still todo.** |
+| DV2 | **Local pre-push gate dry-run** — `scripts/preflight.sh` = `cargo fmt --check` + `clippy` + `verify-docs.sh` + `cargo test` before push | red-pipeline round-trips on reconcile (MR !4 took 2) | S | todo |
+| DV3 | **Doc-header conformance at source** — seat pre-commit hook running `verify-docs.sh`, and/or `version` baked into the doc template seats copy | every reconcile Aegis hand-fixes seat docs missing the `version` header (recurring tax) | S | todo |
+| DV4 | **Worktree bootstrap script** — `scripts/seat-worktree.sh <seat>` creates the worktree + wires `node_modules` + shared target in one step | manual per-seat `git worktree add` + `pnpm install` each time | S | todo |
+| DV5 | **Parallel DB tests** — per-test transaction/schema isolation to drop the `--test-threads=1` serial constraint | DB integration tests run serially (race avoidance) | M | todo |
+| DV6 | **CI cargo cache** — cache registry + incremental `target` across pipelines (GitLab cache key), beyond the baked image | CI rebuilds from cold each pipeline | S–M | todo |
+
+Related but tracked elsewhere: coordination routing latency (Aegis→Lyra→worker takes minutes per
+hop) is addressed by **G19 governed dispatch** (§4, P0 step 6), not duplicated here.
 
 ## 5. Coordination model (so escalations don't evaporate)
 

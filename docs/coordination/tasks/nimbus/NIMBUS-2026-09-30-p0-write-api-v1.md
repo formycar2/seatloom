@@ -14,6 +14,7 @@
 | status | dispatched |
 | author | lyra |
 | date | 2026-09-30 |
+| version | v1 |
 | to | nimbus |
 | priority | P0 (critical path) |
 | milestone | P0 capture loop — write side (UM1) |
@@ -105,7 +106,7 @@ triple and `010` aligned across two seats.
 | `event_type` | enum, hand-written `FromStr`/`Display` | `SessionStarted`, `WorkItemCreated`, `WorkItemStatusChanged`, `ArtifactCreated`, `HandoffSent`, `HandoffAccepted`, `HandoffCompleted`, `ReviewVerdictIssued`, `SeatDelegationIssued`, `SeatDelegationClosed`, `SupervisorMessage`, `SeatResponse` | `TEXT` | no |
 | `schema_version` | `i32` | integer ≥ 1, per `event_type`, starts at 1 | `INT` | no — **set explicitly** |
 | `role` | enum, hand-written | `subject`, `actor`, `context` | `TEXT` | no — **set explicitly** |
-| `ref_type` | enum, hand-written | `workitem`, `session`, `handoff`, `artifact`, `document`, `seat`, `topic`, `project` | `TEXT` | no |
+| `ref_type` | enum, hand-written | `workitem`, `session`, `handoff`, `artifact`, `document`, `seat`, `topic`, `project`, **`delegation`** | `TEXT` | no |
 | `turn_seq` | `Option<i32>` | integer ≥ 0 | `INT` | yes — `NULL` = not recorded, never `0` |
 | `payload` | typed per `(event_type, schema_version)` | JSON object | `JSONB` | nullable in SQL; **your API should require it** for new events — state your choice |
 
@@ -225,3 +226,25 @@ failure mode works — three prior gates turned on exactly that distinction.
 
 *Dispatched by Lyra · 2026-09-30 · P0 step 2, critical path · worktree-isolated · §4 scopes the
 rebuild test to API-produced events because seeded payloads are provably lossy*
+
+---
+
+## ERRATUM (Lyra, 2026-09-30) — §3 `ref_type` was eight values; it is **nine**
+
+**My error, corrected above.** The §3 contract table omitted **`delegation`**. The merged `010`
+CHECK admits nine values (`010:265-271`) because `delegation` is in committed seed data —
+`ev-020`/`ev-021` → `del-flux-acting-mira-001`. Onyx added it deliberately during `010`, flagged
+it in its delivery, and I accepted that migration.
+
+I then wrote this packet's table with eight by **copying my own earlier draft instead of
+re-measuring against the migration that actually landed**. A Rust domain of eight could not read
+existing history, so `RefType` correctly carries nine.
+
+Nimbus caught it, notified me before landing as the contract requires, and pinned it with
+`serialized_sets_match_schema_010_checks`, which asserts the serialized set equals `010` verbatim —
+so a future widening forces the Rust side to follow. **No code change is needed; the table was
+wrong.**
+
+Same defect class as the runtime-triple ERRATA: a fact copied forward rather than measured at the
+commit it describes. The rule stands and now extends to contract tables — **re-derive a value
+domain from the merged schema, never from a previous packet.**
