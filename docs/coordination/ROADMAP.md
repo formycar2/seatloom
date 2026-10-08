@@ -153,3 +153,32 @@ seat coordination is **human-paced tmux send-keys** — exactly the manual, atte
 pollution-prone loop SeatLoom exists to replace. The plan is to make SeatLoom itself hold this
 view and run this loop. This file is the interim; the SeatLoom UI over the captured event model
 is the destination.
+
+## Session snapshot + 奔终态 reprioritization (2026-10-08)
+
+**Decision (Mr. Zhang): go straight to the END-STATE, no throwaway transitional work.** The
+capture-based structured UI satisfies see-team / command-via-Aegis / history, better than the
+terminal mirror. So:
+- **Critical path (reprioritized):** step 4 MCP emit (Nimbus) → step 6 governed dispatch / G19
+  (Nimbus) → step 5 first captured event → structured UI: **UM2 timeline + UM3 history/replay**
+  (Mira, over `canonical_events` + `archived_sessions` + pi session transcripts) + **structured
+  supervisor-IM** (talk to Aegis → governed dispatch → events).
+- **KEEP (not throwaway):** UM0 live mirror + the mirror-fidelity fix — survives as the "drop into a
+  seat's raw terminal" DETAIL view.
+- **DROP (throwaway):** scrollback-for-history hack (TUI has no scrollback anyway); transitional B1
+  "mirror-drive Aegis pane" as the primary IM (final IM is structured).
+- step 6 (governed dispatch) also fixes the **Lyra dropped-hop** problem — until it lands, every
+  hop needs an Aegis nudge.
+
+**State as of 2026-10-08 (for resume after compaction):**
+- Migration: all 5 worker seats on PI (recipe in memory/project_harness_compliance_migration_pi.md).
+  Aegis stays Claude Code for now, NOT in tmux (this harness session; aegis-feishu ≠ Aegis).
+- UM0 live mirror + pipe-pane fix merged to track (1a34007). Mirror-fidelity fix delivered on
+  branches — Mira da4213b (viewport=geometry authority) + Nimbus 45d6c15 (resize tmux window) —
+  PENDING Flux-verify + Lyra-merge (stuck on Lyra's hop).
+- Archive: AgentHistory 271 sessions / 14GB ingested as `archived_sessions` (migration 011).
+- UI running (pnpm tauri:dev, vite :1420) on track; shows seats but mirror garbles pi TUI until the
+  fidelity fix merges + UI restart.
+- **Pending Aegis tasks:** (1) merge mirror fix (nudge Lyra), (2) reconcile local track (~30 ahead)
+  → GitLab, (3) rebuild stale local DB (001→011; running DB lacks 008/010), (4) restart UI after
+  mirror fix. Then begin the reprioritized critical path (step 4 MCP).
