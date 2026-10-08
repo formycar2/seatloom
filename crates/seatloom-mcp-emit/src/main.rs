@@ -7,6 +7,7 @@
 
 mod emit;
 mod protocol;
+mod scheduler;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
