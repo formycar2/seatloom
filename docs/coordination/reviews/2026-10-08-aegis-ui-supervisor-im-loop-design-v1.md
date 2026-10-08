@@ -5,7 +5,7 @@
 | template | T4 |
 | subtype | design_proposal |
 | id | review-2026-10-08-ui-supervisor-im-loop |
-| status | draft — pending Mr. Zhang review |
+| status | accepted — Mr. Zhang ratified 2026-10-08 (minimal-first B1; bind UI IM to the Aegis session; free-form intent to Aegis) |
 | author | aegis |
 | date | 2026-10-08 |
 | version | v1 |
