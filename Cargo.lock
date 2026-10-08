@@ -3193,11 +3193,13 @@ name = "seatloom-mcp-emit"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "deadpool-postgres",
  "nanoid",
  "seatloom-core",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

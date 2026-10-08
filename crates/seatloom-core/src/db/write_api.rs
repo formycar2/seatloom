@@ -352,49 +352,24 @@ impl SeatloomDb {
     ///
     /// Validation happens before a connection is taken, so a rejected draft never
     /// starts a transaction.
+    ///
+    /// This is a thin wrapper over [`append_event_in_tx`]: it validates, opens a
+    /// transaction, delegates the actual event + refs + projection write to the
+    /// in-tx variant, and commits. There is exactly **one** implementation of the
+    /// append (in `append_event_in_tx`); this method only owns the
+    /// validate-then-open-then-commit lifecycle so every existing caller keeps
+    /// its unchanged `(&EventDraft) -> AppendOutcome` contract.
+    /// (LYRA-2026-10-08-p0-step6-unblock-v1 §7-C, option b.)
     pub async fn append_event(&self, draft: &EventDraft) -> Result<AppendOutcome, WriteError> {
-        let subject = draft.validate()?.clone();
+        // Validate BEFORE taking a connection, so a rejected draft never opens a
+        // transaction — the property step 4 verified and A1's doc comment states.
+        draft.validate()?;
 
         let mut client = self.pool_client().await?;
         let tx = client.transaction().await?;
-
-        tx.execute(
-            INSERT_EVENT_SQL,
-            &[
-                &draft.event_id,
-                &draft.event_type.as_str(),
-                &draft.occurred_at,
-                &draft.actor_ref,
-                &draft.payload,
-                &draft.project_id,
-                &draft.schema_version,
-                &draft.turn_seq,
-            ],
-        )
-        .await?;
-
-        for r in &draft.refs {
-            tx.execute(
-                INSERT_REF_SQL,
-                &[
-                    &draft.event_id,
-                    &r.ref_type.as_str(),
-                    &r.ref_id,
-                    &r.role.as_str(),
-                ],
-            )
-            .await?;
-        }
-
-        let projection = apply_projection(&tx, draft, &subject).await?;
-
+        let outcome = append_event_in_tx(&tx, draft).await?;
         tx.commit().await?;
-
-        Ok(AppendOutcome {
-            event_id: draft.event_id.clone(),
-            subject,
-            projection,
-        })
+        Ok(outcome)
     }
 
     /// Rebuild the `workitems` projection for one project **from the ledger
@@ -503,6 +478,81 @@ pub struct RebuildReport {
     pub project_id: String,
     pub rows_deleted: u64,
     pub events_replayed: usize,
+}
+
+// =============================================================================
+// The append primitive, against a caller-supplied transaction
+// =============================================================================
+//
+// This is the SINGLE implementation of "append event + refs + projection". Both
+// `append_event` (which opens and commits its own transaction) and the governed
+// dispatch scheduler (which composes the append with a `dispatches` row change
+// in ONE transaction, step-6 rule 2) call through here, so there is no second
+// copy of the append logic to drift — the exact property A1 exists to guarantee.
+// (LYRA-2026-10-08-p0-step6-unblock-v1 §7-C, option b.)
+//
+// It is `pub(crate)`: the scheduler lives in a separate crate
+// (`seatloom-mcp-emit`) and reaches it through a thin `SeatloomDb` method rather
+// than touching the pool or the projection functions directly. The ref INSERT
+// keeps NO `ON CONFLICT DO NOTHING` — a duplicate must fail loudly, the whole
+// reason the clause was removed.
+//
+// Validation is the CALLER's responsibility before opening the transaction;
+// `append_event` does exactly that, preserving "a rejected draft never starts a
+// transaction". A caller that composes this into a larger transaction likewise
+// validates first. We re-run `validate()` here only to obtain the subject ref
+// the projection step needs; it is pure and cheap, and it cannot start a
+// transaction, so it does not weaken the before-tx property.
+
+/// Append `draft` (event + every ref + its projection) inside `tx`. Does **not**
+/// commit — the caller owns the transaction lifecycle, which is what lets the
+/// scheduler put a status transition and its event in the same transaction.
+///
+/// `pub` so the governed-dispatch scheduler in the separate `seatloom-mcp-emit`
+/// crate can compose it with a `dispatches` row change in one transaction
+/// (step-6 rule 2). It is the ONLY public way to append against a borrowed
+/// transaction; every caller still goes through the same one implementation.
+pub async fn append_event_in_tx(
+    tx: &Transaction<'_>,
+    draft: &EventDraft,
+) -> Result<AppendOutcome, WriteError> {
+    let subject = draft.validate()?.clone();
+
+    tx.execute(
+        INSERT_EVENT_SQL,
+        &[
+            &draft.event_id,
+            &draft.event_type.as_str(),
+            &draft.occurred_at,
+            &draft.actor_ref,
+            &draft.payload,
+            &draft.project_id,
+            &draft.schema_version,
+            &draft.turn_seq,
+        ],
+    )
+    .await?;
+
+    for r in &draft.refs {
+        tx.execute(
+            INSERT_REF_SQL,
+            &[
+                &draft.event_id,
+                &r.ref_type.as_str(),
+                &r.ref_id,
+                &r.role.as_str(),
+            ],
+        )
+        .await?;
+    }
+
+    let projection = apply_projection(tx, draft, &subject).await?;
+
+    Ok(AppendOutcome {
+        event_id: draft.event_id.clone(),
+        subject,
+        projection,
+    })
 }
 
 // =============================================================================
@@ -900,6 +950,160 @@ mod tests {
         assert!(
             !INSERT_REF_SQL.contains("ON CONFLICT"),
             "a duplicate ref must fail loudly, not be silently dropped"
+        );
+    }
+
+    // =========================================================================
+    // append_event_in_tx (7-C) — DB-backed, #[ignore] like the integration tests
+    // =========================================================================
+    //
+    // These prove the in-tx variant honours the CALLER's transaction lifecycle:
+    // it commits only when the caller commits, and rolls back when the caller
+    // rolls back. Marked #[ignore] so `cargo test` stays green without a DB; run
+    // with `--include-ignored` against a SCRATCH database (never live seatloom).
+    use crate::db::{create_pool, SeatloomDb};
+
+    async fn scratch_db() -> Option<(SeatloomDb, deadpool_postgres::Pool)> {
+        // Refuse the live database by name, same guard as the proof harnesses.
+        let url = std::env::var("DATABASE_URL").ok()?;
+        if url.rsplit('/').next() == Some("seatloom") {
+            panic!("refusing to run against the live `seatloom` database");
+        }
+        let pool = create_pool().ok()?;
+        let db = SeatloomDb::new(pool.clone());
+        db.ping().await.ok()?;
+        Some((db, pool))
+    }
+
+    fn in_tx_draft(event_id: &str, wi: &str) -> EventDraft {
+        EventDraft {
+            event_id: event_id.to_string(),
+            event_type: EventType::WorkItemCreated,
+            schema_version: 1,
+            occurred_at: ts(),
+            actor_ref: "seat:seat-nimbus-001".to_string(),
+            project_id: "p0-intx-proof".to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({"title": "in-tx", "status": "draft", "priority": "low"}),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::WorkItem, wi),
+                ObjectRefDraft::new(RefType::Seat, "seat-nimbus-001", RefRole::Actor),
+            ],
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a scratch PostgreSQL (DATABASE_URL to a non-live DB)"]
+    async fn append_event_in_tx_commits_with_the_callers_transaction() {
+        let Some((_db, pool)) = scratch_db().await else {
+            panic!("DATABASE_URL must point at a reachable scratch DB");
+        };
+        let mut client = pool.get().await.expect("client");
+        // Fixtures the FK/projection need.
+        client.execute("INSERT INTO projects (id, name, created_at, worker_budget_tokens, supervisor_budget_tokens) VALUES ('p0-intx-proof','in-tx', NOW(), 1024, 1024) ON CONFLICT (id) DO NOTHING", &[]).await.unwrap();
+        client.execute("INSERT INTO seats (id, name, capability_tags, status, created_at) VALUES ('seat-nimbus-001','Nimbus','{}','active', NOW()) ON CONFLICT (id) DO NOTHING", &[]).await.unwrap();
+        client
+            .execute(
+                "DELETE FROM event_object_refs WHERE event_id = 'ev-intx-commit'",
+                &[],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "DELETE FROM canonical_events WHERE id = 'ev-intx-commit'",
+                &[],
+            )
+            .await
+            .unwrap();
+        client
+            .execute("DELETE FROM workitems WHERE id = 'wi-intx-commit'", &[])
+            .await
+            .unwrap();
+
+        let tx = client.transaction().await.expect("tx");
+        let outcome = append_event_in_tx(&tx, &in_tx_draft("ev-intx-commit", "wi-intx-commit"))
+            .await
+            .expect("in-tx append should succeed");
+        assert_eq!(outcome.event_id, "ev-intx-commit");
+        tx.commit().await.expect("caller commits");
+
+        let n: i64 = client
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE id = 'ev-intx-commit'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 1, "committed event must be present after caller commits");
+        let w: i64 = client
+            .query_one(
+                "SELECT count(*) FROM workitems WHERE id = 'wi-intx-commit'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(w, 1, "projection written in the same tx must be present");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a scratch PostgreSQL (DATABASE_URL to a non-live DB)"]
+    async fn append_event_in_tx_rolls_back_with_the_callers_transaction() {
+        let Some((_db, pool)) = scratch_db().await else {
+            panic!("DATABASE_URL must point at a reachable scratch DB");
+        };
+        let mut client = pool.get().await.expect("client");
+        client.execute("INSERT INTO projects (id, name, created_at, worker_budget_tokens, supervisor_budget_tokens) VALUES ('p0-intx-proof','in-tx', NOW(), 1024, 1024) ON CONFLICT (id) DO NOTHING", &[]).await.unwrap();
+        client.execute("INSERT INTO seats (id, name, capability_tags, status, created_at) VALUES ('seat-nimbus-001','Nimbus','{}','active', NOW()) ON CONFLICT (id) DO NOTHING", &[]).await.unwrap();
+        client
+            .execute(
+                "DELETE FROM event_object_refs WHERE event_id = 'ev-intx-rollback'",
+                &[],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "DELETE FROM canonical_events WHERE id = 'ev-intx-rollback'",
+                &[],
+            )
+            .await
+            .unwrap();
+        client
+            .execute("DELETE FROM workitems WHERE id = 'wi-intx-rollback'", &[])
+            .await
+            .unwrap();
+
+        let tx = client.transaction().await.expect("tx");
+        append_event_in_tx(&tx, &in_tx_draft("ev-intx-rollback", "wi-intx-rollback"))
+            .await
+            .expect("in-tx append should succeed inside the tx");
+        // Caller decides to roll back — e.g. a later step in the composed
+        // transaction failed. The event + refs + projection must vanish together.
+        tx.rollback().await.expect("caller rolls back");
+
+        let n: i64 = client
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE id = 'ev-intx-rollback'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "rolled-back event must be absent");
+        let w: i64 = client
+            .query_one(
+                "SELECT count(*) FROM workitems WHERE id = 'wi-intx-rollback'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            w, 0,
+            "projection written in the rolled-back tx must be absent"
         );
     }
 }

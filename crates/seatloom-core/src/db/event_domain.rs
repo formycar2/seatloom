@@ -46,6 +46,13 @@ pub enum EventType {
     SeatDelegationClosed,
     SupervisorMessage,
     SeatResponse,
+    // (012, G19) dispatch lifecycle — the three transitions that make the
+    // `dispatches` projection replayable from the ledger. Lyra sign-off in the
+    // value-domain contract 2026-10-08; added to A1 under
+    // LYRA-2026-10-08-p0-step6-unblock-v1 (7-A). Pinned to `012:73-75`.
+    SeatDispatchIssued,
+    SeatDispatchDelivered,
+    SeatDispatchCompleted,
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -80,22 +87,28 @@ pub enum RefType {
     Topic,
     Project,
     Delegation,
+    // (012, G19) `dispatches` is a table with its own object, exactly the
+    // reasoning 010 used to admit `delegation`. Without it an event cannot name
+    // the dispatch it is about. Lyra sign-off 2026-10-08; added under
+    // LYRA-2026-10-08-p0-step6-unblock-v1 (7-A).
+    Dispatch,
 }
 
 const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStatusChanged, \
                                    ArtifactCreated, HandoffSent, HandoffAccepted, \
                                    HandoffCompleted, ReviewVerdictIssued, SeatDelegationIssued, \
-                                   SeatDelegationClosed, SupervisorMessage, SeatResponse";
+                                   SeatDelegationClosed, SupervisorMessage, SeatResponse, \
+                                   SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
 const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document, seat, topic, \
-                                 project, delegation";
+                                 project, delegation, dispatch";
 
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 12] = [
+    pub const ALL: [EventType; 15] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -108,6 +121,9 @@ impl EventType {
         EventType::SeatDelegationClosed,
         EventType::SupervisorMessage,
         EventType::SeatResponse,
+        EventType::SeatDispatchIssued,
+        EventType::SeatDispatchDelivered,
+        EventType::SeatDispatchCompleted,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -124,6 +140,9 @@ impl EventType {
             EventType::SeatDelegationClosed => "SeatDelegationClosed",
             EventType::SupervisorMessage => "SupervisorMessage",
             EventType::SeatResponse => "SeatResponse",
+            EventType::SeatDispatchIssued => "SeatDispatchIssued",
+            EventType::SeatDispatchDelivered => "SeatDispatchDelivered",
+            EventType::SeatDispatchCompleted => "SeatDispatchCompleted",
         }
     }
 }
@@ -145,6 +164,9 @@ impl FromStr for EventType {
             "SeatDelegationClosed" => Ok(EventType::SeatDelegationClosed),
             "SupervisorMessage" => Ok(EventType::SupervisorMessage),
             "SeatResponse" => Ok(EventType::SeatResponse),
+            "SeatDispatchIssued" => Ok(EventType::SeatDispatchIssued),
+            "SeatDispatchDelivered" => Ok(EventType::SeatDispatchDelivered),
+            "SeatDispatchCompleted" => Ok(EventType::SeatDispatchCompleted),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -210,7 +232,7 @@ impl fmt::Display for RefRole {
 }
 
 impl RefType {
-    pub const ALL: [RefType; 9] = [
+    pub const ALL: [RefType; 10] = [
         RefType::WorkItem,
         RefType::Session,
         RefType::Handoff,
@@ -220,6 +242,7 @@ impl RefType {
         RefType::Topic,
         RefType::Project,
         RefType::Delegation,
+        RefType::Dispatch,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -233,6 +256,7 @@ impl RefType {
             RefType::Topic => "topic",
             RefType::Project => "project",
             RefType::Delegation => "delegation",
+            RefType::Dispatch => "dispatch",
         }
     }
 }
@@ -251,6 +275,7 @@ impl FromStr for RefType {
             "topic" => Ok(RefType::Topic),
             "project" => Ok(RefType::Project),
             "delegation" => Ok(RefType::Delegation),
+            "dispatch" => Ok(RefType::Dispatch),
             _ => Err(ParseValueError {
                 domain: "RefType",
                 value: s.to_string(),
@@ -293,10 +318,13 @@ mod tests {
         }
     }
 
-    /// Pins the serialized set against `010`'s CHECK constraints verbatim. If a
-    /// migration widens a domain, this test is where the Rust side must follow.
+    /// Pins the serialized set against the migrations' CHECK constraints
+    /// verbatim. `010` created the 12-value event_type and 9-value ref_type
+    /// vocabularies; `012` widened them to 15 and 10 respectively (governed
+    /// dispatch, G19). If a migration widens a domain, this test is where the
+    /// Rust side must follow — kept verbatim, never loosened.
     #[test]
-    fn serialized_sets_match_schema_010_checks() {
+    fn serialized_sets_match_schema_010_and_012_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -313,8 +341,12 @@ mod tests {
                 "SeatDelegationClosed",
                 "SupervisorMessage",
                 "SeatResponse",
+                // 012:73-75 (G19) canonical_events_event_type_vocab widening
+                "SeatDispatchIssued",
+                "SeatDispatchDelivered",
+                "SeatDispatchCompleted",
             ],
-            "must equal 010:141-159 canonical_events_event_type_vocab"
+            "must equal 010:141-159 + 012's canonical_events_event_type_vocab"
         );
         let roles: Vec<&str> = RefRole::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(roles, vec!["subject", "actor", "context"]);
@@ -331,8 +363,10 @@ mod tests {
                 "topic",
                 "project",
                 "delegation",
+                // 012 (G19) event_object_refs_ref_type_vocab widening
+                "dispatch",
             ],
-            "must equal 010:270-276 event_object_refs_ref_type_vocab"
+            "must equal 010:270-276 + 012's event_object_refs_ref_type_vocab"
         );
     }
 

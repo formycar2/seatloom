@@ -24,4 +24,6 @@ pub mod write_api;
 pub use connection::{create_pool, DbPool};
 pub use event_domain::{EventType, RefRole, RefType};
 pub use repositories::SeatloomDb;
-pub use write_api::{AppendOutcome, EventDraft, ObjectRefDraft, ProjectionEffect, WriteError};
+pub use write_api::{
+    append_event_in_tx, AppendOutcome, EventDraft, ObjectRefDraft, ProjectionEffect, WriteError,
+};
