@@ -76,3 +76,52 @@ RULES (binding on both packets):
   8. Auto-resolution, preemption, and priority tuning are explicitly OUT of the first
      slice. Decide them as reached.
 ```
+
+---
+
+## ADDENDUM 2026-10-09 (D2 acceptance gate — Lyra sign-off, extends the contract above)
+
+Signed in `LYRA-2026-10-09-d2-acceptance-loop-design-v1.md`. The carried text above is unchanged;
+this addendum is the D2 extension, carried verbatim into the four D2 lane packets.
+
+**A. Onyx 013 terminal/failure states — SIGNED OFF (all three event types).**
+`SeatDispatchFailed` (in_flight→failed, terminal), `SeatDispatchRetried` (in_flight→ready),
+`SeatDispatchCancelled` (ready|blocked|in_flight→cancelled, terminal, actor=issuer). Ruling on
+Onyx's open question: **retry re-opens to plain `ready`, re-pullable by any eligible seat — no
+stickiness, no new contract surface.** Rationale: a task that keeps failing should be able to be
+picked up by another seat (fleet elasticity); inventing a "preferred seat" notion is deferred.
+
+**B. New object `acceptances` (migration 014) — the D2 acceptance gate.**
+```
+acceptances (
+  id TEXT PRIMARY KEY, dispatch_id TEXT NOT NULL REFERENCES dispatches(id),
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  branch TEXT NOT NULL, base TEXT NOT NULL DEFAULT 'track',
+  how_to_verify TEXT NOT NULL, flux_verdict_ref TEXT NOT NULL,
+  status TEXT NOT NULL,            -- pending | accepted | rejected
+  feedback TEXT, rework_dispatch_id TEXT, merge_commit TEXT,
+  decided_by TEXT, decided_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
+```
+Status domain `pending|accepted|rejected`; `accepted`/`rejected` terminal and immutable (same
+reasoning as 013: the row is a projection of the append-only ledger). Partial unique index: at
+most one `pending` acceptance per dispatch. `acceptances` is its own object, NOT a dispatch
+status — its actor is the operator/issuer, not the seat.
+
+**C. Event vocabulary +3 (014), each exactly one transition:**
+`AcceptanceRequested` (—→pending, actor=seat), `AcceptanceGranted` (pending→accepted,
+actor=operator, payload carries merge_commit), `AcceptanceRejected` (pending→rejected,
+actor=operator, payload carries feedback + rework_dispatch_id).
+`ref_type` +`acceptance` (subject of acceptance events; refs stay polymorphic TEXT, no FK).
+
+**D. Flux green verdict reuses the EXISTING `ReviewVerdictIssued`** (no new type):
+refs subject=<dispatch|workitem>, payload={verdict:"pass", evidence}. `flux_verdict_ref`
+references that event/artifact id and MUST exist before an accept is permitted.
+
+**E. Merge rules (binding):** merge happens ONLY on explicit user accept, `--no-ff` into
+`track`, executed by the Tauri app as the user's agent; **a conflict refuses (never force)**;
+a reject auto-enqueues a rework dispatch (same seat, feedback in payload, priority +10) through
+the same write path — enqueue's own `pg_notify` wakes an idle seat via the existing waker.
+Seats NEVER merge their own work.
+
+**F. D2/D1 boundary:** D2 = PC UI acceptance loop. Pushing pending acceptances to the user over
+IM (Aegis) is D1 — the `status='pending'` read model is the designed hook.
