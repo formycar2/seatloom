@@ -190,3 +190,27 @@ verdict payload) — stated, not fabricated.
 Delivered on `packet/nimbus/waker-hardening`; a Flux verification dispatch
 carrying this commit sha is enqueued (per the dispatch's dogfood chain) before
 completion.
+
+## 9. Dogfood attempt on live (2026-10-09, recorded)
+
+Flux verified this delivery green (`ev-OrgcgAsHA0XkpFcpsppQO`, 62/62) and the
+dogfood dispatch asked for the real `request_acceptance` call on live. Attempted
+by driving the freshly-built binary over stdio as `seat:seat-nimbus-001`
+against live `seatloom` (the harness MCP connection still runs the pre-D2
+binary, so its tool list lacks the new tools):
+
+```
+ERR dispatch rejected: db error | ERROR: relation "acceptances" does not exist
+    | sqlstate=42P01
+```
+
+Reading the failure precisely: **guard 1 passed** (the dispatch is the calling
+seat's own `done` row — otherwise `NotCompleted`), **guard 2 passed**
+(`ev-OrgcgAsHA0XkpFcpsppQO` exists on live — otherwise `UnknownFluxVerdict`), and
+the write path stopped exactly at the missing `acceptances` table — i.e. at the
+`013`/`014` schema that Onyx delivers and ops applies. That gap is escalated in
+`docs/coordination/tasks/flux/FLUX-2026-10-09-nimbus-d2-backend-verify-delivery-v1.md`
+§4; per the dispatch, it is **not** worked around here (no migration was applied
+to live from this lane). Once `013`/`014` land, the identical call creates the
+pending acceptance and the card appears in the UI's 待验收区 for the user's
+one-step verify → Accept.
