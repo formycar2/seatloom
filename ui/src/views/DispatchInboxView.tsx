@@ -30,21 +30,28 @@ const DispatchInboxView: React.FC = () => {
     [activeProjectId, projectData],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await api.listDispatches(activeProjectId ?? undefined);
-      setDispatches(rows);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [activeProjectId]);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const rows = await api.listDispatches(activeProjectId ?? undefined);
+        setDispatches(rows);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [activeProjectId],
+  );
 
   useEffect(() => {
     void load();
+    // Live refresh: poll every 5s so dispatches flow ready -> in_flight -> done
+    // in real time (e.g. while watching a seat pull its next task).
+    const timer = setInterval(() => void load(true), 5000);
+    return () => clearInterval(timer);
   }, [load]);
 
   // Group by target seat, each group's rows already ordered by the backend.

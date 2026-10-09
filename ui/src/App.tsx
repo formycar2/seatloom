@@ -60,6 +60,7 @@ const App: React.FC = () => {
     setActiveProject,
     addWorkItem,
     hydrateFromBackend,
+    refreshEvents,
     backendHydrated,
   } = useDataStore();
   // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
@@ -74,6 +75,16 @@ const App: React.FC = () => {
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
     hydrateFromBackend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Live timeline: poll the active project's events every 8s so new captured
+  // events (incl. MCP-emitted ones from other processes) appear without a reload.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refreshEvents();
+    }, 8000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

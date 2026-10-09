@@ -42,6 +42,12 @@ interface DataState {
    * available (browser-dev or pre-bootstrap).
    */
   hydrateFromBackend: () => Promise<void>;
+  /**
+   * Re-fetch only the canonical events for the active project and replace that
+   * project's `events` slice. Cheap enough to poll for a live timeline; silent
+   * no-op in browser-dev or when there is no active project.
+   */
+  refreshEvents: () => Promise<void>;
 }
 
 const LOG_DAY = '2026-04-28';
@@ -1550,6 +1556,28 @@ export const useDataStore = create<DataState>((set, get) => ({
       },
     };
   }),
+
+  refreshEvents: async () => {
+    if (!isTauri()) return;
+    const activeProjectId = get().activeProjectId;
+    if (!activeProjectId) return;
+    try {
+      const eventsDto = await api.listEvents(400);
+      const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
+      set((state) => {
+        const data = state.projectData[activeProjectId];
+        if (!data) return {} as Partial<DataState>;
+        return {
+          projectData: {
+            ...state.projectData,
+            [activeProjectId]: { ...data, events },
+          },
+        };
+      });
+    } catch {
+      // transient fetch error; keep the existing events
+    }
+  },
 
   hydrateFromBackend: async () => {
     if (!isTauri()) {
