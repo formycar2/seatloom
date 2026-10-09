@@ -14,6 +14,41 @@ const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   done: { label: '完成', cls: 'bg-secondary text-text-secondary border-border/40' },
 };
 
+const STATUS_FILTERS: { key: string; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'in_flight', label: '进行中' },
+  { key: 'ready', label: '就绪' },
+  { key: 'blocked', label: '阻塞' },
+  { key: 'done', label: '完成' },
+];
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const p = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function relTime(iso: string | null): string {
+  if (!iso) return '';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${s}秒前`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时前`;
+  return `${Math.floor(h / 24)}天前`;
+}
+
+function duration(a: string | null, b: string | null): string {
+  if (!a || !b) return '';
+  const s = Math.round((new Date(b).getTime() - new Date(a).getTime()) / 1000);
+  if (s < 60) return `${s}秒`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  return rs ? `${m}分${rs}秒` : `${m}分`;
+}
+
 const DispatchInboxView: React.FC = () => {
   const [dispatches, setDispatches] = useState<DispatchDto[]>([]);
   const [seatsDb, setSeatsDb] = useState<SeatDto[]>([]);
@@ -58,15 +93,24 @@ const DispatchInboxView: React.FC = () => {
     return () => clearInterval(timer);
   }, [load]);
 
-  // Group by target seat, each group's rows already ordered by the backend.
+  // Status filter + per-status counts (counts from all dispatches, not filtered).
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: dispatches.length };
+    for (const d of dispatches) c[d.status] = (c[d.status] ?? 0) + 1;
+    return c;
+  }, [dispatches]);
+
+  // Group by target seat (filtered), each group's rows already ordered by the backend.
   const bySeat = useMemo(() => {
     const groups = new Map<string, DispatchDto[]>();
     for (const d of dispatches) {
+      if (statusFilter !== 'all' && d.status !== statusFilter) continue;
       if (!groups.has(d.targetSeatId)) groups.set(d.targetSeatId, []);
       groups.get(d.targetSeatId)!.push(d);
     }
     return Array.from(groups.entries());
-  }, [dispatches]);
+  }, [dispatches, statusFilter]);
 
   // --- New-dispatch form (operator commands a seat from the UI) ---
   const seats = seatsDb;
@@ -211,69 +255,125 @@ const DispatchInboxView: React.FC = () => {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
-        {error ? (
-          <div className="flex items-center gap-2 text-sm font-bold text-red-600">
-            <AlertCircle size={16} /> 加载派单失败:{error}
-          </div>
-        ) : dispatches.length === 0 && !loading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="p-4 bg-secondary rounded-full border border-border/40 text-text-secondary mb-4 opacity-20">
-              <Send className="w-8 h-8" />
+      <div className="flex-1 overflow-y-auto">
+        {/* Status filter bar */}
+        <div className="px-8 pt-5 pb-3 flex flex-wrap gap-2 border-b border-border/30 bg-background sticky top-0 z-10">
+          {STATUS_FILTERS.map((f) => {
+            const n = counts[f.key] ?? 0;
+            const active = statusFilter === f.key;
+            return (
+              <button
+                key={f.key}
+                onClick={() => setStatusFilter(f.key)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+                  active
+                    ? 'bg-primary text-white border-primary'
+                    : 'bg-card text-text-secondary border-border/50 hover:bg-accent'
+                }`}
+              >
+                {f.label}
+                <span
+                  className={`text-[10px] px-1.5 rounded-full ${active ? 'bg-white/25' : 'bg-secondary'}`}
+                >
+                  {n}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="px-8 py-6">
+          {error ? (
+            <div className="flex items-center gap-2 text-sm font-bold text-red-600">
+              <AlertCircle size={16} /> 加载派单失败:{error}
             </div>
-            <p className="text-sm font-bold text-text-secondary">暂无派单</p>
-            <p className="text-xs text-text-secondary uppercase tracking-widest mt-1 opacity-60">
-              Aegis 下达的指令会出现在这里
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-8 max-w-4xl">
-            {bySeat.map(([seatId, rows]) => (
-              <div key={seatId}>
-                <div className="flex items-center gap-2 mb-3">
-                  <h3 className="text-sm font-black text-text-primary">{seatName(seatId)}</h3>
-                  <span className="text-[10px] font-bold text-text-secondary uppercase tracking-widest">
-                    {rows.length} 项
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {rows.map((d) => {
-                    const st = STATUS_STYLE[d.status] ?? {
-                      label: d.status,
-                      cls: 'bg-secondary text-text-secondary border-border/40',
-                    };
-                    return (
-                      <div
-                        key={d.id}
-                        className="sl-card p-4 flex items-start gap-3 border border-border/40"
-                      >
-                        <span
-                          className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${st.cls}`}
+          ) : bySeat.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="p-4 bg-secondary rounded-full border border-border/40 text-text-secondary mb-4 opacity-20">
+                <Send className="w-8 h-8" />
+              </div>
+              <p className="text-sm font-bold text-text-secondary">
+                {dispatches.length === 0 ? '暂无派单' : '该状态下暂无派单'}
+              </p>
+              <p className="text-xs text-text-secondary mt-1 opacity-60">
+                点右上「新建派单」把任务派给某个席位
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-8 max-w-4xl">
+              {bySeat.map(([seatId, rows]) => (
+                <div key={seatId}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <h3 className="text-sm font-black text-text-primary">{seatName(seatId)}</h3>
+                    <span className="text-[10px] font-bold text-text-secondary uppercase tracking-widest">
+                      {rows.length} 项
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {rows.map((d) => {
+                      const st = STATUS_STYLE[d.status] ?? {
+                        label: d.status,
+                        cls: 'bg-secondary text-text-secondary border-border/40',
+                      };
+                      const note =
+                        d.payload && typeof d.payload === 'object'
+                          ? ((d.payload as Record<string, unknown>).note ??
+                            (d.payload as Record<string, unknown>).instructions)
+                          : undefined;
+                      return (
+                        <div
+                          key={d.id}
+                          title={`编号 ${d.id}`}
+                          className="sl-card p-4 border border-border/40"
                         >
-                          {st.label}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold text-text-primary">{d.title}</p>
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[11px] text-text-secondary">
-                            <span>优先级 {d.priority}</span>
-                            <span>来自 {d.issuedBy}</span>
-                            <span className="font-mono opacity-70">{d.id}</span>
-                            {d.deps.length > 0 && (
-                              <span className="text-amber-600">
-                                依赖 {d.deps.length} 项(
-                                {d.deps.map((x) => `${x.depKind}:${x.depValue}`).join(', ')})
-                              </span>
-                            )}
+                          <div className="flex items-start gap-3">
+                            <span
+                              className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${st.cls}`}
+                            >
+                              {st.label}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-bold text-text-primary">{d.title}</p>
+                              {typeof note === 'string' && note && (
+                                <p className="text-xs text-text-secondary mt-0.5 line-clamp-2">
+                                  {note}
+                                </p>
+                              )}
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[11px] text-text-secondary">
+                                <span className="font-black text-text-primary/80">
+                                  P{d.priority}
+                                </span>
+                                <span>发出 {relTime(d.issuedAt)}</span>
+                                {d.status === 'in_flight' && d.startedAt && (
+                                  <span className="text-blue-600 font-semibold">
+                                    开始 {relTime(d.startedAt)}
+                                  </span>
+                                )}
+                                {d.status === 'done' && (
+                                  <span>
+                                    完成 {fmtTime(d.completedAt)}
+                                    {duration(d.startedAt, d.completedAt) && (
+                                      <> · 耗时 {duration(d.startedAt, d.completedAt)}</>
+                                    )}
+                                  </span>
+                                )}
+                                {d.deps.length > 0 && (
+                                  <span className="text-amber-600">
+                                    等待依赖 {d.deps.length} 项
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

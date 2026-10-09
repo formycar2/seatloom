@@ -37,7 +37,7 @@ export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
  * Tabs whose content is mirrored from a live tmux pane. Everything not listed
  * here is seed- or fixture-backed until its capture path lands.
  */
-export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions']);
+export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions', 'dispatches']);
 
 /** The live-mirror tab: the one surface whose LIVE claim depends on discovery. */
 export const LIVE_MIRROR_TAB = 'live-seats';
