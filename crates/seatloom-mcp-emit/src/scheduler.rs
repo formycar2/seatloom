@@ -20,7 +20,8 @@
 //!
 //! # Contract mapping (VALUE-DOMAIN-2026-10-08-governed-dispatch-v1)
 //!
-//! - STATUS DOMAIN (4): [`DispatchStatus`] = ready | blocked | in_flight | done.
+//! - STATUS DOMAIN (6, `013`): [`DispatchStatus`] = ready | blocked | in_flight |
+//!   done | failed | cancelled; done/failed/cancelled are terminal and immutable.
 //! - Rule 1 (one in_flight per seat): [`select_next`] returns an existing
 //!   in_flight before any ready item; the database partial unique index is the
 //!   actual enforcement, this is the scheduler half.
@@ -40,16 +41,23 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// The 4-value status domain, lowercase snake_case to match the DB CHECK
-/// (`ready | blocked | in_flight | done`). Kept local to the scheduler crate:
-/// it is a dispatch concern, not part of A1's `event_domain` vocabulary, so it
-/// does not touch the accepted enum file.
+/// The status domain, lowercase snake_case to match the DB CHECK. Kept local
+/// to the scheduler crate: it is a dispatch concern, not part of A1's
+/// `event_domain` vocabulary, so it does not touch the accepted enum file.
+///
+/// `013` widened the DB domain 4 -> 6 with two TERMINAL values (`failed`,
+/// `cancelled`): a terminal row is immutable — the dispatches row is a
+/// projection of the append-only ledger, so mutating a terminal row back to a
+/// non-terminal state would silently rewrite a recorded fact. The retry path
+/// re-opens from `in_flight`, never from `failed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchStatus {
     Ready,
     Blocked,
     InFlight,
     Done,
+    Failed,
+    Cancelled,
 }
 
 impl DispatchStatus {
@@ -59,6 +67,8 @@ impl DispatchStatus {
             DispatchStatus::Blocked => "blocked",
             DispatchStatus::InFlight => "in_flight",
             DispatchStatus::Done => "done",
+            DispatchStatus::Failed => "failed",
+            DispatchStatus::Cancelled => "cancelled",
         }
     }
 
@@ -71,6 +81,8 @@ impl DispatchStatus {
             "blocked" => Some(DispatchStatus::Blocked),
             "in_flight" => Some(DispatchStatus::InFlight),
             "done" => Some(DispatchStatus::Done),
+            "failed" => Some(DispatchStatus::Failed),
+            "cancelled" => Some(DispatchStatus::Cancelled),
             _ => None,
         }
     }
@@ -336,14 +348,35 @@ mod tests {
             DispatchStatus::Blocked,
             DispatchStatus::InFlight,
             DispatchStatus::Done,
+            DispatchStatus::Failed,
+            DispatchStatus::Cancelled,
         ] {
             assert_eq!(DispatchStatus::parse(s.as_str()), Some(s));
         }
         assert_eq!(DispatchStatus::parse("running"), None);
+        assert_eq!(DispatchStatus::parse("queued"), None);
         for k in [DepKind::Event, DepKind::Artifact, DepKind::Dispatch] {
             assert_eq!(DepKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(DepKind::parse("session"), None);
+    }
+
+    /// A terminal row is never pullable: the scheduler must skip it even though
+    /// `select_next`'s filters are expressed over ready/in_flight only — this
+    /// pins that a failed/cancelled row does not sneak into the ready set via a
+    /// future status widening. Terminal immutability itself is enforced in SQL
+    /// (the guarded UPDATEs in `dispatch.rs`) and in `live_status`'s
+    /// return-as-stored arm.
+    #[test]
+    fn terminal_rows_are_not_selected_for_pull() {
+        let items = vec![
+            d("failed", "s", DispatchStatus::Failed, 100, "t1"),
+            d("cancelled", "s", DispatchStatus::Cancelled, 100, "t2"),
+        ];
+        assert_eq!(
+            select_next("s", &items),
+            PullDecision::Nothing { stall: false }
+        );
     }
 
     // ---- select_next: the pull algorithm -----------------------------------

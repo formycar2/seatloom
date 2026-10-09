@@ -454,3 +454,42 @@ pub struct DispatchDependencyRow {
     pub dep_kind: String, // 'event'|'artifact'|'dispatch'
     pub dep_value: String,
 }
+
+/// One acceptance row (schema 014, D2 acceptance gate) — the UI's 待验收 card.
+/// Its own first-class object: the actor is the operator/issuer (not the seat),
+/// and it carries the delivery branch, the one-step verification, the Flux
+/// verdict reference, and the decision lineage (merge commit / rework dispatch).
+#[derive(Debug, Clone)]
+pub struct AcceptanceRow {
+    pub id: String,
+    pub dispatch_id: String,
+    pub project_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    pub flux_verdict_ref: String,
+    pub status: String, // 'pending'|'accepted'|'rejected'
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+    pub merge_commit: Option<String>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// An acceptance joined to the dispatch it gates plus the Flux verdict's
+/// rendered facts — the read model the Tauri `cmd_list_acceptances` returns.
+/// `flux_verdict` / `flux_verdict_occurred_at` are `None` when the referenced
+/// row is an artifact (which carries no verdict payload) or has vanished.
+/// `dispatch_priority` / `dispatch_payload` are carried so the reject path can
+/// auto-enqueue the rework (priority+10, packet lineage) without a second query.
+#[derive(Debug, Clone)]
+pub struct AcceptanceWithDispatchRow {
+    pub acceptance: AcceptanceRow,
+    pub dispatch_title: String,
+    pub dispatch_seat_id: String,
+    pub dispatch_priority: i32,
+    pub dispatch_payload: serde_json::Value,
+    pub flux_verdict: Option<String>,
+    pub flux_verdict_occurred_at: Option<DateTime<Utc>>,
+}

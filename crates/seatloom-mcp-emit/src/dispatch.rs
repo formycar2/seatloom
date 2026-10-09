@@ -1,9 +1,11 @@
 //! P0 step 6 (Nimbus half) — the DB/MCP layer for governed dispatch (G19).
 //!
-//! Three tools, wired onto the merged step-4 crate (extends, never forks):
+//! Five tools, wired onto the merged step-4 crate (extends, never forks):
 //!   - `enqueue_dispatch`   (issuer: Aegis / Lyra)
 //!   - `get_next_dispatch`  (the seat, when idle)
-//!   - `complete_dispatch`  (the seat, when done)
+//!   - `complete_dispatch`  (the seat, when done — or when it must report failure)
+//!   - `cancel_dispatch`    (the issuer, withdrawing non-terminal work)
+//!   - `request_acceptance` (the seat, handing a finished delivery to the D2 gate)
 //!
 //! Every status transition is an EVENT appended in the **same transaction** as
 //! the `dispatches` row change (contract rule 2), via
@@ -12,6 +14,14 @@
 //! an EXISTENCE query over `dispatch_dependencies` (no FK on `dep_value`, by
 //! Onyx's `012` design). The pull decision, cycle, and stall are computed by the
 //! pure [`crate::scheduler`] core.
+//!
+//! `013` (terminal/failure states) and `014` (the D2 acceptance gate) extend the
+//! layer: `complete_dispatch` gains an `outcome` argument (done | failed, with
+//! the retry budget on the row), `cancel_dispatch` is the issuer-side
+//! withdrawal, and `request_acceptance` creates the `acceptances` row that the
+//! Tauri accept/reject commands later decide. Each new transition has exactly
+//! one event type (Lyra sign-off 2026-10-09), so the projection stays
+//! replayable.
 //!
 //! # Non-forgeable seat identity (packet §1.1)
 //!
@@ -57,6 +67,11 @@ pub struct EnqueueArgs {
     pub project_id: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<DepArg>,
+    /// Retry budget for this dispatch (`013`): how many FAILED attempts are
+    /// re-opened to `ready` before the failure becomes terminal. Omitted / `0`
+    /// means the first failure is terminal (the pre-013 behaviour).
+    #[serde(default)]
+    pub max_retries: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +86,39 @@ pub struct DepArg {
 #[derive(Debug, Deserialize)]
 pub struct CompleteArgs {
     pub dispatch_id: String,
+    /// `"done"` (the default, fully backward compatible) or `"failed"`. On
+    /// `"failed"` the retry budget on the row decides between a re-open
+    /// (`SeatDispatchRetried`, in_flight -> ready) and a terminal failure
+    /// (`SeatDispatchFailed`, in_flight -> failed) — `013`.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Optional failure reason; carried verbatim into the retry/failure event
+    /// payload so the ledger records WHY an attempt ended.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `cancel_dispatch` — the issuer withdraws non-terminal work (`013`). Takes no
+/// seat parameter: the issuer identity comes from the server env, and the write
+/// is guarded on `issued_by = <resolved actor_ref>`.
+#[derive(Debug, Deserialize)]
+pub struct CancelArgs {
+    pub id: String,
+}
+
+/// `request_acceptance` — the seat hands a COMPLETED delivery to the D2
+/// acceptance gate (`014`). The seat never merges its own work; this creates the
+/// `acceptances` row the operator later accepts or rejects.
+#[derive(Debug, Deserialize)]
+pub struct RequestAcceptanceArgs {
+    pub dispatch_id: String,
+    /// The delivery branch to be merged on accept, e.g. `packet/<seat>/<id>`.
+    pub branch: String,
+    /// The one-step verification the operator performs: "do A, see B".
+    pub how_to_verify: String,
+    /// The Flux green-verdict reference (a `ReviewVerdictIssued` event or
+    /// artifact id). Must exist before a request is permitted.
+    pub flux_verdict_ref: String,
 }
 
 /// A rejection in the dispatch layer, rendered verbatim into the MCP tool error.
@@ -78,9 +126,47 @@ pub struct CompleteArgs {
 pub enum DispatchRejection {
     MissingActorRef,
     MissingProjectId,
-    UnknownDepKind { value: String },
-    PriorityNotI32 { priority: i64 },
-    NotYourInFlight { dispatch_id: String, seat: String },
+    UnknownDepKind {
+        value: String,
+    },
+    PriorityNotI32 {
+        priority: i64,
+    },
+    NotYourInFlight {
+        dispatch_id: String,
+        seat: String,
+    },
+    /// `complete_dispatch`'s `outcome` is neither "done" nor "failed".
+    UnknownOutcome {
+        value: String,
+    },
+    /// `enqueue_dispatch`'s `max_retries` is negative or does not fit in i32 —
+    /// the budget is a hard ceiling, and a nonsense ceiling is rejected, never
+    /// silently clamped (`013`).
+    InvalidMaxRetries {
+        max_retries: i64,
+    },
+    /// `cancel_dispatch`: the dispatch is not a non-terminal row issued by the
+    /// resolved actor (unknown, terminal, or another issuer's).
+    NotCancellable {
+        dispatch_id: String,
+        actor: String,
+    },
+    /// `request_acceptance`: the dispatch is not a COMPLETED dispatch owned by
+    /// the calling seat (`014`).
+    NotCompleted {
+        dispatch_id: String,
+        seat: String,
+    },
+    /// `request_acceptance`: the Flux verdict reference names no existing event
+    /// or artifact — the merge criterion's first half is unproven (`014`).
+    UnknownFluxVerdict {
+        flux_verdict_ref: String,
+    },
+    /// `request_acceptance`: the dispatch already has a pending acceptance.
+    AcceptancePending {
+        dispatch_id: String,
+    },
     Db(String),
 }
 
@@ -105,6 +191,30 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::NotYourInFlight { dispatch_id, seat } => write!(
                 f,
                 "dispatch rejected: {dispatch_id:?} is not an in_flight dispatch owned by {seat:?}"
+            ),
+            DispatchRejection::UnknownOutcome { value } => write!(
+                f,
+                "complete_dispatch rejected: outcome {value:?} is not one of done|failed"
+            ),
+            DispatchRejection::InvalidMaxRetries { max_retries } => write!(
+                f,
+                "enqueue_dispatch rejected: max_retries {max_retries} is invalid; the retry budget is a hard ceiling and must be a non-negative integer that fits in i32 (013)"
+            ),
+            DispatchRejection::NotCancellable { dispatch_id, actor } => write!(
+                f,
+                "cancel rejected: {dispatch_id:?} is not a non-terminal dispatch issued by {actor:?} (only the issuer may cancel, and only ready|blocked|in_flight)"
+            ),
+            DispatchRejection::NotCompleted { dispatch_id, seat } => write!(
+                f,
+                "request_acceptance rejected: {dispatch_id:?} is not a completed dispatch owned by {seat:?} (013/014: only a done dispatch of the calling seat may be handed to the acceptance gate)"
+            ),
+            DispatchRejection::UnknownFluxVerdict { flux_verdict_ref } => write!(
+                f,
+                "request_acceptance rejected: flux_verdict_ref {flux_verdict_ref:?} names no existing event or artifact — the Flux green verdict is the merge criterion's first half and must exist"
+            ),
+            DispatchRejection::AcceptancePending { dispatch_id } => write!(
+                f,
+                "request_acceptance rejected: {dispatch_id:?} already has a pending acceptance (one at a time; await the operator's decision)"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -193,15 +303,25 @@ async fn dep_satisfied(
 }
 
 /// Compute the live status for a row given its stored status and its deps.
-/// `done` and `in_flight` are terminal/active states and are returned as stored;
-/// a non-terminal row is `ready` iff every dependency is satisfied, else `blocked`.
+/// `done`, `failed`, `cancelled` (terminal, `013`) and `in_flight` (active) are
+/// returned as stored; a non-terminal row is `ready` iff every dependency is
+/// satisfied, else `blocked`.
+///
+/// The terminal states MUST sit in the "return as stored" arm: recomputing them
+/// would flip a `failed`/`cancelled` row whose deps happen to all exist back to
+/// `ready` — a silent rewrite of a recorded fact (the exact anti-pattern `013`
+/// added them to prevent). Flagged by Onyx's design §2.1 as a Nimbus-lane
+/// correctness fix; landed here.
 async fn live_status(
     tx: &tokio_postgres::Transaction<'_>,
     stored: DispatchStatus,
     deps: &[Dependency],
 ) -> Result<DispatchStatus, DispatchRejection> {
     match stored {
-        DispatchStatus::Done | DispatchStatus::InFlight => Ok(stored),
+        DispatchStatus::Done
+        | DispatchStatus::InFlight
+        | DispatchStatus::Failed
+        | DispatchStatus::Cancelled => Ok(stored),
         DispatchStatus::Ready | DispatchStatus::Blocked => {
             for d in deps {
                 if !dep_satisfied(tx, d).await? {
@@ -283,6 +403,25 @@ fn lifecycle_event(
     actor_ref: &str,
     project_id: &str,
 ) -> EventDraft {
+    lifecycle_event_with_payload(
+        event_type,
+        dispatch_id,
+        actor_ref,
+        project_id,
+        serde_json::json!({ "dispatch_id": dispatch_id }),
+    )
+}
+
+/// [`lifecycle_event`] with an explicit payload — used where the transition
+/// carries facts the projection cannot hold (a retried row is `ready`, so the
+/// failed attempt's reason/budget lives only in the event; `013`).
+fn lifecycle_event_with_payload(
+    event_type: EventType,
+    dispatch_id: &str,
+    actor_ref: &str,
+    project_id: &str,
+    payload: serde_json::Value,
+) -> EventDraft {
     EventDraft {
         event_id: format!("ev-{}", nanoid::nanoid!()),
         event_type,
@@ -291,7 +430,7 @@ fn lifecycle_event(
         actor_ref: actor_ref.to_string(),
         project_id: project_id.to_string(),
         turn_seq: None,
-        payload: serde_json::json!({ "dispatch_id": dispatch_id }),
+        payload,
         refs: vec![
             ObjectRefDraft::subject(RefType::Dispatch, dispatch_id),
             ObjectRefDraft::new(RefType::Seat, seat_id_of(actor_ref), RefRole::Actor),
@@ -338,6 +477,17 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
         Some(s) if !s.trim().is_empty() => s,
         _ => format!("disp-{}", nanoid::nanoid!()),
     };
+    // Retry budget (`013`): a hard ceiling, never NULL-means-unlimited. 0 (the
+    // default) keeps the pre-013 behaviour — the first failure is terminal.
+    // A negative or oversized budget is REJECTED, never silently clamped: a
+    // silent fallback is exactly the defect the hand-written boundaries avoid.
+    let max_retries: i32 = match args.max_retries {
+        None => 0,
+        Some(m) => i32::try_from(m)
+            .ok()
+            .filter(|m| *m >= 0)
+            .ok_or(DispatchRejection::InvalidMaxRetries { max_retries: m })?,
+    };
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
@@ -353,8 +503,8 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
 
     tx.execute(
         "INSERT INTO dispatches \
-         (id, target_seat_id, issued_by, project_id, title, payload, status, priority, issued_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())",
+         (id, target_seat_id, issued_by, project_id, title, payload, status, priority, issued_at, max_retries) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)",
         &[
             &dispatch_id,
             &args.target_seat_id,
@@ -364,6 +514,7 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
             &args.payload,
             &status.as_str(),
             &priority,
+            &max_retries,
         ],
     )
     .await
@@ -637,44 +788,80 @@ async fn cycle_already_escalated(
 }
 
 // =============================================================================
-// Tool 3 — complete_dispatch
+// Tool 3 — complete_dispatch (done | failed, with the 013 retry budget)
 // =============================================================================
 
-/// Mark the resolved seat's in_flight dispatch `done` + append
-/// `SeatDispatchCompleted` in one transaction. The seat can only complete its
-/// OWN in_flight dispatch (identity from env, status guarded in SQL).
+/// Close the resolved seat's in_flight dispatch and append the matching event in
+/// one transaction. The seat can only complete its OWN in_flight dispatch
+/// (identity from env, status guarded in SQL).
+///
+/// `outcome` (default `"done"`, fully backward compatible):
+///   - `"done"`   -> in_flight -> done + `SeatDispatchCompleted` (unchanged);
+///   - `"failed"` -> the row's retry budget decides (`013`):
+///       * retry_count < max_retries -> in_flight -> ready, retry_count+1,
+///         `SeatDispatchRetried` (the attempt is durably recorded in the ledger
+///         even though the row is pullable again; the one-in-flight slot is
+///         released, so the same or another seat can pull it);
+///       * otherwise -> in_flight -> failed (terminal) + `SeatDispatchFailed`.
+///
+/// Each outcome maps to EXACTLY ONE event type, so the projection stays
+/// replayable (a single "sometimes-retry-sometimes-terminal" event would make
+/// the ledger ambiguous — Onyx's design §2.2).
 pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, DispatchRejection> {
     let identity = resolve_seat()?;
+    let outcome = args.outcome.as_deref().unwrap_or("done").trim();
+    if outcome != "done" && outcome != "failed" {
+        return Err(DispatchRejection::UnknownOutcome {
+            value: outcome.to_string(),
+        });
+    }
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
 
-    // Fetch the project_id for the event, and prove ownership + in_flight state
-    // atomically by the UPDATE's WHERE clause.
-    let project_id: Option<String> = tx
+    // Fetch the project_id + retry budget for the event, and prove ownership +
+    // in_flight state atomically by the SELECT's WHERE clause.
+    let row = tx
         .query_opt(
-            "SELECT project_id FROM dispatches \
-               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
-            &[&args.dispatch_id, &identity.seat_id],
-        )
-        .await
-        .map_err(db)?
-        .map(|r| r.get(0));
-    let Some(project_id) = project_id else {
-        return Err(DispatchRejection::NotYourInFlight {
-            dispatch_id: args.dispatch_id,
-            seat: identity.seat_id,
-        });
-    };
-
-    let n = tx
-        .execute(
-            "UPDATE dispatches SET status = 'done', completed_at = NOW() \
+            "SELECT project_id, retry_count, max_retries FROM dispatches \
                WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
             &[&args.dispatch_id, &identity.seat_id],
         )
         .await
         .map_err(db)?;
+    let Some(row) = row else {
+        return Err(DispatchRejection::NotYourInFlight {
+            dispatch_id: args.dispatch_id,
+            seat: identity.seat_id,
+        });
+    };
+    let project_id: String = row.get(0);
+    let retry_count: i32 = row.get(1);
+    let max_retries: i32 = row.get(2);
+
+    // Decide the transition BEFORE writing it. A retry re-opens to plain
+    // `ready` — re-pullable by any eligible seat, no stickiness (Lyra's ruling
+    // on Onyx's open question: fleet elasticity over preferred-seat notions).
+    let (new_status, event_type, retrying) = decide_completion(outcome, retry_count, max_retries);
+
+    let n = if retrying {
+        tx.execute(
+            "UPDATE dispatches SET status = 'ready', retry_count = retry_count + 1, \
+               started_at = NULL \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
+            &[&args.dispatch_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?
+    } else {
+        tx.execute(
+            "UPDATE dispatches SET status = $3, completed_at = NOW() \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
+            &[&args.dispatch_id, &identity.seat_id, &new_status],
+        )
+        .await
+        .map_err(db)?
+    };
     if n != 1 {
         return Err(DispatchRejection::NotYourInFlight {
             dispatch_id: args.dispatch_id,
@@ -682,9 +869,134 @@ pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, Dispatc
         });
     }
 
-    let draft = lifecycle_event(
-        EventType::SeatDispatchCompleted,
+    // One event per transition; the payload carries the retry/failure facts the
+    // projection cannot (a retried row is `ready` — the failed attempt lives
+    // only in the ledger).
+    let payload = match outcome {
+        "done" => serde_json::json!({ "dispatch_id": args.dispatch_id }),
+        "failed" if retrying => serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "reason": args.reason,
+            "retry_count": retry_count + 1,
+            "max_retries": max_retries,
+        }),
+        _ => serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "reason": args.reason,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "retries_exhausted": true,
+        }),
+    };
+    let draft = lifecycle_event_with_payload(
+        event_type,
         &args.dispatch_id,
+        &identity.actor_ref,
+        &project_id,
+        payload,
+    );
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    let summary = match outcome {
+        "done" => format!("completed {} for {}", args.dispatch_id, identity.seat_id),
+        "failed" if retrying => format!(
+            "failed {} for {} — retry budget not exhausted (retry {}/{}); re-opened to ready (any eligible seat may pull)",
+            args.dispatch_id,
+            identity.seat_id,
+            retry_count + 1,
+            max_retries
+        ),
+        _ => format!(
+            "failed {} for {} — retries exhausted (retry_count {}, max_retries {}); terminal",
+            args.dispatch_id, identity.seat_id, retry_count, max_retries
+        ),
+    };
+    Ok(summary)
+}
+
+/// The `013` completion decision, pure so it is testable without a database
+/// (the scheduler-core discipline): which transition an
+/// `(outcome, retry_count, max_retries)` triple implies.
+///
+/// Returns `(new_status, event_type, retrying)`. Exactly one event type per
+/// transition — a single "sometimes-retry-sometimes-terminal" event would make
+/// the ledger ambiguous to replay (Onyx's design §2.2). `outcome` is assumed
+/// pre-validated as `"done"` | `"failed"` (the tool rejects anything else).
+fn decide_completion(
+    outcome: &str,
+    retry_count: i32,
+    max_retries: i32,
+) -> (&'static str, EventType, bool) {
+    match outcome {
+        "done" => ("done", EventType::SeatDispatchCompleted, false),
+        // Budget remaining: re-open to plain ready (any eligible seat may pull).
+        "failed" if retry_count < max_retries => ("ready", EventType::SeatDispatchRetried, true),
+        // Budget exhausted (or none was ever granted): terminal failure.
+        _ => ("failed", EventType::SeatDispatchFailed, false),
+    }
+}
+
+// =============================================================================
+// Tool 4 — cancel_dispatch (issuer side, 013)
+// =============================================================================
+
+/// Withdraw a non-terminal dispatch: `ready | blocked | in_flight -> cancelled`
+/// (terminal) + `SeatDispatchCancelled`, in one transaction.
+///
+/// The actor is the ISSUER, not the seat: a seat either does the work (`done`)
+/// or fails it (`failed`); withdrawal is the issuer's act — so the tool is
+/// guarded on `issued_by = <resolved actor_ref>` and lives beside (not inside)
+/// `complete_dispatch`. Cancelling an `in_flight` dispatch releases the
+/// one-in-flight slot: the seat's in-progress work is abandoned, which is the
+/// intended "withdraw the work" semantics.
+pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guarded fetch: the dispatch must exist, be issued by the resolved actor,
+    // and be non-terminal. Terminal rows are immutable (013), so a done/failed/
+    // cancelled dispatch can never be cancelled — recorded facts stand.
+    let project_id: Option<String> = tx
+        .query_opt(
+            "SELECT project_id FROM dispatches \
+               WHERE id = $1 AND issued_by = $2 \
+                 AND status IN ('ready', 'blocked', 'in_flight')",
+            &[&args.id, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?
+        .map(|r| r.get(0));
+    let Some(project_id) = project_id else {
+        return Err(DispatchRejection::NotCancellable {
+            dispatch_id: args.id,
+            actor: identity.actor_ref,
+        });
+    };
+
+    let n = tx
+        .execute(
+            "UPDATE dispatches SET status = 'cancelled', completed_at = NOW() \
+               WHERE id = $1 AND issued_by = $2 \
+                 AND status IN ('ready', 'blocked', 'in_flight')",
+            &[&args.id, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?;
+    if n != 1 {
+        return Err(DispatchRejection::NotCancellable {
+            dispatch_id: args.id,
+            actor: identity.actor_ref,
+        });
+    }
+
+    let draft = lifecycle_event(
+        EventType::SeatDispatchCancelled,
+        &args.id,
         &identity.actor_ref,
         &project_id,
     );
@@ -694,8 +1006,139 @@ pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, Dispatc
 
     tx.commit().await.map_err(db)?;
     Ok(format!(
-        "completed {} for {}",
-        args.dispatch_id, identity.seat_id
+        "cancelled {} (issued by {})",
+        args.id, identity.actor_ref
+    ))
+}
+
+// =============================================================================
+// Tool 5 — request_acceptance (seat side, 014 — the D2 acceptance gate)
+// =============================================================================
+
+/// Hand a COMPLETED delivery to the acceptance gate: insert the `acceptances`
+/// row + append `AcceptanceRequested` in ONE transaction (contract rule 2).
+///
+/// The seat NEVER merges its own work (Lyra's binding merge rule): this only
+/// records the request. The operator later accepts (merge into track, executed
+/// by the Tauri app as the user's agent) or rejects (auto-enqueued rework).
+///
+/// Guards, all checked inside the transaction:
+///   1. the dispatch belongs to the calling seat AND is `done`
+///      (a `SeatDispatchCompleted` landed — the row is its projection);
+///   2. `flux_verdict_ref` names an existing event or artifact (the merge
+///      criterion's first half — Flux green);
+///   3. the dispatch has no PENDING acceptance already (the partial unique
+///      index is the backstop; this is the clean error).
+pub async fn request_acceptance(
+    pool: &Pool,
+    args: RequestAcceptanceArgs,
+) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guard 1 — the caller's own COMPLETED dispatch.
+    let project_id: Option<String> = tx
+        .query_opt(
+            "SELECT project_id FROM dispatches \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'done'",
+            &[&args.dispatch_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?
+        .map(|r| r.get(0));
+    let Some(project_id) = project_id else {
+        return Err(DispatchRejection::NotCompleted {
+            dispatch_id: args.dispatch_id,
+            seat: identity.seat_id,
+        });
+    };
+
+    // Guard 2 — the Flux verdict referent exists (event OR artifact; the ref is
+    // polymorphic TEXT with no FK, exactly like dispatch_dependencies.dep_value).
+    let verdict_exists: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) \
+                OR EXISTS (SELECT 1 FROM artifacts WHERE id = $1)",
+            &[&args.flux_verdict_ref],
+        )
+        .await
+        .map_err(db)?
+        .get(0);
+    if !verdict_exists {
+        return Err(DispatchRejection::UnknownFluxVerdict {
+            flux_verdict_ref: args.flux_verdict_ref,
+        });
+    }
+
+    // Guard 3 — at most one pending acceptance per dispatch.
+    let pending = tx
+        .query_opt(
+            "SELECT id FROM acceptances WHERE dispatch_id = $1 AND status = 'pending'",
+            &[&args.dispatch_id],
+        )
+        .await
+        .map_err(db)?;
+    if pending.is_some() {
+        return Err(DispatchRejection::AcceptancePending {
+            dispatch_id: args.dispatch_id,
+        });
+    }
+
+    // Deterministic id: one acceptance per dispatch, ever (a rework gets a NEW
+    // dispatch id, so the lineage stays one-to-one and self-documenting).
+    let acceptance_id = format!("acc-{}", args.dispatch_id);
+    tx.execute(
+        "INSERT INTO acceptances \
+         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) \
+         VALUES ($1, $2, $3, $4, 'track', $5, $6, 'pending')",
+        &[
+            &acceptance_id,
+            &args.dispatch_id,
+            &project_id,
+            &args.branch,
+            &args.how_to_verify,
+            &args.flux_verdict_ref,
+        ],
+    )
+    .await
+    .map_err(db)?;
+
+    // Same transaction: the request event. Subject = the acceptance (its own
+    // object, `014`); actor = the seat; context = the dispatch it gates.
+    let draft = EventDraft {
+        event_id: format!("ev-{}", nanoid::nanoid!()),
+        event_type: EventType::AcceptanceRequested,
+        schema_version: 1,
+        occurred_at: Utc::now(),
+        actor_ref: identity.actor_ref.clone(),
+        project_id,
+        turn_seq: None,
+        payload: serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "branch": args.branch,
+            "how_to_verify": args.how_to_verify,
+            "flux_verdict_ref": args.flux_verdict_ref,
+        }),
+        refs: vec![
+            ObjectRefDraft::subject(RefType::Acceptance, &acceptance_id),
+            ObjectRefDraft::new(
+                RefType::Seat,
+                seat_id_of(&identity.actor_ref),
+                RefRole::Actor,
+            ),
+            ObjectRefDraft::new(RefType::Dispatch, &args.dispatch_id, RefRole::Context),
+        ],
+    };
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    Ok(format!(
+        "requested acceptance {acceptance_id} for {} (branch {}, flux verdict {}) — pending operator decision",
+        args.dispatch_id, args.branch, args.flux_verdict_ref
     ))
 }
 
@@ -772,6 +1215,97 @@ mod tests {
     fn seat_id_strips_the_actor_prefix() {
         assert_eq!(seat_id_of("seat:seat-nimbus-001"), "seat-nimbus-001");
         assert_eq!(seat_id_of("seat-nimbus-001"), "seat-nimbus-001");
+    }
+
+    /// `013` backward compatibility: a caller that sends only `dispatch_id`
+    /// (the pre-013 shape, still what every live seat sends) parses with
+    /// `outcome = None` -> `"done"`.
+    #[test]
+    fn complete_args_default_to_the_done_outcome() {
+        let a: CompleteArgs =
+            serde_json::from_value(serde_json::json!({ "dispatch_id": "disp-1" })).unwrap();
+        assert_eq!(a.outcome, None);
+        assert_eq!(a.reason, None);
+        let b: CompleteArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "outcome": "failed", "reason": "flaky dep"
+        }))
+        .unwrap();
+        assert_eq!(b.outcome.as_deref(), Some("failed"));
+        assert_eq!(b.reason.as_deref(), Some("flaky dep"));
+    }
+
+    /// `enqueue_dispatch` without `max_retries` (the pre-013 shape) parses;
+    /// the budget defaults to 0 = first failure terminal.
+    #[test]
+    fn enqueue_args_max_retries_defaults_to_none() {
+        let a: EnqueueArgs = serde_json::from_value(serde_json::json!({
+            "target_seat_id": "seat-nimbus-001", "title": "t", "payload": {}
+        }))
+        .unwrap();
+        assert_eq!(a.max_retries, None);
+    }
+
+    /// The `013` decision table: each (outcome, budget) maps to exactly one
+    /// transition, and the three transitions carry three DISTINCT event types
+    /// (the replayability property Onyx's design §2.2 insists on).
+    #[test]
+    fn decide_completion_maps_each_outcome_to_exactly_one_transition() {
+        // done is unchanged and never a retry.
+        assert_eq!(
+            decide_completion("done", 0, 3),
+            ("done", EventType::SeatDispatchCompleted, false)
+        );
+        // failed WITH budget remaining re-opens to plain ready (no stickiness).
+        assert_eq!(
+            decide_completion("failed", 0, 3),
+            ("ready", EventType::SeatDispatchRetried, true)
+        );
+        assert_eq!(
+            decide_completion("failed", 2, 3),
+            ("ready", EventType::SeatDispatchRetried, true)
+        );
+        // budget exhausted, or never granted (max_retries = 0) -> terminal.
+        assert_eq!(
+            decide_completion("failed", 3, 3),
+            ("failed", EventType::SeatDispatchFailed, false)
+        );
+        assert_eq!(
+            decide_completion("failed", 0, 0),
+            ("failed", EventType::SeatDispatchFailed, false)
+        );
+        // Distinct event types across the three transitions.
+        let types = [
+            decide_completion("done", 0, 0).1,
+            decide_completion("failed", 0, 1).1,
+            decide_completion("failed", 1, 1).1,
+        ];
+        assert_eq!(
+            types,
+            [
+                EventType::SeatDispatchCompleted,
+                EventType::SeatDispatchRetried,
+                EventType::SeatDispatchFailed,
+            ]
+        );
+    }
+
+    /// `lifecycle_event_with_payload` carries the explicit payload (the retry
+    /// facts a `ready` row cannot hold) while keeping the one-subject shape.
+    #[test]
+    fn lifecycle_event_with_payload_keeps_one_subject_and_carries_the_payload() {
+        let d = lifecycle_event_with_payload(
+            EventType::SeatDispatchRetried,
+            "disp-1",
+            "seat:seat-nimbus-001",
+            "proj",
+            serde_json::json!({ "retry_count": 1, "max_retries": 3 }),
+        );
+        assert_eq!(d.event_type, EventType::SeatDispatchRetried);
+        assert_eq!(d.payload["retry_count"], 1);
+        assert_eq!(
+            d.refs.iter().filter(|r| r.role == RefRole::Subject).count(),
+            1
+        );
     }
 
     #[test]

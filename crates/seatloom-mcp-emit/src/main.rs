@@ -2,7 +2,9 @@
 //!
 //! Reads newline-delimited JSON-RPC 2.0 on stdin, writes responses on stdout,
 //! and logs to stderr (never stdout — stdout is the protocol channel). Exposes
-//! one tool, `emit_event`, routed through the A1 write API. See
+//! the governed-dispatch toolset (step 4 + step 6 + 013/014): `emit_event`,
+//! `enqueue_dispatch`, `get_next_dispatch`, `complete_dispatch`,
+//! `cancel_dispatch`, `request_acceptance`. See
 //! NIMBUS-2026-10-08-p0-step4-mcp-emit-v1.
 
 mod dispatch;
@@ -40,7 +42,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -92,10 +94,10 @@ async fn handle_request(
     }
 }
 
-/// `tools/call` dispatch. Four tools: `emit_event` (step 4) and the three
-/// governed-dispatch tools (step 6). Any other name is a tool error. A rejection
-/// is a tool error with `isError: true`, carrying the typed message verbatim —
-/// never a transport error, and never a partial write.
+/// `tools/call` dispatch. Six tools: `emit_event` (step 4) and the five
+/// governed-dispatch tools (step 6 + 013/014). Any other name is a tool error. A
+/// rejection is a tool error with `isError: true`, carrying the typed message
+/// verbatim — never a transport error, and never a partial write.
 async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -104,10 +106,12 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "enqueue_dispatch" => call_enqueue(pool, id, arguments).await,
         "get_next_dispatch" => call_get_next(pool, id, arguments).await,
         "complete_dispatch" => call_complete(pool, id, arguments).await,
+        "cancel_dispatch" => call_cancel(pool, id, arguments).await,
+        "request_acceptance" => call_request_acceptance(pool, id, arguments).await,
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance)"),
                 true,
             ),
         ),
@@ -185,6 +189,44 @@ async fn call_complete(pool: &Pool, id: Value, arguments: Value) -> Value {
         }
     };
     match dispatch::complete(pool, args).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+async fn call_cancel(pool: &Pool, id: Value, arguments: Value) -> Value {
+    let args: dispatch::CancelArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("cancel_dispatch rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::cancel(pool, args).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+async fn call_request_acceptance(pool: &Pool, id: Value, arguments: Value) -> Value {
+    let args: dispatch::RequestAcceptanceArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("request_acceptance rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::request_acceptance(pool, args).await {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
         Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }
