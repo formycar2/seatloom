@@ -389,6 +389,19 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
         .await
         .map_err(|e| DispatchRejection::Db(e.to_string()))?;
 
+    // Wake the target seat (event-driven, zero-poll): the waker daemon LISTENs
+    // on 'dispatch_ready' and nudges the seat iff it is idle. Fires on COMMIT, so
+    // the dispatch row is already visible when the notification is delivered.
+    // Only notify for a READY dispatch — a blocked one has nothing to pull yet.
+    if status == DispatchStatus::Ready {
+        tx.execute(
+            "SELECT pg_notify('dispatch_ready', $1)",
+            &[&args.target_seat_id],
+        )
+        .await
+        .map_err(db)?;
+    }
+
     tx.commit().await.map_err(db)?;
     Ok(format!(
         "enqueued {dispatch_id} (status={})",

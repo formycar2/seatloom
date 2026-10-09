@@ -12,6 +12,13 @@ edition = "2021"
 name = "seatloom-mcp-emit"
 path = "src/main.rs"
 
+# P0 — event-driven dispatch waker: LISTEN dispatch_ready, nudge an idle seat's
+# tmux pane so it drains its queue. Non-LLM (zero idle tokens), only pokes idle
+# seats (never interrupts a busy one).
+[[bin]]
+name = "seatloom-waker"
+path = "src/bin/waker.rs"
+
 [dependencies]
 seatloom-core = { path = "../seatloom-core" }
 # Hand-rolled JSON-RPC 2.0 over stdio (the packet §2.7 sanctioned fallback).
