@@ -6,15 +6,19 @@ use std::str::FromStr;
 use thiserror::Error;
 use tokio_postgres::Row;
 
+use crate::db::event_domain::{EventType, RefRole, RefType};
 use crate::db::models::{
-    ArtifactRow, CanonicalEventRow, ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow,
-    DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow,
-    HandoffReceiptRow, HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow,
-    PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
-    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
+    ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
+    DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
+    HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
+    PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
+    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
+use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::seat::SeatRole;
 use crate::objects::session::{Agent, Harness, ParseValueError};
+use chrono::Utc;
 
 pub struct SeatloomDb {
     pool: Pool,
@@ -446,6 +450,200 @@ impl SeatloomDb {
             )
             .await?;
         Ok(rows.iter().map(row_to_dispatch_dep).collect())
+    }
+
+    // =========================================================================
+    // Acceptance gate (014, D2) — read model + the operator's decide write
+    // =========================================================================
+
+    /// The acceptance read model for a project: every acceptance joined to its
+    /// dispatch's title/seat and its Flux verdict's rendered facts. Pending
+    /// first (the UI's 待验收区), then most-recently-decided.
+    pub async fn list_acceptances_for_project(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AcceptanceWithDispatchRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT a.id, a.dispatch_id, a.project_id, a.branch, a.base, a.how_to_verify, \
+                       a.flux_verdict_ref, a.status, a.feedback, a.rework_dispatch_id, \
+                       a.merge_commit, a.decided_by, a.decided_at, a.created_at, \
+                       d.title, d.target_seat_id, d.priority, d.payload, \
+                       CASE WHEN e.id IS NOT NULL THEN e.payload->>'verdict' END, \
+                       CASE WHEN e.id IS NOT NULL THEN e.occurred_at END \
+                  FROM acceptances a \
+                  JOIN dispatches d ON d.id = a.dispatch_id \
+                  LEFT JOIN canonical_events e ON e.id = a.flux_verdict_ref \
+                 WHERE a.project_id = $1 \
+                 ORDER BY (a.status = 'pending') DESC, a.decided_at DESC NULLS LAST, \
+                          a.created_at DESC \
+                 LIMIT $2",
+                &[&project_id, &limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_acceptance_with_dispatch).collect())
+    }
+
+    /// One acceptance (same joined shape as the list).
+    pub async fn get_acceptance(
+        &self,
+        acceptance_id: &str,
+    ) -> Result<Option<AcceptanceWithDispatchRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT a.id, a.dispatch_id, a.project_id, a.branch, a.base, a.how_to_verify, \
+                       a.flux_verdict_ref, a.status, a.feedback, a.rework_dispatch_id, \
+                       a.merge_commit, a.decided_by, a.decided_at, a.created_at, \
+                       d.title, d.target_seat_id, d.priority, d.payload, \
+                       CASE WHEN e.id IS NOT NULL THEN e.payload->>'verdict' END, \
+                       CASE WHEN e.id IS NOT NULL THEN e.occurred_at END \
+                  FROM acceptances a \
+                  JOIN dispatches d ON d.id = a.dispatch_id \
+                  LEFT JOIN canonical_events e ON e.id = a.flux_verdict_ref \
+                 WHERE a.id = $1",
+                &[&acceptance_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_acceptance_with_dispatch))
+    }
+
+    /// Does the referent of a Flux verdict reference exist? The ref is
+    /// polymorphic TEXT with no FK (the 010/012 reasoning — `ReviewVerdictIssued`
+    /// event OR artifact id), so existence in either table is the check.
+    pub async fn event_or_artifact_exists(&self, ref_id: &str) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) \
+                    OR EXISTS (SELECT 1 FROM artifacts WHERE id = $1)",
+                &[&ref_id],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// The operator's decision, landed atomically with its ledger event
+    /// (contract rule 2): a GUARDED `pending -> accepted|rejected` transition
+    /// plus the matching `AcceptanceGranted` / `AcceptanceRejected` event in ONE
+    /// transaction. The guard (`WHERE id = $1 AND status = 'pending'`) is what
+    /// makes accepted/rejected terminal in the write path — a second decision of
+    /// the same acceptance updates 0 rows and errors rather than silently
+    /// rewriting a recorded fact.
+    ///
+    /// Returns the decided row as landed, so the caller's response is populated
+    /// from what the database actually holds (status, merge_commit,
+    /// rework_dispatch_id) rather than from the caller's intentions.
+    pub async fn decide_acceptance(
+        &self,
+        acceptance_id: &str,
+        status: &str, // 'accepted' | 'rejected'
+        feedback: Option<&str>,
+        merge_commit: Option<&str>,
+        rework_dispatch_id: Option<&str>,
+        operator_ref: &str,
+    ) -> Result<AcceptanceRow, DbError> {
+        let event_type = match status {
+            "accepted" => EventType::AcceptanceGranted,
+            "rejected" => EventType::AcceptanceRejected,
+            other => {
+                return Err(DbError::AcceptanceNotPending {
+                    id: format!("{acceptance_id} (bad target status {other:?})"),
+                })
+            }
+        };
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+
+        // The guarded fetch proves pending-ness inside the tx (and supplies the
+        // event's project/dispatch refs and the granted payload's branch/base).
+        let row = tx
+            .query_opt(
+                "SELECT project_id, dispatch_id, branch, base FROM acceptances \
+                  WHERE id = $1 AND status = 'pending'",
+                &[&acceptance_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::AcceptanceNotPending {
+                id: acceptance_id.to_string(),
+            });
+        };
+        let project_id: String = row.get(0);
+        let dispatch_id: String = row.get(1);
+        let branch: String = row.get(2);
+        let base: String = row.get(3);
+
+        let n = tx
+            .execute(
+                "UPDATE acceptances \
+                   SET status = $2, feedback = $3, merge_commit = $4, \
+                       rework_dispatch_id = $5, decided_by = $6, decided_at = NOW() \
+                  WHERE id = $1 AND status = 'pending'",
+                &[
+                    &acceptance_id,
+                    &status,
+                    &feedback,
+                    &merge_commit,
+                    &rework_dispatch_id,
+                    &operator_ref,
+                ],
+            )
+            .await?;
+        if n != 1 {
+            return Err(DbError::AcceptanceNotPending {
+                id: acceptance_id.to_string(),
+            });
+        }
+
+        // Same transaction: the decision event (the row is a projection). Actor
+        // is the operator (a configured actor_ref; refs stay polymorphic TEXT,
+        // no FK — Lyra 014 §3). Payload shapes are the contract's: granted
+        // carries {branch, base, merge_commit}, rejected {feedback,
+        // rework_dispatch_id}.
+        let payload = match status {
+            "accepted" => serde_json::json!({
+                "branch": branch,
+                "base": base,
+                "merge_commit": merge_commit,
+            }),
+            _ => serde_json::json!({
+                "feedback": feedback,
+                "rework_dispatch_id": rework_dispatch_id,
+            }),
+        };
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: operator_ref.to_string(),
+            project_id,
+            turn_seq: None,
+            payload,
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Acceptance, acceptance_id),
+                ObjectRefDraft::new(RefType::Seat, operator_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Dispatch, dispatch_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        // Read the decided row back INSIDE the transaction: the response the UI
+        // renders is populated from the landed state, not from intentions.
+        let decided = tx
+            .query_one(
+                "SELECT id, dispatch_id, project_id, branch, base, how_to_verify, \
+                       flux_verdict_ref, status, feedback, rework_dispatch_id, \
+                       merge_commit, decided_by, decided_at, created_at \
+                  FROM acceptances WHERE id = $1",
+                &[&acceptance_id],
+            )
+            .await?;
+        let decided = row_to_acceptance(&decided);
+        tx.commit().await?;
+        Ok(decided)
     }
 
     // =========================================================================
@@ -1557,6 +1755,37 @@ fn row_to_dispatch_dep(r: &Row) -> DispatchDependencyRow {
     }
 }
 
+fn row_to_acceptance(r: &Row) -> AcceptanceRow {
+    AcceptanceRow {
+        id: r.get(0),
+        dispatch_id: r.get(1),
+        project_id: r.get(2),
+        branch: r.get(3),
+        base: r.get(4),
+        how_to_verify: r.get(5),
+        flux_verdict_ref: r.get(6),
+        status: r.get(7),
+        feedback: r.get(8),
+        rework_dispatch_id: r.get(9),
+        merge_commit: r.get(10),
+        decided_by: r.get(11),
+        decided_at: r.get(12),
+        created_at: r.get(13),
+    }
+}
+
+fn row_to_acceptance_with_dispatch(r: &Row) -> AcceptanceWithDispatchRow {
+    AcceptanceWithDispatchRow {
+        acceptance: row_to_acceptance(r),
+        dispatch_title: r.get(14),
+        dispatch_seat_id: r.get(15),
+        dispatch_priority: r.get(16),
+        dispatch_payload: r.get(17),
+        flux_verdict: r.get(18),
+        flux_verdict_occurred_at: r.get(19),
+    }
+}
+
 fn row_to_document(r: &Row) -> DocumentRow {
     DocumentRow {
         id: r.get(0),
@@ -1826,6 +2055,15 @@ pub enum DbError {
     Postgres(#[from] tokio_postgres::Error),
     #[error("connection pool error: {0}")]
     Pool(deadpool_postgres::PoolError),
+    /// The write API refused a draft (bad refs / payload shape) before any write.
+    /// Boxed because `WriteError` itself has a `Db(DbError)` variant — an unboxed
+    /// `#[from] WriteError` would make the two enums recursively sized.
+    #[error("event write rejected: {0}")]
+    Write(Box<crate::db::write_api::WriteError>),
+    /// The acceptance was not in `pending` state (already decided, or unknown
+    /// id) — the guarded write refused, so nothing was written.
+    #[error("acceptance {id:?} is not pending (already decided or unknown)")]
+    AcceptanceNotPending { id: String },
     /// A stored string is outside the value domain its Rust type declares.
     /// Raised only at the row-hydration parse boundary (see `check_domain`).
     #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
@@ -1836,6 +2074,12 @@ pub enum DbError {
         #[source]
         source: ParseValueError,
     },
+}
+
+impl From<crate::db::write_api::WriteError> for DbError {
+    fn from(e: crate::db::write_api::WriteError) -> Self {
+        DbError::Write(Box::new(e))
+    }
 }
 
 #[cfg(test)]

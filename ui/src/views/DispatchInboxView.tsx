@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
+import AcceptanceSection from '../components/AcceptanceSection';
 
 // DispatchInboxView — the governed-dispatch (G19) seat inbox. Reads the live
 // `dispatches` projection via cmd_list_dispatches. Mirrors the V1 AppShell
@@ -34,6 +35,11 @@ import { DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
 // table with sortable columns, a per-seat status strip as the group header
 // (triage at a glance), done rows folded away by default, and a row that
 // expands in place to the full payload + provenance instead of a detail page.
+//
+// Below the inbox sits the D2 「待验收」 section (AcceptanceSection): the same
+// page, the same 5s cadence, the other half of the loop — work that is already
+// delivered and Flux-verified, waiting on the user's 接受/打回. The inbox
+// answers "what should a seat do next"; 待验收 answers "do I take this work".
 //
 // A status kanban was rejected: dispatch titles and payload notes are long
 // text, so four narrow columns would truncate the very content the operator
@@ -712,6 +718,7 @@ const DispatchInboxView: React.FC = () => {
   // --- New-dispatch form (operator commands a seat from the UI) ---
   const formRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  const inboxRef = useRef<HTMLDivElement>(null);
   const seats = seatsDb;
   const [showNew, setShowNew] = useState(false);
   const [newSeat, setNewSeat] = useState('');
@@ -751,6 +758,17 @@ const DispatchInboxView: React.FC = () => {
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       titleRef.current?.focus();
+    });
+  }, []);
+
+  // 打回 a delivery spawns a rework dispatch; the acceptance card links straight
+  // to it. The inbox search already matches dispatch ids, so "locating" is a
+  // search plus a scroll — no routing, no second surface to keep in sync.
+  const locateDispatch = useCallback((dispatchId: string) => {
+    setStatusFilter('all');
+    setQuery(dispatchId);
+    requestAnimationFrame(() => {
+      inboxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }, []);
 
@@ -969,130 +987,140 @@ const DispatchInboxView: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" ref={inboxRef}>
         <div className="px-8 py-5">
-          {error ? (
-            <div className="flex items-center gap-2 text-sm font-bold text-red-600">
-              <AlertCircle size={16} /> 加载派单失败:{error}
-            </div>
-          ) : mainRows.length === 0 && doneRows.length === 0 ? (
-            <EmptyState
-              dispatches={dispatches.length}
-              hasQuery={query.trim().length > 0}
-              hasStatusFilter={statusFilter !== 'all'}
-              onClearQuery={clearQuery}
-            />
-          ) : (
-            <div className="max-w-6xl space-y-6">
-              {mainRows.length === 0 ? (
-                // Everything that matched is folded into 已完成.
-                <div className="flex flex-col items-center justify-center py-14 text-center">
-                  <div className="p-4 bg-secondary rounded-full border border-border/40 text-text-secondary mb-4 opacity-20">
-                    <Inbox className="w-8 h-8" />
+          <div className="max-w-6xl space-y-10">
+            {error ? (
+              <div className="flex items-center gap-2 text-sm font-bold text-red-600">
+                <AlertCircle size={16} /> 加载派单失败:{error}
+              </div>
+            ) : mainRows.length === 0 && doneRows.length === 0 ? (
+              <EmptyState
+                dispatches={dispatches.length}
+                hasQuery={query.trim().length > 0}
+                hasStatusFilter={statusFilter !== 'all'}
+                onClearQuery={clearQuery}
+              />
+            ) : (
+              <div className="max-w-6xl space-y-6">
+                {mainRows.length === 0 ? (
+                  // Everything that matched is folded into 已完成.
+                  <div className="flex flex-col items-center justify-center py-14 text-center">
+                    <div className="p-4 bg-secondary rounded-full border border-border/40 text-text-secondary mb-4 opacity-20">
+                      <Inbox className="w-8 h-8" />
+                    </div>
+                    <p className="text-sm font-bold text-text-secondary">无待处理的派单</p>
+                    <p className="text-xs text-text-secondary mt-1 opacity-60">
+                      {doneRows.length} 项已完成已折叠 — 它们不再需要操作者注意力
+                    </p>
+                    <button
+                      onClick={() => setShowDone(true)}
+                      className="mt-4 text-xs font-black text-primary uppercase tracking-widest hover:underline"
+                    >
+                      显示已完成({doneRows.length})
+                    </button>
                   </div>
-                  <p className="text-sm font-bold text-text-secondary">无待处理的派单</p>
-                  <p className="text-xs text-text-secondary mt-1 opacity-60">
-                    {doneRows.length} 项已完成已折叠 — 它们不再需要操作者注意力
-                  </p>
-                  <button
-                    onClick={() => setShowDone(true)}
-                    className="mt-4 text-xs font-black text-primary uppercase tracking-widest hover:underline"
-                  >
-                    显示已完成({doneRows.length})
-                  </button>
-                </div>
-              ) : (
-                groups.map((g) => (
-                  <section
-                    key={g.key}
-                    className="rounded-xl border border-border/40 overflow-hidden bg-card"
-                  >
-                    {groupMode === 'seat' ? (
-                      <SeatGroupHeader seatId={g.key} rows={g.rows} seatName={seatName} />
-                    ) : (
-                      <div className="flex items-center gap-2 px-4 py-2 bg-secondary/40 border-b border-border/30">
-                        <span className="text-[10px] font-black text-text-secondary uppercase tracking-widest">
-                          全部席位
-                        </span>
-                        <span className="text-[11px] text-text-secondary">
-                          {g.rows.length} 项 · 跨席位按{sortLabel ?? '默认'}排序
-                        </span>
-                      </div>
-                    )}
-                    <table className="w-full table-fixed border-collapse">
-                      <colgroup>
-                        {COL_WIDTHS.map((w, i) => (
-                          <col key={i} className={w} />
-                        ))}
-                      </colgroup>
-                      <TableHead sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                      <tbody>
-                        {g.rows.map((d) => (
-                          <DispatchRow
-                            key={d.id}
-                            d={d}
-                            seatLabel={seatName(d.targetSeatId)}
-                            now={now}
-                            expanded={expandedId === d.id}
-                            flash={flashes[d.id] !== undefined}
-                            onToggle={(id) => setExpandedId((v) => (v === id ? null : id))}
-                            onReuse={reuseDispatch}
-                          />
-                        ))}
-                      </tbody>
-                    </table>
-                  </section>
-                ))
-              )}
+                ) : (
+                  groups.map((g) => (
+                    <section
+                      key={g.key}
+                      className="rounded-xl border border-border/40 overflow-hidden bg-card"
+                    >
+                      {groupMode === 'seat' ? (
+                        <SeatGroupHeader seatId={g.key} rows={g.rows} seatName={seatName} />
+                      ) : (
+                        <div className="flex items-center gap-2 px-4 py-2 bg-secondary/40 border-b border-border/30">
+                          <span className="text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                            全部席位
+                          </span>
+                          <span className="text-[11px] text-text-secondary">
+                            {g.rows.length} 项 · 跨席位按{sortLabel ?? '默认'}排序
+                          </span>
+                        </div>
+                      )}
+                      <table className="w-full table-fixed border-collapse">
+                        <colgroup>
+                          {COL_WIDTHS.map((w, i) => (
+                            <col key={i} className={w} />
+                          ))}
+                        </colgroup>
+                        <TableHead sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                        <tbody>
+                          {g.rows.map((d) => (
+                            <DispatchRow
+                              key={d.id}
+                              d={d}
+                              seatLabel={seatName(d.targetSeatId)}
+                              now={now}
+                              expanded={expandedId === d.id}
+                              flash={flashes[d.id] !== undefined}
+                              onToggle={(id) => setExpandedId((v) => (v === id ? null : id))}
+                              onReuse={reuseDispatch}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </section>
+                  ))
+                )}
 
-              {/* Completed work: one fold, not a wall of grey rows. */}
-              {doneRows.length > 0 && statusFilter !== 'done' && (
-                <section className="rounded-xl border border-border/40 overflow-hidden bg-card">
-                  <button
-                    onClick={() => setShowDone((v) => !v)}
-                    aria-expanded={doneOpen}
-                    className="w-full flex items-center gap-2 px-4 py-2 bg-secondary/40 hover:bg-secondary/60 transition-colors text-left"
-                  >
-                    <ChevronRight
-                      size={13}
-                      className={`text-text-secondary transition-transform ${doneOpen ? 'rotate-90' : ''}`}
-                    />
-                    <span className="text-[10px] font-black text-text-secondary uppercase tracking-widest">
-                      已完成
-                    </span>
-                    <span className="text-[10px] font-bold px-1.5 rounded-full bg-secondary text-text-secondary">
-                      {doneRows.length}
-                    </span>
-                    <span className="ml-auto text-[10px] text-text-secondary">默认折叠</span>
-                  </button>
-                  {doneOpen && (
-                    <table className="w-full table-fixed border-collapse">
-                      <colgroup>
-                        {COL_WIDTHS.map((w, i) => (
-                          <col key={i} className={w} />
-                        ))}
-                      </colgroup>
-                      <TableHead sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                      <tbody>
-                        {doneRows.map((d) => (
-                          <DispatchRow
-                            key={d.id}
-                            d={d}
-                            seatLabel={seatName(d.targetSeatId)}
-                            now={now}
-                            expanded={expandedId === d.id}
-                            flash={flashes[d.id] !== undefined}
-                            onToggle={(id) => setExpandedId((v) => (v === id ? null : id))}
-                            onReuse={reuseDispatch}
-                          />
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              )}
-            </div>
-          )}
+                {/* Completed work: one fold, not a wall of grey rows. */}
+                {doneRows.length > 0 && statusFilter !== 'done' && (
+                  <section className="rounded-xl border border-border/40 overflow-hidden bg-card">
+                    <button
+                      onClick={() => setShowDone((v) => !v)}
+                      aria-expanded={doneOpen}
+                      className="w-full flex items-center gap-2 px-4 py-2 bg-secondary/40 hover:bg-secondary/60 transition-colors text-left"
+                    >
+                      <ChevronRight
+                        size={13}
+                        className={`text-text-secondary transition-transform ${doneOpen ? 'rotate-90' : ''}`}
+                      />
+                      <span className="text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                        已完成
+                      </span>
+                      <span className="text-[10px] font-bold px-1.5 rounded-full bg-secondary text-text-secondary">
+                        {doneRows.length}
+                      </span>
+                      <span className="ml-auto text-[10px] text-text-secondary">默认折叠</span>
+                    </button>
+                    {doneOpen && (
+                      <table className="w-full table-fixed border-collapse">
+                        <colgroup>
+                          {COL_WIDTHS.map((w, i) => (
+                            <col key={i} className={w} />
+                          ))}
+                        </colgroup>
+                        <TableHead sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                        <tbody>
+                          {doneRows.map((d) => (
+                            <DispatchRow
+                              key={d.id}
+                              d={d}
+                              seatLabel={seatName(d.targetSeatId)}
+                              now={now}
+                              expanded={expandedId === d.id}
+                              flash={flashes[d.id] !== undefined}
+                              onToggle={(id) => setExpandedId((v) => (v === id ? null : id))}
+                              onReuse={reuseDispatch}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </section>
+                )}
+              </div>
+            )}
+
+            {/* D2: the other half of the loop — delivered + Flux-verified work
+                waiting on the user's 接受/打回. Same page, same 5s cadence. */}
+            <AcceptanceSection
+              seatName={seatName}
+              live={autoRefresh}
+              onLocateDispatch={locateDispatch}
+            />
+          </div>
         </div>
       </div>
     </div>

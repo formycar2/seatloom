@@ -1,3 +1,4 @@
+pub mod acceptance_cmds;
 pub mod artifact_cmds;
 pub mod delegation_cmds;
 pub mod dispatch_cmds;

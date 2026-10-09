@@ -20,7 +20,10 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Closed `canonical_events.event_type` vocabulary — the 12 values admitted by
-/// `010`'s `canonical_events_event_type_vocab` CHECK (`010:141-159`).
+/// `010`'s `canonical_events_event_type_vocab` CHECK (`010:141-159`), widened
+/// twice since: `012` (+3 dispatch lifecycle, G19) and `013`/`014` (+3 dispatch
+/// failure/retry/cancel, +3 acceptance gate). Each widening carried its Lyra
+/// value-domain sign-off; see the variant comments.
 ///
 /// **`ArtifactProduced` is deliberately absent.** An earlier draft of `010` added
 /// it; it was dropped on Lyra's sign-off (`AEGIS-2026-09-30-p0-step1-signoff-v1`,
@@ -53,6 +56,21 @@ pub enum EventType {
     SeatDispatchIssued,
     SeatDispatchDelivered,
     SeatDispatchCompleted,
+    // (013, G19 follow-on) dispatch terminal / retry / cancel transitions —
+    // each exactly one (from -> to) transition, so the projection stays
+    // replayable (a single "sometimes-retry-sometimes-terminal" event would
+    // make the ledger ambiguous to replay). Lyra sign-off 2026-10-09
+    // (VALUE-DOMAIN sign-off A; ONYX-2026-10-09-dispatch-states-design §2.5).
+    SeatDispatchFailed,
+    SeatDispatchRetried,
+    SeatDispatchCancelled,
+    // (014, D2 acceptance gate) the acceptance object's three transitions —
+    // acceptance is its own first-class object (actor = operator, not the
+    // seat). Lyra sign-off 2026-10-09 (VALUE-DOMAIN sign-off B/C;
+    // LYRA-2026-10-09-d2-acceptance-loop-design-v1 §3).
+    AcceptanceRequested,
+    AcceptanceGranted,
+    AcceptanceRejected,
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -92,23 +110,29 @@ pub enum RefType {
     // the dispatch it is about. Lyra sign-off 2026-10-08; added under
     // LYRA-2026-10-08-p0-step6-unblock-v1 (7-A).
     Dispatch,
+    // (014, D2 acceptance gate) `acceptances` is its own object — the subject
+    // type of the acceptance events. Lyra sign-off 2026-10-09
+    // (LYRA-2026-10-09-d2-acceptance-loop-design-v1 §3).
+    Acceptance,
 }
 
 const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStatusChanged, \
                                    ArtifactCreated, HandoffSent, HandoffAccepted, \
                                    HandoffCompleted, ReviewVerdictIssued, SeatDelegationIssued, \
                                    SeatDelegationClosed, SupervisorMessage, SeatResponse, \
-                                   SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted";
+                                   SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted, \
+                                   SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, \
+                                   AcceptanceRequested, AcceptanceGranted, AcceptanceRejected";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
 const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document, seat, topic, \
-                                 project, delegation, dispatch";
+                                 project, delegation, dispatch, acceptance";
 
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 15] = [
+    pub const ALL: [EventType; 21] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -124,6 +148,12 @@ impl EventType {
         EventType::SeatDispatchIssued,
         EventType::SeatDispatchDelivered,
         EventType::SeatDispatchCompleted,
+        EventType::SeatDispatchFailed,
+        EventType::SeatDispatchRetried,
+        EventType::SeatDispatchCancelled,
+        EventType::AcceptanceRequested,
+        EventType::AcceptanceGranted,
+        EventType::AcceptanceRejected,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -143,6 +173,12 @@ impl EventType {
             EventType::SeatDispatchIssued => "SeatDispatchIssued",
             EventType::SeatDispatchDelivered => "SeatDispatchDelivered",
             EventType::SeatDispatchCompleted => "SeatDispatchCompleted",
+            EventType::SeatDispatchFailed => "SeatDispatchFailed",
+            EventType::SeatDispatchRetried => "SeatDispatchRetried",
+            EventType::SeatDispatchCancelled => "SeatDispatchCancelled",
+            EventType::AcceptanceRequested => "AcceptanceRequested",
+            EventType::AcceptanceGranted => "AcceptanceGranted",
+            EventType::AcceptanceRejected => "AcceptanceRejected",
         }
     }
 }
@@ -167,6 +203,12 @@ impl FromStr for EventType {
             "SeatDispatchIssued" => Ok(EventType::SeatDispatchIssued),
             "SeatDispatchDelivered" => Ok(EventType::SeatDispatchDelivered),
             "SeatDispatchCompleted" => Ok(EventType::SeatDispatchCompleted),
+            "SeatDispatchFailed" => Ok(EventType::SeatDispatchFailed),
+            "SeatDispatchRetried" => Ok(EventType::SeatDispatchRetried),
+            "SeatDispatchCancelled" => Ok(EventType::SeatDispatchCancelled),
+            "AcceptanceRequested" => Ok(EventType::AcceptanceRequested),
+            "AcceptanceGranted" => Ok(EventType::AcceptanceGranted),
+            "AcceptanceRejected" => Ok(EventType::AcceptanceRejected),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -232,7 +274,7 @@ impl fmt::Display for RefRole {
 }
 
 impl RefType {
-    pub const ALL: [RefType; 10] = [
+    pub const ALL: [RefType; 11] = [
         RefType::WorkItem,
         RefType::Session,
         RefType::Handoff,
@@ -243,6 +285,7 @@ impl RefType {
         RefType::Project,
         RefType::Delegation,
         RefType::Dispatch,
+        RefType::Acceptance,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -257,6 +300,7 @@ impl RefType {
             RefType::Project => "project",
             RefType::Delegation => "delegation",
             RefType::Dispatch => "dispatch",
+            RefType::Acceptance => "acceptance",
         }
     }
 }
@@ -276,6 +320,7 @@ impl FromStr for RefType {
             "project" => Ok(RefType::Project),
             "delegation" => Ok(RefType::Delegation),
             "dispatch" => Ok(RefType::Dispatch),
+            "acceptance" => Ok(RefType::Acceptance),
             _ => Err(ParseValueError {
                 domain: "RefType",
                 value: s.to_string(),
@@ -320,11 +365,12 @@ mod tests {
 
     /// Pins the serialized set against the migrations' CHECK constraints
     /// verbatim. `010` created the 12-value event_type and 9-value ref_type
-    /// vocabularies; `012` widened them to 15 and 10 respectively (governed
-    /// dispatch, G19). If a migration widens a domain, this test is where the
+    /// vocabularies; `012` widened them to 15 and 10 (governed dispatch, G19);
+    /// `013`/`014` widen them to 21 and 11 (dispatch failure states + the D2
+    /// acceptance gate). If a migration widens a domain, this test is where the
     /// Rust side must follow — kept verbatim, never loosened.
     #[test]
-    fn serialized_sets_match_schema_010_and_012_checks() {
+    fn serialized_sets_match_schema_010_012_013_014_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -345,8 +391,16 @@ mod tests {
                 "SeatDispatchIssued",
                 "SeatDispatchDelivered",
                 "SeatDispatchCompleted",
+                // 013 (G19 follow-on): terminal / retry / cancel transitions
+                "SeatDispatchFailed",
+                "SeatDispatchRetried",
+                "SeatDispatchCancelled",
+                // 014 (D2 acceptance gate): the acceptance object's transitions
+                "AcceptanceRequested",
+                "AcceptanceGranted",
+                "AcceptanceRejected",
             ],
-            "must equal 010:141-159 + 012's canonical_events_event_type_vocab"
+            "must equal 010:141-159 + 012 + 013 + 014's canonical_events_event_type_vocab"
         );
         let roles: Vec<&str> = RefRole::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(roles, vec!["subject", "actor", "context"]);
@@ -365,8 +419,10 @@ mod tests {
                 "delegation",
                 // 012 (G19) event_object_refs_ref_type_vocab widening
                 "dispatch",
+                // 014 (D2 acceptance gate)
+                "acceptance",
             ],
-            "must equal 010:270-276 + 012's event_object_refs_ref_type_vocab"
+            "must equal 010:270-276 + 012 + 014's event_object_refs_ref_type_vocab"
         );
     }
 
