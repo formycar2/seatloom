@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Send, AlertCircle, Plus } from 'lucide-react';
 import { api } from '../lib/api';
-import { DispatchDto } from '../lib/types-dto';
-import { useDataStore } from '../stores/useDataStore';
+import { DispatchDto, SeatDto } from '../lib/types-dto';
 
 // Scenario 3 — the governed-dispatch (G19) seat-inbox view. Reads the live
 // `dispatches` projection via cmd_list_dispatches and groups by seat. Mirrors
@@ -16,35 +15,40 @@ const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
 };
 
 const DispatchInboxView: React.FC = () => {
-  const { activeProjectId, projectData } = useDataStore();
   const [dispatches, setDispatches] = useState<DispatchDto[]>([]);
+  const [seatsDb, setSeatsDb] = useState<SeatDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Seats come from the DB (cmd_list_seats) so their ids (seat-mira-001, …) match
+  // dispatches.target_seat_id — NOT from the UI store, whose active project may be
+  // mock data with different ids.
+  useEffect(() => {
+    api
+      .listSeats()
+      .then(setSeatsDb)
+      .catch(() => setSeatsDb([]));
+  }, []);
+
   const seatName = useCallback(
-    (seatId: string): string => {
-      const data = activeProjectId ? projectData[activeProjectId] : null;
-      const seat = data?.seats.find((s) => s.id === seatId);
-      return seat?.name ? `${seat.name}` : seatId;
-    },
-    [activeProjectId, projectData],
+    (seatId: string): string => seatsDb.find((s) => s.id === seatId)?.name ?? seatId,
+    [seatsDb],
   );
 
-  const load = useCallback(
-    async (silent = false) => {
-      if (!silent) setLoading(true);
-      setError(null);
-      try {
-        const rows = await api.listDispatches(activeProjectId ?? undefined);
-        setDispatches(rows);
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [activeProjectId],
-  );
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    setError(null);
+    try {
+      // No project arg → backend uses its default project (seatloom), where the
+      // governed dispatches live. (The UI store's active project may be mock.)
+      const rows = await api.listDispatches();
+      setDispatches(rows);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     void load();
@@ -65,7 +69,7 @@ const DispatchInboxView: React.FC = () => {
   }, [dispatches]);
 
   // --- New-dispatch form (operator commands a seat from the UI) ---
-  const seats = (activeProjectId ? projectData[activeProjectId]?.seats : undefined) ?? [];
+  const seats = seatsDb;
   const [showNew, setShowNew] = useState(false);
   const [newSeat, setNewSeat] = useState('');
   const [newTitle, setNewTitle] = useState('');
