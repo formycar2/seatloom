@@ -221,7 +221,10 @@ fn get_next_dispatch_tool() -> Value {
     json!({
         "name": "get_next_dispatch",
         "description": "Pull THIS seat's next ready, highest-priority dispatch when idle (end of turn), \
-            mark it in_flight, and append SeatDispatchDelivered in ONE transaction. Blocked items are \
+            mark it in_flight, and append SeatDispatchDelivered in ONE transaction. The result carries \
+            the dispatch's TITLE and PAYLOAD — the payload IS your task instructions (e.g. a packet path \
+            or an inline note); do exactly what it says, then call complete_dispatch with the dispatch_id. \
+            Blocked items are \
             SKIPPED (never head-of-line-block). If the seat already holds an in_flight dispatch, the \
             SAME one is returned (one in_flight per seat is a database fact). A cross-seat cycle or an \
             all-blocked stall is detected and escalated (SupervisorMessage + daily-log line), never hung. \

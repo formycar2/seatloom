@@ -400,6 +400,26 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
 // Tool 2 — get_next_dispatch
 // =============================================================================
 
+/// Fetch a dispatch's task CONTENT (title + payload JSON) so `get_next_dispatch`
+/// returns the WORK, not just the id. Without this the seat receives a dispatch
+/// id with no instructions and cannot know what to do.
+async fn fetch_content(
+    tx: &tokio_postgres::Transaction<'_>,
+    dispatch_id: &str,
+) -> Result<(String, String), DispatchRejection> {
+    let row = tx
+        .query_one(
+            "SELECT title, payload FROM dispatches WHERE id = $1",
+            &[&dispatch_id],
+        )
+        .await
+        .map_err(db)?;
+    let title: String = row.get(0);
+    let payload: serde_json::Value = row.get(1);
+    let payload_str = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    Ok((title, payload_str))
+}
+
 /// Resolve the seat, evaluate readiness, pull the next ready/highest-priority
 /// item (or return an existing in_flight), mark it in_flight + append
 /// `SeatDispatchDelivered` in one transaction. On a cycle or a stall, escalate
@@ -473,9 +493,12 @@ pub async fn get_next(
 
     match crate::scheduler::select_next(&identity.seat_id, &views) {
         PullDecision::AlreadyInFlight { dispatch_id } => {
+            let (title, payload) = fetch_content(&tx, &dispatch_id).await?;
             tx.commit().await.map_err(db)?;
             Ok(format!(
-                "{dispatch_id} (already in_flight for {})",
+                "delivered {dispatch_id} to {} (already in_flight — resuming this task)\n\
+                 title: {title}\npayload: {payload}\n\
+                 Do the work described in payload, then call complete_dispatch with dispatch_id={dispatch_id}.",
                 identity.seat_id
             ))
         }
@@ -508,6 +531,7 @@ pub async fn get_next(
             append_event_in_tx(&tx, &draft)
                 .await
                 .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+            let (title, payload) = fetch_content(&tx, &dispatch_id).await?;
             tx.commit().await.map_err(db)?;
             let note = if seat_cycle.is_some() {
                 " (note: a dependency cycle involving this seat was escalated)"
@@ -515,7 +539,9 @@ pub async fn get_next(
                 ""
             };
             Ok(format!(
-                "delivered {dispatch_id} to {}{note}",
+                "delivered {dispatch_id} to {}{note}\n\
+                 title: {title}\npayload: {payload}\n\
+                 Do the work described in payload, then call complete_dispatch with dispatch_id={dispatch_id}.",
                 identity.seat_id
             ))
         }
