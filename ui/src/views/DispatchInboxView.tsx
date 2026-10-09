@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Send, AlertCircle } from 'lucide-react';
+import { RefreshCw, Send, AlertCircle, Plus } from 'lucide-react';
 import { api } from '../lib/api';
 import { DispatchDto } from '../lib/types-dto';
 import { useDataStore } from '../stores/useDataStore';
@@ -64,6 +64,35 @@ const DispatchInboxView: React.FC = () => {
     return Array.from(groups.entries());
   }, [dispatches]);
 
+  // --- New-dispatch form (operator commands a seat from the UI) ---
+  const seats = (activeProjectId ? projectData[activeProjectId]?.seats : undefined) ?? [];
+  const [showNew, setShowNew] = useState(false);
+  const [newSeat, setNewSeat] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newInstr, setNewInstr] = useState('');
+  const [newPrio, setNewPrio] = useState(5);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+
+  const canSubmit = newSeat && newTitle.trim() && newInstr.trim() && !submitting;
+
+  const handleCreate = useCallback(async () => {
+    if (!newSeat || !newTitle.trim() || !newInstr.trim()) return;
+    setSubmitting(true);
+    setSubmitErr(null);
+    try {
+      await api.enqueueDispatch(newSeat, newTitle.trim(), newInstr.trim(), newPrio);
+      setNewTitle('');
+      setNewInstr('');
+      setShowNew(false);
+      await load(true);
+    } catch (e) {
+      setSubmitErr(String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [newSeat, newTitle, newInstr, newPrio, load]);
+
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
       <div className="p-8 border-b border-border/40 flex items-center justify-between">
@@ -75,14 +104,108 @@ const DispatchInboxView: React.FC = () => {
             每个席位的治理派单队列(G19)· 进行中 → 就绪 → 阻塞 → 完成
           </p>
         </div>
-        <button
-          onClick={() => void load()}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-card text-text-secondary hover:bg-accent transition-all shadow-sm text-xs font-bold"
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowNew((v) => !v)}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-primary/60 bg-primary text-white hover:bg-primary/90 transition-all shadow-sm text-xs font-bold"
+          >
+            <Plus size={14} />
+            新建派单
+          </button>
+          <button
+            onClick={() => void load()}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-card text-text-secondary hover:bg-accent transition-all shadow-sm text-xs font-bold"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+        </div>
       </div>
+
+      {showNew && (
+        <div className="px-8 py-5 border-b border-border/40 bg-secondary/40">
+          <div className="max-w-4xl space-y-3">
+            <div className="flex flex-wrap gap-3">
+              <div className="space-y-1">
+                <label className="block text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                  派给席位
+                </label>
+                <select
+                  value={newSeat}
+                  onChange={(e) => setNewSeat(e.target.value)}
+                  className="px-3 py-1.5 bg-card border border-border/40 rounded-lg text-xs font-bold focus:outline-none focus:ring-1 focus:ring-primary min-w-[160px]"
+                >
+                  <option value="">选择席位…</option>
+                  {seats.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name ?? s.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                  优先级
+                </label>
+                <input
+                  type="number"
+                  value={newPrio}
+                  onChange={(e) => setNewPrio(Number(e.target.value))}
+                  className="px-3 py-1.5 bg-card border border-border/40 rounded-lg text-xs font-bold focus:outline-none focus:ring-1 focus:ring-primary w-24"
+                />
+              </div>
+              <div className="space-y-1 flex-1 min-w-[220px]">
+                <label className="block text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                  标题(一行摘要)
+                </label>
+                <input
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="例如:为派单页加失败态徽章"
+                  className="w-full px-3 py-1.5 bg-card border border-border/40 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[10px] font-black text-text-secondary uppercase tracking-widest">
+                指令(payload — 席位将照此执行)
+              </label>
+              <textarea
+                value={newInstr}
+                onChange={(e) => setNewInstr(e.target.value)}
+                rows={3}
+                placeholder="把席位需要的全部上下文写在这里(自足:别依赖它当前分支没有的文件)。"
+                className="w-full px-3 py-2 bg-card border border-border/40 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+              />
+            </div>
+            {submitErr && (
+              <div className="flex items-center gap-2 text-xs font-bold text-red-600">
+                <AlertCircle size={14} /> 派单失败:{submitErr}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleCreate()}
+                disabled={!canSubmit}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold shadow-sm transition-all disabled:opacity-40 hover:bg-primary/90"
+              >
+                <Send size={14} />
+                {submitting ? '派发中…' : '派发'}
+              </button>
+              <button
+                onClick={() => setShowNew(false)}
+                className="px-4 py-2 rounded-xl border border-border/60 bg-card text-text-secondary text-xs font-bold hover:bg-accent"
+              >
+                取消
+              </button>
+              <span className="text-[11px] text-text-secondary">
+                派发后会即时唤醒该席位(若它空闲)并出现在下方队列。
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {error ? (

@@ -110,6 +110,13 @@ export const api = {
   // --- Governed dispatch (G19) — seat inboxes ---
   listDispatches: (projectId?: string, limit?: number): Promise<DispatchDto[]> =>
     invoke('cmd_list_dispatches', { projectId, limit }),
+  enqueueDispatch: (
+    targetSeatId: string,
+    title: string,
+    instructions: string,
+    priority?: number,
+  ): Promise<string> =>
+    invoke('cmd_enqueue_dispatch', { targetSeatId, title, instructions, priority }),
 
   // --- Supervisor IM ---
   listSupervisorMessages: (
