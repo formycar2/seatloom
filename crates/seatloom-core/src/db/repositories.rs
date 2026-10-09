@@ -532,6 +532,10 @@ impl SeatloomDb {
     /// makes accepted/rejected terminal in the write path — a second decision of
     /// the same acceptance updates 0 rows and errors rather than silently
     /// rewriting a recorded fact.
+    ///
+    /// Returns the decided row as landed, so the caller's response is populated
+    /// from what the database actually holds (status, merge_commit,
+    /// rework_dispatch_id) rather than from the caller's intentions.
     pub async fn decide_acceptance(
         &self,
         acceptance_id: &str,
@@ -540,7 +544,7 @@ impl SeatloomDb {
         merge_commit: Option<&str>,
         rework_dispatch_id: Option<&str>,
         operator_ref: &str,
-    ) -> Result<(), DbError> {
+    ) -> Result<AcceptanceRow, DbError> {
         let event_type = match status {
             "accepted" => EventType::AcceptanceGranted,
             "rejected" => EventType::AcceptanceRejected,
@@ -626,8 +630,20 @@ impl SeatloomDb {
             ],
         };
         append_event_in_tx(&tx, &draft).await?;
+        // Read the decided row back INSIDE the transaction: the response the UI
+        // renders is populated from the landed state, not from intentions.
+        let decided = tx
+            .query_one(
+                "SELECT id, dispatch_id, project_id, branch, base, how_to_verify, \
+                       flux_verdict_ref, status, feedback, rework_dispatch_id, \
+                       merge_commit, decided_by, decided_at, created_at \
+                  FROM acceptances WHERE id = $1",
+                &[&acceptance_id],
+            )
+            .await?;
+        let decided = row_to_acceptance(&decided);
         tx.commit().await?;
-        Ok(())
+        Ok(decided)
     }
 
     // =========================================================================

@@ -75,7 +75,7 @@ pub async fn cmd_accept_delivery(
     )
     .await?;
 
-    state
+    let decided = state
         .db
         .decide_acceptance(
             &acceptance_id,
@@ -90,7 +90,9 @@ pub async fn cmd_accept_delivery(
 
     Ok(AcceptanceResult {
         accepted: true,
-        merge_commit: Some(merge_commit),
+        status: decided.status,
+        merge_commit: decided.merge_commit,
+        rework_dispatch_id: decided.rework_dispatch_id,
         error: None,
     })
 }
@@ -118,7 +120,7 @@ pub async fn cmd_reject_delivery(
     // simply retries.
     let rework_dispatch_id = enqueue_rework_via_mcp(&state, &row, &feedback, &operator).await?;
 
-    state
+    let decided = state
         .db
         .decide_acceptance(
             &acceptance_id,
@@ -131,9 +133,15 @@ pub async fn cmd_reject_delivery(
         .await
         .map_err(|e| e.to_string())?;
 
+    // The Flux HOLD fix: the decision response carries the landed status AND the
+    // rework dispatch id, so the UI's reject path renders the rejected badge and
+    // the jump-to-rework link from this response alone (a superset of the card
+    // normaliser — no Mira-side change).
     Ok(AcceptanceResult {
         accepted: false,
-        merge_commit: None,
+        status: decided.status,
+        merge_commit: decided.merge_commit,
+        rework_dispatch_id: decided.rework_dispatch_id,
         error: None,
     })
 }
@@ -362,6 +370,38 @@ fn parse_enqueued_id(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Flux HOLD fix, pinned at the wire: the decision response is a SUPERSET
+    /// of the acceptance-card normaliser — `status` and `reworkDispatchId` are
+    /// present with the camelCase names the UI reads, on BOTH paths.
+    #[test]
+    fn acceptance_result_serializes_the_reject_path_fields() {
+        let reject = AcceptanceResult {
+            accepted: false,
+            status: "rejected".to_string(),
+            merge_commit: None,
+            rework_dispatch_id: Some("disp-rework-1".to_string()),
+            error: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&reject).unwrap();
+        assert_eq!(v["accepted"], false);
+        assert_eq!(v["status"], "rejected");
+        assert_eq!(v["reworkDispatchId"], "disp-rework-1");
+        assert!(v.get("mergeCommit").is_some());
+        assert!(v.get("error").is_some());
+
+        let accept = AcceptanceResult {
+            accepted: true,
+            status: "accepted".to_string(),
+            merge_commit: Some("abc123".to_string()),
+            rework_dispatch_id: None,
+            error: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&accept).unwrap();
+        assert_eq!(v["status"], "accepted");
+        assert_eq!(v["mergeCommit"], "abc123");
+        assert!(v["reworkDispatchId"].is_null());
+    }
 
     #[test]
     fn parses_the_enqueued_id_out_of_the_tool_result_text() {

@@ -438,15 +438,26 @@ impl From<AcceptanceWithDispatchRow> for AcceptanceCard {
     }
 }
 
-/// The outcome of an accept/reject command (D2 contract D). A refusal (merge
-/// conflict, missing operator config, not-pending, unverified) is an `Err`
-/// carrying the reason — `error` is the soft-failure field the contract asks
-/// the UI to render, kept for contract fidelity.
+/// The outcome of an accept/reject command (D2 contract D, widened by the
+/// Flux HOLD fix). A refusal (merge conflict, missing operator config,
+/// not-pending, unverified) is an `Err` carrying the reason — `error` is the
+/// soft-failure field the contract asks the UI to render, kept for contract
+/// fidelity.
+///
+/// `status` + `rework_dispatch_id` make the response a SUPERSET of the
+/// acceptance-card normaliser (`FLUX-2026-10-09-mira-d2-ui-verify-delivery-v1`
+/// §4): on a reject the UI can render the rejected badge, echo the feedback
+/// (already on the card) and jump to the rework dispatch from the decision
+/// response alone — no follow-up read, no dead-end "already handled" label.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcceptanceResult {
     pub accepted: bool,
+    /// The decided acceptance's status: 'accepted' | 'rejected'.
+    pub status: String,
     pub merge_commit: Option<String>,
+    /// The auto-enqueued rework dispatch on a reject (lineage jump link).
+    pub rework_dispatch_id: Option<String>,
     pub error: Option<String>,
 }
 
