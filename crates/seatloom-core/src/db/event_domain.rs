@@ -438,6 +438,35 @@ mod tests {
         assert!(EventType::from_str("ArtifactCreated").is_ok());
     }
 
+    /// `013`/`014` widened the event vocabulary by six; this pins that the six
+    /// new dispatch/acceptance types are admitted, round-trip, and are distinct
+    /// (each names one transition), while an unknown type is still rejected.
+    #[test]
+    fn the_six_d2_event_types_are_admitted_and_distinct() {
+        use std::collections::HashSet;
+        let new = [
+            EventType::SeatDispatchFailed,
+            EventType::SeatDispatchRetried,
+            EventType::SeatDispatchCancelled,
+            EventType::AcceptanceRequested,
+            EventType::AcceptanceGranted,
+            EventType::AcceptanceRejected,
+        ];
+        for v in new {
+            assert_eq!(EventType::from_str(v.as_str()).expect("round-trip"), v);
+            assert!(EventType::ALL.contains(&v), "{} must be in ALL", v.as_str());
+        }
+        // Distinct serialized forms (no two transitions share an event type).
+        let names: HashSet<&str> = new.iter().map(|v| v.as_str()).collect();
+        assert_eq!(names.len(), 6, "the six D2 event types must be distinct");
+        assert!(EventType::from_str("SeatDispatchReopened").is_err());
+        // ref_type widened by one: `acceptance` is admitted.
+        assert_eq!(
+            RefType::from_str("acceptance").unwrap(),
+            RefType::Acceptance
+        );
+    }
+
     /// Casing is significant in both directions, and deliberately inconsistent
     /// between the domains because the committed data is.
     #[test]

@@ -1346,3 +1346,405 @@ mod tests {
         );
     }
 }
+
+/// D2 / 013 integration tests for the dispatch TOOLS (enqueue / get_next /
+/// complete / cancel / request_acceptance) against a real Postgres. `#[ignore]`
+/// so `cargo test -p seatloom-mcp-emit` passes without a DB; they REFUSE the
+/// live `seatloom` database. The tools resolve identity from env, so these are
+/// env-serialised — run SINGLE-THREADED against a scratch DB:
+///
+///   DATABASE_URL=postgresql://seatloom:seatloom@localhost:5432/seatloom_d2_nimbus \
+///     cargo test -p seatloom-mcp-emit -- --ignored --test-threads=1
+#[cfg(test)]
+mod db_itests {
+    use super::*;
+    use deadpool_postgres::Pool;
+    use tokio_postgres::NoTls;
+
+    const SEAT: &str = "seat:seat-nimbus-001";
+    const SEAT_ID: &str = "seat-nimbus-001";
+
+    async fn scratch_pool() -> Option<Pool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let dbname = url.rsplit('/').next().unwrap_or("");
+        if dbname == "seatloom" || dbname.starts_with("seatloom?") {
+            eprintln!("REFUSING live `seatloom` DB — set DATABASE_URL to a scratch DB");
+            return None;
+        }
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.url = Some(url);
+        let pool = cfg
+            .create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls)
+            .ok()?;
+        let c = pool.get().await.ok()?;
+        // Require 013 (retry_count) + 014 (acceptances); else skip.
+        let ready: bool = c
+            .query_one(
+                "SELECT to_regclass('public.acceptances') IS NOT NULL \
+                    AND EXISTS (SELECT 1 FROM information_schema.columns \
+                                 WHERE table_name='dispatches' AND column_name='retry_count')",
+                &[],
+            )
+            .await
+            .ok()?
+            .get(0);
+        ready.then_some(pool)
+    }
+
+    fn as_seat() {
+        std::env::set_var(ACTOR_REF_ENV, SEAT);
+        std::env::set_var(PROJECT_ID_ENV, "seatloom_itest");
+    }
+    fn as_actor(actor: &str) {
+        std::env::set_var(ACTOR_REF_ENV, actor);
+        std::env::set_var(PROJECT_ID_ENV, "seatloom_itest");
+    }
+
+    async fn clean(pool: &Pool, project: &str) {
+        let c = pool.get().await.expect("client");
+        for sql in [
+            format!("DELETE FROM acceptances WHERE project_id='{project}'"),
+            format!("DELETE FROM dispatch_dependencies WHERE dispatch_id IN (SELECT id FROM dispatches WHERE project_id='{project}')"),
+            format!("DELETE FROM dispatches WHERE project_id='{project}'"),
+            format!("DELETE FROM event_object_refs WHERE event_id IN (SELECT id FROM canonical_events WHERE project_id='{project}')"),
+            format!("DELETE FROM canonical_events WHERE project_id='{project}'"),
+        ] {
+            c.execute(&sql, &[]).await.expect("clean");
+        }
+        c.execute(
+            "INSERT INTO projects (id,name,created_at,worker_budget_tokens,supervisor_budget_tokens) \
+             VALUES ($1,$1,NOW(),1024,1024) ON CONFLICT (id) DO NOTHING",
+            &[&project],
+        ).await.expect("project");
+    }
+
+    async fn status_of(pool: &Pool, id: &str) -> (String, i32) {
+        let c = pool.get().await.expect("client");
+        let r = c
+            .query_one(
+                "SELECT status, retry_count FROM dispatches WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .expect("row");
+        (r.get(0), r.get(1))
+    }
+
+    async fn dispatch_event_types(pool: &Pool, id: &str) -> Vec<String> {
+        let c = pool.get().await.expect("client");
+        c.query(
+            "SELECT e.event_type FROM canonical_events e \
+               JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
+              WHERE r.ref_type='dispatch' AND r.ref_id=$1 ORDER BY e.occurred_at",
+            &[&id],
+        )
+        .await
+        .expect("events")
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect()
+    }
+
+    fn enqueue_args(id: &str, project: &str, max_retries: i64) -> EnqueueArgs {
+        EnqueueArgs {
+            id: Some(id.to_string()),
+            target_seat_id: SEAT_ID.to_string(),
+            title: "itest".to_string(),
+            payload: serde_json::json!({"packet": "p/x.md"}),
+            priority: Some(5),
+            project_id: Some(project.to_string()),
+            dependencies: vec![],
+            max_retries: Some(max_retries),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn complete_failed_retries_within_budget_then_fails_terminally() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+
+        enqueue(&pool, enqueue_args("disp-it-retry", project, 1))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap(); // -> in_flight
+                                                              // Within budget -> ready + retry_count+1 + SeatDispatchRetried.
+        let msg = complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-retry".into(),
+                outcome: Some("failed".into()),
+                reason: Some("flaky".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(msg.contains("re-opened to ready"), "{msg}");
+        assert_eq!(status_of(&pool, "disp-it-retry").await, ("ready".into(), 1));
+
+        // Pull again, exhaust the budget -> failed (terminal) + SeatDispatchFailed.
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-retry".into(),
+                outcome: Some("failed".into()),
+                reason: Some("still flaky".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status_of(&pool, "disp-it-retry").await,
+            ("failed".into(), 1)
+        );
+        assert_eq!(
+            dispatch_event_types(&pool, "disp-it-retry").await,
+            vec![
+                "SeatDispatchIssued",
+                "SeatDispatchDelivered",
+                "SeatDispatchRetried",
+                "SeatDispatchDelivered",
+                "SeatDispatchFailed"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn complete_failed_with_default_budget_fails_on_first_failure() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+        enqueue(&pool, enqueue_args("disp-it-nobudget", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-nobudget".into(),
+                outcome: Some("failed".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status_of(&pool, "disp-it-nobudget").await,
+            ("failed".into(), 0)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn cancel_is_issuer_only_and_releases_the_in_flight_slot() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+
+        // Issued by the operator; pulled in_flight by the seat.
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-cancel", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap(); // in_flight (holds the slot)
+
+        // A non-issuer (the seat) cannot cancel.
+        let err = cancel(
+            &pool,
+            CancelArgs {
+                id: "disp-it-cancel".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::NotCancellable { .. }),
+            "{err}"
+        );
+
+        // The issuer can; it releases the slot and records SeatDispatchCancelled.
+        as_actor("human:supervisor");
+        cancel(
+            &pool,
+            CancelArgs {
+                id: "disp-it-cancel".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status_of(&pool, "disp-it-cancel").await.0, "cancelled");
+        assert!(dispatch_event_types(&pool, "disp-it-cancel")
+            .await
+            .contains(&"SeatDispatchCancelled".to_string()));
+
+        // Slot released: the seat can now hold a fresh in_flight.
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-after", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(msg.contains("delivered disp-it-after"), "{msg}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn request_acceptance_guards_then_happy_path_and_rework_pullable() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+
+        // A verdict event the request can reference.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-req", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+
+        // Guard: not completed yet (still ready, not pulled).
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "b".into(),
+                how_to_verify: "h".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::NotCompleted { .. }),
+            "{err}"
+        );
+
+        // Complete it, then the happy path creates the acceptance + event.
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-req".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ok = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(ok.contains("acc-disp-it-req"), "{ok}");
+
+        // Guard: a second request while pending is refused.
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "b".into(),
+                how_to_verify: "h".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptancePending { .. }),
+            "{err}"
+        );
+
+        // The acceptance row + AcceptanceRequested landed.
+        let c = pool.get().await.unwrap();
+        let st: String = c
+            .query_one(
+                "SELECT status FROM acceptances WHERE id='acc-disp-it-req'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(st, "pending");
+
+        // A rework dispatch (as the reject path would enqueue) is pullable.
+        as_actor("human:supervisor");
+        enqueue(&pool, EnqueueArgs {
+            id: Some("disp-it-rework".into()), target_seat_id: SEAT_ID.into(),
+            title: "打回重做:itest".into(),
+            payload: serde_json::json!({"rework_of":"disp-it-req","feedback":"redo","branch":"packet/nimbus/x"}),
+            priority: Some(15), project_id: Some(project.into()), dependencies: vec![], max_retries: Some(0),
+        }).await.unwrap();
+        as_seat();
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(
+            msg.contains("delivered disp-it-rework"),
+            "rework must be pullable: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn live_status_returns_terminal_rows_as_stored_never_recomputed_to_ready() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+
+        // A failed (terminal) dispatch with NO unmet deps: a naive recompute
+        // would read it ready. It must stay failed and never be delivered.
+        enqueue(&pool, enqueue_args("disp-it-term", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-term".into(),
+                outcome: Some("failed".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
+
+        // Nothing is pullable (the terminal row is not recomputed to ready).
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(
+            msg.contains("nothing ready"),
+            "terminal row must not be delivered: {msg}"
+        );
+        assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
+    }
+}
