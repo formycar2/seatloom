@@ -11,8 +11,8 @@ use crate::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, LedgerEventWithRefs, MemoryRow,
-    ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, LedgerEventWithRefs, MemoryRelationRow,
+    MemoryRow, ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
     PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
     SeatDelegationRow, SeatRow, SessionRow, TopicRow, WorkItemRow,
 };
@@ -704,6 +704,7 @@ impl SeatloomDb {
         topic_id: &str,
         query: Option<&str>,
         include_forgotten: bool,
+        include_superseded: bool,
         limit: i64,
     ) -> Result<Vec<MemoryRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
@@ -711,19 +712,61 @@ impl SeatloomDb {
             .query(
                 "SELECT id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
                         l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
-                        source_kind, source_ref, heat, recall_count, last_recalled_at, \
-                        tier, tier_changed_at, status, forgotten_reason, created_at, updated_at \
+                        source_kind, source_ref, kind, confidence, supersedes, \
+                        l2_line_start, l2_line_end, heat, recall_count, last_recalled_at, \
+                        tier, tier_changed_at, status, forgotten_reason, \
+                        resolved_by, resolved_at, created_at, updated_at \
                    FROM memories \
                   WHERE project_id = $1 AND topic_id = $2 \
                     AND ($3::bool OR status = 'active') \
+                    AND ($5::bool OR NOT EXISTS ( \
+                          SELECT 1 FROM memory_relations r \
+                           WHERE r.to_id = memories.id AND r.rel = 'supersedes')) \
                     AND ($4::text IS NULL OR to_tsvector('simple', title || ' ' || l0_summary) \
                          @@ plainto_tsquery('simple', $4)) \
                   ORDER BY heat DESC, updated_at DESC \
-                  LIMIT $5",
-                &[&project_id, &topic_id, &include_forgotten, &query, &limit],
+                  LIMIT $6",
+                &[
+                    &project_id,
+                    &topic_id,
+                    &include_forgotten,
+                    &query,
+                    &include_superseded,
+                    &limit,
+                ],
             )
             .await?;
         Ok(rows.iter().map(row_to_memory).collect())
+    }
+
+    /// Who supersedes this memory (the reverse lookup 018's
+    /// `idx_memory_relations_to` serves). `None` when nothing does.
+    pub async fn superseded_by(&self, memory_id: &str) -> Result<Option<String>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT from_id FROM memory_relations \
+                  WHERE to_id = $1 AND rel = 'supersedes' ORDER BY from_id LIMIT 1",
+                &[&memory_id],
+            )
+            .await?;
+        Ok(row.map(|r| r.get(0)))
+    }
+
+    /// This memory's outgoing edges (018).
+    pub async fn list_memory_relations(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<MemoryRelationRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT from_id, to_id, rel FROM memory_relations \
+                  WHERE from_id = $1 ORDER BY rel, to_id",
+                &[&memory_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_memory_relation).collect())
     }
 
     /// A topic and its ancestor chain (001/010 `topics.parent_topic_id`), nearest
@@ -764,6 +807,7 @@ impl SeatloomDb {
     /// The caller (the tool) has already validated the shape; this is the write
     /// path, and the only one.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_memory(
         &self,
         memory_id: &str,
@@ -779,6 +823,12 @@ impl SeatloomDb {
         l2_body_digest: Option<&str>,
         source_kind: &str,
         source_ref: &str,
+        kind: &str,
+        confidence: &str,
+        supersedes: Option<&str>,
+        l2_line_start: Option<i32>,
+        l2_line_end: Option<i32>,
+        relations: &[(String, String)], // (to_id, rel) pairs
         actor_ref: &str,
     ) -> Result<(), DbError> {
         let mut client = self.pool.get().await.map_err(DbError::Pool)?;
@@ -787,8 +837,9 @@ impl SeatloomDb {
             "INSERT INTO memories \
                (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
                 l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
-                source_kind, source_ref) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                source_kind, source_ref, kind, confidence, supersedes, \
+                l2_line_start, l2_line_end) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
             &[
                 &memory_id,
                 &project_id,
@@ -803,9 +854,31 @@ impl SeatloomDb {
                 &l2_body_digest,
                 &source_kind,
                 &source_ref,
+                &kind,
+                &confidence,
+                &supersedes,
+                &l2_line_start,
+                &l2_line_end,
             ],
         )
         .await?;
+        // The supersedes edge has TWO spellings — the column above and a
+        // memory_relations row — written in the SAME transaction so they can
+        // never disagree (contract §G2).
+        if let Some(prev) = supersedes {
+            tx.execute(
+                "INSERT INTO memory_relations (from_id, to_id, rel) VALUES ($1,$2,'supersedes')",
+                &[&memory_id, &prev],
+            )
+            .await?;
+        }
+        for (to_id, rel) in relations {
+            tx.execute(
+                "INSERT INTO memory_relations (from_id, to_id, rel) VALUES ($1,$2,$3)",
+                &[&memory_id, &to_id, &rel],
+            )
+            .await?;
+        }
         let draft = EventDraft {
             event_id: format!("ev-{}", nanoid::nanoid!()),
             event_type: EventType::MemoryCreated,
@@ -820,6 +893,12 @@ impl SeatloomDb {
                 "title": title,
                 "source_kind": source_kind,
                 "source_ref": source_ref,
+                "kind": kind,
+                "confidence": confidence,
+                "supersedes": supersedes,
+                "relations": relations.iter().map(|(to, rel)| serde_json::json!({"to_id": to, "rel": rel})).collect::<Vec<_>>(),
+                "l2_line_start": l2_line_start,
+                "l2_line_end": l2_line_end,
             }),
             refs: vec![
                 ObjectRefDraft::subject(RefType::Memory, memory_id),
@@ -858,7 +937,7 @@ impl SeatloomDb {
         };
         let project_id: String = row.get(1);
         let topic_id: String = row.get(2);
-        let heat_before: i32 = row.get(13);
+        let heat_before: i32 = row.get(18);
         tx.execute(
             "UPDATE memories \
                SET heat = heat + 1, recall_count = recall_count + 1, \
@@ -896,6 +975,74 @@ impl SeatloomDb {
         Ok(updated)
     }
 
+    /// `resolve` — the G3 closure path (018): `active -> resolved` +
+    /// `MemoryResolved` in ONE transaction. The ONLY closure path: there is no
+    /// background sweep and no automatic anything (contract §G3).
+    ///
+    /// `resolved_by` comes from the caller (the seat identity the tool resolved),
+    /// `resolved_at` is now. A row that is already `resolved` or `forgotten` is
+    /// refused — a tombstone and a closed record are both immutable facts.
+    pub async fn resolve_memory(
+        &self,
+        memory_id: &str,
+        actor_ref: &str,
+    ) -> Result<MemoryRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::MemoryNotFound {
+                id: memory_id.to_string(),
+            });
+        };
+        let status: String = row.get(23);
+        if status != "active" {
+            return Err(DbError::MemoryNotActive {
+                id: memory_id.to_string(),
+            });
+        }
+        let project_id: String = row.get(1);
+        let topic_id: String = row.get(2);
+        let kind: String = row.get(13);
+        tx.execute(
+            "UPDATE memories \
+               SET status = 'resolved', resolved_by = $2, resolved_at = NOW(), \
+                   updated_at = NOW() \
+              WHERE id = $1 AND status = 'active'",
+            &[&memory_id, &actor_ref],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::MemoryResolved,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: actor_ref.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "memory_id": memory_id,
+                "topic_id": topic_id,
+                "kind": kind,
+                "resolved_by": actor_ref,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Memory, memory_id),
+                ObjectRefDraft::new(RefType::Seat, actor_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Topic, &topic_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
     /// `promote`: the ONLY tier channel — an explicit target tier, up OR down.
     /// Same tier = no transition = refused (nothing is written, no event).
     pub async fn set_memory_tier(
@@ -916,7 +1063,7 @@ impl SeatloomDb {
         };
         let project_id: String = row.get(1);
         let topic_id: String = row.get(2);
-        let from_tier: String = row.get(16);
+        let from_tier: String = row.get(21);
         if from_tier == to_tier {
             return Err(DbError::MemoryNoTierChange {
                 id: memory_id.to_string(),
@@ -977,7 +1124,7 @@ impl SeatloomDb {
                 id: memory_id.to_string(),
             });
         };
-        let status: String = row.get(18);
+        let status: String = row.get(23);
         if status != "active" {
             return Err(DbError::MemoryNotActive {
                 id: memory_id.to_string(),
@@ -2387,8 +2534,10 @@ fn row_to_dispatch_dep(r: &Row) -> DispatchDependencyRow {
 const MEMORY_COLUMNS: &str =
     "SELECT id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
         l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
-        source_kind, source_ref, heat, recall_count, last_recalled_at, \
-        tier, tier_changed_at, status, forgotten_reason, created_at, updated_at \
+        source_kind, source_ref, kind, confidence, supersedes, l2_line_start, l2_line_end, \
+        heat, recall_count, last_recalled_at, \
+        tier, tier_changed_at, status, forgotten_reason, resolved_by, resolved_at, \
+        created_at, updated_at \
           FROM memories";
 
 fn row_to_memory(r: &Row) -> MemoryRow {
@@ -2406,15 +2555,30 @@ fn row_to_memory(r: &Row) -> MemoryRow {
         l2_body_digest: r.get(10),
         source_kind: r.get(11),
         source_ref: r.get(12),
-        heat: r.get(13),
-        recall_count: r.get(14),
-        last_recalled_at: r.get(15),
-        tier: r.get(16),
-        tier_changed_at: r.get(17),
-        status: r.get(18),
-        forgotten_reason: r.get(19),
-        created_at: r.get(20),
-        updated_at: r.get(21),
+        kind: r.get(13),
+        confidence: r.get(14),
+        supersedes: r.get(15),
+        l2_line_start: r.get(16),
+        l2_line_end: r.get(17),
+        heat: r.get(18),
+        recall_count: r.get(19),
+        last_recalled_at: r.get(20),
+        tier: r.get(21),
+        tier_changed_at: r.get(22),
+        status: r.get(23),
+        forgotten_reason: r.get(24),
+        resolved_by: r.get(25),
+        resolved_at: r.get(26),
+        created_at: r.get(27),
+        updated_at: r.get(28),
+    }
+}
+
+fn row_to_memory_relation(r: &Row) -> MemoryRelationRow {
+    MemoryRelationRow {
+        from_id: r.get(0),
+        to_id: r.get(1),
+        rel: r.get(2),
     }
 }
 

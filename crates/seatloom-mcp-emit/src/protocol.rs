@@ -108,6 +108,7 @@ pub fn tools_list_result() -> Value {
             remember_tool(),
             promote_tool(),
             forget_tool(),
+            resolve_tool(),
             get_dispatch_tool(),
             query_ledger_tool(),
         ]
@@ -125,7 +126,7 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 22 PascalCase values.",
+                    "description": "Event type. One of the 27 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
@@ -134,7 +135,9 @@ fn emit_event_tool() -> Value {
                         "SeatDispatchIssued", "SeatDispatchDelivered", "SeatDispatchCompleted",
                         "SeatDispatchFailed", "SeatDispatchRetried", "SeatDispatchCancelled",
                         "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
-                        "AcceptanceCancelled"
+                        "AcceptanceCancelled",
+                        "MemoryCreated", "MemoryRecalled", "MemoryPromoted",
+                        "MemoryForgotten", "MemoryResolved"
                     ]
                 },
                 "payload": {
@@ -436,6 +439,7 @@ fn recall_tool() -> Value {
                 "topic_id": { "type": "string", "minLength": 1, "description": "The topic to recall from. project + topic is the ONLY scoping framework — there is no all-projects recall." },
                 "query": { "type": "string", "description": "Text filter over title + l0_summary. Omitted = every active memory of the topic." },
                 "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed rejection." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories that a newer one superseded (018). They are excluded by default — a stale decision served as current is worse than no memory — and each included row carries superseded_by." },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Page size, default 20, hard ceiling 100. Ordered by heat DESC then updated_at DESC." }
             }
         }
@@ -457,7 +461,7 @@ fn remember_tool() -> Value {
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["topic_id", "title", "l0_summary", "l2_ref_kind", "source_kind", "source_ref"],
+            "required": ["topic_id", "title", "l0_summary", "l2_ref_kind", "source_kind", "source_ref", "kind", "confidence"],
             "properties": {
                 "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it." },
                 "topic_id": { "type": "string", "minLength": 1 },
@@ -470,6 +474,23 @@ fn remember_tool() -> Value {
                 "l2_body_digest": { "type": "string", "description": "sha256 hex of the referenced body, documents.body_digest style." },
                 "source_kind": { "type": "string", "enum": ["archived_session", "canonical_event", "document", "manual"] },
                 "source_ref": { "type": "string", "minLength": 1, "description": "Polymorphic provenance: '<harness>:<id>' for archived_session, an event id, a doc id, or an actor note. No FK — recorded, never guessed." },
+                "kind": { "type": "string", "enum": ["decision", "failure", "fact", "preference", "artifact", "unresolved"], "description": "REQUIRED (018). The record type; the DB default is a backfill only, never a write path." },
+                "confidence": { "type": "string", "enum": ["quoted", "inferred"], "description": "REQUIRED (018). Binary, never a score: quoted = the raw text says it, inferred = derived." },
+                "supersedes": { "type": "string", "description": "The memory this one replaces (018). Create-time only; the edge is written in BOTH spellings (the column and a memory_relations row) in the SAME transaction." },
+                "l2_line_start": { "type": "integer", "description": "First line of the L2 evidence (1-based). REQUIRED when l2_ref_kind='file' AND source_kind='archived_session'." },
+                "l2_line_end": { "type": "integer", "description": "Last line of the L2 evidence (>= l2_line_start)." },
+                "relations": {
+                    "type": "array",
+                    "description": "Extra typed edges to other memories (018). Each target must already exist; a duplicate edge in one call is refused.",
+                    "items": {
+                        "type": "object",
+                        "required": ["to_id", "rel"],
+                        "properties": {
+                            "to_id": { "type": "string", "minLength": 1 },
+                            "rel": { "type": "string", "enum": ["supersedes", "caused_by", "fixed_by", "refines"] }
+                        }
+                    }
+                },
                 "tags": { "type": "array", "items": { "type": "string" } }
             }
         }
@@ -519,6 +540,27 @@ fn forget_tool() -> Value {
 }
 
 /// `get_dispatch` — the dispatch read model. Pure read, no identity.
+/// `resolve` — the G3 closure path (018): the only way an `unresolved` record
+/// becomes `resolved`. No background sweep, ever.
+fn resolve_tool() -> Value {
+    json!({
+        "name": "resolve",
+        "description": "Close an ACTIVE memory: active -> resolved + MemoryResolved in ONE transaction, \
+            with resolved_by taken from the server-side SEATLOOM_ACTOR_REF (never a parameter) and \
+            resolved_at = now. This is the ONLY closure path — there is no background sweep and no \
+            automatic anything. Refused: an unknown id, an already-resolved record (immutable), a \
+            forgotten tombstone (immutable). Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
 fn get_dispatch_tool() -> Value {
     json!({
         "name": "get_dispatch",
@@ -625,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_fourteen_tools() {
+    fn tools_list_advertises_the_fifteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -644,6 +686,7 @@ mod tests {
                 "remember",
                 "promote",
                 "forget",
+                "resolve",
                 "get_dispatch",
                 "query_ledger"
             ]
@@ -672,6 +715,19 @@ mod tests {
             .expect("properties object");
         assert!(!lineage.contains_key("seat_id"));
         assert!(!lineage.contains_key("actor_ref"));
+        // The five D5 memory tools expose no identity either — identity is
+        // resolved server-side from SEATLOOM_ACTOR_REF.
+        for name in ["recall", "remember", "promote", "forget", "resolve"] {
+            let t = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} must be advertised"));
+            let props = t["inputSchema"]["properties"].as_object().expect("props");
+            assert!(
+                !props.contains_key("seat_id") && !props.contains_key("actor_ref"),
+                "{name} must not expose identity"
+            );
+        }
         // request_acceptance REQUIRES the plan on the wire (016).
         let req = &tools[5]["inputSchema"];
         assert!(
@@ -683,15 +739,28 @@ mod tests {
             "acceptance_plan is required: {:?}",
             req["required"]
         );
+        // remember REQUIRES kind + confidence on the wire (018).
+        let remember = &tools[9]["inputSchema"];
+        for field in ["kind", "confidence"] {
+            assert!(
+                remember["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == field),
+                "remember must require {field}: {:?}",
+                remember["required"]
+            );
+        }
     }
 
     #[test]
-    fn tool_schema_enumerates_all_22_event_types_and_11_ref_types() {
+    fn tool_schema_enumerates_all_27_event_types_and_11_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 22);
+        assert_eq!(types.len(), 27);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()

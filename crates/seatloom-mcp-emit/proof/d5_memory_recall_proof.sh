@@ -67,9 +67,9 @@ print("depth:", l["depth"], "(expect l0)")
 print("topic chain:", [t["id"] for t in l["topic_chain"]], "(expect child then parent)")
 m = l["memories"][0]
 print("memory fields:", sorted(m.keys()))
-assert "l0_summary" in m, "l0 is always returned"
-assert "l1_overview" not in m, "l1 omitted at l0"
-assert "l2_ref_kind" not in m, "l2 omitted at l0"
+assert "l0Summary" in m, "l0 is always returned"
+assert "l1Overview" not in m, "l1 omitted at l0"
+assert "l2RefKind" not in m, "l2 omitted at l0"
 print("recalled:", l["recalled"], "(expect 1)")
 '
 echo "row after recall: heat=$(psql "SELECT heat FROM memories WHERE id='${MEM}';") recall_count=$(psql "SELECT recall_count FROM memories WHERE id='${MEM}';") last_recalled=$(psql "SELECT (last_recalled_at IS NOT NULL) FROM memories WHERE id='${MEM}';")  (expect 1 / 1 / t)"

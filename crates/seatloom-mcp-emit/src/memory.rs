@@ -20,7 +20,10 @@ use serde::Deserialize;
 
 use seatloom_core::db::repositories::DbError;
 use seatloom_core::db::SeatloomDb;
-use seatloom_core::objects::memory::{L2RefKind, MemoryLayer, MemorySourceKind, MemoryTier};
+use seatloom_core::objects::memory::{
+    L2RefKind, MemoryConfidence, MemoryKind, MemoryLayer, MemoryRelation, MemorySourceKind,
+    MemoryTier,
+};
 
 use crate::dispatch::{resolve_project, resolve_seat, DispatchRejection};
 
@@ -50,6 +53,11 @@ pub struct RecallArgs {
     /// typed rejection, never a serde fallback.
     #[serde(default)]
     pub depth: Option<String>,
+    /// Opt in to superseded rows (018). They are excluded by default — a stale
+    /// decision served as current is worse than no memory — and, when included,
+    /// each carries `superseded_by` so the caller can judge for itself.
+    #[serde(default)]
+    pub include_superseded: Option<bool>,
     #[serde(default)]
     pub limit: Option<i64>,
 }
@@ -77,8 +85,44 @@ pub struct RememberArgs {
     /// 'archived_session' | 'canonical_event' | 'document' | 'manual'.
     pub source_kind: String,
     pub source_ref: String,
+    /// REQUIRED (018, contract §G1): 'decision' | 'failure' | 'fact' |
+    /// 'preference' | 'artifact' | 'unresolved'. The additive DB default is a
+    /// backfill only — the tool requires it explicitly.
+    pub kind: String,
+    /// REQUIRED (018, §G4): 'quoted' | 'inferred'. Binary, never a score.
+    pub confidence: String,
+    /// The memory this one supersedes (018, §G2). Create-time only. The edge is
+    /// written in BOTH spellings (the column and a `memory_relations` row) in the
+    /// SAME transaction.
+    #[serde(default)]
+    pub supersedes: Option<String>,
+    /// First line of the L2 evidence inside `l2_file_path` (1-based). REQUIRED
+    /// when l2_ref_kind='file' AND source_kind='archived_session' (018, §G5).
+    #[serde(default)]
+    pub l2_line_start: Option<i32>,
+    /// Last line of the L2 evidence (>= l2_line_start).
+    #[serde(default)]
+    pub l2_line_end: Option<i32>,
+    /// Extra typed edges to other memories (018, §G2): `{to_id, rel}` with rel in
+    /// 'supersedes' | 'caused_by' | 'fixed_by' | 'refines'. A non-existent or
+    /// self target, or a duplicate edge, is a typed rejection.
+    #[serde(default)]
+    pub relations: Vec<MemoryRelationArg>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// One outgoing edge in a `remember` call.
+#[derive(Debug, Deserialize)]
+pub struct MemoryRelationArg {
+    pub to_id: String,
+    pub rel: String,
+}
+
+/// `resolve` — the G3 closure path (018, §G3).
+#[derive(Debug, Deserialize)]
+pub struct ResolveArgs {
+    pub memory_id: String,
 }
 
 /// `promote` — the ONLY tier channel, explicit target tier, up OR down.
@@ -124,6 +168,29 @@ pub enum MemoryRejection {
     NoTierChange { memory_id: String, tier: String },
     /// The recall page size exceeds the hard ceiling.
     LimitTooLarge { limit: i64 },
+    /// A `relations` target names no memory.
+    RelationTargetMissing { to_id: String },
+    /// A `relations` edge points at the memory being created (a self-edge).
+    /// Not reachable through `remember` today (the new id is server-generated
+    /// and every target must already exist), but the contract names the case and
+    /// the day a tool takes a caller-supplied id it must refuse it.
+    #[allow(dead_code)]
+    RelationSelfEdge { to_id: String },
+    /// The same edge is asserted twice in one call.
+    RelationDuplicate { to_id: String, rel: String },
+    /// The L2 evidence line range is required but absent (018 §G5: "the evidence
+    /// is somewhere in this 134MB file" is NOT evidence).
+    L2LinesRequired {
+        l2_ref_kind: String,
+        source_kind: String,
+    },
+    /// The L2 line range is inconsistent (end before start).
+    L2LinesInverted { start: i32, end: i32 },
+    /// The memory is not `active` (already resolved, or a forgotten tombstone).
+    /// The repository's `MemoryNotActive` does not carry the status, so the
+    /// resolve path reports the generic wording; this variant keeps the precise
+    /// message available for the caller that has it.
+    MemoryNotResolvable { memory_id: String, status: String },
     /// A database failure that is not one of the typed conditions above.
     Db(String),
 }
@@ -155,6 +222,35 @@ impl std::fmt::Display for MemoryRejection {
             MemoryRejection::LimitTooLarge { limit } => {
                 write!(f, "limit {limit} exceeds the hard ceiling {RECALL_LIMIT_MAX}")
             }
+            MemoryRejection::RelationTargetMissing { to_id } => write!(
+                f,
+                "relation target {to_id:?} names no memory — an edge to nothing is not an edge"
+            ),
+            MemoryRejection::RelationSelfEdge { to_id } => write!(
+                f,
+                "relation target {to_id:?} is the memory being created — a self-edge asserts nothing"
+            ),
+            MemoryRejection::RelationDuplicate { to_id, rel } => write!(
+                f,
+                "relation {rel} -> {to_id:?} is asserted twice — the edge set is duplicate-free"
+            ),
+            MemoryRejection::L2LinesRequired {
+                l2_ref_kind,
+                source_kind,
+            } => write!(
+                f,
+                "l2_line_start/l2_line_end are REQUIRED when l2_ref_kind is '{l2_ref_kind}' and \
+                 source_kind is '{source_kind}' — 'the evidence is somewhere in this file' is not \
+                 evidence (018 §G5)"
+            ),
+            MemoryRejection::L2LinesInverted { start, end } => {
+                write!(f, "l2_line_end ({end}) must be >= l2_line_start ({start})")
+            }
+            MemoryRejection::MemoryNotResolvable { memory_id, status } => write!(
+                f,
+                "memory {memory_id:?} is {status:?} — only an ACTIVE record can be resolved \
+                 (a closed record and a tombstone are both immutable)"
+            ),
             MemoryRejection::Db(e) => write!(f, "memory tool rejected: {e}"),
         }
     }
@@ -230,6 +326,7 @@ where
 /// the L2 pointer fields are `None` unless the caller asked for that layer — the
 /// token budget belongs to the caller, so the default is the smallest answer.
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecalledMemory {
     pub id: String,
     pub title: String,
@@ -238,6 +335,10 @@ pub struct RecalledMemory {
     pub recall_count: i32,
     /// l0 is ALWAYS returned — it is the only default layer.
     pub l0_summary: String,
+    /// Set only when the caller opted into superseded rows: the memory that
+    /// replaced this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub l1_overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -253,10 +354,13 @@ pub struct RecalledMemory {
 /// The recall answer: the topic's ancestor chain (so a memory is never read out
 /// of context) plus the memories at the requested depth.
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecallResult {
     pub project_id: String,
     pub topic_id: String,
     pub depth: String,
+    /// Whether superseded rows were included (and therefore annotated).
+    pub include_superseded: bool,
     /// The recalled topic and its ancestors, nearest first.
     pub topic_chain: Vec<TopicChainEntry>,
     pub memories: Vec<RecalledMemory>,
@@ -267,6 +371,7 @@ pub struct RecallResult {
 
 /// One level of the topic chain.
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TopicChainEntry {
     pub id: String,
     pub title: String,
@@ -292,12 +397,14 @@ pub async fn recall(db: &SeatloomDb, args: RecallArgs) -> Result<String, MemoryR
         return Err(MemoryRejection::LimitTooLarge { limit });
     }
 
+    let include_superseded = args.include_superseded.unwrap_or(false);
     let rows = db
         .list_memories_for_recall(
             &project_id,
             &args.topic_id,
             args.query.as_deref(),
             false,
+            include_superseded,
             limit,
         )
         .await?;
@@ -317,6 +424,13 @@ pub async fn recall(db: &SeatloomDb, args: RecallArgs) -> Result<String, MemoryR
             heat: row.heat + 1,
             recall_count: row.recall_count + 1,
             l0_summary: row.l0_summary.clone(),
+            // Opting into superseded rows annotates WHICH memory replaced each
+            // one, so the caller can judge for itself (018 §G2).
+            superseded_by: if include_superseded {
+                db.superseded_by(&row.id).await?
+            } else {
+                None
+            },
             l1_overview: match depth {
                 MemoryLayer::L0 => None,
                 _ => row.l1_overview.clone(),
@@ -344,6 +458,7 @@ pub async fn recall(db: &SeatloomDb, args: RecallArgs) -> Result<String, MemoryR
         project_id,
         topic_id: args.topic_id,
         depth: depth.as_str().to_string(),
+        include_superseded,
         topic_chain: chain
             .into_iter()
             .map(|t| TopicChainEntry {
@@ -375,6 +490,14 @@ pub async fn remember(db: &SeatloomDb, args: RememberArgs) -> Result<String, Mem
     let source_ref = non_empty(&args.source_ref, "source_ref")?;
     let l2_kind = parse_domain::<L2RefKind>(&args.l2_ref_kind, "l2_ref_kind")?;
     let source_kind = parse_domain::<MemorySourceKind>(&args.source_kind, "source_kind")?;
+    // 018: kind and confidence are REQUIRED — the additive DB defaults are a
+    // backfill only, never a write path (contract §G1/§G4).
+    let kind = parse_domain::<MemoryKind>(&args.kind, "kind")?;
+    let confidence = parse_domain::<MemoryConfidence>(&args.confidence, "confidence")?;
+    let supersedes = match &args.supersedes {
+        Some(id) => Some(non_empty(id, "supersedes")?),
+        None => None,
+    };
 
     // The L2 pointer pair: exactly one pointer, and it must match the kind.
     // `015`'s CHECK enforces the same rule in the database — belt and braces.
@@ -411,6 +534,71 @@ pub async fn remember(db: &SeatloomDb, args: RememberArgs) -> Result<String, Mem
         }
     }
 
+    // 018 §G5: the L2 pointer must carry a line range when the evidence is a
+    // slice of an archived session transcript — "the evidence is somewhere in
+    // this 134MB file" is NOT evidence. Mirrors the DB CHECK; refused here so
+    // the caller gets the reason, not a constraint name.
+    let (l2_line_start, l2_line_end) = match (args.l2_line_start, args.l2_line_end) {
+        (Some(s), Some(e)) => {
+            if e < s {
+                return Err(MemoryRejection::L2LinesInverted { start: s, end: e });
+            }
+            (Some(s), Some(e))
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(MemoryRejection::L2LinesRequired {
+                l2_ref_kind: l2_kind.as_str().to_string(),
+                source_kind: source_kind.as_str().to_string(),
+            });
+        }
+        (None, None) => {
+            if l2_kind == L2RefKind::File && source_kind == MemorySourceKind::ArchivedSession {
+                return Err(MemoryRejection::L2LinesRequired {
+                    l2_ref_kind: l2_kind.as_str().to_string(),
+                    source_kind: source_kind.as_str().to_string(),
+                });
+            }
+            (None, None)
+        }
+    };
+
+    // 018 §G2: the relation edges. Every target must exist, and no edge may be
+    // asserted twice in one call — all checked before any DB contact, so the
+    // caller gets a reason rather than a constraint name.
+    //
+    // A SELF-edge cannot occur here: `from_id` is the new memory's id, which this
+    // tool generates and the caller cannot name, and every target must already
+    // exist. The refusal exists for the day a tool takes a caller-supplied id.
+    let mut relations: Vec<(String, String)> = Vec::with_capacity(args.relations.len());
+    for r in &args.relations {
+        let to_id = non_empty(&r.to_id, "relations[].to_id")?;
+        parse_domain::<MemoryRelation>(&r.rel, "relations[].rel")?;
+        if relations
+            .iter()
+            .any(|(t, rel)| t == &to_id && rel == &r.rel)
+        {
+            return Err(MemoryRejection::RelationDuplicate {
+                to_id,
+                rel: r.rel.clone(),
+            });
+        }
+        relations.push((to_id, r.rel.clone()));
+    }
+    for (to_id, _) in &relations {
+        if db.get_memory(to_id).await?.is_none() {
+            return Err(MemoryRejection::RelationTargetMissing {
+                to_id: to_id.clone(),
+            });
+        }
+    }
+    if let Some(prev) = &supersedes {
+        if db.get_memory(prev).await?.is_none() {
+            return Err(MemoryRejection::RelationTargetMissing {
+                to_id: prev.clone(),
+            });
+        }
+    }
+
     let memory_id = format!("mem-{}", nanoid::nanoid!());
     db.insert_memory(
         &memory_id,
@@ -426,15 +614,32 @@ pub async fn remember(db: &SeatloomDb, args: RememberArgs) -> Result<String, Mem
         args.l2_body_digest.as_deref(),
         source_kind.as_str(),
         &source_ref,
+        kind.as_str(),
+        confidence.as_str(),
+        supersedes.as_deref(),
+        l2_line_start,
+        l2_line_end,
+        &relations,
         &identity.actor_ref,
     )
     .await?;
 
     Ok(format!(
         "remembered memory {memory_id} in project {project_id} / topic {topic_id} \
-         (tier cold, status active, source {} {})",
+         (kind {}, confidence {}, tier cold, status active, source {} {}{}{})",
+        kind.as_str(),
+        confidence.as_str(),
         source_kind.as_str(),
-        source_ref
+        source_ref,
+        supersedes
+            .as_ref()
+            .map(|s| format!(", supersedes {s}"))
+            .unwrap_or_default(),
+        if relations.is_empty() {
+            String::new()
+        } else {
+            format!(", {} relation(s)", relations.len())
+        }
     ))
 }
 
@@ -452,6 +657,42 @@ pub async fn promote(db: &SeatloomDb, args: PromoteArgs) -> Result<String, Memor
     Ok(format!(
         "promoted memory {} to tier {} (one MemoryPromoted event appended)",
         row.id, row.tier
+    ))
+}
+
+// =============================================================================
+// resolve
+// =============================================================================
+
+/// `resolve(memory_id)` — the G3 closure path (018, §G3): `active -> resolved`
+/// + `MemoryResolved` in ONE transaction.
+///
+/// The ONLY closure path: there is no background sweep and no automatic
+// anything.
+///
+/// `resolved_by` comes from the server-side identity, never a parameter.
+pub async fn resolve(db: &SeatloomDb, args: ResolveArgs) -> Result<String, MemoryRejection> {
+    let identity = resolve_seat()?;
+    // Read the row first so a refusal can name the ACTUAL status: a closed
+    // record and a tombstone are different facts, and the caller deserves to
+    // know which one it hit.
+    if let Some(existing) = db.get_memory(&args.memory_id).await? {
+        if existing.status != "active" {
+            return Err(MemoryRejection::MemoryNotResolvable {
+                memory_id: args.memory_id.clone(),
+                status: existing.status.clone(),
+            });
+        }
+    }
+    let row = db
+        .resolve_memory(&args.memory_id, &identity.actor_ref)
+        .await?;
+    Ok(format!(
+        "resolved memory {} (kind {}, closed by {} at {} — one MemoryResolved event appended)",
+        row.id,
+        row.kind,
+        row.resolved_by.as_deref().unwrap_or("?"),
+        row.resolved_at.map(|t| t.to_rfc3339()).unwrap_or_default()
     ))
 }
 
@@ -501,6 +742,7 @@ mod tests {
             heat: 1,
             recall_count: 1,
             l0_summary: "s".into(),
+            superseded_by: None,
             l1_overview: None,
             l2_ref_kind: None,
             l2_document_id: None,
@@ -508,18 +750,19 @@ mod tests {
             l2_body_digest: None,
         };
         let v: Value = serde_json::to_value(&l0).unwrap();
-        assert!(v.get("l0_summary").is_some(), "l0 is always returned");
-        assert!(v.get("l1_overview").is_none(), "l1 is omitted at l0");
-        assert!(v.get("l2_ref_kind").is_none(), "l2 is omitted at l0");
+        assert!(v.get("l0Summary").is_some(), "l0 is always returned");
+        assert!(v.get("l1Overview").is_none(), "l1 is omitted at l0");
+        assert!(v.get("l2RefKind").is_none(), "l2 is omitted at l0");
 
         let l2 = RecalledMemory {
+            superseded_by: None,
             l2_ref_kind: Some("file".into()),
             l2_file_path: Some("docs/x.md".into()),
             ..l0
         };
         let v: Value = serde_json::to_value(&l2).unwrap();
-        assert_eq!(v["l2_ref_kind"], "file");
-        assert_eq!(v["l2_file_path"], "docs/x.md");
+        assert_eq!(v["l2RefKind"], "file");
+        assert_eq!(v["l2FilePath"], "docs/x.md");
     }
 
     /// The typed refusals name the rule, so a caller can fix the call without

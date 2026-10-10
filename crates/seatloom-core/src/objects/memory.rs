@@ -248,6 +248,195 @@ impl TryFrom<&str> for MemorySourceKind {
     }
 }
 
+// =============================================================================
+// The record type (018, contract §G1): 6 values
+// =============================================================================
+
+/// What KIND of knowledge a memory records. Without it the six record types had
+/// nowhere to live but an unconstrained `tags[]` — "every failure in this
+/// project" was unaskable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryKind {
+    Decision,
+    Failure,
+    Fact,
+    Preference,
+    Artifact,
+    Unresolved,
+}
+
+impl MemoryKind {
+    pub const ALL: [MemoryKind; 6] = [
+        MemoryKind::Decision,
+        MemoryKind::Failure,
+        MemoryKind::Fact,
+        MemoryKind::Preference,
+        MemoryKind::Artifact,
+        MemoryKind::Unresolved,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemoryKind::Decision => "decision",
+            MemoryKind::Failure => "failure",
+            MemoryKind::Fact => "fact",
+            MemoryKind::Preference => "preference",
+            MemoryKind::Artifact => "artifact",
+            MemoryKind::Unresolved => "unresolved",
+        }
+    }
+}
+
+impl fmt::Display for MemoryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for MemoryKind {
+    type Err = ParseValueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "decision" => Ok(MemoryKind::Decision),
+            "failure" => Ok(MemoryKind::Failure),
+            "fact" => Ok(MemoryKind::Fact),
+            "preference" => Ok(MemoryKind::Preference),
+            "artifact" => Ok(MemoryKind::Artifact),
+            "unresolved" => Ok(MemoryKind::Unresolved),
+            _ => Err(ParseValueError {
+                domain: "MemoryKind",
+                value: s.to_string(),
+                expected: "decision | failure | fact | preference | artifact | unresolved",
+            }),
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryKind {
+    type Error = ParseValueError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+// =============================================================================
+// The confidence domain (018, contract §G4): quoted | inferred — BINARY
+// =============================================================================
+
+/// How well-founded a memory is. BINARY, never a score: LLM self-scored
+/// confidence is not trustworthy. `quoted` = the raw text says it; `inferred` =
+/// derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryConfidence {
+    Quoted,
+    Inferred,
+}
+
+impl MemoryConfidence {
+    pub const ALL: [MemoryConfidence; 2] = [MemoryConfidence::Quoted, MemoryConfidence::Inferred];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemoryConfidence::Quoted => "quoted",
+            MemoryConfidence::Inferred => "inferred",
+        }
+    }
+}
+
+impl fmt::Display for MemoryConfidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for MemoryConfidence {
+    type Err = ParseValueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "quoted" => Ok(MemoryConfidence::Quoted),
+            "inferred" => Ok(MemoryConfidence::Inferred),
+            _ => Err(ParseValueError {
+                domain: "MemoryConfidence",
+                value: s.to_string(),
+                expected: "quoted | inferred",
+            }),
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryConfidence {
+    type Error = ParseValueError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+// =============================================================================
+// The relation domain (018, contract §G2): 4 values
+// =============================================================================
+
+/// A typed edge between two memories. `supersedes` is the one the write path
+/// keeps in TWO spellings (the `memories.supersedes` column and a
+/// `memory_relations` row) — one edge, one transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryRelation {
+    Supersedes,
+    CausedBy,
+    FixedBy,
+    Refines,
+}
+
+impl MemoryRelation {
+    pub const ALL: [MemoryRelation; 4] = [
+        MemoryRelation::Supersedes,
+        MemoryRelation::CausedBy,
+        MemoryRelation::FixedBy,
+        MemoryRelation::Refines,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemoryRelation::Supersedes => "supersedes",
+            MemoryRelation::CausedBy => "caused_by",
+            MemoryRelation::FixedBy => "fixed_by",
+            MemoryRelation::Refines => "refines",
+        }
+    }
+}
+
+impl fmt::Display for MemoryRelation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for MemoryRelation {
+    type Err = ParseValueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "supersedes" => Ok(MemoryRelation::Supersedes),
+            "caused_by" => Ok(MemoryRelation::CausedBy),
+            "fixed_by" => Ok(MemoryRelation::FixedBy),
+            "refines" => Ok(MemoryRelation::Refines),
+            _ => Err(ParseValueError {
+                domain: "MemoryRelation",
+                value: s.to_string(),
+                expected: "supersedes | caused_by | fixed_by | refines",
+            }),
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryRelation {
+    type Error = ParseValueError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +473,43 @@ mod tests {
         // is a different (unknown) value, not a silent normalisation.
         assert!(MemoryLayer::from_str("L0").is_err());
         assert!(MemoryTier::from_str("Cold").is_err());
+    }
+
+    /// The three 018 domains round-trip and reject unknowns, with the contract's
+    /// values pinned verbatim.
+    #[test]
+    fn the_018_domains_round_trip_and_pin_the_contract() {
+        for v in MemoryKind::ALL {
+            assert_eq!(MemoryKind::from_str(v.as_str()).expect("round-trip"), v);
+        }
+        for v in MemoryConfidence::ALL {
+            assert_eq!(
+                MemoryConfidence::from_str(v.as_str()).expect("round-trip"),
+                v
+            );
+        }
+        for v in MemoryRelation::ALL {
+            assert_eq!(MemoryRelation::from_str(v.as_str()).expect("round-trip"), v);
+        }
+        let kinds: Vec<&str> = MemoryKind::ALL.iter().map(|v| v.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "decision",
+                "failure",
+                "fact",
+                "preference",
+                "artifact",
+                "unresolved"
+            ]
+        );
+        let conf: Vec<&str> = MemoryConfidence::ALL.iter().map(|v| v.as_str()).collect();
+        assert_eq!(conf, vec!["quoted", "inferred"]);
+        let rels: Vec<&str> = MemoryRelation::ALL.iter().map(|v| v.as_str()).collect();
+        assert_eq!(rels, vec!["supersedes", "caused_by", "fixed_by", "refines"]);
+        assert!(MemoryKind::from_str("note").is_err());
+        assert!(MemoryConfidence::from_str("0.9").is_err(), "never a score");
+        assert!(MemoryRelation::from_str("blocks").is_err());
     }
 
     /// The domains are the contract's, in the contract's order — pinned so a

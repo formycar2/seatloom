@@ -482,6 +482,19 @@ pub struct MemoryRow {
     /// Polymorphic provenance reference, NO FK (the 010 ref-fabric reasoning):
     /// `'<harness>:<id>'` | event id | doc id | actor note.
     pub source_ref: String,
+    /// Record type (018): 'decision' | 'failure' | 'fact' | 'preference' |
+    /// 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred' (018) — binary, never a score.
+    pub confidence: String,
+    /// The memory this one supersedes (018; the same edge as a
+    /// `memory_relations` row with rel='supersedes'). Create-time only.
+    pub supersedes: Option<String>,
+    /// First line of the L2 evidence inside `l2_file_path` (1-based). REQUIRED
+    /// when l2_ref_kind='file' AND source_kind='archived_session' (018).
+    pub l2_line_start: Option<i32>,
+    /// Last line of the L2 evidence (>= l2_line_start).
+    pub l2_line_end: Option<i32>,
     /// +1 per recall. NO automatic decay, ever.
     pub heat: i32,
     pub recall_count: i32,
@@ -490,12 +503,26 @@ pub struct MemoryRow {
     /// 'cold' | 'warm' | 'hot'. Transitions ONLY via the promote tool.
     pub tier: String,
     pub tier_changed_at: DateTime<Utc>,
-    /// 'active' | 'forgotten'. forget is a SOFT tombstone; rows are never
-    /// hard-deleted.
+    /// 'active' | 'forgotten' | 'resolved' (018 widened it). forgotten is a SOFT
+    /// tombstone (reason required, rows never hard-deleted); resolved is the G3
+    /// closing state for 'unresolved' records, closed ONLY by the resolve tool.
     pub status: String,
     pub forgotten_reason: Option<String>,
+    /// Who closed the record (018; set by the resolve tool, never a parameter).
+    pub resolved_by: Option<String>,
+    /// When it was closed (018).
+    pub resolved_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// One row of `memory_relations` (018): a typed edge between two memories.
+#[derive(Debug, Clone)]
+pub struct MemoryRelationRow {
+    pub from_id: String,
+    pub to_id: String,
+    /// 'supersedes' | 'caused_by' | 'fixed_by' | 'refines'.
+    pub rel: String,
 }
 
 /// One topic row (010) as the lineage assembler needs it: the ancestor chain of

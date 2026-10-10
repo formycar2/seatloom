@@ -44,7 +44,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, get_dispatch, query_ledger)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -96,10 +96,10 @@ async fn handle_request(
     }
 }
 
-/// `tools/call` dispatch. Fourteen tools: `emit_event` (step 4), the six
+/// `tools/call` dispatch. Fifteen tools: `emit_event` (step 4), the six
 /// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on), the
-/// acceptance-lineage READ (Lane B), the four D5 memory tools
-/// (`recall`/`remember`/`promote`/`forget`) and the two pure READS
+/// acceptance-lineage READ (Lane B), the five D5 memory tools
+/// (`recall`/`remember`/`promote`/`forget`/`resolve`) and the two pure READS
 /// (`get_dispatch`/`query_ledger`). Any other name is a tool error. A rejection
 /// is a tool error with `isError: true`, carrying the typed message verbatim —
 /// never a transport error, and never a partial write.
@@ -132,6 +132,10 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
             Ok(a) => render_memory(id, memory::forget(db, a).await),
             Err(resp) => resp,
         },
+        "resolve" => match memory_args::<memory::ResolveArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::resolve(db, a).await),
+            Err(resp) => resp,
+        },
         // --- D5 knowledge layer (Lane B): the pure reads that end the psql era ---
         "get_dispatch" => match read_args::<read::GetDispatchArgs>(&id, arguments) {
             Ok(a) => render_read(id, read::get_dispatch(db, a).await),
@@ -144,7 +148,7 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, get_dispatch, query_ledger)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger)"),
                 true,
             ),
         ),

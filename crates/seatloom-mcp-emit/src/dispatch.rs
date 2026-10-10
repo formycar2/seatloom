@@ -2432,7 +2432,8 @@ mod tests {
 mod db_itests {
     use super::*;
     use crate::memory::{
-        forget, promote, recall, remember, ForgetArgs, PromoteArgs, RecallArgs, RememberArgs,
+        forget, promote, recall, remember, resolve, ForgetArgs, MemoryRelationArg, PromoteArgs,
+        RecallArgs, RememberArgs, ResolveArgs,
     };
     use crate::read;
     use deadpool_postgres::Pool;
@@ -2532,7 +2533,13 @@ mod db_itests {
         // Memories are deleted by topic membership as well as by project: a
         // memory created under another project's fixture may still point at one
         // of this project's topics, and the FK would refuse the topic delete.
+        // Edges first: 018's memory_relations references memories(id), so the
+        // memories cannot be deleted while an edge points at them.
         for sql in [
+            format!(
+                "DELETE FROM memory_relations WHERE from_id IN (SELECT id FROM memories WHERE project_id = '{project}') \
+                  OR to_id IN (SELECT id FROM memories WHERE project_id = '{project}')"
+            ),
             format!(
                 "DELETE FROM memories WHERE project_id = '{project}' \
                   OR topic_id IN (SELECT id FROM topics WHERE project_id = '{project}')"
@@ -3151,6 +3158,12 @@ mod db_itests {
                 l2_body_digest: None,
                 source_kind: "document".into(),
                 source_ref: "doc-mem-target".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
                 tags: vec!["d2".into()],
             },
         )
@@ -3192,6 +3205,7 @@ mod db_itests {
                 topic_id: "topic-child".into(),
                 query: None,
                 depth: None,
+                include_superseded: None,
                 limit: None,
             },
         )
@@ -3201,11 +3215,11 @@ mod db_itests {
         assert_eq!(v["depth"], "l0");
         assert_eq!(v["memories"].as_array().unwrap().len(), 1);
         let m = &v["memories"][0];
-        assert!(m.get("l0_summary").is_some(), "l0 is always returned");
-        assert!(m.get("l1_overview").is_none(), "l1 is omitted at l0");
-        assert!(m.get("l2_ref_kind").is_none(), "l2 is omitted at l0");
+        assert!(m.get("l0Summary").is_some(), "l0 is always returned");
+        assert!(m.get("l1Overview").is_none(), "l1 is omitted at l0");
+        assert!(m.get("l2RefKind").is_none(), "l2 is omitted at l0");
         // The topic's ancestor chain rides along.
-        let chain: Vec<&str> = v["topic_chain"]
+        let chain: Vec<&str> = v["topicChain"]
             .as_array()
             .unwrap()
             .iter()
@@ -3231,7 +3245,7 @@ mod db_itests {
         assert_eq!(events().await, before + 2, "one MemoryRecalled");
 
         // --- l1 and l2 disclose their layers
-        for (depth, field) in [("l1", "l1_overview"), ("l2", "l2_ref_kind")] {
+        for (depth, field) in [("l1", "l1Overview"), ("l2", "l2RefKind")] {
             let out = recall(
                 &db,
                 RecallArgs {
@@ -3239,6 +3253,7 @@ mod db_itests {
                     topic_id: "topic-child".into(),
                     query: None,
                     depth: Some(depth.into()),
+                    include_superseded: None,
                     limit: None,
                 },
             )
@@ -3362,6 +3377,7 @@ mod db_itests {
                 topic_id: "topic-child".into(),
                 query: None,
                 depth: None,
+                include_superseded: None,
                 limit: None,
             },
         )
@@ -3383,6 +3399,7 @@ mod db_itests {
                 topic_id: "topic-child".into(),
                 query: None,
                 depth: Some("l3".into()),
+                include_superseded: None,
                 limit: None,
             },
             RecallArgs {
@@ -3390,6 +3407,7 @@ mod db_itests {
                 topic_id: "topic-child".into(),
                 query: None,
                 depth: None,
+                include_superseded: None,
                 limit: Some(101),
             },
         ] {
@@ -3409,6 +3427,12 @@ mod db_itests {
                 l2_body_digest: None,
                 source_kind: "manual".into(),
                 source_ref: "note".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
                 tags: vec![],
             },
         )
@@ -3428,6 +3452,12 @@ mod db_itests {
                 l2_body_digest: None,
                 source_kind: "vibes".into(),
                 source_ref: "note".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
                 tags: vec![],
             },
         )
@@ -3443,6 +3473,266 @@ mod db_itests {
         .await
         .expect_err("an unknown tier is refused");
         assert_eq!(events().await, settled, "every refusal above wrote nothing");
+    }
+
+    /// 018 (D5 Phase 2) against a real database: `remember` writes kind /
+    /// confidence / the L2 line range and the supersede edge in BOTH spellings
+    /// (the column and a `memory_relations` row) in one transaction; `recall`
+    /// hides superseded rows by default and annotates them when opted in;
+    /// `resolve` closes an ACTIVE record with `MemoryResolved`. Every malformed
+    /// input is a typed refusal that moves no ledger row.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-018 (scratch DB); run --test-threads=1"]
+    async fn memory_tools_018_typed_fields_supersede_and_resolve() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        clean_memories(&pool, project).await;
+        as_seat();
+        let db = SeatloomDb::new(pool.clone());
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by) \
+                 VALUES ('topic-018',$1,'018 topic','open','seat:seat-lyra-001')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        }
+
+        // --- the negative matrix, each a typed refusal with zero writes
+        let events_before: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let base = || RememberArgs {
+            project_id: Some(project.into()),
+            topic_id: "topic-018".into(),
+            title: "t".into(),
+            l0_summary: "s".into(),
+            l1_overview: None,
+            l2_ref_kind: "document".into(),
+            l2_document_id: None,
+            l2_file_path: None,
+            l2_body_digest: None,
+            source_kind: "manual".into(),
+            source_ref: "note".into(),
+            kind: "fact".into(),
+            confidence: "quoted".into(),
+            supersedes: None,
+            l2_line_start: None,
+            l2_line_end: None,
+            relations: vec![],
+            tags: vec![],
+        };
+        // a document pointer needs a document id
+        remember(&db, base())
+            .await
+            .expect_err("document pointer without an id");
+        // kind out of the 6-value vocab
+        let mut a = base();
+        a.kind = "note".into();
+        remember(&db, a).await.expect_err("kind out of vocab");
+        // confidence out of the 2-value vocab
+        let mut a = base();
+        a.confidence = "0.9".into();
+        remember(&db, a).await.expect_err("confidence is binary");
+        // file + archived_session without the line range
+        let mut a = base();
+        a.l2_ref_kind = "file".into();
+        a.l2_file_path = Some("docs/x.md".into());
+        a.source_kind = "archived_session".into();
+        a.source_ref = "claude:ses-1".into();
+        remember(&db, a)
+            .await
+            .expect_err("the l2 line range is required");
+        // ... and an inverted one
+        let mut a = base();
+        a.l2_ref_kind = "file".into();
+        a.l2_file_path = Some("docs/x.md".into());
+        a.source_kind = "archived_session".into();
+        a.source_ref = "claude:ses-1".into();
+        a.l2_line_start = Some(20);
+        a.l2_line_end = Some(10);
+        remember(&db, a).await.expect_err("end before start");
+        // a relation to a memory that does not exist
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.relations = vec![MemoryRelationArg {
+            to_id: "mem-nope".into(),
+            rel: "caused_by".into(),
+        }];
+        remember(&db, a).await.expect_err("a relation to nothing");
+        let events_after: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(events_before, events_after, "every refusal wrote nothing");
+
+        // --- a valid record, with kind/confidence/l2 lines
+        let c = pool.get().await.unwrap();
+        c.execute(
+            "INSERT INTO documents (id,project_id,title,file_path,parse_status,tags,depends_on) \
+             VALUES ('doc-018',$1,'the doc','docs/018.md','ok','{}','{}')",
+            &[&project],
+        )
+        .await
+        .unwrap();
+        drop(c);
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.kind = "failure".into();
+        a.confidence = "quoted".into();
+        let msg = remember(&db, a).await.expect("a valid record");
+        let old_id = msg.split_whitespace().nth(2).unwrap().to_string();
+        let row = db.get_memory(&old_id).await.unwrap().unwrap();
+        assert_eq!(row.kind, "failure");
+        assert_eq!(row.confidence, "quoted");
+        assert_eq!(row.l2_document_id.as_deref(), Some("doc-018"));
+
+        // --- supersede: BOTH spellings, one transaction
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.kind = "decision".into();
+        a.supersedes = Some(old_id.clone());
+        let msg = remember(&db, a).await.expect("the superseding record");
+        let new_id = msg.split_whitespace().nth(2).unwrap().to_string();
+        let (col, rel_rows): (Option<String>, i64) = {
+            let c = pool.get().await.unwrap();
+            let r = c
+                .query_one("SELECT supersedes FROM memories WHERE id = $1", &[&new_id])
+                .await
+                .unwrap();
+            let n = c
+                .query_one(
+                    "SELECT count(*) FROM memory_relations \
+                      WHERE from_id = $1 AND to_id = $2 AND rel = 'supersedes'",
+                    &[&new_id, &old_id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            (r.get(0), n)
+        };
+        assert_eq!(col.as_deref(), Some(old_id.as_str()), "the column spelling");
+        assert_eq!(rel_rows, 1, "the relation spelling");
+
+        // --- recall hides the superseded row by default, annotates when opted in
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-018".into(),
+                query: None,
+                depth: None,
+                include_superseded: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = v["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![new_id.as_str()], "the superseded row is hidden");
+        assert_eq!(v["includeSuperseded"], false);
+
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-018".into(),
+                query: None,
+                depth: None,
+                include_superseded: Some(true),
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall with superseded");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let superseded = v["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == old_id.as_str())
+            .expect("the superseded row is now visible");
+        assert_eq!(
+            superseded["supersededBy"].as_str(),
+            Some(new_id.as_str()),
+            "and annotated with its replacement"
+        );
+
+        // --- resolve: active -> resolved + MemoryResolved, and the refusals
+        let out = resolve(
+            &db,
+            ResolveArgs {
+                memory_id: new_id.clone(),
+            },
+        )
+        .await
+        .expect("resolve");
+        assert!(out.contains("resolved memory"), "{out}");
+        let row = db.get_memory(&new_id).await.unwrap().unwrap();
+        assert_eq!(row.status, "resolved");
+        assert_eq!(row.resolved_by.as_deref(), Some("seat:seat-nimbus-001"));
+        assert!(row.resolved_at.is_some());
+        let resolved_events: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1 \
+                  AND event_type = 'MemoryResolved'",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved_events, 1);
+
+        let err = resolve(
+            &db,
+            ResolveArgs {
+                memory_id: new_id.clone(),
+            },
+        )
+        .await
+        .expect_err("a resolved record is immutable");
+        assert!(
+            err.to_string().contains("resolved"),
+            "the refusal names the status: {err}"
+        );
+        resolve(
+            &db,
+            ResolveArgs {
+                memory_id: "mem-nope".into(),
+            },
+        )
+        .await
+        .expect_err("an unknown id");
     }
 
     /// The two pure reads against a real database: `get_dispatch` answers with
