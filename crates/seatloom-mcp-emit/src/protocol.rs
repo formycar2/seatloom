@@ -99,6 +99,9 @@ pub fn tools_list_result() -> Value {
             enqueue_dispatch_tool(),
             get_next_dispatch_tool(),
             complete_dispatch_tool(),
+            cancel_dispatch_tool(),
+            request_acceptance_tool(),
+            cancel_acceptance_tool(),
         ]
     })
 }
@@ -114,12 +117,16 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 12 PascalCase values.",
+                    "description": "Event type. One of the 22 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
                         "HandoffCompleted", "ReviewVerdictIssued", "SeatDelegationIssued",
-                        "SeatDelegationClosed", "SupervisorMessage", "SeatResponse"
+                        "SeatDelegationClosed", "SupervisorMessage", "SeatResponse",
+                        "SeatDispatchIssued", "SeatDispatchDelivered", "SeatDispatchCompleted",
+                        "SeatDispatchFailed", "SeatDispatchRetried", "SeatDispatchCancelled",
+                        "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
+                        "AcceptanceCancelled"
                     ]
                 },
                 "payload": {
@@ -138,7 +145,8 @@ fn emit_event_tool() -> Value {
                                 "type": "string",
                                 "enum": [
                                     "workitem", "session", "handoff", "artifact", "document",
-                                    "seat", "topic", "project", "delegation"
+                                    "seat", "topic", "project", "delegation", "dispatch",
+                                    "acceptance"
                                 ]
                             },
                             "ref_id": { "type": "string", "minLength": 1 },
@@ -211,6 +219,11 @@ fn enqueue_dispatch_tool() -> Value {
                             "dep_value": { "type": "string", "minLength": 1, "description": "canonical_events.id | artifacts.id | dispatches.id" }
                         }
                     }
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Retry budget (013): how many FAILED attempts are re-opened to ready before the failure is terminal. 0 (default) = the first failure is terminal."
                 }
             }
         }
@@ -243,15 +256,93 @@ fn get_next_dispatch_tool() -> Value {
 fn complete_dispatch_tool() -> Value {
     json!({
         "name": "complete_dispatch",
-        "description": "Mark THIS seat's in_flight dispatch done and append SeatDispatchCompleted in ONE \
-            transaction. The seat can only complete its own in_flight dispatch (identity from \
-            SEATLOOM_ACTOR_REF, ownership + in_flight state checked in SQL).",
+        "description": "Close THIS seat's in_flight dispatch and append the matching event in ONE \
+            transaction. outcome='done' (default, backward compatible) -> done + SeatDispatchCompleted. \
+            outcome='failed' (+ optional reason) applies the 013 retry budget: retry_count < max_retries \
+            re-opens the dispatch to ready (+SeatDispatchRetried, any eligible seat may pull it again); \
+            otherwise it fails terminally (+SeatDispatchFailed). The seat can only complete its own \
+            in_flight dispatch (identity from SEATLOOM_ACTOR_REF, ownership + in_flight state checked \
+            in SQL).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
             "required": ["dispatch_id"],
             "properties": {
-                "dispatch_id": { "type": "string", "minLength": 1, "description": "The in_flight dispatch to complete." }
+                "dispatch_id": { "type": "string", "minLength": 1, "description": "The in_flight dispatch to complete." },
+                "outcome": { "type": "string", "enum": ["done", "failed"], "description": "Default 'done'. 'failed' reports the attempt failed (013 retry/failure path)." },
+                "reason": { "type": "string", "description": "Optional failure reason; carried verbatim into the SeatDispatchRetried / SeatDispatchFailed payload." }
+            }
+        }
+    })
+}
+
+fn cancel_dispatch_tool() -> Value {
+    json!({
+        "name": "cancel_dispatch",
+        "description": "Withdraw a non-terminal dispatch (issuer side, 013): ready|blocked|in_flight -> \
+            cancelled (terminal) + SeatDispatchCancelled in ONE transaction. Guarded on \
+            issued_by = the resolved SEATLOOM_ACTOR_REF — only the issuer may cancel, and terminal rows \
+            are immutable. Cancelling an in_flight dispatch releases the one-in-flight slot (the work \
+            is abandoned, which is the intended semantics).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1, "description": "The dispatch to withdraw." }
+            }
+        }
+    })
+}
+
+fn request_acceptance_tool() -> Value {
+    json!({
+        "name": "request_acceptance",
+        "description": "Hand a COMPLETED delivery to the D2 acceptance gate (014): insert the \
+            acceptances row + append AcceptanceRequested in ONE transaction. The seat NEVER merges its \
+            own work — an operator later accepts (merge into the named base, via the Tauri command) or \
+            rejects (auto-enqueued rework). Guards: the merge base must be NAMED (the `base` argument, \
+            else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
+            hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
+            calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
+            or artifact; the dispatch must have no pending acceptance. Identity from SEATLOOM_ACTOR_REF \
+            (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
+                "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
+                "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
+                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
+                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." }
+            }
+        }
+    })
+}
+
+/// `cancel_acceptance` — the seat pulls back its OWN pending request. The
+/// acceptance-side mirror of `cancel_dispatch` (013): the actor that created the
+/// row may withdraw it while it is non-terminal, and the reason is mandatory so
+/// the ledger records WHY the card is no longer being offered.
+fn cancel_acceptance_tool() -> Value {
+    json!({
+        "name": "cancel_acceptance",
+        "description": "Withdraw the calling seat's OWN pending acceptance request (D2 follow-on): \
+            pending -> cancelled (terminal) + AcceptanceCancelled in ONE transaction. No merge, no \
+            rework — the card simply stops being offered to the operator, with the reason recorded. \
+            Use it when the card was satisfied by other means (e.g. the work already landed through a \
+            bootstrap install) instead of hand-editing the ledger. Guarded on the acceptance being \
+            pending AND gating a dispatch owned by the resolved SEATLOOM_ACTOR_REF — terminal rows are \
+            immutable, so a decided card can never be re-cancelled.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id", "reason"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to withdraw, acc-<dispatch-id>." },
+                "reason": { "type": "string", "minLength": 1, "description": "One line, recorded verbatim on the row and in the AcceptanceCancelled event payload." }
             }
         }
     })
@@ -319,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_four_tools() {
+    fn tools_list_advertises_the_seven_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -329,28 +420,46 @@ mod tests {
                 "emit_event",
                 "enqueue_dispatch",
                 "get_next_dispatch",
-                "complete_dispatch"
+                "complete_dispatch",
+                "cancel_dispatch",
+                "request_acceptance",
+                "cancel_acceptance"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
         let get_next = &tools[2]["inputSchema"]["properties"];
         assert!(get_next.get("seat_id").is_none());
         assert!(get_next.get("target_seat_id").is_none());
+        // request_acceptance likewise takes no seat parameter — identity is
+        // resolved from SEATLOOM_ACTOR_REF server-side (014).
+        let req = tools[5]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!req.contains_key("seat_id"));
+        assert!(!req.contains_key("actor_ref"));
+        // cancel_acceptance is guarded on the same server-side identity.
+        let cancel = tools[6]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!cancel.contains_key("seat_id"));
+        assert!(!cancel.contains_key("actor_ref"));
+        assert!(cancel.contains_key("reason"), "the reason is mandatory");
     }
 
     #[test]
-    fn tool_schema_enumerates_all_12_event_types_and_9_ref_types() {
+    fn tool_schema_enumerates_all_22_event_types_and_11_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 12);
+        assert_eq!(types.len(), 22);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(ref_types.len(), 9);
+        assert_eq!(ref_types.len(), 11);
         assert!(ref_types.iter().any(|v| v == "delegation"));
+        assert!(ref_types.iter().any(|v| v == "acceptance"));
         // ArtifactProduced must NOT appear.
         assert!(!types.iter().any(|v| v == "ArtifactProduced"));
     }

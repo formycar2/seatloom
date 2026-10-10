@@ -1,9 +1,12 @@
 //! P0 step 6 (Nimbus half) — the DB/MCP layer for governed dispatch (G19).
 //!
-//! Three tools, wired onto the merged step-4 crate (extends, never forks):
+//! Five tools, wired onto the merged step-4 crate (extends, never forks):
 //!   - `enqueue_dispatch`   (issuer: Aegis / Lyra)
 //!   - `get_next_dispatch`  (the seat, when idle)
-//!   - `complete_dispatch`  (the seat, when done)
+//!   - `complete_dispatch`  (the seat, when done — or when it must report failure)
+//!   - `cancel_dispatch`    (the issuer, withdrawing non-terminal work)
+//!   - `request_acceptance` (the seat, handing a finished delivery to the D2 gate)
+//!   - `cancel_acceptance` (the seat, pulling back its own pending request)
 //!
 //! Every status transition is an EVENT appended in the **same transaction** as
 //! the `dispatches` row change (contract rule 2), via
@@ -12,6 +15,20 @@
 //! an EXISTENCE query over `dispatch_dependencies` (no FK on `dep_value`, by
 //! Onyx's `012` design). The pull decision, cycle, and stall are computed by the
 //! pure [`crate::scheduler`] core.
+//!
+//! `013` (terminal/failure states) and `014` (the D2 acceptance gate) extend the
+//! layer: `complete_dispatch` gains an `outcome` argument (done | failed, with
+//! the retry budget on the row), `cancel_dispatch` is the issuer-side
+//! withdrawal, and `request_acceptance` creates the `acceptances` row that the
+//! Tauri accept/reject commands later decide. Each new transition has exactly
+//! one event type (Lyra sign-off 2026-10-09), so the projection stays
+//! replayable.
+//!
+//! The D2 follow-on (Aegis dispatch `disp-E8BP2vKlOwMHLomm0eX8J`) closes two
+//! holes in that gate: the merge BASE is now an explicit, validated input
+//! instead of a hardcoded `'track'` that does not exist, and a pending card can
+//! be withdrawn by the seat that requested it (`cancel_acceptance`) instead of
+//! only ever being accepted or rejected.
 //!
 //! # Non-forgeable seat identity (packet §1.1)
 //!
@@ -37,6 +54,15 @@ use crate::scheduler::{
 pub const ACTOR_REF_ENV: &str = "SEATLOOM_ACTOR_REF";
 /// Env var naming the default project when a call omits `project_id`.
 pub const PROJECT_ID_ENV: &str = "SEATLOOM_PROJECT_ID";
+/// Env var naming the integration branch a delivery merges into on accept,
+/// used when `request_acceptance` is called without an explicit `base`.
+///
+/// The base used to be the hardcoded literal `'track'`, which is not a branch
+/// that exists in this repository (`track/infra-foundation` is) — so the merge
+/// only failed at click time. It is now discovered, never invented: the caller
+/// names it, or the operator configures it here, and if neither does the
+/// request is REFUSED rather than guessing a branch name.
+pub const INTEGRATION_BRANCH_ENV: &str = "SEATLOOM_INTEGRATION_BRANCH";
 
 // =============================================================================
 // Tool argument shapes
@@ -57,6 +83,11 @@ pub struct EnqueueArgs {
     pub project_id: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<DepArg>,
+    /// Retry budget for this dispatch (`013`): how many FAILED attempts are
+    /// re-opened to `ready` before the failure becomes terminal. Omitted / `0`
+    /// means the first failure is terminal (the pre-013 behaviour).
+    #[serde(default)]
+    pub max_retries: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +102,62 @@ pub struct DepArg {
 #[derive(Debug, Deserialize)]
 pub struct CompleteArgs {
     pub dispatch_id: String,
+    /// `"done"` (the default, fully backward compatible) or `"failed"`. On
+    /// `"failed"` the retry budget on the row decides between a re-open
+    /// (`SeatDispatchRetried`, in_flight -> ready) and a terminal failure
+    /// (`SeatDispatchFailed`, in_flight -> failed) — `013`.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Optional failure reason; carried verbatim into the retry/failure event
+    /// payload so the ledger records WHY an attempt ended.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `cancel_dispatch` — the issuer withdraws non-terminal work (`013`). Takes no
+/// seat parameter: the issuer identity comes from the server env, and the write
+/// is guarded on `issued_by = <resolved actor_ref>`.
+#[derive(Debug, Deserialize)]
+pub struct CancelArgs {
+    pub id: String,
+}
+
+/// `request_acceptance` — the seat hands a COMPLETED delivery to the D2
+/// acceptance gate (`014`). The seat never merges its own work; this creates the
+/// `acceptances` row the operator later accepts or rejects.
+#[derive(Debug, Deserialize)]
+pub struct RequestAcceptanceArgs {
+    pub dispatch_id: String,
+    /// The delivery branch to be merged on accept, e.g. `packet/<seat>/<id>`.
+    pub branch: String,
+    /// The one-step verification the operator performs: "do A, see B".
+    pub how_to_verify: String,
+    /// The Flux green-verdict reference (a `ReviewVerdictIssued` event or
+    /// artifact id). Must exist before a request is permitted.
+    pub flux_verdict_ref: String,
+    /// The branch the delivery merges into on accept — the integration branch
+    /// the packet branched FROM (here `track/infra-foundation`).
+    ///
+    /// EXPLICIT, not defaulted: the pre-fix code hardcoded the literal
+    /// `'track'`, which is not a branch that exists, so the failure only
+    /// surfaced when the operator clicked Accept. Omitted, the value comes from
+    /// `SEATLOOM_INTEGRATION_BRANCH`; if neither names it the request is
+    /// refused — a branch name is never invented at request time.
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// `cancel_acceptance` — the seat pulls back its OWN pending acceptance request
+/// (D2 follow-on). The delivery is not merged and no rework is created: the card
+/// is closed as `cancelled` with the reason recorded, which is how "this card
+/// was satisfied by other means" is expressed in the ledger instead of by hand.
+#[derive(Debug, Deserialize)]
+pub struct CancelAcceptanceArgs {
+    /// The acceptance to withdraw (`acc-<dispatch-id>`).
+    pub acceptance_id: String,
+    /// Why the card is being pulled back — required, one line, recorded
+    /// verbatim on the row and in the `AcceptanceCancelled` event payload.
+    pub reason: String,
 }
 
 /// A rejection in the dispatch layer, rendered verbatim into the MCP tool error.
@@ -78,9 +165,72 @@ pub struct CompleteArgs {
 pub enum DispatchRejection {
     MissingActorRef,
     MissingProjectId,
-    UnknownDepKind { value: String },
-    PriorityNotI32 { priority: i64 },
-    NotYourInFlight { dispatch_id: String, seat: String },
+    UnknownDepKind {
+        value: String,
+    },
+    PriorityNotI32 {
+        priority: i64,
+    },
+    NotYourInFlight {
+        dispatch_id: String,
+        seat: String,
+    },
+    /// `complete_dispatch`'s `outcome` is neither "done" nor "failed".
+    UnknownOutcome {
+        value: String,
+    },
+    /// `enqueue_dispatch`'s `max_retries` is negative or does not fit in i32 —
+    /// the budget is a hard ceiling, and a nonsense ceiling is rejected, never
+    /// silently clamped (`013`).
+    InvalidMaxRetries {
+        max_retries: i64,
+    },
+    /// `cancel_dispatch`: the dispatch is not a non-terminal row issued by the
+    /// resolved actor (unknown, terminal, or another issuer's).
+    NotCancellable {
+        dispatch_id: String,
+        actor: String,
+    },
+    /// `request_acceptance`: the dispatch is not a COMPLETED dispatch owned by
+    /// the calling seat (`014`).
+    NotCompleted {
+        dispatch_id: String,
+        seat: String,
+    },
+    /// `request_acceptance`: the Flux verdict reference names no existing event
+    /// or artifact — the merge criterion's first half is unproven (`014`).
+    UnknownFluxVerdict {
+        flux_verdict_ref: String,
+    },
+    /// `request_acceptance`: the dispatch already has a pending acceptance.
+    AcceptancePending {
+        dispatch_id: String,
+    },
+    /// `request_acceptance`: neither the `base` argument nor
+    /// `SEATLOOM_INTEGRATION_BRANCH` named the merge base. Refusing beats the
+    /// old behaviour of hardcoding `'track'` — a branch that does not exist in
+    /// this repository, so the merge only failed at click time.
+    MissingBase,
+    /// `request_acceptance`: the resolved base is not a local branch (or the
+    /// repository could not be read). Symmetric with the delivery-branch check
+    /// the merge path performs, moved earlier so the error is a request-time
+    /// refusal instead of a click-time surprise.
+    UnknownBase {
+        base: String,
+        detail: String,
+    },
+    /// `cancel_acceptance`: the acceptance is not a PENDING acceptance of a
+    /// dispatch owned by the calling seat (unknown id, already decided, or
+    /// another seat's). Only the requesting seat may withdraw its own request.
+    AcceptanceNotCancellable {
+        acceptance_id: String,
+        seat: String,
+    },
+    /// `cancel_acceptance`: the reason is empty — a void with no recorded why is
+    /// an unexplained edit to the ledger.
+    EmptyCancelReason {
+        acceptance_id: String,
+    },
     Db(String),
 }
 
@@ -105,6 +255,46 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::NotYourInFlight { dispatch_id, seat } => write!(
                 f,
                 "dispatch rejected: {dispatch_id:?} is not an in_flight dispatch owned by {seat:?}"
+            ),
+            DispatchRejection::UnknownOutcome { value } => write!(
+                f,
+                "complete_dispatch rejected: outcome {value:?} is not one of done|failed"
+            ),
+            DispatchRejection::InvalidMaxRetries { max_retries } => write!(
+                f,
+                "enqueue_dispatch rejected: max_retries {max_retries} is invalid; the retry budget is a hard ceiling and must be a non-negative integer that fits in i32 (013)"
+            ),
+            DispatchRejection::NotCancellable { dispatch_id, actor } => write!(
+                f,
+                "cancel rejected: {dispatch_id:?} is not a non-terminal dispatch issued by {actor:?} (only the issuer may cancel, and only ready|blocked|in_flight)"
+            ),
+            DispatchRejection::NotCompleted { dispatch_id, seat } => write!(
+                f,
+                "request_acceptance rejected: {dispatch_id:?} is not a completed dispatch owned by {seat:?} (013/014: only a done dispatch of the calling seat may be handed to the acceptance gate)"
+            ),
+            DispatchRejection::UnknownFluxVerdict { flux_verdict_ref } => write!(
+                f,
+                "request_acceptance rejected: flux_verdict_ref {flux_verdict_ref:?} names no existing event or artifact — the Flux green verdict is the merge criterion's first half and must exist"
+            ),
+            DispatchRejection::AcceptancePending { dispatch_id } => write!(
+                f,
+                "request_acceptance rejected: {dispatch_id:?} already has a pending acceptance (one at a time; await the operator's decision)"
+            ),
+            DispatchRejection::MissingBase => write!(
+                f,
+                "request_acceptance rejected: no merge base — pass `base` explicitly or set {INTEGRATION_BRANCH_ENV} (the integration branch this delivery branched from). The old hardcoded 'track' is not a branch in this repository, so the base is never invented"
+            ),
+            DispatchRejection::UnknownBase { base, detail } => write!(
+                f,
+                "request_acceptance rejected: merge base {base:?} does not exist ({detail}) — a delivery may only be handed to a base that exists, exactly like the delivery branch"
+            ),
+            DispatchRejection::AcceptanceNotCancellable { acceptance_id, seat } => write!(
+                f,
+                "cancel_acceptance rejected: {acceptance_id:?} is not a pending acceptance of a dispatch owned by {seat:?} (unknown id, already decided, or another seat's — only the requesting seat may withdraw its own request)"
+            ),
+            DispatchRejection::EmptyCancelReason { acceptance_id } => write!(
+                f,
+                "cancel_acceptance rejected: {acceptance_id:?} needs a reason — a void with no recorded why is an unexplained edit to the ledger"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -193,15 +383,25 @@ async fn dep_satisfied(
 }
 
 /// Compute the live status for a row given its stored status and its deps.
-/// `done` and `in_flight` are terminal/active states and are returned as stored;
-/// a non-terminal row is `ready` iff every dependency is satisfied, else `blocked`.
+/// `done`, `failed`, `cancelled` (terminal, `013`) and `in_flight` (active) are
+/// returned as stored; a non-terminal row is `ready` iff every dependency is
+/// satisfied, else `blocked`.
+///
+/// The terminal states MUST sit in the "return as stored" arm: recomputing them
+/// would flip a `failed`/`cancelled` row whose deps happen to all exist back to
+/// `ready` — a silent rewrite of a recorded fact (the exact anti-pattern `013`
+/// added them to prevent). Flagged by Onyx's design §2.1 as a Nimbus-lane
+/// correctness fix; landed here.
 async fn live_status(
     tx: &tokio_postgres::Transaction<'_>,
     stored: DispatchStatus,
     deps: &[Dependency],
 ) -> Result<DispatchStatus, DispatchRejection> {
     match stored {
-        DispatchStatus::Done | DispatchStatus::InFlight => Ok(stored),
+        DispatchStatus::Done
+        | DispatchStatus::InFlight
+        | DispatchStatus::Failed
+        | DispatchStatus::Cancelled => Ok(stored),
         DispatchStatus::Ready | DispatchStatus::Blocked => {
             for d in deps {
                 if !dep_satisfied(tx, d).await? {
@@ -283,6 +483,25 @@ fn lifecycle_event(
     actor_ref: &str,
     project_id: &str,
 ) -> EventDraft {
+    lifecycle_event_with_payload(
+        event_type,
+        dispatch_id,
+        actor_ref,
+        project_id,
+        serde_json::json!({ "dispatch_id": dispatch_id }),
+    )
+}
+
+/// [`lifecycle_event`] with an explicit payload — used where the transition
+/// carries facts the projection cannot hold (a retried row is `ready`, so the
+/// failed attempt's reason/budget lives only in the event; `013`).
+fn lifecycle_event_with_payload(
+    event_type: EventType,
+    dispatch_id: &str,
+    actor_ref: &str,
+    project_id: &str,
+    payload: serde_json::Value,
+) -> EventDraft {
     EventDraft {
         event_id: format!("ev-{}", nanoid::nanoid!()),
         event_type,
@@ -291,7 +510,7 @@ fn lifecycle_event(
         actor_ref: actor_ref.to_string(),
         project_id: project_id.to_string(),
         turn_seq: None,
-        payload: serde_json::json!({ "dispatch_id": dispatch_id }),
+        payload,
         refs: vec![
             ObjectRefDraft::subject(RefType::Dispatch, dispatch_id),
             ObjectRefDraft::new(RefType::Seat, seat_id_of(actor_ref), RefRole::Actor),
@@ -338,6 +557,17 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
         Some(s) if !s.trim().is_empty() => s,
         _ => format!("disp-{}", nanoid::nanoid!()),
     };
+    // Retry budget (`013`): a hard ceiling, never NULL-means-unlimited. 0 (the
+    // default) keeps the pre-013 behaviour — the first failure is terminal.
+    // A negative or oversized budget is REJECTED, never silently clamped: a
+    // silent fallback is exactly the defect the hand-written boundaries avoid.
+    let max_retries: i32 = match args.max_retries {
+        None => 0,
+        Some(m) => i32::try_from(m)
+            .ok()
+            .filter(|m| *m >= 0)
+            .ok_or(DispatchRejection::InvalidMaxRetries { max_retries: m })?,
+    };
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
@@ -353,8 +583,8 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
 
     tx.execute(
         "INSERT INTO dispatches \
-         (id, target_seat_id, issued_by, project_id, title, payload, status, priority, issued_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())",
+         (id, target_seat_id, issued_by, project_id, title, payload, status, priority, issued_at, max_retries) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)",
         &[
             &dispatch_id,
             &args.target_seat_id,
@@ -364,6 +594,7 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
             &args.payload,
             &status.as_str(),
             &priority,
+            &max_retries,
         ],
     )
     .await
@@ -637,44 +868,80 @@ async fn cycle_already_escalated(
 }
 
 // =============================================================================
-// Tool 3 — complete_dispatch
+// Tool 3 — complete_dispatch (done | failed, with the 013 retry budget)
 // =============================================================================
 
-/// Mark the resolved seat's in_flight dispatch `done` + append
-/// `SeatDispatchCompleted` in one transaction. The seat can only complete its
-/// OWN in_flight dispatch (identity from env, status guarded in SQL).
+/// Close the resolved seat's in_flight dispatch and append the matching event in
+/// one transaction. The seat can only complete its OWN in_flight dispatch
+/// (identity from env, status guarded in SQL).
+///
+/// `outcome` (default `"done"`, fully backward compatible):
+///   - `"done"`   -> in_flight -> done + `SeatDispatchCompleted` (unchanged);
+///   - `"failed"` -> the row's retry budget decides (`013`):
+///       * retry_count < max_retries -> in_flight -> ready, retry_count+1,
+///         `SeatDispatchRetried` (the attempt is durably recorded in the ledger
+///         even though the row is pullable again; the one-in-flight slot is
+///         released, so the same or another seat can pull it);
+///       * otherwise -> in_flight -> failed (terminal) + `SeatDispatchFailed`.
+///
+/// Each outcome maps to EXACTLY ONE event type, so the projection stays
+/// replayable (a single "sometimes-retry-sometimes-terminal" event would make
+/// the ledger ambiguous — Onyx's design §2.2).
 pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, DispatchRejection> {
     let identity = resolve_seat()?;
+    let outcome = args.outcome.as_deref().unwrap_or("done").trim();
+    if outcome != "done" && outcome != "failed" {
+        return Err(DispatchRejection::UnknownOutcome {
+            value: outcome.to_string(),
+        });
+    }
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
 
-    // Fetch the project_id for the event, and prove ownership + in_flight state
-    // atomically by the UPDATE's WHERE clause.
-    let project_id: Option<String> = tx
+    // Fetch the project_id + retry budget for the event, and prove ownership +
+    // in_flight state atomically by the SELECT's WHERE clause.
+    let row = tx
         .query_opt(
-            "SELECT project_id FROM dispatches \
-               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
-            &[&args.dispatch_id, &identity.seat_id],
-        )
-        .await
-        .map_err(db)?
-        .map(|r| r.get(0));
-    let Some(project_id) = project_id else {
-        return Err(DispatchRejection::NotYourInFlight {
-            dispatch_id: args.dispatch_id,
-            seat: identity.seat_id,
-        });
-    };
-
-    let n = tx
-        .execute(
-            "UPDATE dispatches SET status = 'done', completed_at = NOW() \
+            "SELECT project_id, retry_count, max_retries FROM dispatches \
                WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
             &[&args.dispatch_id, &identity.seat_id],
         )
         .await
         .map_err(db)?;
+    let Some(row) = row else {
+        return Err(DispatchRejection::NotYourInFlight {
+            dispatch_id: args.dispatch_id,
+            seat: identity.seat_id,
+        });
+    };
+    let project_id: String = row.get(0);
+    let retry_count: i32 = row.get(1);
+    let max_retries: i32 = row.get(2);
+
+    // Decide the transition BEFORE writing it. A retry re-opens to plain
+    // `ready` — re-pullable by any eligible seat, no stickiness (Lyra's ruling
+    // on Onyx's open question: fleet elasticity over preferred-seat notions).
+    let (new_status, event_type, retrying) = decide_completion(outcome, retry_count, max_retries);
+
+    let n = if retrying {
+        tx.execute(
+            "UPDATE dispatches SET status = 'ready', retry_count = retry_count + 1, \
+               started_at = NULL \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
+            &[&args.dispatch_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?
+    } else {
+        tx.execute(
+            "UPDATE dispatches SET status = $3, completed_at = NOW() \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'in_flight'",
+            &[&args.dispatch_id, &identity.seat_id, &new_status],
+        )
+        .await
+        .map_err(db)?
+    };
     if n != 1 {
         return Err(DispatchRejection::NotYourInFlight {
             dispatch_id: args.dispatch_id,
@@ -682,9 +949,134 @@ pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, Dispatc
         });
     }
 
-    let draft = lifecycle_event(
-        EventType::SeatDispatchCompleted,
+    // One event per transition; the payload carries the retry/failure facts the
+    // projection cannot (a retried row is `ready` — the failed attempt lives
+    // only in the ledger).
+    let payload = match outcome {
+        "done" => serde_json::json!({ "dispatch_id": args.dispatch_id }),
+        "failed" if retrying => serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "reason": args.reason,
+            "retry_count": retry_count + 1,
+            "max_retries": max_retries,
+        }),
+        _ => serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "reason": args.reason,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "retries_exhausted": true,
+        }),
+    };
+    let draft = lifecycle_event_with_payload(
+        event_type,
         &args.dispatch_id,
+        &identity.actor_ref,
+        &project_id,
+        payload,
+    );
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    let summary = match outcome {
+        "done" => format!("completed {} for {}", args.dispatch_id, identity.seat_id),
+        "failed" if retrying => format!(
+            "failed {} for {} — retry budget not exhausted (retry {}/{}); re-opened to ready (any eligible seat may pull)",
+            args.dispatch_id,
+            identity.seat_id,
+            retry_count + 1,
+            max_retries
+        ),
+        _ => format!(
+            "failed {} for {} — retries exhausted (retry_count {}, max_retries {}); terminal",
+            args.dispatch_id, identity.seat_id, retry_count, max_retries
+        ),
+    };
+    Ok(summary)
+}
+
+/// The `013` completion decision, pure so it is testable without a database
+/// (the scheduler-core discipline): which transition an
+/// `(outcome, retry_count, max_retries)` triple implies.
+///
+/// Returns `(new_status, event_type, retrying)`. Exactly one event type per
+/// transition — a single "sometimes-retry-sometimes-terminal" event would make
+/// the ledger ambiguous to replay (Onyx's design §2.2). `outcome` is assumed
+/// pre-validated as `"done"` | `"failed"` (the tool rejects anything else).
+fn decide_completion(
+    outcome: &str,
+    retry_count: i32,
+    max_retries: i32,
+) -> (&'static str, EventType, bool) {
+    match outcome {
+        "done" => ("done", EventType::SeatDispatchCompleted, false),
+        // Budget remaining: re-open to plain ready (any eligible seat may pull).
+        "failed" if retry_count < max_retries => ("ready", EventType::SeatDispatchRetried, true),
+        // Budget exhausted (or none was ever granted): terminal failure.
+        _ => ("failed", EventType::SeatDispatchFailed, false),
+    }
+}
+
+// =============================================================================
+// Tool 4 — cancel_dispatch (issuer side, 013)
+// =============================================================================
+
+/// Withdraw a non-terminal dispatch: `ready | blocked | in_flight -> cancelled`
+/// (terminal) + `SeatDispatchCancelled`, in one transaction.
+///
+/// The actor is the ISSUER, not the seat: a seat either does the work (`done`)
+/// or fails it (`failed`); withdrawal is the issuer's act — so the tool is
+/// guarded on `issued_by = <resolved actor_ref>` and lives beside (not inside)
+/// `complete_dispatch`. Cancelling an `in_flight` dispatch releases the
+/// one-in-flight slot: the seat's in-progress work is abandoned, which is the
+/// intended "withdraw the work" semantics.
+pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guarded fetch: the dispatch must exist, be issued by the resolved actor,
+    // and be non-terminal. Terminal rows are immutable (013), so a done/failed/
+    // cancelled dispatch can never be cancelled — recorded facts stand.
+    let project_id: Option<String> = tx
+        .query_opt(
+            "SELECT project_id FROM dispatches \
+               WHERE id = $1 AND issued_by = $2 \
+                 AND status IN ('ready', 'blocked', 'in_flight')",
+            &[&args.id, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?
+        .map(|r| r.get(0));
+    let Some(project_id) = project_id else {
+        return Err(DispatchRejection::NotCancellable {
+            dispatch_id: args.id,
+            actor: identity.actor_ref,
+        });
+    };
+
+    let n = tx
+        .execute(
+            "UPDATE dispatches SET status = 'cancelled', completed_at = NOW() \
+               WHERE id = $1 AND issued_by = $2 \
+                 AND status IN ('ready', 'blocked', 'in_flight')",
+            &[&args.id, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?;
+    if n != 1 {
+        return Err(DispatchRejection::NotCancellable {
+            dispatch_id: args.id,
+            actor: identity.actor_ref,
+        });
+    }
+
+    let draft = lifecycle_event(
+        EventType::SeatDispatchCancelled,
+        &args.id,
         &identity.actor_ref,
         &project_id,
     );
@@ -694,9 +1086,295 @@ pub async fn complete(pool: &Pool, args: CompleteArgs) -> Result<String, Dispatc
 
     tx.commit().await.map_err(db)?;
     Ok(format!(
-        "completed {} for {}",
-        args.dispatch_id, identity.seat_id
+        "cancelled {} (issued by {})",
+        args.id, identity.actor_ref
     ))
+}
+
+// =============================================================================
+// Tool 5 — request_acceptance (seat side, 014 — the D2 acceptance gate)
+// =============================================================================
+
+/// Hand a COMPLETED delivery to the acceptance gate: insert the `acceptances`
+/// row + append `AcceptanceRequested` in ONE transaction (contract rule 2).
+///
+/// The seat NEVER merges its own work (Lyra's binding merge rule): this only
+/// records the request. The operator later accepts (merge into the recorded
+/// base, executed by the Tauri app as the user's agent) or rejects
+/// (auto-enqueued rework).
+///
+/// Guards:
+///   0. the merge base is NAMED (explicit `base` argument, else
+///      `SEATLOOM_INTEGRATION_BRANCH`) and EXISTS as a local branch — the
+///      delivery-branch check the merge path performs, moved to request time so
+///      a wrong base is a refusal here instead of a surprise at click time
+///      (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J, defect 1);
+///   1. the dispatch belongs to the calling seat AND is `done`
+///      (a `SeatDispatchCompleted` landed — the row is its projection);
+///   2. `flux_verdict_ref` names an existing event or artifact (the merge
+///      criterion's first half — Flux green);
+///   3. the dispatch has no PENDING acceptance already (the partial unique
+///      index is the backstop; this is the clean error).
+pub async fn request_acceptance(
+    pool: &Pool,
+    args: RequestAcceptanceArgs,
+) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+
+    // Guard 0 — the merge base is named (never invented) and exists. Checked
+    // BEFORE the transaction: it is a fact about the repository, not about the
+    // dispatch, and a caller that got the base wrong should learn that without
+    // a DB round-trip.
+    let base = resolve_base(args.base.as_deref())?;
+    let repo_root = seatloom_core::git::ops::resolve_repo_root();
+    let base_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !base_exists {
+        return Err(DispatchRejection::UnknownBase {
+            base,
+            detail: format!("no refs/heads/<base> in {}", repo_root.display()),
+        });
+    }
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guard 1 — the caller's own COMPLETED dispatch.
+    let project_id: Option<String> = tx
+        .query_opt(
+            "SELECT project_id FROM dispatches \
+               WHERE id = $1 AND target_seat_id = $2 AND status = 'done'",
+            &[&args.dispatch_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?
+        .map(|r| r.get(0));
+    let Some(project_id) = project_id else {
+        return Err(DispatchRejection::NotCompleted {
+            dispatch_id: args.dispatch_id,
+            seat: identity.seat_id,
+        });
+    };
+
+    // Guard 2 — the Flux verdict referent exists (event OR artifact; the ref is
+    // polymorphic TEXT with no FK, exactly like dispatch_dependencies.dep_value).
+    let verdict_exists: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) \
+                OR EXISTS (SELECT 1 FROM artifacts WHERE id = $1)",
+            &[&args.flux_verdict_ref],
+        )
+        .await
+        .map_err(db)?
+        .get(0);
+    if !verdict_exists {
+        return Err(DispatchRejection::UnknownFluxVerdict {
+            flux_verdict_ref: args.flux_verdict_ref,
+        });
+    }
+
+    // Guard 3 — at most one pending acceptance per dispatch.
+    let pending = tx
+        .query_opt(
+            "SELECT id FROM acceptances WHERE dispatch_id = $1 AND status = 'pending'",
+            &[&args.dispatch_id],
+        )
+        .await
+        .map_err(db)?;
+    if pending.is_some() {
+        return Err(DispatchRejection::AcceptancePending {
+            dispatch_id: args.dispatch_id,
+        });
+    }
+
+    // Deterministic id: one acceptance per dispatch, ever (a rework gets a NEW
+    // dispatch id, so the lineage stays one-to-one and self-documenting).
+    let acceptance_id = format!("acc-{}", args.dispatch_id);
+    tx.execute(
+        "INSERT INTO acceptances \
+         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')",
+        &[
+            &acceptance_id,
+            &args.dispatch_id,
+            &project_id,
+            &args.branch,
+            &base,
+            &args.how_to_verify,
+            &args.flux_verdict_ref,
+        ],
+    )
+    .await
+    .map_err(db)?;
+
+    // Same transaction: the request event. Subject = the acceptance (its own
+    // object, `014`); actor = the seat; context = the dispatch it gates. The
+    // base rides in the payload so the ledger records WHAT the delivery will
+    // merge into, not just that a request happened.
+    let draft = EventDraft {
+        event_id: format!("ev-{}", nanoid::nanoid!()),
+        event_type: EventType::AcceptanceRequested,
+        schema_version: 1,
+        occurred_at: Utc::now(),
+        actor_ref: identity.actor_ref.clone(),
+        project_id,
+        turn_seq: None,
+        payload: serde_json::json!({
+            "dispatch_id": args.dispatch_id,
+            "branch": args.branch,
+            "base": base,
+            "how_to_verify": args.how_to_verify,
+            "flux_verdict_ref": args.flux_verdict_ref,
+        }),
+        refs: vec![
+            ObjectRefDraft::subject(RefType::Acceptance, &acceptance_id),
+            ObjectRefDraft::new(
+                RefType::Seat,
+                seat_id_of(&identity.actor_ref),
+                RefRole::Actor,
+            ),
+            ObjectRefDraft::new(RefType::Dispatch, &args.dispatch_id, RefRole::Context),
+        ],
+    };
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    Ok(format!(
+        "requested acceptance {acceptance_id} for {} (branch {}, base {}, flux verdict {}) — pending operator decision",
+        args.dispatch_id, args.branch, base, args.flux_verdict_ref
+    ))
+}
+
+// =============================================================================
+// Tool 6 — cancel_acceptance (seat side, D2 follow-on — the withdrawal)
+// =============================================================================
+
+/// Withdraw the calling seat's OWN pending acceptance request: `pending ->
+/// cancelled` (terminal) + `AcceptanceCancelled` in ONE transaction.
+///
+/// Why this exists: before it, the only ways out of a pending card were accept
+/// (merge) and reject (auto-enqueue rework). Neither expresses "this card was
+/// satisfied by other means" — the bootstrap-install card
+/// (`acc-disp-me6Nm8e9D6ZRe4fKyVokY`, base recorded as the non-existent
+/// `'track'`, pointing at a branch whose merge would revert merged work) could
+/// only be closed by hand-editing the database. A void is now a first-class,
+/// recorded transition instead.
+///
+/// Authority mirrors `cancel_dispatch` (`013`): only the actor that created the
+/// row may withdraw it, and only while it is non-terminal. Here that is the
+/// seat whose dispatch the acceptance gates — resolved from
+/// `SEATLOOM_ACTOR_REF`, never from a parameter.
+///
+/// A cancel produces NO rework and NO merge: the delivery simply stops being
+/// offered to the operator. The reason is mandatory and is recorded on the row
+/// (`feedback`) and in the event payload.
+pub async fn cancel_acceptance(
+    pool: &Pool,
+    args: CancelAcceptanceArgs,
+) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+    let reason = args.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(DispatchRejection::EmptyCancelReason {
+            acceptance_id: args.acceptance_id,
+        });
+    }
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guarded fetch: the acceptance must be pending AND gate a dispatch owned by
+    // the calling seat. Terminal rows are immutable (014), so an
+    // accepted/rejected/cancelled card can never be re-cancelled — recorded
+    // facts stand.
+    let row = tx
+        .query_opt(
+            "SELECT a.project_id, a.dispatch_id FROM acceptances a \
+               JOIN dispatches d ON d.id = a.dispatch_id \
+              WHERE a.id = $1 AND a.status = 'pending' AND d.target_seat_id = $2",
+            &[&args.acceptance_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?;
+    let Some(row) = row else {
+        return Err(DispatchRejection::AcceptanceNotCancellable {
+            acceptance_id: args.acceptance_id,
+            seat: identity.seat_id,
+        });
+    };
+    let project_id: String = row.get(0);
+    let dispatch_id: String = row.get(1);
+
+    let n = tx
+        .execute(
+            "UPDATE acceptances \
+               SET status = 'cancelled', feedback = $2, decided_by = $3, decided_at = NOW() \
+              WHERE id = $1 AND status = 'pending'",
+            &[&args.acceptance_id, &reason, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?;
+    if n != 1 {
+        return Err(DispatchRejection::AcceptanceNotCancellable {
+            acceptance_id: args.acceptance_id,
+            seat: identity.seat_id,
+        });
+    }
+
+    // Same transaction: the withdrawal event. Actor is the SEAT (it is pulling
+    // back its own hand-over), refs exactly like AcceptanceRequested.
+    let draft = EventDraft {
+        event_id: format!("ev-{}", nanoid::nanoid!()),
+        event_type: EventType::AcceptanceCancelled,
+        schema_version: 1,
+        occurred_at: Utc::now(),
+        actor_ref: identity.actor_ref.clone(),
+        project_id,
+        turn_seq: None,
+        payload: serde_json::json!({
+            "dispatch_id": dispatch_id,
+            "reason": reason,
+        }),
+        refs: vec![
+            ObjectRefDraft::subject(RefType::Acceptance, &args.acceptance_id),
+            ObjectRefDraft::new(
+                RefType::Seat,
+                seat_id_of(&identity.actor_ref),
+                RefRole::Actor,
+            ),
+            ObjectRefDraft::new(RefType::Dispatch, &dispatch_id, RefRole::Context),
+        ],
+    };
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    Ok(format!(
+        "cancelled acceptance {} for {} (reason: {}) — the card is closed; no merge, no rework",
+        args.acceptance_id, dispatch_id, reason
+    ))
+}
+
+/// Resolve the merge base: the explicit argument wins, then
+/// `SEATLOOM_INTEGRATION_BRANCH`. Neither naming it is a REFUSAL — the old
+/// hardcoded `'track'` was a branch that does not exist in this repository, so
+/// the base is discovered or the request does not happen.
+fn resolve_base(explicit: Option<&str>) -> Result<String, DispatchRejection> {
+    if let Some(v) = explicit.filter(|v| !v.trim().is_empty()) {
+        return Ok(v.trim().to_string());
+    }
+    std::env::var(INTEGRATION_BRANCH_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .ok_or(DispatchRejection::MissingBase)
 }
 
 // =============================================================================
@@ -764,6 +1442,14 @@ fn park_daily_log_line(reason: &str, offending_dispatch: &str) {
 #[allow(dead_code)]
 type _KeepDb = Db;
 
+/// Serialises env mutation across this file's tests. The tools read identity
+/// (`SEATLOOM_ACTOR_REF`) and the merge base (`SEATLOOM_INTEGRATION_BRANCH`,
+/// `SEATLOOM_REPO_ROOT`) from the process env, and cargo runs a crate's tests
+/// on parallel threads inside one process — so every test that touches them
+/// holds this lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,6 +1458,309 @@ mod tests {
     fn seat_id_strips_the_actor_prefix() {
         assert_eq!(seat_id_of("seat:seat-nimbus-001"), "seat-nimbus-001");
         assert_eq!(seat_id_of("seat-nimbus-001"), "seat-nimbus-001");
+    }
+
+    /// A pool pointed at a closed port: it exists so a test can prove the code
+    /// REACHED the database (the failure is a connection error, not a guard
+    /// refusal) without needing a database at all.
+    fn dead_pool() -> Pool {
+        use deadpool_postgres::Runtime;
+        use tokio_postgres::NoTls;
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.url = Some("postgresql://seatloom:seatloom@127.0.0.1:1/seatloom_unused".to_string());
+        cfg.create_pool(Some(Runtime::Tokio1), NoTls)
+            .expect("a pool object builds without connecting")
+    }
+
+    /// A scratch git repo whose local `refs/heads` carries `branch` — the shape
+    /// the request-time base guard inspects. Worktrees share `refs/heads`, so a
+    /// branch created here answers exactly like one on the main checkout.
+    fn scratch_repo_with_branch(branch: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "seatloom-base-guard-{}-{}",
+            std::process::id(),
+            branch.replace('/', "_")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "main"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        ok(&["branch", branch]);
+        root
+    }
+
+    /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
+    /// NAMED and EXISTS before a card is recorded. The old code hardcoded
+    /// `'track'` — not a branch in this repository — so the error only appeared
+    /// when the operator clicked Accept. Order pinned here: an unnamed base
+    /// refuses, an absent base refuses, and a base that exists gets PAST the
+    /// guard (the dead pool then proves the database was reached).
+    #[tokio::test]
+    async fn request_acceptance_names_and_verifies_the_base_before_the_db() {
+        let _guard = ENV_LOCK.lock().await;
+        let root = scratch_repo_with_branch("track/infra-foundation");
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        let pool = dead_pool();
+        let args = |base: Option<&str>| RequestAcceptanceArgs {
+            dispatch_id: "disp-base-guard".into(),
+            branch: "packet/nimbus/x".into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: base.map(str::to_string),
+        };
+
+        // 1. Nothing names the base: refuse rather than invent 'track'.
+        let err = request_acceptance(&pool, args(None)).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::MissingBase),
+            "an unnamed base must refuse, never default: {err}"
+        );
+
+        // 2. The base is named but is not a branch: refuse, symmetric with the
+        //    delivery-branch check the merge path performs.
+        let err = request_acceptance(&pool, args(Some("track")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::UnknownBase { .. }),
+            "a non-existent base must refuse at request time: {err}"
+        );
+
+        // 3. The base exists: the guard passes and the DB is reached (the pool
+        //    is dead, so the only possible failure is the connection).
+        let err = request_acceptance(&pool, args(Some("track/infra-foundation")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "an existing base must get past the guard into the DB: {err}"
+        );
+
+        // 4. The env var supplies the base when the argument omits it — the
+        //    discoverable source, so callers need not repeat the branch name.
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track/infra-foundation");
+        let err = request_acceptance(&pool, args(None)).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "the configured integration branch must satisfy the guard: {err}"
+        );
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Defect 2: a void with no recorded why is an unexplained edit to the
+    /// ledger, so the reason is screened BEFORE any row is touched.
+    #[tokio::test]
+    async fn cancel_acceptance_requires_a_reason_before_the_db() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-x".into(),
+                reason: "   ".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::EmptyCancelReason { .. }),
+            "a blank reason must refuse: {err}"
+        );
+    }
+
+    /// The withdrawal args are strict about the shape the tool schema advertises:
+    /// `reason` is required (an absent one is a bad-arguments rejection, not a
+    /// silent empty reason).
+    #[test]
+    fn cancel_acceptance_args_require_the_reason() {
+        let ok: CancelAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "acceptance_id": "acc-disp-x",
+            "reason": "already landed via the bootstrap install"
+        }))
+        .unwrap();
+        assert_eq!(ok.acceptance_id, "acc-disp-x");
+        assert!(!ok.reason.is_empty());
+        let missing: Result<CancelAcceptanceArgs, _> = serde_json::from_value(serde_json::json!({
+            "acceptance_id": "acc-disp-x"
+        }));
+        assert!(missing.is_err(), "reason is required");
+    }
+
+    /// The resolution order for the merge base, pinned directly: the explicit
+    /// argument wins, the env var is the discoverable fallback, and silence is a
+    /// refusal. A blank/whitespace value is treated as absent, never as a
+    /// branch name.
+    #[test]
+    fn resolve_base_prefers_the_argument_then_the_env_and_never_invents() {
+        // A sync test: `blocking_lock` (an async-aware lock would deadlock a
+        // plain #[test] that tried to await it).
+        let _guard = ENV_LOCK.blocking_lock();
+        let had = std::env::var_os(INTEGRATION_BRANCH_ENV);
+
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track/infra-foundation");
+        assert_eq!(
+            resolve_base(Some("track/other")).unwrap(),
+            "track/other",
+            "the explicit argument wins over the env var"
+        );
+        assert_eq!(
+            resolve_base(None).unwrap(),
+            "track/infra-foundation",
+            "the env var is the discoverable source"
+        );
+        assert_eq!(
+            resolve_base(Some("   ")).unwrap(),
+            "track/infra-foundation",
+            "a blank argument is absent, not a branch name"
+        );
+
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        assert!(
+            matches!(resolve_base(None), Err(DispatchRejection::MissingBase)),
+            "nothing naming the base is a refusal — 'track' is never invented"
+        );
+
+        match had {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+    }
+
+    /// `request_acceptance` stays backward compatible on the wire: a caller that
+    /// sends only the four original fields parses (base defaults to None and is
+    /// then resolved from the env or refused).
+    #[test]
+    fn request_acceptance_args_base_is_optional_on_the_wire() {
+        let legacy: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+        }))
+        .unwrap();
+        assert_eq!(legacy.base, None);
+        let explicit: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
+            "base": "track/infra-foundation"
+        }))
+        .unwrap();
+        assert_eq!(explicit.base.as_deref(), Some("track/infra-foundation"));
+    }
+
+    /// `013` backward compatibility: a caller that sends only `dispatch_id`
+    /// (the pre-013 shape, still what every live seat sends) parses with
+    /// `outcome = None` -> `"done"`.
+    #[test]
+    fn complete_args_default_to_the_done_outcome() {
+        let a: CompleteArgs =
+            serde_json::from_value(serde_json::json!({ "dispatch_id": "disp-1" })).unwrap();
+        assert_eq!(a.outcome, None);
+        assert_eq!(a.reason, None);
+        let b: CompleteArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "outcome": "failed", "reason": "flaky dep"
+        }))
+        .unwrap();
+        assert_eq!(b.outcome.as_deref(), Some("failed"));
+        assert_eq!(b.reason.as_deref(), Some("flaky dep"));
+    }
+
+    /// `enqueue_dispatch` without `max_retries` (the pre-013 shape) parses;
+    /// the budget defaults to 0 = first failure terminal.
+    #[test]
+    fn enqueue_args_max_retries_defaults_to_none() {
+        let a: EnqueueArgs = serde_json::from_value(serde_json::json!({
+            "target_seat_id": "seat-nimbus-001", "title": "t", "payload": {}
+        }))
+        .unwrap();
+        assert_eq!(a.max_retries, None);
+    }
+
+    /// The `013` decision table: each (outcome, budget) maps to exactly one
+    /// transition, and the three transitions carry three DISTINCT event types
+    /// (the replayability property Onyx's design §2.2 insists on).
+    #[test]
+    fn decide_completion_maps_each_outcome_to_exactly_one_transition() {
+        // done is unchanged and never a retry.
+        assert_eq!(
+            decide_completion("done", 0, 3),
+            ("done", EventType::SeatDispatchCompleted, false)
+        );
+        // failed WITH budget remaining re-opens to plain ready (no stickiness).
+        assert_eq!(
+            decide_completion("failed", 0, 3),
+            ("ready", EventType::SeatDispatchRetried, true)
+        );
+        assert_eq!(
+            decide_completion("failed", 2, 3),
+            ("ready", EventType::SeatDispatchRetried, true)
+        );
+        // budget exhausted, or never granted (max_retries = 0) -> terminal.
+        assert_eq!(
+            decide_completion("failed", 3, 3),
+            ("failed", EventType::SeatDispatchFailed, false)
+        );
+        assert_eq!(
+            decide_completion("failed", 0, 0),
+            ("failed", EventType::SeatDispatchFailed, false)
+        );
+        // Distinct event types across the three transitions.
+        let types = [
+            decide_completion("done", 0, 0).1,
+            decide_completion("failed", 0, 1).1,
+            decide_completion("failed", 1, 1).1,
+        ];
+        assert_eq!(
+            types,
+            [
+                EventType::SeatDispatchCompleted,
+                EventType::SeatDispatchRetried,
+                EventType::SeatDispatchFailed,
+            ]
+        );
+    }
+
+    /// `lifecycle_event_with_payload` carries the explicit payload (the retry
+    /// facts a `ready` row cannot hold) while keeping the one-subject shape.
+    #[test]
+    fn lifecycle_event_with_payload_keeps_one_subject_and_carries_the_payload() {
+        let d = lifecycle_event_with_payload(
+            EventType::SeatDispatchRetried,
+            "disp-1",
+            "seat:seat-nimbus-001",
+            "proj",
+            serde_json::json!({ "retry_count": 1, "max_retries": 3 }),
+        );
+        assert_eq!(d.event_type, EventType::SeatDispatchRetried);
+        assert_eq!(d.payload["retry_count"], 1);
+        assert_eq!(
+            d.refs.iter().filter(|r| r.role == RefRole::Subject).count(),
+            1
+        );
     }
 
     #[test]
@@ -809,6 +1798,600 @@ mod tests {
         assert_eq!(
             d.refs.iter().filter(|r| r.role == RefRole::Subject).count(),
             1
+        );
+    }
+}
+
+/// D2 / 013 integration tests for the dispatch TOOLS (enqueue / get_next /
+/// complete / cancel / request_acceptance) against a real Postgres. `#[ignore]`
+/// so `cargo test -p seatloom-mcp-emit` passes without a DB; they REFUSE the
+/// live `seatloom` database. The tools resolve identity from env, so these are
+/// env-serialised — run SINGLE-THREADED against a scratch DB:
+///
+///   DATABASE_URL=postgresql://seatloom:seatloom@localhost:5432/seatloom_d2_nimbus \
+///     cargo test -p seatloom-mcp-emit -- --ignored --test-threads=1
+#[cfg(test)]
+mod db_itests {
+    use super::*;
+    use deadpool_postgres::Pool;
+    use tokio_postgres::NoTls;
+
+    const SEAT: &str = "seat:seat-nimbus-001";
+    const SEAT_ID: &str = "seat-nimbus-001";
+
+    async fn scratch_pool() -> Option<Pool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let dbname = url.rsplit('/').next().unwrap_or("");
+        if dbname == "seatloom" || dbname.starts_with("seatloom?") {
+            eprintln!("REFUSING live `seatloom` DB — set DATABASE_URL to a scratch DB");
+            return None;
+        }
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.url = Some(url);
+        let pool = cfg
+            .create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls)
+            .ok()?;
+        let c = pool.get().await.ok()?;
+        // Require 013 (retry_count) + 014 (acceptances); else skip.
+        let ready: bool = c
+            .query_one(
+                "SELECT to_regclass('public.acceptances') IS NOT NULL \
+                    AND EXISTS (SELECT 1 FROM information_schema.columns \
+                                 WHERE table_name='dispatches' AND column_name='retry_count')",
+                &[],
+            )
+            .await
+            .ok()?
+            .get(0);
+        ready.then_some(pool)
+    }
+
+    fn as_seat() {
+        std::env::set_var(ACTOR_REF_ENV, SEAT);
+        std::env::set_var(PROJECT_ID_ENV, "seatloom_itest");
+    }
+    fn as_actor(actor: &str) {
+        std::env::set_var(ACTOR_REF_ENV, actor);
+        std::env::set_var(PROJECT_ID_ENV, "seatloom_itest");
+    }
+
+    /// Point the request-time base guard at a scratch git repo that carries a
+    /// local `track` branch, so the guard is satisfied by a REAL repository
+    /// rather than by whatever the runner happens to have checked out. Returns
+    /// the temp root (the OS reclaims /tmp).
+    fn with_base_repo() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("seatloom-itest-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        root
+    }
+
+    async fn clean(pool: &Pool, project: &str) {
+        let c = pool.get().await.expect("client");
+        for sql in [
+            format!("DELETE FROM acceptances WHERE project_id='{project}'"),
+            format!("DELETE FROM dispatch_dependencies WHERE dispatch_id IN (SELECT id FROM dispatches WHERE project_id='{project}')"),
+            format!("DELETE FROM dispatches WHERE project_id='{project}'"),
+            format!("DELETE FROM event_object_refs WHERE event_id IN (SELECT id FROM canonical_events WHERE project_id='{project}')"),
+            format!("DELETE FROM canonical_events WHERE project_id='{project}'"),
+        ] {
+            c.execute(&sql, &[]).await.expect("clean");
+        }
+        c.execute(
+            "INSERT INTO projects (id,name,created_at,worker_budget_tokens,supervisor_budget_tokens) \
+             VALUES ($1,$1,NOW(),1024,1024) ON CONFLICT (id) DO NOTHING",
+            &[&project],
+        ).await.expect("project");
+    }
+
+    async fn status_of(pool: &Pool, id: &str) -> (String, i32) {
+        let c = pool.get().await.expect("client");
+        let r = c
+            .query_one(
+                "SELECT status, retry_count FROM dispatches WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .expect("row");
+        (r.get(0), r.get(1))
+    }
+
+    async fn dispatch_event_types(pool: &Pool, id: &str) -> Vec<String> {
+        let c = pool.get().await.expect("client");
+        c.query(
+            "SELECT e.event_type FROM canonical_events e \
+               JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
+              WHERE r.ref_type='dispatch' AND r.ref_id=$1 ORDER BY e.occurred_at",
+            &[&id],
+        )
+        .await
+        .expect("events")
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect()
+    }
+
+    fn enqueue_args(id: &str, project: &str, max_retries: i64) -> EnqueueArgs {
+        EnqueueArgs {
+            id: Some(id.to_string()),
+            target_seat_id: SEAT_ID.to_string(),
+            title: "itest".to_string(),
+            payload: serde_json::json!({"packet": "p/x.md"}),
+            priority: Some(5),
+            project_id: Some(project.to_string()),
+            dependencies: vec![],
+            max_retries: Some(max_retries),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn complete_failed_retries_within_budget_then_fails_terminally() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+
+        enqueue(&pool, enqueue_args("disp-it-retry", project, 1))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap(); // -> in_flight
+                                                              // Within budget -> ready + retry_count+1 + SeatDispatchRetried.
+        let msg = complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-retry".into(),
+                outcome: Some("failed".into()),
+                reason: Some("flaky".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(msg.contains("re-opened to ready"), "{msg}");
+        assert_eq!(status_of(&pool, "disp-it-retry").await, ("ready".into(), 1));
+
+        // Pull again, exhaust the budget -> failed (terminal) + SeatDispatchFailed.
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-retry".into(),
+                outcome: Some("failed".into()),
+                reason: Some("still flaky".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status_of(&pool, "disp-it-retry").await,
+            ("failed".into(), 1)
+        );
+        assert_eq!(
+            dispatch_event_types(&pool, "disp-it-retry").await,
+            vec![
+                "SeatDispatchIssued",
+                "SeatDispatchDelivered",
+                "SeatDispatchRetried",
+                "SeatDispatchDelivered",
+                "SeatDispatchFailed"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn complete_failed_with_default_budget_fails_on_first_failure() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+        enqueue(&pool, enqueue_args("disp-it-nobudget", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-nobudget".into(),
+                outcome: Some("failed".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status_of(&pool, "disp-it-nobudget").await,
+            ("failed".into(), 0)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn cancel_is_issuer_only_and_releases_the_in_flight_slot() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+
+        // Issued by the operator; pulled in_flight by the seat.
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-cancel", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap(); // in_flight (holds the slot)
+
+        // A non-issuer (the seat) cannot cancel.
+        let err = cancel(
+            &pool,
+            CancelArgs {
+                id: "disp-it-cancel".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::NotCancellable { .. }),
+            "{err}"
+        );
+
+        // The issuer can; it releases the slot and records SeatDispatchCancelled.
+        as_actor("human:supervisor");
+        cancel(
+            &pool,
+            CancelArgs {
+                id: "disp-it-cancel".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status_of(&pool, "disp-it-cancel").await.0, "cancelled");
+        assert!(dispatch_event_types(&pool, "disp-it-cancel")
+            .await
+            .contains(&"SeatDispatchCancelled".to_string()));
+
+        // Slot released: the seat can now hold a fresh in_flight.
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-after", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(msg.contains("delivered disp-it-after"), "{msg}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn request_acceptance_guards_then_happy_path_and_rework_pullable() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+
+        // A verdict event the request can reference.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-req", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+
+        // Guard: not completed yet (still ready, not pulled).
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "b".into(),
+                how_to_verify: "h".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::NotCompleted { .. }),
+            "{err}"
+        );
+
+        // Complete it, then the happy path creates the acceptance + event.
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-req".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ok = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(ok.contains("acc-disp-it-req"), "{ok}");
+
+        // Guard: a second request while pending is refused.
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-req".into(),
+                branch: "b".into(),
+                how_to_verify: "h".into(),
+                flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptancePending { .. }),
+            "{err}"
+        );
+
+        // The acceptance row + AcceptanceRequested landed.
+        let c = pool.get().await.unwrap();
+        let st: String = c
+            .query_one(
+                "SELECT status FROM acceptances WHERE id='acc-disp-it-req'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(st, "pending");
+
+        // The recorded base is the one the caller named (NOT the old hardcoded
+        // 'track' default), and the ledger event carries it too.
+        let row = c
+            .query_one(
+                "SELECT a.base, \
+                        (SELECT e.payload FROM canonical_events e \
+                           JOIN event_object_refs r ON r.event_id = e.id \
+                            AND r.role = 'subject' AND r.ref_type = 'acceptance' \
+                          WHERE r.ref_id = a.id) \
+                   FROM acceptances a WHERE a.id = 'acc-disp-it-req'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let recorded_base: String = row.get(0);
+        let payload: serde_json::Value = row.get(1);
+        assert_eq!(recorded_base, "track");
+        assert_eq!(payload["base"], "track", "the event records the merge base");
+
+        // A rework dispatch (as the reject path would enqueue) is pullable.
+        as_actor("human:supervisor");
+        enqueue(&pool, EnqueueArgs {
+            id: Some("disp-it-rework".into()), target_seat_id: SEAT_ID.into(),
+            title: "打回重做:itest".into(),
+            payload: serde_json::json!({"rework_of":"disp-it-req","feedback":"redo","branch":"packet/nimbus/x"}),
+            priority: Some(15), project_id: Some(project.into()), dependencies: vec![], max_retries: Some(0),
+        }).await.unwrap();
+        as_seat();
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(
+            msg.contains("delivered disp-it-rework"),
+            "rework must be pullable: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn live_status_returns_terminal_rows_as_stored_never_recomputed_to_ready() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+
+        // A failed (terminal) dispatch with NO unmet deps: a naive recompute
+        // would read it ready. It must stay failed and never be delivered.
+        enqueue(&pool, enqueue_args("disp-it-term", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-term".into(),
+                outcome: Some("failed".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
+
+        // Nothing is pullable (the terminal row is not recomputed to ready).
+        let msg = get_next(&pool, Some(project.into())).await.unwrap();
+        assert!(
+            msg.contains("nothing ready"),
+            "terminal row must not be delivered: {msg}"
+        );
+        assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
+    }
+
+    /// Defect 2 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): a pending card can
+    /// be withdrawn by the seat that requested it, so "this card was satisfied
+    /// by other means" is a RECORDED transition instead of a hand-edited row.
+    /// No merge, no rework; the row and the ledger agree, and a second
+    /// withdrawal is refused because cancelled is terminal.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-016 (scratch DB); run --test-threads=1"]
+    async fn cancel_acceptance_withdraws_own_pending_card_and_is_terminal() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-c','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-cancel", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-cancel".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-cancel".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict-c".into(),
+                base: Some("track".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The seat withdraws its own pending card.
+        let msg = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "already landed via the bootstrap install".into(),
+            },
+        )
+        .await
+        .expect("the requesting seat may withdraw its own card");
+        assert!(
+            msg.contains("cancelled acceptance acc-disp-it-cancel"),
+            "{msg}"
+        );
+
+        // The row is terminal, the reason is recorded, and the event landed.
+        let c = pool.get().await.unwrap();
+        let row = c
+            .query_one(
+                "SELECT status, feedback, decided_by FROM acceptances WHERE id='acc-disp-it-cancel'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let status: String = row.get(0);
+        let feedback: Option<String> = row.get(1);
+        let decided_by: Option<String> = row.get(2);
+        assert_eq!(status, "cancelled");
+        assert_eq!(
+            feedback.as_deref(),
+            Some("already landed via the bootstrap install")
+        );
+        assert_eq!(decided_by.as_deref(), Some(SEAT));
+        let events = c
+            .query(
+                "SELECT e.event_type FROM canonical_events e \
+                   JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
+                  WHERE r.ref_type='acceptance' AND r.ref_id='acc-disp-it-cancel' \
+                  ORDER BY e.occurred_at",
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        assert_eq!(events, vec!["AcceptanceRequested", "AcceptanceCancelled"]);
+
+        // Terminal is immutable: a second withdrawal is refused, and nothing is
+        // rewritten. No rework dispatch was created either — a void is not a
+        // reject.
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "again".into(),
+            },
+        )
+        .await
+        .expect_err("a cancelled acceptance is terminal");
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceNotCancellable { .. }),
+            "{err}"
+        );
+        let reworks: i64 = c
+            .query_one(
+                "SELECT count(*) FROM dispatches WHERE payload->>'rework_of' = 'disp-it-cancel'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(reworks, 0, "a void creates no rework");
+
+        // Another seat cannot withdraw it either (authority is the requester).
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-mira-001");
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "not mine".into(),
+            },
+        )
+        .await
+        .expect_err("only the requesting seat may withdraw");
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceNotCancellable { .. }),
+            "{err}"
         );
     }
 }

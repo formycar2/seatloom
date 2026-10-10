@@ -417,7 +417,11 @@ mod tests {
 
     #[test]
     fn missing_actor_ref_is_a_typed_rejection_not_a_default() {
-        // Ensure the env fallback is not set for this assertion.
+        // Ensure the env fallback is not set for this assertion. The lock is
+        // shared crate-wide: these tests mutate the process env, and so do
+        // dispatch.rs's identity/base tests — unsynchronised, one test's
+        // set_var is another test's "not set".
+        let _guard = crate::dispatch::ENV_LOCK.blocking_lock();
         std::env::remove_var(ACTOR_REF_ENV);
         let mut v = base_args();
         v.as_object_mut().unwrap().remove("actor_ref");
@@ -429,6 +433,7 @@ mod tests {
 
     #[test]
     fn missing_project_id_is_a_typed_rejection_not_a_default() {
+        let _guard = crate::dispatch::ENV_LOCK.blocking_lock();
         std::env::remove_var(PROJECT_ID_ENV);
         let mut v = base_args();
         v.as_object_mut().unwrap().remove("project_id");
@@ -450,6 +455,7 @@ mod tests {
 
     #[test]
     fn blank_actor_ref_in_call_falls_through_to_rejection_without_env() {
+        let _guard = crate::dispatch::ENV_LOCK.blocking_lock();
         std::env::remove_var(ACTOR_REF_ENV);
         let mut v = base_args();
         v["actor_ref"] = serde_json::json!("   ");
