@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# seat-launch.sh — (re)launch a SeatLoom seat with a pinned session ID.
+# seat-launch.sh — (re)launch a SeatLoom seat on pi, in its own worktree, with a pinned session ID.
 #
-# Why this exists: every seat writes its structured transcript to
-# ~/.claude/projects/<repo-slug>/<session-uuid>.jsonl, but the filename carries no
-# seat identity and all seats share one project directory. Passing --session-id at
-# launch makes the seat→transcript mapping exact instead of guessed, which is what
-# scripts/seat-status.sh and the future ingestion layer both need.
+# Two reasons this exists:
+#  1. MCP: a seat only reaches the seatloom MCP when pi runs with the seat's worktree
+#     as cwd, because that is where its .pi/mcp.json lives. A seat launched elsewhere —
+#     or as Claude Code, which reads .mcp.json rather than .pi/mcp.json — comes up with
+#     NO MCP, cannot call get_next_dispatch, and the dispatch queue stalls silently.
+#  2. Traceability: --session-id makes the seat→transcript mapping exact instead of
+#     guessed, which scripts/seat-status.sh and the ingestion layer both need.
 #
 # Usage:
 #   scripts/seat-launch.sh <seat-session>     relaunch one seat
@@ -18,7 +20,9 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODEL="${SEATLOOM_MODEL:-claude-opus-5[1m]}"
+MODEL="${SEATLOOM_MODEL:-stepplan-anthropic/step-5-preview}"
+PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
+WORKTREES="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
 MAP="$REPO/.seatloom/seat-sessions.tsv"
 FORCE=0
 
@@ -45,6 +49,22 @@ launch_seat() {
 
   uuid=$(python3 -c 'import uuid;print(uuid.uuid4())')
 
+  # Each seat runs from ITS OWN worktree, because that is where its .pi/mcp.json
+  # lives — pi picks up the project-level MCP config from the cwd. Launching from
+  # the shared checkout (or as Claude Code, which reads .mcp.json, not .pi/mcp.json)
+  # leaves the seat with NO seatloom MCP: it cannot call get_next_dispatch and the
+  # queue silently stalls. Observed 2026-10-10 after a reboot recreated the seat
+  # sessions as Claude Code — every seat reported "No MCP servers configured".
+  local wt seatname
+  seatname=$(printf '%s' "${seat%%-*}" | tr '[:upper:]' '[:lower:]')
+  wt="$WORKTREES/$seatname"
+  if [ ! -d "$wt" ]; then
+    echo "  $seat: no worktree at $wt — falling back to $REPO (MCP may be absent)"
+    wt="$REPO"
+  elif [ ! -f "$wt/.pi/mcp.json" ]; then
+    echo "  $seat: WARNING $wt has no .pi/mcp.json — seat will have no seatloom MCP"
+  fi
+
   # Stop the current agent, leave the shell and the tmux session intact.
   local pane child
   pane=$(tmux display-message -p -t "$seat" '#{pane_pid}')
@@ -52,11 +72,21 @@ launch_seat() {
   [ -n "$child" ] && { kill "$child" 2>/dev/null; sleep 3; }
 
   tmux resize-window -t "$seat" -x 200 -y 50 2>/dev/null
+  # Bail out of any leftover TUI prompt (pi trust dialog, a half-finished credential
+  # entry) before typing a shell command, or the command lands in that prompt's text
+  # field instead of the shell. Observed 2026-10-10: a reboot left one seat sitting in
+  # pi's "Enter API Key" dialog.
+  tmux send-keys -t "$seat" Escape 2>/dev/null; sleep 0.3
+  tmux send-keys -t "$seat" C-c 2>/dev/null; sleep 0.5
+  tmux send-keys -t "$seat" C-u 2>/dev/null; sleep 0.3
+  # --approve trusts project-local files for the run, which is what lets pi load this
+  # worktree's .pi/mcp.json. Without it pi stops on an interactive "Trust project
+  # folder?" dialog and the seat never reaches the MCP — i.e. the queue stalls.
   tmux send-keys -t "$seat" \
-    "cd $REPO && stepcode claude --model \"$MODEL\" --session-id $uuid" Enter
+    "cd $wt && $PI --approve --model \"$MODEL\" --session-id $uuid" Enter
 
   printf '%s\t%s\t%s\t%s\n' "$seat" "$uuid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODEL" >> "$MAP"
-  echo "  $seat: launched, session $uuid"
+  echo "  $seat: launched on pi in $wt, session $uuid"
 }
 
 case "${1:---help}" in

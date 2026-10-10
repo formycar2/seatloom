@@ -138,6 +138,61 @@ export interface DispatchDto {
   deps: DispatchDependencyDto[];
 }
 
+// ── D2 acceptance loop ──────────────────────────────────────────────────────
+// The half of the D2 milestone that closes a delivery inside the product: a
+// dispatched, delivered, Flux-verified branch becomes an acceptance card the
+// user decides on — 接受 merges it, 打回 re-dispatches the seat.
+//
+// Nimbus owns the Rust side (`cmd_list_acceptances` / `cmd_accept_delivery` /
+// `cmd_reject_delivery` and the backing schema); this is the TypeScript mirror
+// of the agreed card shape. Field names follow the house convention — camelCase,
+// because the backend serialises with `rename_all = "camelCase"` (see the header
+// of this file). `ui/src/lib/acceptance.ts` normalises the other spelling too,
+// because the lane that commissioned this UI spelled the same fields snake_case
+// and the contract cannot be read off Nimbus's code until his commands land.
+
+/** Flux's technical verdict, carried on the card it was made about. */
+export interface FluxVerdictDto {
+  refId: string;
+  verdict: string; // 'pass' | 'fail' | 'error' | …
+  occurredAt: string;
+}
+
+export interface AcceptanceCardDto {
+  id: string;
+  dispatchId: string;
+  dispatchTitle: string;
+  seatId: string;
+  branch: string;
+  base: string;
+  /**
+   * The single "do A, see B" sentence the acceptance is decided on. Rendered
+   * prominently: it is the acceptance criterion, not a description.
+   */
+  howToVerify: string;
+  fluxVerdict: FluxVerdictDto;
+  /** 'awaiting_acceptance' | 'accepted' | 'rejected' | … */
+  status: string;
+  createdAt: string;
+  /** Set by cmd_accept_delivery — the merge that closed the loop. */
+  mergeCommit?: string | null;
+  /** Set by cmd_reject_delivery — the operator's one-line reason. */
+  feedback?: string | null;
+  /** Set by cmd_reject_delivery — the rework dispatch the rejection created. */
+  reworkDispatchId?: string | null;
+}
+
+/**
+ * What cmd_accept_delivery / cmd_reject_delivery hand back: the card as it
+ * stands after the decision, so the UI can show the closed-loop result
+ * (`mergeCommit`) or the rework it spawned (`reworkDispatchId`) without a
+ * second round-trip.
+ *
+ * A merge that cannot be applied (conflict) is a REJECTED promise carrying the
+ * verbatim git output — never a card with the conflict swallowed.
+ */
+export type AcceptanceDecisionDto = AcceptanceCardDto;
+
 // ---------------------------------------------------------------------------
 // Acceptance card lineage (acceptance-lineage milestone, Lane B)
 // ---------------------------------------------------------------------------
