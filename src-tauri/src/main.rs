@@ -15,7 +15,9 @@ use state::AppState;
 use std::path::PathBuf;
 
 use commands::{
-    acceptance_cmds::{cmd_accept_delivery, cmd_list_acceptances, cmd_reject_delivery},
+    acceptance_cmds::{
+        cmd_accept_delivery, cmd_get_acceptance_lineage, cmd_list_acceptances, cmd_reject_delivery,
+    },
     artifact_cmds::{cmd_get_artifact, cmd_list_artifacts},
     dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches},
     document_cmds::{
@@ -153,6 +155,7 @@ fn main() {
             cmd_list_acceptances,
             cmd_accept_delivery,
             cmd_reject_delivery,
+            cmd_get_acceptance_lineage,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

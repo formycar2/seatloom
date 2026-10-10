@@ -42,7 +42,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -94,11 +94,11 @@ async fn handle_request(
     }
 }
 
-/// `tools/call` dispatch. Seven tools: `emit_event` (step 4) and the six
-/// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on). Any other
-/// name is a tool error. A rejection is a tool error with `isError: true`,
-/// carrying the typed message verbatim — never a transport error, and never a
-/// partial write.
+/// `tools/call` dispatch. Eight tools: `emit_event` (step 4), the six
+/// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on) and one pure
+/// READ (`get_acceptance_lineage`, acceptance-lineage Lane B). Any other name is
+/// a tool error. A rejection is a tool error with `isError: true`, carrying the
+/// typed message verbatim — never a transport error, and never a partial write.
 async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -110,10 +110,11 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "cancel_dispatch" => call_cancel(pool, id, arguments).await,
         "request_acceptance" => call_request_acceptance(pool, id, arguments).await,
         "cancel_acceptance" => call_cancel_acceptance(pool, id, arguments).await,
+        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage)"),
                 true,
             ),
         ),
@@ -230,6 +231,31 @@ async fn call_request_acceptance(pool: &Pool, id: Value, arguments: Value) -> Va
     };
     match dispatch::request_acceptance(pool, args).await {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The lineage READ. Takes the shared `SeatloomDb` (not the pool) because it
+/// writes nothing — the same read handle `emit_event` uses.
+async fn call_get_acceptance_lineage(
+    db: &seatloom_core::db::SeatloomDb,
+    id: Value,
+    arguments: Value,
+) -> Value {
+    let args: dispatch::GetAcceptanceLineageArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("get_acceptance_lineage rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::get_acceptance_lineage(db, args).await {
+        Ok(json) => success(id, tool_call_result(&json, false)),
         Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }
 }

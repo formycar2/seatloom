@@ -417,6 +417,10 @@ impl From<AcceptanceWithDispatchRow> for AcceptanceCard {
             decided_by: _,
             decided_at: _,
             created_at,
+            // The plan is NOT surfaced on the pending-list card: the 待验收
+            // list is a scan, and the plan is the operator's reading material
+            // on the card's own detail view (the lineage read model).
+            acceptance_plan: _,
         } = acceptance;
         Self {
             id,
@@ -436,6 +440,210 @@ impl From<AcceptanceWithDispatchRow> for AcceptanceCard {
             merge_commit,
             feedback,
             rework_dispatch_id,
+        }
+    }
+}
+
+// =============================================================================
+// Acceptance lineage (acceptance-lineage milestone, Lane B) — the read model
+// =============================================================================
+
+/// One acceptance card's full lineage, as the UI renders it. The seven blocks
+/// are the value-domain contract's §3, in the operator's reading order; the
+/// camelCase wire shape is produced here, ONCE, from the core assembler's
+/// already-camelCase structs (the boundary normalises, it does not re-shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDto {
+    pub acceptance: AcceptanceLineageCardDto,
+    pub dispatch: AcceptanceLineageDispatchDto,
+    pub events: Vec<AcceptanceLineageEventDto>,
+    pub flux_verdict: Option<AcceptanceLineageVerdictDto>,
+    pub products: Vec<AcceptanceLineageProductDto>,
+    pub dependencies: Vec<AcceptanceLineageDependencyDto>,
+    pub rework: Option<AcceptanceLineageDispatchDto>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineage> for AcceptanceLineageDto {
+    fn from(l: seatloom_core::db::lineage::AcceptanceLineage) -> Self {
+        Self {
+            acceptance: l.acceptance.into(),
+            dispatch: l.dispatch.into(),
+            events: l.events.into_iter().map(Into::into).collect(),
+            flux_verdict: l.flux_verdict.map(Into::into),
+            products: l.products.into_iter().map(Into::into).collect(),
+            dependencies: l.dependencies.into_iter().map(Into::into).collect(),
+            rework: l.rework.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageCardDto {
+    pub id: String,
+    pub dispatch_id: String,
+    pub project_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    /// The structured plan (016). `None` = the legacy row has no plan yet.
+    pub acceptance_plan: Option<serde_json::Value>,
+    pub flux_verdict_ref: String,
+    pub status: String,
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+    pub merge_commit: Option<String>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub created_at: String,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageCard> for AcceptanceLineageCardDto {
+    fn from(c: seatloom_core::db::lineage::AcceptanceLineageCard) -> Self {
+        Self {
+            id: c.id,
+            dispatch_id: c.dispatch_id,
+            project_id: c.project_id,
+            branch: c.branch,
+            base: c.base,
+            how_to_verify: c.how_to_verify,
+            acceptance_plan: c.acceptance_plan,
+            flux_verdict_ref: c.flux_verdict_ref,
+            status: c.status,
+            feedback: c.feedback,
+            rework_dispatch_id: c.rework_dispatch_id,
+            merge_commit: c.merge_commit,
+            decided_by: c.decided_by,
+            decided_at: iso_opt(c.decided_at),
+            created_at: iso(c.created_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDispatchDto {
+    pub id: String,
+    pub title: String,
+    pub issued_by: String,
+    pub target_seat_id: String,
+    pub priority: i32,
+    pub status: String,
+    pub issued_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    /// The original task statement (packet path / instructions), verbatim.
+    pub payload: serde_json::Value,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageDispatch> for AcceptanceLineageDispatchDto {
+    fn from(d: seatloom_core::db::lineage::AcceptanceLineageDispatch) -> Self {
+        Self {
+            id: d.id,
+            title: d.title,
+            issued_by: d.issued_by,
+            target_seat_id: d.target_seat_id,
+            priority: d.priority,
+            status: d.status,
+            issued_at: iso(d.issued_at),
+            started_at: iso_opt(d.started_at),
+            completed_at: iso_opt(d.completed_at),
+            payload: d.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageEventDto {
+    pub id: String,
+    pub event_type: String,
+    pub occurred_at: String,
+    pub actor_ref: String,
+    pub payload: Option<serde_json::Value>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageEvent> for AcceptanceLineageEventDto {
+    fn from(e: seatloom_core::db::lineage::AcceptanceLineageEvent) -> Self {
+        Self {
+            id: e.id,
+            event_type: e.event_type,
+            occurred_at: iso(e.occurred_at),
+            actor_ref: e.actor_ref,
+            payload: e.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageVerdictDto {
+    pub ref_id: String,
+    pub verdict: Option<String>,
+    pub evidence: Option<String>,
+    pub evidence_detail: Option<String>,
+    pub target_branch: Option<String>,
+    pub lane: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageVerdict> for AcceptanceLineageVerdictDto {
+    fn from(v: seatloom_core::db::lineage::AcceptanceLineageVerdict) -> Self {
+        Self {
+            ref_id: v.ref_id,
+            verdict: v.verdict,
+            evidence: v.evidence,
+            evidence_detail: v.evidence_detail,
+            target_branch: v.target_branch,
+            lane: v.lane,
+            occurred_at: iso_opt(v.occurred_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageProductDto {
+    pub ref_type: String,
+    pub ref_id: String,
+    /// `None` when the referent could not be joined — the id is still carried.
+    pub title: Option<String>,
+    pub path: Option<String>,
+    /// `false` = the referent is not in the database (carried verbatim, never
+    /// guessed at).
+    pub resolved: bool,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageProduct> for AcceptanceLineageProductDto {
+    fn from(p: seatloom_core::db::lineage::AcceptanceLineageProduct) -> Self {
+        Self {
+            ref_type: p.ref_type,
+            ref_id: p.ref_id,
+            title: p.title,
+            path: p.path,
+            resolved: p.resolved,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDependencyDto {
+    pub dep_kind: String,
+    pub dep_value: String,
+    /// The referent's live existence (012: readiness is an existence query).
+    pub exists: bool,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageDependency>
+    for AcceptanceLineageDependencyDto
+{
+    fn from(d: seatloom_core::db::lineage::AcceptanceLineageDependency) -> Self {
+        Self {
+            dep_kind: d.dep_kind,
+            dep_value: d.dep_value,
+            exists: d.exists,
         }
     }
 }

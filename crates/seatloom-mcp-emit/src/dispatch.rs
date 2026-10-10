@@ -7,6 +7,7 @@
 //!   - `cancel_dispatch`    (the issuer, withdrawing non-terminal work)
 //!   - `request_acceptance` (the seat, handing a finished delivery to the D2 gate)
 //!   - `cancel_acceptance` (the seat, pulling back its own pending request)
+//!   - `get_acceptance_lineage` (anyone: the pure-read lineage of one card)
 //!
 //! Every status transition is an EVENT appended in the **same transaction** as
 //! the `dispatches` row change (contract rule 2), via
@@ -40,7 +41,7 @@
 
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use seatloom_core::db::event_domain::{EventType, RefRole, RefType};
@@ -145,6 +146,16 @@ pub struct RequestAcceptanceArgs {
     /// refused — a branch name is never invented at request time.
     #[serde(default)]
     pub base: Option<String>,
+    /// The structured acceptance plan (016, shape v1) — the product-operation
+    /// script the operator follows to verify a user-perceivable result:
+    /// `scenario`, `steps`, `expected` (+ optional `preconditions`).
+    ///
+    /// REQUIRED, and validated BEFORE any DB contact (value-domain contract
+    /// §2, tool layer): a missing, empty or malformed plan is a typed
+    /// rejection, so "no plan -> no card" cannot be bypassed by a caller that
+    /// skips the check. Authored by the PO; immutable after the request, same
+    /// rule as `how_to_verify`.
+    pub acceptance_plan: serde_json::Value,
 }
 
 /// `cancel_acceptance` — the seat pulls back its OWN pending acceptance request
@@ -231,6 +242,21 @@ pub enum DispatchRejection {
     EmptyCancelReason {
         acceptance_id: String,
     },
+    /// `get_acceptance_lineage`: no acceptance carries that id. A read of a
+    /// mistyped id must say so, not render an empty card.
+    AcceptanceNotFound {
+        acceptance_id: String,
+    },
+    /// `request_acceptance`: no acceptance plan was supplied (absent, not an
+    /// object, or the empty object — which the contract states is NOT a plan).
+    MissingAcceptancePlan,
+    /// `request_acceptance`: the plan is an object but does not match shape v1.
+    /// `detail` names the first rule broken, so the caller can fix it without
+    /// guessing (contract §1: unknown keys, empty scenario/steps/expected,
+    /// plan_version != 1, blank action/output/expect, wrong types).
+    InvalidAcceptancePlan {
+        detail: String,
+    },
     Db(String),
 }
 
@@ -295,6 +321,18 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::EmptyCancelReason { acceptance_id } => write!(
                 f,
                 "cancel_acceptance rejected: {acceptance_id:?} needs a reason — a void with no recorded why is an unexplained edit to the ledger"
+            ),
+            DispatchRejection::AcceptanceNotFound { acceptance_id } => write!(
+                f,
+                "get_acceptance_lineage rejected: acceptance {acceptance_id:?} not found"
+            ),
+            DispatchRejection::MissingAcceptancePlan => write!(
+                f,
+                "request_acceptance rejected: no acceptance plan — the card must carry the product-operation script (scenario/steps/expected, shape v1); an empty object is NOT a plan (no plan -> no card)"
+            ),
+            DispatchRejection::InvalidAcceptancePlan { detail } => write!(
+                f,
+                "request_acceptance rejected: the acceptance plan does not match shape v1: {detail}"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -1109,6 +1147,9 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 ///      delivery-branch check the merge path performs, moved to request time so
 ///      a wrong base is a refusal here instead of a surprise at click time
 ///      (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J, defect 1);
+///   0b. the acceptance plan is present and matches shape v1 (016) — a missing,
+///      empty or malformed plan is a typed rejection before any DB contact
+///      (acceptance-lineage milestone, value-domain contract §2);
 ///   1. the dispatch belongs to the calling seat AND is `done`
 ///      (a `SeatDispatchCompleted` landed — the row is its projection);
 ///   2. `flux_verdict_ref` names an existing event or artifact (the merge
@@ -1126,6 +1167,13 @@ pub async fn request_acceptance(
     // dispatch, and a caller that got the base wrong should learn that without
     // a DB round-trip.
     let base = resolve_base(args.base.as_deref())?;
+    // Guard 0b — the acceptance plan (016, shape v1) is present and well-formed,
+    // ALSO before the transaction: no plan -> no card, and a malformed plan is a
+    // typed rejection here rather than a DB CHECK violation later. The DB (016)
+    // only re-checks non-emptiness; this is the shape authority.
+    let plan = validate_acceptance_plan(&args.acceptance_plan)?;
+    let plan_json =
+        serde_json::to_value(&plan).map_err(|e| DispatchRejection::Db(e.to_string()))?;
     let repo_root = seatloom_core::git::ops::resolve_repo_root();
     let base_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &base)
         .await
@@ -1196,8 +1244,9 @@ pub async fn request_acceptance(
     let acceptance_id = format!("acc-{}", args.dispatch_id);
     tx.execute(
         "INSERT INTO acceptances \
-         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')",
+         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, \
+          status, acceptance_plan) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
         &[
             &acceptance_id,
             &args.dispatch_id,
@@ -1206,6 +1255,7 @@ pub async fn request_acceptance(
             &base,
             &args.how_to_verify,
             &args.flux_verdict_ref,
+            &plan_json,
         ],
     )
     .await
@@ -1229,6 +1279,7 @@ pub async fn request_acceptance(
             "base": base,
             "how_to_verify": args.how_to_verify,
             "flux_verdict_ref": args.flux_verdict_ref,
+            "acceptance_plan": plan_json,
         }),
         refs: vec![
             ObjectRefDraft::subject(RefType::Acceptance, &acceptance_id),
@@ -1362,6 +1413,196 @@ pub async fn cancel_acceptance(
     ))
 }
 
+// =============================================================================
+// Tool 7 — get_acceptance_lineage (read only, acceptance-lineage Lane B)
+// =============================================================================
+
+/// Arguments of the lineage read tool. `acceptance_id` only: this is a READ of
+/// an already-recorded card, so no seat identity is resolved and none is
+/// forgeable — the non-forgeable-identity rule governs WRITES (a seat cannot
+/// act as another seat); a read has nothing to act as.
+#[derive(Debug, Deserialize)]
+pub struct GetAcceptanceLineageArgs {
+    pub acceptance_id: String,
+}
+
+/// Assemble one acceptance's lineage: the card, the dispatch it gates (with the
+/// ORIGINAL task statement), the event chain, the Flux verdict and its evidence,
+/// the products, the dependency edges, and the rework dispatch.
+///
+/// Pure read — zero writes, zero events (value-domain contract §3/§6). It exists
+/// so no seat has to `psql` the ledger to answer "what is this card and where
+/// did it come from?", which is exactly what Aegis had to do by hand before.
+/// The assembler is ONE shared function (`seatloom_core::db::lineage`); the
+/// Tauri command `cmd_get_acceptance_lineage` calls the same one, so the two
+/// surfaces cannot drift.
+pub async fn get_acceptance_lineage(
+    db: &seatloom_core::db::SeatloomDb,
+    args: GetAcceptanceLineageArgs,
+) -> Result<String, DispatchRejection> {
+    let lineage = seatloom_core::db::lineage::get_acceptance_lineage(db, &args.acceptance_id)
+        .await
+        .map_err(|e| match e {
+            seatloom_core::db::lineage::LineageError::NotFound { acceptance_id } => {
+                DispatchRejection::AcceptanceNotFound { acceptance_id }
+            }
+            other => DispatchRejection::Db(other.to_string()),
+        })?;
+    // The response is the assembled object itself: the caller asked for the
+    // lineage, so the lineage is the answer — no second, summarised shape that
+    // could drift from what the UI renders.
+    serde_json::to_string_pretty(&lineage).map_err(|e| DispatchRejection::Db(e.to_string()))
+}
+
+// =============================================================================
+// Acceptance plan — shape v1 (value-domain contract §1, Lyra sign-off 2026-10-10)
+// =============================================================================
+
+/// The structured acceptance plan: the product-operation script the operator
+/// follows to verify a user-perceivable result. Shape v1, VERBATIM from the
+/// value-domain contract:
+///
+/// ```text
+/// acceptance_plan JSONB, an object with EXACTLY these keys (unknown key =
+/// typed rejection):
+///   plan_version  INTEGER = 1
+///   scenario      STRING  non-empty   -- what the user is trying to achieve
+///   steps         ARRAY   non-empty   -- each: {action non-empty, input optional}
+///   expected      ARRAY   non-empty   -- each: {output non-empty, expect non-empty}
+///   preconditions ARRAY of STRING, optional (empty allowed)
+/// ```
+///
+/// `{}` is NOT a plan. The plan is authored by the PO at request time and is
+/// immutable afterwards — the same immutability rule as `how_to_verify`, and
+/// there is deliberately no update path.
+///
+/// The struct exists so the validated plan has ONE typed home; the tool layer
+/// validates it BEFORE any DB contact (house discipline: typed errors, never a
+/// DB-error crutch), and the database layer (016) only re-checks non-emptiness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanV1 {
+    pub plan_version: i64,
+    pub scenario: String,
+    pub steps: Vec<AcceptancePlanStep>,
+    pub expected: Vec<AcceptancePlanExpectation>,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
+}
+
+/// One product-operation step: where to click / what to fill / what to say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanStep {
+    pub action: String,
+    #[serde(default)]
+    pub input: Option<String>,
+}
+
+/// One observable output and its pass criterion ("seeing X = pass").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanExpectation {
+    pub output: String,
+    pub expect: String,
+}
+
+/// Validate a plan value against shape v1.
+///
+/// The order of the checks is the contract's order, and each failure names the
+/// rule broken — a caller that gets `plan_version: 2` back is told exactly that,
+/// not "invalid plan". Blank strings are treated as absent everywhere: a step
+/// whose `action` is `"   "` is an empty action, not a step.
+pub fn validate_acceptance_plan(
+    value: &serde_json::Value,
+) -> Result<AcceptancePlanV1, DispatchRejection> {
+    if value.is_null() {
+        return Err(DispatchRejection::MissingAcceptancePlan);
+    }
+    if !value.is_object() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: format!("the plan must be a JSON object, found {}", json_kind(value)),
+        });
+    }
+    if value.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Err(DispatchRejection::MissingAcceptancePlan);
+    }
+    // `deny_unknown_fields` on every struct makes an unknown key a serde error
+    // here, which is exactly the contract's rule.
+    let plan: AcceptancePlanV1 = serde_json::from_value(value.clone()).map_err(|e| {
+        DispatchRejection::InvalidAcceptancePlan {
+            detail: e.to_string(),
+        }
+    })?;
+    if plan.plan_version != 1 {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: format!("plan_version must be 1, found {}", plan.plan_version),
+        });
+    }
+    let scenario = plan.scenario.trim();
+    if scenario.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "scenario must be a non-empty string".to_string(),
+        });
+    }
+    if plan.steps.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "steps must be a non-empty array".to_string(),
+        });
+    }
+    for (i, step) in plan.steps.iter().enumerate() {
+        if step.action.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("steps[{i}].action must be a non-empty string"),
+            });
+        }
+        if let Some(input) = &step.input {
+            if input.trim().is_empty() {
+                return Err(DispatchRejection::InvalidAcceptancePlan {
+                    detail: format!("steps[{i}].input must be a non-empty string when present"),
+                });
+            }
+        }
+    }
+    if plan.expected.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "expected must be a non-empty array".to_string(),
+        });
+    }
+    for (i, exp) in plan.expected.iter().enumerate() {
+        if exp.output.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("expected[{i}].output must be a non-empty string"),
+            });
+        }
+        if exp.expect.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("expected[{i}].expect must be a non-empty string"),
+            });
+        }
+    }
+    for (i, pre) in plan.preconditions.iter().enumerate() {
+        if pre.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("preconditions[{i}] must be a non-empty string when present"),
+            });
+        }
+    }
+    Ok(plan)
+}
+
+/// The JSON kind of a value, for an error that says what it found.
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
 /// Resolve the merge base: the explicit argument wins, then
 /// `SEATLOOM_INTEGRATION_BRANCH`. Neither naming it is a REFUSAL — the old
 /// hardcoded `'track'` was a branch that does not exist in this repository, so
@@ -1450,6 +1691,25 @@ type _KeepDb = Db;
 #[cfg(test)]
 pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// A valid shape-v1 acceptance plan, for tests whose subject is another guard
+/// (base, pending, ownership). The plan's own rules have their own matrix in
+/// `mod tests`. Shared by both test modules, so a plan-shape change cannot
+/// silently break the other guards' fixtures.
+#[cfg(test)]
+pub(crate) fn valid_plan() -> serde_json::Value {
+    serde_json::json!({
+        "plan_version": 1,
+        "scenario": "operator verifies the delivered slice end to end",
+        "steps": [
+            { "action": "open the dispatch page and expand the acceptance card" },
+            { "action": "run the one-step check", "input": "pnpm test" }
+        ],
+        "expected": [
+            { "output": "the suite passes", "expect": "seeing a green run" }
+        ]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1523,6 +1783,7 @@ mod tests {
             how_to_verify: "do A see B".into(),
             flux_verdict_ref: "ev-verdict".into(),
             base: base.map(str::to_string),
+            acceptance_plan: valid_plan(),
         };
 
         // 1. Nothing names the base: refuse rather than invent 'track'.
@@ -1594,6 +1855,119 @@ mod tests {
         );
     }
 
+    /// Contract §1/§2 + packet §5.2: every malformed-plan branch is a TYPED
+    /// rejection naming the rule broken, and a valid plan passes. `{}` and
+    /// `null` are MissingAcceptancePlan (not "an empty plan"); everything else
+    /// is InvalidAcceptancePlan with the first broken rule.
+    #[test]
+    fn acceptance_plan_shape_v1_rejects_every_malformed_branch() {
+        // --- the two "no plan at all" cases
+        for empty in [
+            serde_json::json!({}),
+            serde_json::Value::Null,
+            serde_json::json!("a string is not a plan"),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!(42),
+        ] {
+            let err = validate_acceptance_plan(&empty).expect_err(&format!("must refuse: {empty}"));
+            assert!(
+                matches!(
+                    err,
+                    DispatchRejection::MissingAcceptancePlan
+                        | DispatchRejection::InvalidAcceptancePlan { .. }
+                ),
+                "must be a typed plan rejection, got {err:?}"
+            );
+        }
+        assert!(matches!(
+            validate_acceptance_plan(&serde_json::json!({})).unwrap_err(),
+            DispatchRejection::MissingAcceptancePlan
+        ));
+        assert!(matches!(
+            validate_acceptance_plan(&serde_json::Value::Null).unwrap_err(),
+            DispatchRejection::MissingAcceptancePlan
+        ));
+
+        // --- plan_version
+        let mut p = valid_plan();
+        p["plan_version"] = serde_json::json!(2);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("plan_version must be 1"), "{err}");
+        p = valid_plan();
+        p["plan_version"] = serde_json::json!("1");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(!err.is_empty(), "a string version is refused");
+
+        // --- unknown key (the contract's own rule, enforced by deny_unknown_fields)
+        let mut p = valid_plan();
+        p["surprise"] = serde_json::json!("x");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("surprise"), "the unknown key is named: {err}");
+
+        // --- scenario
+        let mut p = valid_plan();
+        p["scenario"] = serde_json::json!("   ");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("scenario"), "{err}");
+        let mut p = valid_plan();
+        p.as_object_mut().unwrap().remove("scenario");
+        assert!(
+            validate_acceptance_plan(&p).is_err(),
+            "scenario is required"
+        );
+
+        // --- steps
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps must be a non-empty array"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "  " }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps[0].action"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "do it", "input": "" }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps[0].input"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "do it", "extra": 1 }]);
+        assert!(
+            validate_acceptance_plan(&p).is_err(),
+            "an unknown step key is refused"
+        );
+
+        // --- expected
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected must be a non-empty array"), "{err}");
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([{ "output": "", "expect": "x" }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected[0].output"), "{err}");
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([{ "output": "o", "expect": " " }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected[0].expect"), "{err}");
+
+        // --- preconditions: optional, but a blank entry is refused
+        let mut p = valid_plan();
+        p["preconditions"] = serde_json::json!([]);
+        assert!(validate_acceptance_plan(&p).is_ok(), "empty is allowed");
+        let mut p = valid_plan();
+        p["preconditions"] = serde_json::json!(["db up", " "]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("preconditions[1]"), "{err}");
+
+        // --- the happy path returns the typed plan
+        let plan = validate_acceptance_plan(&valid_plan()).expect("a valid plan passes");
+        assert_eq!(plan.plan_version, 1);
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[1].input.as_deref(), Some("pnpm test"));
+        assert_eq!(plan.expected.len(), 1);
+        assert!(plan.preconditions.is_empty());
+    }
+
     /// The withdrawal args are strict about the shape the tool schema advertises:
     /// `reason` is required (an absent one is a bad-arguments rejection, not a
     /// silent empty reason).
@@ -1652,24 +2026,39 @@ mod tests {
         }
     }
 
-    /// `request_acceptance` stays backward compatible on the wire: a caller that
-    /// sends only the four original fields parses (base defaults to None and is
-    /// then resolved from the env or refused).
+    /// `base` stays optional on the wire (the env var can supply it), while
+    /// `acceptance_plan` does NOT: 016 made the plan part of the card, so a call
+    /// without one is a bad-arguments rejection rather than a silently
+    /// plan-less card. This is the wire contract of the two optionality rules
+    /// side by side.
     #[test]
-    fn request_acceptance_args_base_is_optional_on_the_wire() {
+    fn request_acceptance_base_is_optional_but_the_plan_is_not() {
         let legacy: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
             "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
-            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
+            "acceptance_plan": valid_plan()
         }))
         .unwrap();
-        assert_eq!(legacy.base, None);
+        assert_eq!(legacy.base, None, "base stays optional on the wire");
+        assert!(legacy.acceptance_plan.is_object());
+
         let explicit: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
             "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
             "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
-            "base": "track/infra-foundation"
+            "base": "track/infra-foundation",
+            "acceptance_plan": valid_plan()
         }))
         .unwrap();
         assert_eq!(explicit.base.as_deref(), Some("track/infra-foundation"));
+
+        let no_plan: Result<RequestAcceptanceArgs, _> = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+        }));
+        assert!(
+            no_plan.is_err(),
+            "a call without a plan must not parse into a plan-less card"
+        );
     }
 
     /// `013` backward compatibility: a caller that sends only `dispatch_id`
@@ -2115,6 +2504,7 @@ mod db_itests {
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2144,6 +2534,7 @@ mod db_itests {
                 how_to_verify: "do A see B".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2159,6 +2550,7 @@ mod db_itests {
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2252,6 +2644,184 @@ mod db_itests {
         assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
     }
 
+    /// Contract §2 (tool layer) against a real database: a missing or malformed
+    /// plan refuses with a TYPED rejection and writes NOTHING (the event count
+    /// does not move), while a valid plan lands on the row AND in the
+    /// `AcceptanceRequested` payload — the same transaction, one write path.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn request_acceptance_enforces_the_plan_and_lands_it() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-plan','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-plan", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-plan".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let events_before: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+
+        // --- the negative matrix, each refusing BEFORE any write
+        let bad: Vec<(&str, serde_json::Value)> = vec![
+            ("missing", serde_json::json!({})),
+            ("null", serde_json::Value::Null),
+            (
+                "wrong version",
+                serde_json::json!({"plan_version": 2, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "unknown key",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": "e"}],
+                "surprise": 1}),
+            ),
+            (
+                "empty steps",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "empty expected",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": []}),
+            ),
+            (
+                "blank action",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "  "}], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "blank expect",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": " "}]}),
+            ),
+        ];
+        for (label, plan) in bad {
+            let err = request_acceptance(
+                &pool,
+                RequestAcceptanceArgs {
+                    dispatch_id: "disp-it-plan".into(),
+                    branch: "packet/nimbus/x".into(),
+                    how_to_verify: "do A see B".into(),
+                    flux_verdict_ref: "ev-it-verdict-plan".into(),
+                    base: Some("track".into()),
+                    acceptance_plan: plan,
+                },
+            )
+            .await
+            .expect_err(&format!("{label} must refuse"));
+            assert!(
+                matches!(
+                    err,
+                    DispatchRejection::MissingAcceptancePlan
+                        | DispatchRejection::InvalidAcceptancePlan { .. }
+                ),
+                "{label}: expected a typed plan rejection, got {err:?}"
+            );
+        }
+        let events_after_refusals: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            events_before, events_after_refusals,
+            "every refusal writes nothing — the event count must not move"
+        );
+        let cards: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(cards, 0, "no card was created by any refusal");
+
+        // --- a valid plan lands on the row AND in the event payload
+        request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-plan".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict-plan".into(),
+                base: Some("track".into()),
+                acceptance_plan: valid_plan(),
+            },
+        )
+        .await
+        .expect("a valid plan creates the card");
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT a.acceptance_plan, e.payload \
+                   FROM acceptances a \
+                   JOIN canonical_events e ON e.id = ( \
+                         SELECT r.event_id FROM event_object_refs r \
+                          WHERE r.ref_type = 'acceptance' AND r.ref_id = a.id \
+                            AND r.role = 'subject') \
+                  WHERE a.id = 'acc-disp-it-plan'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let row_plan: serde_json::Value = row.get(0);
+        let event_payload: serde_json::Value = row.get(1);
+        assert_eq!(row_plan["scenario"], valid_plan()["scenario"]);
+        assert_eq!(row_plan["steps"][1]["input"], "pnpm test");
+        assert_eq!(
+            event_payload["acceptance_plan"], row_plan,
+            "the event carries the same plan as the row — one transaction"
+        );
+    }
+
     /// Defect 2 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): a pending card can
     /// be withdrawn by the seat that requested it, so "this card was satisfied
     /// by other means" is a RECORDED transition instead of a hand-edited row.
@@ -2299,6 +2869,7 @@ mod db_itests {
                 how_to_verify: "do A see B".into(),
                 flux_verdict_ref: "ev-it-verdict-c".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await

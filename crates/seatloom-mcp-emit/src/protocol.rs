@@ -102,6 +102,7 @@ pub fn tools_list_result() -> Value {
             cancel_dispatch_tool(),
             request_acceptance_tool(),
             cancel_acceptance_tool(),
+            get_acceptance_lineage_tool(),
         ]
     })
 }
@@ -305,18 +306,77 @@ fn request_acceptance_tool() -> Value {
             else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
             hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
             calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
-            or artifact; the dispatch must have no pending acceptance. Identity from SEATLOOM_ACTOR_REF \
-            (never a parameter).",
+            or artifact; the dispatch must have no pending acceptance; a valid acceptance_plan (shape v1) \
+            is REQUIRED — a missing or malformed plan is a typed rejection before any DB contact. \
+            Identity from SEATLOOM_ACTOR_REF (never a parameter).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref"],
+            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref", "acceptance_plan"],
             "properties": {
                 "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
                 "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
                 "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
                 "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
-                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." }
+                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." },
+                "acceptance_plan": {
+                    "type": "object",
+                    "description": "The structured acceptance plan (shape v1, PO-authored, immutable after the request). EXACTLY these keys: plan_version (integer, must be 1); scenario (non-empty string); steps (non-empty array of {action non-empty, input optional}); expected (non-empty array of {output non-empty, expect non-empty}); preconditions (optional array of non-empty strings). An unknown key or an empty object is a typed rejection before any DB contact — no plan, no card.",
+                    "required": ["plan_version", "scenario", "steps", "expected"],
+                    "properties": {
+                        "plan_version": { "type": "integer", "description": "Must be 1." },
+                        "scenario": { "type": "string", "minLength": 1 },
+                        "steps": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["action"],
+                                "properties": {
+                                    "action": { "type": "string", "minLength": 1 },
+                                    "input": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "expected": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["output", "expect"],
+                                "properties": {
+                                    "output": { "type": "string", "minLength": 1 },
+                                    "expect": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// `get_acceptance_lineage` — the pure-read lineage of one acceptance card
+/// (acceptance-lineage milestone, Lane B). No identity parameter: a read of an
+/// already-recorded card has nothing to act as, and the non-forgeable-identity
+/// rule governs writes. One shared assembler with the Tauri command, so the two
+/// surfaces cannot drift.
+fn get_acceptance_lineage_tool() -> Value {
+    json!({
+        "name": "get_acceptance_lineage",
+        "description": "Assemble one acceptance card's lineage (READ ONLY, zero writes): the \
+            card itself, the dispatch it gates (title/issuer/when/original task payload), the full \
+            event chain in occurred_at order, the Flux verdict with its evidence, the artifact/ \
+            document products, the dispatch's dependency edges with each referent's existence, and \
+            the rework dispatch when the card was rejected. Answers 'what is this card and where \
+            did it come from' without psql. An unknown acceptance id is a typed rejection, not an \
+            empty card.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to assemble, acc-<dispatch-id>." }
             }
         }
     })
@@ -410,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_seven_tools() {
+    fn tools_list_advertises_the_eight_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -423,7 +483,8 @@ mod tests {
                 "complete_dispatch",
                 "cancel_dispatch",
                 "request_acceptance",
-                "cancel_acceptance"
+                "cancel_acceptance",
+                "get_acceptance_lineage"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
@@ -444,6 +505,23 @@ mod tests {
         assert!(!cancel.contains_key("seat_id"));
         assert!(!cancel.contains_key("actor_ref"));
         assert!(cancel.contains_key("reason"), "the reason is mandatory");
+        // The lineage READ exposes no identity either — it reads a recorded card.
+        let lineage = tools[7]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!lineage.contains_key("seat_id"));
+        assert!(!lineage.contains_key("actor_ref"));
+        // request_acceptance REQUIRES the plan on the wire (016).
+        let req = &tools[5]["inputSchema"];
+        assert!(
+            req["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "acceptance_plan"),
+            "acceptance_plan is required: {:?}",
+            req["required"]
+        );
     }
 
     #[test]

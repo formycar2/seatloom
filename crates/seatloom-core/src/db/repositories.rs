@@ -11,7 +11,7 @@ use crate::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
     DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
-    HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
+    HandoffRow, ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
     PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
     SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
@@ -470,6 +470,7 @@ impl SeatloomDb {
                 "SELECT a.id, a.dispatch_id, a.project_id, a.branch, a.base, a.how_to_verify, \
                        a.flux_verdict_ref, a.status, a.feedback, a.rework_dispatch_id, \
                        a.merge_commit, a.decided_by, a.decided_at, a.created_at, \
+                       a.acceptance_plan, \
                        d.title, d.target_seat_id, d.priority, d.payload, \
                        CASE WHEN e.id IS NOT NULL THEN e.payload->>'verdict' END, \
                        CASE WHEN e.id IS NOT NULL THEN e.occurred_at END \
@@ -497,6 +498,7 @@ impl SeatloomDb {
                 "SELECT a.id, a.dispatch_id, a.project_id, a.branch, a.base, a.how_to_verify, \
                        a.flux_verdict_ref, a.status, a.feedback, a.rework_dispatch_id, \
                        a.merge_commit, a.decided_by, a.decided_at, a.created_at, \
+                       a.acceptance_plan, \
                        d.title, d.target_seat_id, d.priority, d.payload, \
                        CASE WHEN e.id IS NOT NULL THEN e.payload->>'verdict' END, \
                        CASE WHEN e.id IS NOT NULL THEN e.occurred_at END \
@@ -508,6 +510,170 @@ impl SeatloomDb {
             )
             .await?;
         Ok(row.as_ref().map(row_to_acceptance_with_dispatch))
+    }
+
+    // =========================================================================
+    // Lineage read model (acceptance-lineage milestone, Lane B) — pure reads.
+    // The assembler lives in `db::lineage`; these are the row-level queries it
+    // composes. No writes, no events, no second source of truth.
+    // =========================================================================
+
+    /// One dispatch by id (the lineage's "original task statement").
+    pub async fn get_dispatch(&self, dispatch_id: &str) -> Result<Option<DispatchRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, target_seat_id, issued_by, project_id, title, payload, status, \
+                        priority, issued_at, started_at, completed_at \
+                 FROM dispatches WHERE id = $1",
+                &[&dispatch_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_dispatch))
+    }
+
+    /// One canonical event by id.
+    pub async fn get_event(&self, event_id: &str) -> Result<Option<CanonicalEventRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, project_id \
+                 FROM canonical_events WHERE id = $1",
+                &[&event_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_event))
+    }
+
+    /// The events that name any of `refs` (`(ref_type, ref_id)` pairs, any role)
+    /// or that ARE `extra_event_id`, in `occurred_at` order.
+    ///
+    /// This is the event chain of an object: the dispatch's lifecycle events, the
+    /// acceptance events that name the acceptance, and (via `extra_event_id`) the
+    /// Flux verdict the card points at even when it names no object ref of its
+    /// own. `occurred_at` then `id` for a stable order when timestamps collide.
+    pub async fn list_events_for_refs(
+        &self,
+        refs: &[(&str, &str)],
+        extra_event_id: Option<&str>,
+    ) -> Result<Vec<CanonicalEventRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        // Build the OR list from the pairs (refs are polymorphic TEXT with no FK,
+        // so the join is the only way to walk the chain).
+        let mut sql = String::from(
+            "SELECT DISTINCT e.id, e.event_type, e.occurred_at, e.actor_ref, e.payload, \
+                    e.created_at, e.project_id \
+             FROM canonical_events e",
+        );
+        // Bound before `params` so the borrowed value outlives the parameter
+        // vector (an empty default keeps the shape uniform when there is no
+        // extra id — the branch below only pushes when there is one).
+        let extra_ref: &str = extra_event_id.unwrap_or("");
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+        if !refs.is_empty() {
+            sql.push_str(
+                " JOIN event_object_refs r ON r.event_id = e.id \
+                 AND (",
+            );
+            for (i, (rt, rid)) in refs.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(" OR ");
+                }
+                sql.push_str(&format!(
+                    "(r.ref_type = ${} AND r.ref_id = ${})",
+                    i * 2 + 1,
+                    i * 2 + 2
+                ));
+                params.push(rt);
+                params.push(rid);
+            }
+            sql.push(')');
+        }
+        let extra_index = params.len() + 1;
+        if extra_event_id.is_some() {
+            sql.push_str(if refs.is_empty() { " WHERE " } else { " OR " });
+            sql.push_str(&format!("e.id = ${extra_index}"));
+            params.push(&extra_ref);
+        }
+        sql.push_str(" ORDER BY e.occurred_at, e.id");
+        let rows = client.query(&sql, &params).await?;
+        Ok(rows.iter().map(row_to_event).collect())
+    }
+
+    /// All object refs of the given events (the lineage's product discovery).
+    pub async fn list_object_refs_for_events(
+        &self,
+        event_ids: &[String],
+    ) -> Result<Vec<ObjectRefRow>, DbError> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT event_id, ref_type, ref_id, role FROM event_object_refs \
+                 WHERE event_id = ANY($1) ORDER BY event_id, ref_type, ref_id",
+                &[&event_ids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| ObjectRefRow {
+                event_id: r.get(0),
+                ref_type: r.get(1),
+                ref_id: r.get(2),
+                role: r.get(3),
+            })
+            .collect())
+    }
+
+    /// The title and path of a product referent, joined from `artifacts` or
+    /// `documents`. `None` when the referent cannot be joined — the caller then
+    /// carries the ref value verbatim and says so (`resolved: false`).
+    pub async fn product_title_and_path(
+        &self,
+        ref_type: &str,
+        ref_id: &str,
+    ) -> Result<Option<(Option<String>, Option<String>)>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let sql = match ref_type {
+            "artifact" => "SELECT title, storage_path FROM artifacts WHERE id = $1",
+            "document" => "SELECT title, file_path FROM documents WHERE id = $1",
+            _ => return Ok(None),
+        };
+        let row = client.query_opt(sql, &[&ref_id]).await?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// One dispatch's dependency edges (012).
+    pub async fn list_dispatch_dependencies(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Vec<DispatchDependencyRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT dispatch_id, dep_kind, dep_value FROM dispatch_dependencies \
+                 WHERE dispatch_id = $1",
+                &[&dispatch_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_dispatch_dep).collect())
+    }
+
+    /// Does the referent of a dependency edge exist? Same existence query the
+    /// scheduler uses (no FK on `dep_value`, by 012's design) — the lineage
+    /// shows each edge with its live answer instead of asserting satisfaction.
+    pub async fn referent_exists(&self, dep_kind: &str, dep_value: &str) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let sql = match dep_kind {
+            "event" => "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1)",
+            "artifact" => "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = $1)",
+            "dispatch" => "SELECT EXISTS (SELECT 1 FROM dispatches WHERE id = $1)",
+            _ => "SELECT FALSE",
+        };
+        let row = client.query_one(sql, &[&dep_value]).await?;
+        Ok(row.get(0))
     }
 
     /// Does the referent of a Flux verdict reference exist? The ref is
@@ -636,7 +802,7 @@ impl SeatloomDb {
             .query_one(
                 "SELECT id, dispatch_id, project_id, branch, base, how_to_verify, \
                        flux_verdict_ref, status, feedback, rework_dispatch_id, \
-                       merge_commit, decided_by, decided_at, created_at \
+                       merge_commit, decided_by, decided_at, created_at, acceptance_plan \
                   FROM acceptances WHERE id = $1",
                 &[&acceptance_id],
             )
@@ -1771,18 +1937,21 @@ fn row_to_acceptance(r: &Row) -> AcceptanceRow {
         decided_by: r.get(11),
         decided_at: r.get(12),
         created_at: r.get(13),
+        // 016: the structured acceptance plan. Read as stored — '{}' means "no
+        // plan yet" and the lineage assembler renders that honestly.
+        acceptance_plan: r.get(14),
     }
 }
 
 fn row_to_acceptance_with_dispatch(r: &Row) -> AcceptanceWithDispatchRow {
     AcceptanceWithDispatchRow {
         acceptance: row_to_acceptance(r),
-        dispatch_title: r.get(14),
-        dispatch_seat_id: r.get(15),
-        dispatch_priority: r.get(16),
-        dispatch_payload: r.get(17),
-        flux_verdict: r.get(18),
-        flux_verdict_occurred_at: r.get(19),
+        dispatch_title: r.get(15),
+        dispatch_seat_id: r.get(16),
+        dispatch_priority: r.get(17),
+        dispatch_payload: r.get(18),
+        flux_verdict: r.get(19),
+        flux_verdict_occurred_at: r.get(20),
     }
 }
 

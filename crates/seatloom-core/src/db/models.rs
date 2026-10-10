@@ -455,6 +455,17 @@ pub struct DispatchDependencyRow {
     pub dep_value: String,
 }
 
+/// One row of `event_object_refs` (001): how an event names an object.
+/// `role` was added by 010 and is NOT NULL there; the lineage assembler reads
+/// refs by event id, so the role rides along for callers that need it.
+#[derive(Debug, Clone)]
+pub struct ObjectRefRow {
+    pub event_id: String,
+    pub ref_type: String, // workitem|session|handoff|artifact|document|seat|topic|project|delegation|dispatch|acceptance
+    pub ref_id: String,
+    pub role: String, // 'subject'|'actor'|'context'
+}
+
 /// One acceptance row (schema 014, D2 acceptance gate) — the UI's 待验收 card.
 /// Its own first-class object: the actor is the operator/issuer (not the seat),
 /// and it carries the delivery branch, the one-step verification, the Flux
@@ -469,6 +480,11 @@ pub struct AcceptanceRow {
     pub how_to_verify: String,
     pub flux_verdict_ref: String,
     pub status: String, // 'pending'|'accepted'|'rejected'|'cancelled'
+    /// The structured acceptance plan (016, shape v1). `'{}'::jsonb` is the
+    /// column default and means "no plan" — the legacy pending row is exempt
+    /// from the plan CHECK until Aegis backfills it. Read as-is; the lineage
+    /// assembler decides what `{}` means.
+    pub acceptance_plan: serde_json::Value,
     pub feedback: Option<String>,
     pub rework_dispatch_id: Option<String>,
     pub merge_commit: Option<String>,
