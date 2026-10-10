@@ -70,4 +70,6 @@ PO,6 份方案已全部产出**(shape v1,JSON 均校验合法);② 结构缺陷(
 
 - Commit `3a269e2`(9 文档)。
 - Dispatch:`disp-acclose-onyx` / `disp-acclose-nimbus` / `disp-acclose-mira`(均 ready)。
-- 账本事件:ArtifactCreated(6 方案 + 3 packet 捕获)、SupervisorMessage ×2(017 缺口、topic 接缝)。
+- 账本事件:ArtifactCreated `ev-OitU4iDmkVH7PcoiLQuHI`(6 方案 + 3 packet 捕获);
+  SupervisorMessage `ev-FSwh_QRzFI3MSUfmZMAqL`(017 缺口:阻塞 Aegis 作废旧卡);
+  SupervisorMessage `ev-A1oC-w_c5DdNdho_Wwid4`(topic 创建接缝:归 Phase 2)。
