@@ -101,6 +101,7 @@ pub fn tools_list_result() -> Value {
             complete_dispatch_tool(),
             cancel_dispatch_tool(),
             request_acceptance_tool(),
+            cancel_acceptance_tool(),
         ]
     })
 }
@@ -116,7 +117,7 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 21 PascalCase values.",
+                    "description": "Event type. One of the 22 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
@@ -124,7 +125,8 @@ fn emit_event_tool() -> Value {
                         "SeatDelegationClosed", "SupervisorMessage", "SeatResponse",
                         "SeatDispatchIssued", "SeatDispatchDelivered", "SeatDispatchCompleted",
                         "SeatDispatchFailed", "SeatDispatchRetried", "SeatDispatchCancelled",
-                        "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected"
+                        "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
+                        "AcceptanceCancelled"
                     ]
                 },
                 "payload": {
@@ -298,10 +300,13 @@ fn request_acceptance_tool() -> Value {
         "name": "request_acceptance",
         "description": "Hand a COMPLETED delivery to the D2 acceptance gate (014): insert the \
             acceptances row + append AcceptanceRequested in ONE transaction. The seat NEVER merges its \
-            own work — an operator later accepts (merge into track, via the Tauri command) or rejects \
-            (auto-enqueued rework). Guards: the dispatch must belong to the calling seat and be done; \
-            flux_verdict_ref must name an existing ReviewVerdictIssued event or artifact; the dispatch \
-            must have no pending acceptance. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+            own work — an operator later accepts (merge into the named base, via the Tauri command) or \
+            rejects (auto-enqueued rework). Guards: the merge base must be NAMED (the `base` argument, \
+            else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
+            hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
+            calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
+            or artifact; the dispatch must have no pending acceptance. Identity from SEATLOOM_ACTOR_REF \
+            (never a parameter).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -310,7 +315,34 @@ fn request_acceptance_tool() -> Value {
                 "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
                 "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
                 "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
-                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." }
+                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
+                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." }
+            }
+        }
+    })
+}
+
+/// `cancel_acceptance` — the seat pulls back its OWN pending request. The
+/// acceptance-side mirror of `cancel_dispatch` (013): the actor that created the
+/// row may withdraw it while it is non-terminal, and the reason is mandatory so
+/// the ledger records WHY the card is no longer being offered.
+fn cancel_acceptance_tool() -> Value {
+    json!({
+        "name": "cancel_acceptance",
+        "description": "Withdraw the calling seat's OWN pending acceptance request (D2 follow-on): \
+            pending -> cancelled (terminal) + AcceptanceCancelled in ONE transaction. No merge, no \
+            rework — the card simply stops being offered to the operator, with the reason recorded. \
+            Use it when the card was satisfied by other means (e.g. the work already landed through a \
+            bootstrap install) instead of hand-editing the ledger. Guarded on the acceptance being \
+            pending AND gating a dispatch owned by the resolved SEATLOOM_ACTOR_REF — terminal rows are \
+            immutable, so a decided card can never be re-cancelled.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id", "reason"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to withdraw, acc-<dispatch-id>." },
+                "reason": { "type": "string", "minLength": 1, "description": "One line, recorded verbatim on the row and in the AcceptanceCancelled event payload." }
             }
         }
     })
@@ -378,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_six_tools() {
+    fn tools_list_advertises_the_seven_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -390,7 +422,8 @@ mod tests {
                 "get_next_dispatch",
                 "complete_dispatch",
                 "cancel_dispatch",
-                "request_acceptance"
+                "request_acceptance",
+                "cancel_acceptance"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
@@ -404,15 +437,22 @@ mod tests {
             .expect("properties object");
         assert!(!req.contains_key("seat_id"));
         assert!(!req.contains_key("actor_ref"));
+        // cancel_acceptance is guarded on the same server-side identity.
+        let cancel = tools[6]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!cancel.contains_key("seat_id"));
+        assert!(!cancel.contains_key("actor_ref"));
+        assert!(cancel.contains_key("reason"), "the reason is mandatory");
     }
 
     #[test]
-    fn tool_schema_enumerates_all_21_event_types_and_11_ref_types() {
+    fn tool_schema_enumerates_all_22_event_types_and_11_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 21);
+        assert_eq!(types.len(), 22);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()

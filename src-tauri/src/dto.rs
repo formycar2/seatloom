@@ -379,7 +379,9 @@ pub struct AcceptanceCard {
     pub base: String,
     pub how_to_verify: String,
     pub flux_verdict: FluxVerdictDto,
-    /// 'pending' | 'accepted' | 'rejected' (accepted/rejected are terminal).
+    /// 'pending' | 'accepted' | 'rejected' | 'cancelled' (accepted/rejected/
+    /// cancelled are terminal; a cancelled card was withdrawn by the seat that
+    /// requested it, so it is offered to the operator no more).
     pub status: String,
     pub created_at: String,
     pub merge_commit: Option<String>,

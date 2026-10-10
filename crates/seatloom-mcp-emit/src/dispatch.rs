@@ -6,6 +6,7 @@
 //!   - `complete_dispatch`  (the seat, when done — or when it must report failure)
 //!   - `cancel_dispatch`    (the issuer, withdrawing non-terminal work)
 //!   - `request_acceptance` (the seat, handing a finished delivery to the D2 gate)
+//!   - `cancel_acceptance` (the seat, pulling back its own pending request)
 //!
 //! Every status transition is an EVENT appended in the **same transaction** as
 //! the `dispatches` row change (contract rule 2), via
@@ -22,6 +23,12 @@
 //! Tauri accept/reject commands later decide. Each new transition has exactly
 //! one event type (Lyra sign-off 2026-10-09), so the projection stays
 //! replayable.
+//!
+//! The D2 follow-on (Aegis dispatch `disp-E8BP2vKlOwMHLomm0eX8J`) closes two
+//! holes in that gate: the merge BASE is now an explicit, validated input
+//! instead of a hardcoded `'track'` that does not exist, and a pending card can
+//! be withdrawn by the seat that requested it (`cancel_acceptance`) instead of
+//! only ever being accepted or rejected.
 //!
 //! # Non-forgeable seat identity (packet §1.1)
 //!
@@ -47,6 +54,15 @@ use crate::scheduler::{
 pub const ACTOR_REF_ENV: &str = "SEATLOOM_ACTOR_REF";
 /// Env var naming the default project when a call omits `project_id`.
 pub const PROJECT_ID_ENV: &str = "SEATLOOM_PROJECT_ID";
+/// Env var naming the integration branch a delivery merges into on accept,
+/// used when `request_acceptance` is called without an explicit `base`.
+///
+/// The base used to be the hardcoded literal `'track'`, which is not a branch
+/// that exists in this repository (`track/infra-foundation` is) — so the merge
+/// only failed at click time. It is now discovered, never invented: the caller
+/// names it, or the operator configures it here, and if neither does the
+/// request is REFUSED rather than guessing a branch name.
+pub const INTEGRATION_BRANCH_ENV: &str = "SEATLOOM_INTEGRATION_BRANCH";
 
 // =============================================================================
 // Tool argument shapes
@@ -119,6 +135,29 @@ pub struct RequestAcceptanceArgs {
     /// The Flux green-verdict reference (a `ReviewVerdictIssued` event or
     /// artifact id). Must exist before a request is permitted.
     pub flux_verdict_ref: String,
+    /// The branch the delivery merges into on accept — the integration branch
+    /// the packet branched FROM (here `track/infra-foundation`).
+    ///
+    /// EXPLICIT, not defaulted: the pre-fix code hardcoded the literal
+    /// `'track'`, which is not a branch that exists, so the failure only
+    /// surfaced when the operator clicked Accept. Omitted, the value comes from
+    /// `SEATLOOM_INTEGRATION_BRANCH`; if neither names it the request is
+    /// refused — a branch name is never invented at request time.
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// `cancel_acceptance` — the seat pulls back its OWN pending acceptance request
+/// (D2 follow-on). The delivery is not merged and no rework is created: the card
+/// is closed as `cancelled` with the reason recorded, which is how "this card
+/// was satisfied by other means" is expressed in the ledger instead of by hand.
+#[derive(Debug, Deserialize)]
+pub struct CancelAcceptanceArgs {
+    /// The acceptance to withdraw (`acc-<dispatch-id>`).
+    pub acceptance_id: String,
+    /// Why the card is being pulled back — required, one line, recorded
+    /// verbatim on the row and in the `AcceptanceCancelled` event payload.
+    pub reason: String,
 }
 
 /// A rejection in the dispatch layer, rendered verbatim into the MCP tool error.
@@ -166,6 +205,31 @@ pub enum DispatchRejection {
     /// `request_acceptance`: the dispatch already has a pending acceptance.
     AcceptancePending {
         dispatch_id: String,
+    },
+    /// `request_acceptance`: neither the `base` argument nor
+    /// `SEATLOOM_INTEGRATION_BRANCH` named the merge base. Refusing beats the
+    /// old behaviour of hardcoding `'track'` — a branch that does not exist in
+    /// this repository, so the merge only failed at click time.
+    MissingBase,
+    /// `request_acceptance`: the resolved base is not a local branch (or the
+    /// repository could not be read). Symmetric with the delivery-branch check
+    /// the merge path performs, moved earlier so the error is a request-time
+    /// refusal instead of a click-time surprise.
+    UnknownBase {
+        base: String,
+        detail: String,
+    },
+    /// `cancel_acceptance`: the acceptance is not a PENDING acceptance of a
+    /// dispatch owned by the calling seat (unknown id, already decided, or
+    /// another seat's). Only the requesting seat may withdraw its own request.
+    AcceptanceNotCancellable {
+        acceptance_id: String,
+        seat: String,
+    },
+    /// `cancel_acceptance`: the reason is empty — a void with no recorded why is
+    /// an unexplained edit to the ledger.
+    EmptyCancelReason {
+        acceptance_id: String,
     },
     Db(String),
 }
@@ -215,6 +279,22 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::AcceptancePending { dispatch_id } => write!(
                 f,
                 "request_acceptance rejected: {dispatch_id:?} already has a pending acceptance (one at a time; await the operator's decision)"
+            ),
+            DispatchRejection::MissingBase => write!(
+                f,
+                "request_acceptance rejected: no merge base — pass `base` explicitly or set {INTEGRATION_BRANCH_ENV} (the integration branch this delivery branched from). The old hardcoded 'track' is not a branch in this repository, so the base is never invented"
+            ),
+            DispatchRejection::UnknownBase { base, detail } => write!(
+                f,
+                "request_acceptance rejected: merge base {base:?} does not exist ({detail}) — a delivery may only be handed to a base that exists, exactly like the delivery branch"
+            ),
+            DispatchRejection::AcceptanceNotCancellable { acceptance_id, seat } => write!(
+                f,
+                "cancel_acceptance rejected: {acceptance_id:?} is not a pending acceptance of a dispatch owned by {seat:?} (unknown id, already decided, or another seat's — only the requesting seat may withdraw its own request)"
+            ),
+            DispatchRejection::EmptyCancelReason { acceptance_id } => write!(
+                f,
+                "cancel_acceptance rejected: {acceptance_id:?} needs a reason — a void with no recorded why is an unexplained edit to the ledger"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -1019,10 +1099,16 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 /// row + append `AcceptanceRequested` in ONE transaction (contract rule 2).
 ///
 /// The seat NEVER merges its own work (Lyra's binding merge rule): this only
-/// records the request. The operator later accepts (merge into track, executed
-/// by the Tauri app as the user's agent) or rejects (auto-enqueued rework).
+/// records the request. The operator later accepts (merge into the recorded
+/// base, executed by the Tauri app as the user's agent) or rejects
+/// (auto-enqueued rework).
 ///
-/// Guards, all checked inside the transaction:
+/// Guards:
+///   0. the merge base is NAMED (explicit `base` argument, else
+///      `SEATLOOM_INTEGRATION_BRANCH`) and EXISTS as a local branch — the
+///      delivery-branch check the merge path performs, moved to request time so
+///      a wrong base is a refusal here instead of a surprise at click time
+///      (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J, defect 1);
 ///   1. the dispatch belongs to the calling seat AND is `done`
 ///      (a `SeatDispatchCompleted` landed — the row is its projection);
 ///   2. `flux_verdict_ref` names an existing event or artifact (the merge
@@ -1034,6 +1120,25 @@ pub async fn request_acceptance(
     args: RequestAcceptanceArgs,
 ) -> Result<String, DispatchRejection> {
     let identity = resolve_seat()?;
+
+    // Guard 0 — the merge base is named (never invented) and exists. Checked
+    // BEFORE the transaction: it is a fact about the repository, not about the
+    // dispatch, and a caller that got the base wrong should learn that without
+    // a DB round-trip.
+    let base = resolve_base(args.base.as_deref())?;
+    let repo_root = seatloom_core::git::ops::resolve_repo_root();
+    let base_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !base_exists {
+        return Err(DispatchRejection::UnknownBase {
+            base,
+            detail: format!("no refs/heads/<base> in {}", repo_root.display()),
+        });
+    }
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
@@ -1092,12 +1197,13 @@ pub async fn request_acceptance(
     tx.execute(
         "INSERT INTO acceptances \
          (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) \
-         VALUES ($1, $2, $3, $4, 'track', $5, $6, 'pending')",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')",
         &[
             &acceptance_id,
             &args.dispatch_id,
             &project_id,
             &args.branch,
+            &base,
             &args.how_to_verify,
             &args.flux_verdict_ref,
         ],
@@ -1106,7 +1212,9 @@ pub async fn request_acceptance(
     .map_err(db)?;
 
     // Same transaction: the request event. Subject = the acceptance (its own
-    // object, `014`); actor = the seat; context = the dispatch it gates.
+    // object, `014`); actor = the seat; context = the dispatch it gates. The
+    // base rides in the payload so the ledger records WHAT the delivery will
+    // merge into, not just that a request happened.
     let draft = EventDraft {
         event_id: format!("ev-{}", nanoid::nanoid!()),
         event_type: EventType::AcceptanceRequested,
@@ -1118,6 +1226,7 @@ pub async fn request_acceptance(
         payload: serde_json::json!({
             "dispatch_id": args.dispatch_id,
             "branch": args.branch,
+            "base": base,
             "how_to_verify": args.how_to_verify,
             "flux_verdict_ref": args.flux_verdict_ref,
         }),
@@ -1137,9 +1246,135 @@ pub async fn request_acceptance(
 
     tx.commit().await.map_err(db)?;
     Ok(format!(
-        "requested acceptance {acceptance_id} for {} (branch {}, flux verdict {}) — pending operator decision",
-        args.dispatch_id, args.branch, args.flux_verdict_ref
+        "requested acceptance {acceptance_id} for {} (branch {}, base {}, flux verdict {}) — pending operator decision",
+        args.dispatch_id, args.branch, base, args.flux_verdict_ref
     ))
+}
+
+// =============================================================================
+// Tool 6 — cancel_acceptance (seat side, D2 follow-on — the withdrawal)
+// =============================================================================
+
+/// Withdraw the calling seat's OWN pending acceptance request: `pending ->
+/// cancelled` (terminal) + `AcceptanceCancelled` in ONE transaction.
+///
+/// Why this exists: before it, the only ways out of a pending card were accept
+/// (merge) and reject (auto-enqueue rework). Neither expresses "this card was
+/// satisfied by other means" — the bootstrap-install card
+/// (`acc-disp-me6Nm8e9D6ZRe4fKyVokY`, base recorded as the non-existent
+/// `'track'`, pointing at a branch whose merge would revert merged work) could
+/// only be closed by hand-editing the database. A void is now a first-class,
+/// recorded transition instead.
+///
+/// Authority mirrors `cancel_dispatch` (`013`): only the actor that created the
+/// row may withdraw it, and only while it is non-terminal. Here that is the
+/// seat whose dispatch the acceptance gates — resolved from
+/// `SEATLOOM_ACTOR_REF`, never from a parameter.
+///
+/// A cancel produces NO rework and NO merge: the delivery simply stops being
+/// offered to the operator. The reason is mandatory and is recorded on the row
+/// (`feedback`) and in the event payload.
+pub async fn cancel_acceptance(
+    pool: &Pool,
+    args: CancelAcceptanceArgs,
+) -> Result<String, DispatchRejection> {
+    let identity = resolve_seat()?;
+    let reason = args.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(DispatchRejection::EmptyCancelReason {
+            acceptance_id: args.acceptance_id,
+        });
+    }
+
+    let mut client = pool.get().await.map_err(db)?;
+    let tx = client.transaction().await.map_err(db)?;
+
+    // Guarded fetch: the acceptance must be pending AND gate a dispatch owned by
+    // the calling seat. Terminal rows are immutable (014), so an
+    // accepted/rejected/cancelled card can never be re-cancelled — recorded
+    // facts stand.
+    let row = tx
+        .query_opt(
+            "SELECT a.project_id, a.dispatch_id FROM acceptances a \
+               JOIN dispatches d ON d.id = a.dispatch_id \
+              WHERE a.id = $1 AND a.status = 'pending' AND d.target_seat_id = $2",
+            &[&args.acceptance_id, &identity.seat_id],
+        )
+        .await
+        .map_err(db)?;
+    let Some(row) = row else {
+        return Err(DispatchRejection::AcceptanceNotCancellable {
+            acceptance_id: args.acceptance_id,
+            seat: identity.seat_id,
+        });
+    };
+    let project_id: String = row.get(0);
+    let dispatch_id: String = row.get(1);
+
+    let n = tx
+        .execute(
+            "UPDATE acceptances \
+               SET status = 'cancelled', feedback = $2, decided_by = $3, decided_at = NOW() \
+              WHERE id = $1 AND status = 'pending'",
+            &[&args.acceptance_id, &reason, &identity.actor_ref],
+        )
+        .await
+        .map_err(db)?;
+    if n != 1 {
+        return Err(DispatchRejection::AcceptanceNotCancellable {
+            acceptance_id: args.acceptance_id,
+            seat: identity.seat_id,
+        });
+    }
+
+    // Same transaction: the withdrawal event. Actor is the SEAT (it is pulling
+    // back its own hand-over), refs exactly like AcceptanceRequested.
+    let draft = EventDraft {
+        event_id: format!("ev-{}", nanoid::nanoid!()),
+        event_type: EventType::AcceptanceCancelled,
+        schema_version: 1,
+        occurred_at: Utc::now(),
+        actor_ref: identity.actor_ref.clone(),
+        project_id,
+        turn_seq: None,
+        payload: serde_json::json!({
+            "dispatch_id": dispatch_id,
+            "reason": reason,
+        }),
+        refs: vec![
+            ObjectRefDraft::subject(RefType::Acceptance, &args.acceptance_id),
+            ObjectRefDraft::new(
+                RefType::Seat,
+                seat_id_of(&identity.actor_ref),
+                RefRole::Actor,
+            ),
+            ObjectRefDraft::new(RefType::Dispatch, &dispatch_id, RefRole::Context),
+        ],
+    };
+    append_event_in_tx(&tx, &draft)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+
+    tx.commit().await.map_err(db)?;
+    Ok(format!(
+        "cancelled acceptance {} for {} (reason: {}) — the card is closed; no merge, no rework",
+        args.acceptance_id, dispatch_id, reason
+    ))
+}
+
+/// Resolve the merge base: the explicit argument wins, then
+/// `SEATLOOM_INTEGRATION_BRANCH`. Neither naming it is a REFUSAL — the old
+/// hardcoded `'track'` was a branch that does not exist in this repository, so
+/// the base is discovered or the request does not happen.
+fn resolve_base(explicit: Option<&str>) -> Result<String, DispatchRejection> {
+    if let Some(v) = explicit.filter(|v| !v.trim().is_empty()) {
+        return Ok(v.trim().to_string());
+    }
+    std::env::var(INTEGRATION_BRANCH_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .ok_or(DispatchRejection::MissingBase)
 }
 
 // =============================================================================
@@ -1207,6 +1442,14 @@ fn park_daily_log_line(reason: &str, offending_dispatch: &str) {
 #[allow(dead_code)]
 type _KeepDb = Db;
 
+/// Serialises env mutation across this file's tests. The tools read identity
+/// (`SEATLOOM_ACTOR_REF`) and the merge base (`SEATLOOM_INTEGRATION_BRANCH`,
+/// `SEATLOOM_REPO_ROOT`) from the process env, and cargo runs a crate's tests
+/// on parallel threads inside one process — so every test that touches them
+/// holds this lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1215,6 +1458,218 @@ mod tests {
     fn seat_id_strips_the_actor_prefix() {
         assert_eq!(seat_id_of("seat:seat-nimbus-001"), "seat-nimbus-001");
         assert_eq!(seat_id_of("seat-nimbus-001"), "seat-nimbus-001");
+    }
+
+    /// A pool pointed at a closed port: it exists so a test can prove the code
+    /// REACHED the database (the failure is a connection error, not a guard
+    /// refusal) without needing a database at all.
+    fn dead_pool() -> Pool {
+        use deadpool_postgres::Runtime;
+        use tokio_postgres::NoTls;
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.url = Some("postgresql://seatloom:seatloom@127.0.0.1:1/seatloom_unused".to_string());
+        cfg.create_pool(Some(Runtime::Tokio1), NoTls)
+            .expect("a pool object builds without connecting")
+    }
+
+    /// A scratch git repo whose local `refs/heads` carries `branch` — the shape
+    /// the request-time base guard inspects. Worktrees share `refs/heads`, so a
+    /// branch created here answers exactly like one on the main checkout.
+    fn scratch_repo_with_branch(branch: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "seatloom-base-guard-{}-{}",
+            std::process::id(),
+            branch.replace('/', "_")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "main"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        ok(&["branch", branch]);
+        root
+    }
+
+    /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
+    /// NAMED and EXISTS before a card is recorded. The old code hardcoded
+    /// `'track'` — not a branch in this repository — so the error only appeared
+    /// when the operator clicked Accept. Order pinned here: an unnamed base
+    /// refuses, an absent base refuses, and a base that exists gets PAST the
+    /// guard (the dead pool then proves the database was reached).
+    #[tokio::test]
+    async fn request_acceptance_names_and_verifies_the_base_before_the_db() {
+        let _guard = ENV_LOCK.lock().await;
+        let root = scratch_repo_with_branch("track/infra-foundation");
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        let pool = dead_pool();
+        let args = |base: Option<&str>| RequestAcceptanceArgs {
+            dispatch_id: "disp-base-guard".into(),
+            branch: "packet/nimbus/x".into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: base.map(str::to_string),
+        };
+
+        // 1. Nothing names the base: refuse rather than invent 'track'.
+        let err = request_acceptance(&pool, args(None)).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::MissingBase),
+            "an unnamed base must refuse, never default: {err}"
+        );
+
+        // 2. The base is named but is not a branch: refuse, symmetric with the
+        //    delivery-branch check the merge path performs.
+        let err = request_acceptance(&pool, args(Some("track")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::UnknownBase { .. }),
+            "a non-existent base must refuse at request time: {err}"
+        );
+
+        // 3. The base exists: the guard passes and the DB is reached (the pool
+        //    is dead, so the only possible failure is the connection).
+        let err = request_acceptance(&pool, args(Some("track/infra-foundation")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "an existing base must get past the guard into the DB: {err}"
+        );
+
+        // 4. The env var supplies the base when the argument omits it — the
+        //    discoverable source, so callers need not repeat the branch name.
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track/infra-foundation");
+        let err = request_acceptance(&pool, args(None)).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "the configured integration branch must satisfy the guard: {err}"
+        );
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Defect 2: a void with no recorded why is an unexplained edit to the
+    /// ledger, so the reason is screened BEFORE any row is touched.
+    #[tokio::test]
+    async fn cancel_acceptance_requires_a_reason_before_the_db() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-x".into(),
+                reason: "   ".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::EmptyCancelReason { .. }),
+            "a blank reason must refuse: {err}"
+        );
+    }
+
+    /// The withdrawal args are strict about the shape the tool schema advertises:
+    /// `reason` is required (an absent one is a bad-arguments rejection, not a
+    /// silent empty reason).
+    #[test]
+    fn cancel_acceptance_args_require_the_reason() {
+        let ok: CancelAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "acceptance_id": "acc-disp-x",
+            "reason": "already landed via the bootstrap install"
+        }))
+        .unwrap();
+        assert_eq!(ok.acceptance_id, "acc-disp-x");
+        assert!(!ok.reason.is_empty());
+        let missing: Result<CancelAcceptanceArgs, _> = serde_json::from_value(serde_json::json!({
+            "acceptance_id": "acc-disp-x"
+        }));
+        assert!(missing.is_err(), "reason is required");
+    }
+
+    /// The resolution order for the merge base, pinned directly: the explicit
+    /// argument wins, the env var is the discoverable fallback, and silence is a
+    /// refusal. A blank/whitespace value is treated as absent, never as a
+    /// branch name.
+    #[test]
+    fn resolve_base_prefers_the_argument_then_the_env_and_never_invents() {
+        // A sync test: `blocking_lock` (an async-aware lock would deadlock a
+        // plain #[test] that tried to await it).
+        let _guard = ENV_LOCK.blocking_lock();
+        let had = std::env::var_os(INTEGRATION_BRANCH_ENV);
+
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track/infra-foundation");
+        assert_eq!(
+            resolve_base(Some("track/other")).unwrap(),
+            "track/other",
+            "the explicit argument wins over the env var"
+        );
+        assert_eq!(
+            resolve_base(None).unwrap(),
+            "track/infra-foundation",
+            "the env var is the discoverable source"
+        );
+        assert_eq!(
+            resolve_base(Some("   ")).unwrap(),
+            "track/infra-foundation",
+            "a blank argument is absent, not a branch name"
+        );
+
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        assert!(
+            matches!(resolve_base(None), Err(DispatchRejection::MissingBase)),
+            "nothing naming the base is a refusal — 'track' is never invented"
+        );
+
+        match had {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+    }
+
+    /// `request_acceptance` stays backward compatible on the wire: a caller that
+    /// sends only the four original fields parses (base defaults to None and is
+    /// then resolved from the env or refused).
+    #[test]
+    fn request_acceptance_args_base_is_optional_on_the_wire() {
+        let legacy: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+        }))
+        .unwrap();
+        assert_eq!(legacy.base, None);
+        let explicit: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
+            "base": "track/infra-foundation"
+        }))
+        .unwrap();
+        assert_eq!(explicit.base.as_deref(), Some("track/infra-foundation"));
     }
 
     /// `013` backward compatibility: a caller that sends only `dispatch_id`
@@ -1398,6 +1853,32 @@ mod db_itests {
     fn as_actor(actor: &str) {
         std::env::set_var(ACTOR_REF_ENV, actor);
         std::env::set_var(PROJECT_ID_ENV, "seatloom_itest");
+    }
+
+    /// Point the request-time base guard at a scratch git repo that carries a
+    /// local `track` branch, so the guard is satisfied by a REAL repository
+    /// rather than by whatever the runner happens to have checked out. Returns
+    /// the temp root (the OS reclaims /tmp).
+    fn with_base_repo() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("seatloom-itest-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        root
     }
 
     async fn clean(pool: &Pool, project: &str) {
@@ -1607,6 +2088,7 @@ mod db_itests {
         };
         let project = "seatloom_itest";
         clean(&pool, project).await;
+        with_base_repo();
 
         // A verdict event the request can reference.
         {
@@ -1632,6 +2114,7 @@ mod db_itests {
                 branch: "b".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
             },
         )
         .await
@@ -1660,6 +2143,7 @@ mod db_itests {
                 branch: "packet/nimbus/x".into(),
                 how_to_verify: "do A see B".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
             },
         )
         .await
@@ -1674,6 +2158,7 @@ mod db_itests {
                 branch: "b".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
+                base: Some("track".into()),
             },
         )
         .await
@@ -1694,6 +2179,25 @@ mod db_itests {
             .unwrap()
             .get(0);
         assert_eq!(st, "pending");
+
+        // The recorded base is the one the caller named (NOT the old hardcoded
+        // 'track' default), and the ledger event carries it too.
+        let row = c
+            .query_one(
+                "SELECT a.base, \
+                        (SELECT e.payload FROM canonical_events e \
+                           JOIN event_object_refs r ON r.event_id = e.id \
+                            AND r.role = 'subject' AND r.ref_type = 'acceptance' \
+                          WHERE r.ref_id = a.id) \
+                   FROM acceptances a WHERE a.id = 'acc-disp-it-req'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let recorded_base: String = row.get(0);
+        let payload: serde_json::Value = row.get(1);
+        assert_eq!(recorded_base, "track");
+        assert_eq!(payload["base"], "track", "the event records the merge base");
 
         // A rework dispatch (as the reject path would enqueue) is pullable.
         as_actor("human:supervisor");
@@ -1746,5 +2250,148 @@ mod db_itests {
             "terminal row must not be delivered: {msg}"
         );
         assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
+    }
+
+    /// Defect 2 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): a pending card can
+    /// be withdrawn by the seat that requested it, so "this card was satisfied
+    /// by other means" is a RECORDED transition instead of a hand-edited row.
+    /// No merge, no rework; the row and the ledger agree, and a second
+    /// withdrawal is refused because cancelled is terminal.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-016 (scratch DB); run --test-threads=1"]
+    async fn cancel_acceptance_withdraws_own_pending_card_and_is_terminal() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-c','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-cancel", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-cancel".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-cancel".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict-c".into(),
+                base: Some("track".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The seat withdraws its own pending card.
+        let msg = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "already landed via the bootstrap install".into(),
+            },
+        )
+        .await
+        .expect("the requesting seat may withdraw its own card");
+        assert!(
+            msg.contains("cancelled acceptance acc-disp-it-cancel"),
+            "{msg}"
+        );
+
+        // The row is terminal, the reason is recorded, and the event landed.
+        let c = pool.get().await.unwrap();
+        let row = c
+            .query_one(
+                "SELECT status, feedback, decided_by FROM acceptances WHERE id='acc-disp-it-cancel'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let status: String = row.get(0);
+        let feedback: Option<String> = row.get(1);
+        let decided_by: Option<String> = row.get(2);
+        assert_eq!(status, "cancelled");
+        assert_eq!(
+            feedback.as_deref(),
+            Some("already landed via the bootstrap install")
+        );
+        assert_eq!(decided_by.as_deref(), Some(SEAT));
+        let events = c
+            .query(
+                "SELECT e.event_type FROM canonical_events e \
+                   JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
+                  WHERE r.ref_type='acceptance' AND r.ref_id='acc-disp-it-cancel' \
+                  ORDER BY e.occurred_at",
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        assert_eq!(events, vec!["AcceptanceRequested", "AcceptanceCancelled"]);
+
+        // Terminal is immutable: a second withdrawal is refused, and nothing is
+        // rewritten. No rework dispatch was created either — a void is not a
+        // reject.
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "again".into(),
+            },
+        )
+        .await
+        .expect_err("a cancelled acceptance is terminal");
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceNotCancellable { .. }),
+            "{err}"
+        );
+        let reworks: i64 = c
+            .query_one(
+                "SELECT count(*) FROM dispatches WHERE payload->>'rework_of' = 'disp-it-cancel'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(reworks, 0, "a void creates no rework");
+
+        // Another seat cannot withdraw it either (authority is the requester).
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-mira-001");
+        let err = cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-cancel".into(),
+                reason: "not mine".into(),
+            },
+        )
+        .await
+        .expect_err("only the requesting seat may withdraw");
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceNotCancellable { .. }),
+            "{err}"
+        );
     }
 }
