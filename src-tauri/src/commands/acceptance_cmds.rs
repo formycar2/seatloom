@@ -3,9 +3,10 @@
 // The D2 loop's user-facing half (Lyra design §4): a seat finishes work, Flux
 // verifies it green, the seat calls `request_acceptance` (MCP), and the operator
 // — here, the SeatLoom desktop app acting as the user's agent — accepts (merge
-// into track) or rejects (auto-enqueued rework). Seats NEVER merge their own
-// work; the merge happens only on an explicit user accept, `--no-ff` into the
-// acceptance's base branch, and a conflict REFUSES (never forces).
+// into the acceptance's recorded base) or rejects (auto-enqueued rework). Seats
+// NEVER merge their own work; the merge happens only on an explicit user accept,
+// `--no-ff` into the acceptance's base branch, and a conflict REFUSES (never
+// forces).
 
 use std::path::Path;
 
@@ -204,9 +205,15 @@ fn err_text(out: &std::process::Output) -> String {
 
 /// Merge `branch` into `base` in the main checkout, `--no-ff` (the delivery
 /// stays its own commit on the base). Refuses — never forces — on: a non-git
-/// root, a dirty tracked tree, a missing branch, a failed base checkout, or a
-/// merge conflict. On conflict the merge is ABORTED, leaving the repo exactly
-/// as found, and git's own conflict text is returned.
+/// root, a dirty tracked tree, a missing branch, a missing BASE, a failed base
+/// checkout, or a merge conflict. On conflict the merge is ABORTED, leaving the
+/// repo exactly as found, and git's own conflict text is returned.
+///
+/// Both refs are proven to exist BEFORE anything is checked out or merged. The
+/// base check used to be missing: `request_acceptance` recorded the hardcoded
+/// `'track'`, and the failure only appeared here as git's "could not check out
+/// base". The request-time guard now catches it first; this is the backstop that
+/// keeps a bad row from ever reaching the merge.
 async fn merge_branch_into_base(
     repo_root: &Path,
     branch: &str,
@@ -242,6 +249,22 @@ async fn merge_branch_into_base(
     if !out.status.success() {
         return Err(format!(
             "branch {branch:?} does not exist in {}",
+            repo_root.display()
+        ));
+    }
+    // 3b. The BASE must exist too — symmetric with the branch check above, and
+    //     the direct fix for the bootstrap card whose base was the literal
+    //     'track' (no such branch; the integration branch is
+    //     'track/infra-foundation'). Checking here as well means a row recorded
+    //     before the request-time guard existed still refuses cleanly instead of
+    //     half-checking-out and failing.
+    let base_here = seatloom_core::git::ops::local_branch_exists(repo_root, base)
+        .await
+        .map_err(|detail| format!("could not verify base {base:?}: {detail}"))?;
+    if !base_here {
+        return Err(format!(
+            "base {base:?} does not exist in {} — the acceptance recorded a merge target that is not a branch; \
+             cancel the acceptance and re-request it with the real integration branch",
             repo_root.display()
         ));
     }

@@ -71,6 +71,16 @@ pub enum EventType {
     AcceptanceRequested,
     AcceptanceGranted,
     AcceptanceRejected,
+    // (D2 follow-on, Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J) the withdrawal
+    // half of the same object: a seat pulls back its OWN pending request —
+    // "this card was satisfied by other means, do not merge it". Terminal and
+    // immutable like accepted/rejected. The acceptance-side mirror of 013's
+    // SeatDispatchCancelled (issuer-side withdrawal), so the ledger can express
+    // a void instead of forcing a reject-with-rework or a hand-edited row.
+    // Value-domain sign-off: REQUESTED from Lyra (the 016 scratch migration
+    // carries the reasoning) — the Rust mirror lands with the dispatch, the
+    // migration with Onyx.
+    AcceptanceCancelled,
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -122,7 +132,7 @@ const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStat
                                    SeatDelegationClosed, SupervisorMessage, SeatResponse, \
                                    SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted, \
                                    SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, \
-                                   AcceptanceRequested, AcceptanceGranted, AcceptanceRejected";
+                                   AcceptanceRequested, AcceptanceGranted, AcceptanceRejected, AcceptanceCancelled";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
@@ -132,7 +142,7 @@ const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document,
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 21] = [
+    pub const ALL: [EventType; 22] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -154,6 +164,7 @@ impl EventType {
         EventType::AcceptanceRequested,
         EventType::AcceptanceGranted,
         EventType::AcceptanceRejected,
+        EventType::AcceptanceCancelled,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -179,6 +190,7 @@ impl EventType {
             EventType::AcceptanceRequested => "AcceptanceRequested",
             EventType::AcceptanceGranted => "AcceptanceGranted",
             EventType::AcceptanceRejected => "AcceptanceRejected",
+            EventType::AcceptanceCancelled => "AcceptanceCancelled",
         }
     }
 }
@@ -209,6 +221,7 @@ impl FromStr for EventType {
             "AcceptanceRequested" => Ok(EventType::AcceptanceRequested),
             "AcceptanceGranted" => Ok(EventType::AcceptanceGranted),
             "AcceptanceRejected" => Ok(EventType::AcceptanceRejected),
+            "AcceptanceCancelled" => Ok(EventType::AcceptanceCancelled),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -367,10 +380,12 @@ mod tests {
     /// verbatim. `010` created the 12-value event_type and 9-value ref_type
     /// vocabularies; `012` widened them to 15 and 10 (governed dispatch, G19);
     /// `013`/`014` widen them to 21 and 11 (dispatch failure states + the D2
-    /// acceptance gate). If a migration widens a domain, this test is where the
-    /// Rust side must follow — kept verbatim, never loosened.
+    /// acceptance gate); the D2 withdrawal follow-on (016, scratch pending
+    /// Onyx) adds `AcceptanceCancelled` -> 22. If a migration widens a domain,
+    /// this test is where the Rust side must follow — kept verbatim, never
+    /// loosened.
     #[test]
-    fn serialized_sets_match_schema_010_012_013_014_checks() {
+    fn serialized_sets_match_schema_010_012_013_014_016_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -399,8 +414,11 @@ mod tests {
                 "AcceptanceRequested",
                 "AcceptanceGranted",
                 "AcceptanceRejected",
+                // D2 withdrawal follow-on (016): the seat pulls back its own
+                // pending request. Terminal, like accepted/rejected.
+                "AcceptanceCancelled",
             ],
-            "must equal 010:141-159 + 012 + 013 + 014's canonical_events_event_type_vocab"
+            "must equal 010:141-159 + 012 + 013 + 014 + 016's canonical_events_event_type_vocab"
         );
         let roles: Vec<&str> = RefRole::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(roles, vec!["subject", "actor", "context"]);
@@ -436,6 +454,45 @@ mod tests {
         assert_eq!(err.domain, "EventType");
         assert_eq!(err.value, "ArtifactProduced");
         assert!(EventType::from_str("ArtifactCreated").is_ok());
+    }
+
+    /// `013`/`014` widened the event vocabulary by six, and the D2 withdrawal
+    /// follow-on adds a seventh; this pins that all seven are admitted,
+    /// round-trip, and are distinct (each names one transition), while an
+    /// unknown type is still rejected.
+    #[test]
+    fn the_seven_d2_event_types_are_admitted_and_distinct() {
+        use std::collections::HashSet;
+        let new = [
+            EventType::SeatDispatchFailed,
+            EventType::SeatDispatchRetried,
+            EventType::SeatDispatchCancelled,
+            EventType::AcceptanceRequested,
+            EventType::AcceptanceGranted,
+            EventType::AcceptanceRejected,
+            EventType::AcceptanceCancelled,
+        ];
+        for v in new {
+            assert_eq!(EventType::from_str(v.as_str()).expect("round-trip"), v);
+            assert!(EventType::ALL.contains(&v), "{} must be in ALL", v.as_str());
+        }
+        // Distinct serialized forms (no two transitions share an event type).
+        let names: HashSet<&str> = new.iter().map(|v| v.as_str()).collect();
+        assert_eq!(names.len(), 7, "the seven D2 event types must be distinct");
+        assert!(EventType::from_str("SeatDispatchReopened").is_err());
+        // A void is NOT a rejection: the two transitions stay separate words in
+        // an append-only ledger, where one word for two meanings can never be
+        // split once rows carry both.
+        assert_ne!(
+            EventType::AcceptanceRejected.to_string(),
+            EventType::AcceptanceCancelled.to_string()
+        );
+        assert!(EventType::from_str("AcceptanceVoided").is_err());
+        // ref_type widened by one: `acceptance` is admitted.
+        assert_eq!(
+            RefType::from_str("acceptance").unwrap(),
+            RefType::Acceptance
+        );
     }
 
     /// Casing is significant in both directions, and deliberately inconsistent

@@ -468,7 +468,7 @@ pub struct AcceptanceRow {
     pub base: String,
     pub how_to_verify: String,
     pub flux_verdict_ref: String,
-    pub status: String, // 'pending'|'accepted'|'rejected'
+    pub status: String, // 'pending'|'accepted'|'rejected'|'cancelled'
     pub feedback: Option<String>,
     pub rework_dispatch_id: Option<String>,
     pub merge_commit: Option<String>,
