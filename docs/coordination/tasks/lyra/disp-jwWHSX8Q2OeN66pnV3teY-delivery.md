@@ -98,3 +98,12 @@ issued_at 串行)。同时:
 3. **结构性缺口已上报 Aegis**:SupervisorMessage `ev-EFQYKBczSufTakaIjGh9s` —— 建议产品
    修复(ReviewVerdictIssued 命中交付时 NOTIFY 请求席位,或 waker poke issuer),否则每条
    verify→card 链都依赖人工 nudge,正是张先生嫌的瓶颈。
+
+## Follow-up 3(2026-10-10 晚):建卡接合首跑成功
+
+`ev-flux-verdict-wash-p2` 落账本(Flux PASS,seat-vela-001 Lane C Part 2)→ 自派单
+`disp-lyra-wash-p2-card` 被唤醒 → 已派 `disp-wash-vela-p2-card`(status=ready)给 vela:
+带 verdict ref、plan 逐字、base=track/infra-foundation。**「预先申判判定 id + gated
+自派单」接合机制端到端跑通**:Flux 判定落地 → 013 触发器唤醒 Lyra → Lyra 派建卡步 →
+vela 调 request_acceptance。这是「5 绿 0 卡」断链的第一个人工闭环修复实例(产品级修复
+仍待 Aegis,见 Follow-up 2 的上报)。
