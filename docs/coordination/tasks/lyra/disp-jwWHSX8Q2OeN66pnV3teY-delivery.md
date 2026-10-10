@@ -68,4 +68,8 @@ D5 Phase 2 拆解完毕并全部派发。产物 5 文档(契约 + 拆解 + 协�
 - Commit `bc0d575`(5 文档)。
 - Dispatch:`disp-mem018-onyx` / `disp-mem018-nimbus` / `disp-fwdrec-*`×5 /
   `disp-vela-register` / `disp-lyra-wash-p1` / `disp-lyra-wash-p2`。
-- 账本事件:ArtifactCreated(本单产物捕获)。
+- 账本事件:ArtifactCreated `ev-Dw27iaj6HsbOX4zXRwGxv`(本单产物捕获)。
+- **自派单被 stall 升级是预期行为**:`disp-lyra-wash-p1`/`disp-lyra-wash-p2` 是有意 blocked
+  (等 `ev-seat-vela-001-registered` / 等 018+typed tools 两门)—— 我的收件箱全 blocked 时,
+  调度器的 stall 检测会升级一条 SupervisorMessage,这是契约规则 5 的设计行为,不是故障;
+  门事件落地时 013 触发器翻 ready + pg_notify,waker 会唤醒我继续驱动 Lane C。
