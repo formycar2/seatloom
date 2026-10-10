@@ -198,9 +198,12 @@ actually lives — this branch, which carries it).
 
 ## 5. Self-requested Flux verification + acceptance request
 
-After this delivery doc: emit the gate event `ev-acceptance-lineage-readmodel-landed`
-(exact id, per packet §6.3) to unblock Mira's Lane A, then `complete_dispatch`,
-then enqueue a commit-pinned Flux verification for `seat-flux-001`
+Emitted (packet §6.3, exact id): `ev-acceptance-lineage-readmodel-landed` —
+`ArtifactCreated`, subject `art-acceptance-lineage-readmodel`, actor
+`seat-nimbus-001`, context `disp-accplan-lane-b-nimbus`, projection `LedgerOnly`.
+Its insertion is what flips `disp-accplan-lane-a-mira` to ready through the 013
+referent trigger. Then `complete_dispatch`, then a commit-pinned Flux
+verification for `seat-flux-001`
 (branch `packet/nimbus/acceptance-lineage-readmodel`, base
 `track/infra-foundation`), and on Flux green call `request_acceptance` with the
 packet §7 one-step verification verbatim:
