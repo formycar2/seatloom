@@ -21,3 +21,12 @@ target/
 .cargo/registry/
 .cargo/git/
 .rustup/
+
+# Secrets — NEVER commit. Bare key files live here for local tooling only.
+# (2026-10-10: key/ and gitlab_pat.txt were untracked but un-ignored; one `git add -A`
+#  would have pushed them to GitLab. History verified clean via `git log -S` before fixing.)
+key/
+gitlab_pat.txt
+*.key
+*.pem
+.local/secrets/
