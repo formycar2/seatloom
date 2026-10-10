@@ -112,6 +112,8 @@ pub fn tools_list_result() -> Value {
             get_dispatch_tool(),
             query_ledger_tool(),
             open_topic_tool(),
+            get_knowledge_tree_tool(),
+            get_topic_memories_tool(),
         ]
     })
 }
@@ -594,6 +596,50 @@ fn open_topic_tool() -> Value {
     })
 }
 
+/// `get_knowledge_tree` — the topic tree of a project, with memory counts.
+/// PURE READ: no write, no event (a panel query, not a recall).
+fn get_knowledge_tree_tool() -> Value {
+    json!({
+        "name": "get_knowledge_tree",
+        "description": "The knowledge topic tree for a project: every topic with its parent and its \
+            ACTIVE, not-superseded memory count. PURE READ — writes nothing, appends no event (a \
+            panel query, not a recall; recall keeps its MemoryRecalled audit). Scope is hard: one \
+            project, never an all-projects read. An empty project is an empty tree, not an error.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `get_topic_memories` — the memories of one topic, progressively disclosed.
+/// PURE READ: no write, no event.
+fn get_topic_memories_tool() -> Value {
+    json!({
+        "name": "get_topic_memories",
+        "description": "The memories of one topic at a disclosure depth, WITH the topic's ancestor \
+            chain (a memory is never returned out of its context). depth l0 (default) returns only \
+            the ~100-token summaries; l1 adds the overview; l2 adds the evidence pointer with the \
+            line range. The token budget belongs to the caller. Superseded rows are excluded unless \
+            include_superseded is set, and then each carries supersededBy. PURE READ — writes \
+            nothing, appends no event.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1 },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed refusal." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories a newer one superseded; each is annotated with supersededBy." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Page size, default 50, hard ceiling 200. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
 fn get_dispatch_tool() -> Value {
     json!({
         "name": "get_dispatch",
@@ -700,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_sixteen_tools() {
+    fn tools_list_advertises_the_eighteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -722,7 +768,9 @@ mod tests {
                 "resolve",
                 "get_dispatch",
                 "query_ledger",
-                "open_topic"
+                "open_topic",
+                "get_knowledge_tree",
+                "get_topic_memories"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).

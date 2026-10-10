@@ -536,6 +536,57 @@ pub struct TopicRow {
     pub parent_topic_id: Option<String>,
 }
 
+/// One node of the knowledge topic tree (overnight step 4): the topic, its
+/// parent, and how many ACTIVE, not-superseded memories it holds — the count a
+/// recall would actually return.
+#[derive(Debug, Clone)]
+pub struct KnowledgeTopicNode {
+    pub topic_id: String,
+    pub title: String,
+    /// 'open' | 'closed' | 'merged'.
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+    pub memory_count: i64,
+}
+
+/// The L2 evidence pointer of a memory, returned only at depth l2.
+#[derive(Debug, Clone)]
+pub struct KnowledgeL2Pointer {
+    /// 'document' | 'file'.
+    pub ref_kind: String,
+    pub document_id: Option<String>,
+    pub file_path: Option<String>,
+    pub body_digest: Option<String>,
+    /// Present when the source is a slice of an archived session transcript.
+    pub line_start: Option<i32>,
+    pub line_end: Option<i32>,
+}
+
+/// One memory as the knowledge panel renders it. `l1_overview` and `l2` are
+/// `None` below their disclosure depth — the caller asks for more, the shape
+/// carries more.
+#[derive(Debug, Clone)]
+pub struct KnowledgeMemoryCard {
+    pub memory_id: String,
+    pub topic_id: String,
+    pub title: String,
+    /// 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred'.
+    pub confidence: String,
+    /// 'cold' | 'warm' | 'hot'.
+    pub tier: String,
+    /// 'active' | 'forgotten' | 'resolved'.
+    pub status: String,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2: Option<KnowledgeL2Pointer>,
+    /// The memory that replaced this one, when it has been superseded.
+    pub superseded_by: Option<String>,
+    pub source_kind: String,
+    pub source_ref: String,
+}
+
 /// A dispatch with its LIVE status and dependency edges — the `get_dispatch`
 /// read tool's answer. `live_status` is recomputed by the same existence rule the
 /// pull decision uses, so a reader sees what the scheduler would see.

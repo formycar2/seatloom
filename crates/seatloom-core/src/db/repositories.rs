@@ -11,12 +11,14 @@ use crate::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, LedgerEventWithRefs, MemoryRelationRow,
-    MemoryRow, ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
-    PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, TopicRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, KnowledgeL2Pointer, KnowledgeMemoryCard,
+    KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow, ObjectRefRow,
+    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
+    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
+    SeatRow, SessionRow, TopicRow, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
+use crate::objects::memory::MemoryLayer;
 use crate::objects::seat::SeatRole;
 use crate::objects::session::{Agent, Harness, ParseValueError};
 use chrono::Utc;
@@ -973,6 +975,94 @@ impl SeatloomDb {
         let updated = row_to_memory(&updated);
         tx.commit().await?;
         Ok(updated)
+    }
+
+    // =========================================================================
+    // Knowledge read model (overnight step 4) — the topic tree and the
+    // memories-by-topic card list, with progressive disclosure.
+    //
+    // PURE READS: these write nothing and append no event. They are interface
+    // queries for the UI, not a recall — `recall` keeps its `MemoryRecalled`
+    // audit; a panel rendering a tree must not mutate what it renders.
+    // =========================================================================
+
+    /// The knowledge topic tree for a project: every topic with its parent and
+    /// its memory count. `memoryCount` counts ACTIVE and NOT-superseded
+    /// memories — a stale decision served as current is worse than no memory, so
+    /// the count a panel shows is the count a recall would return.
+    pub async fn knowledge_topic_tree(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<KnowledgeTopicNode>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT t.id, t.title, t.status, t.parent_topic_id, \
+                        (SELECT count(*) FROM memories m \
+                          WHERE m.topic_id = t.id AND m.status = 'active' \
+                            AND NOT EXISTS (SELECT 1 FROM memory_relations r \
+                                             WHERE r.to_id = m.id AND r.rel = 'supersedes')) \
+                   FROM topics t \
+                  WHERE t.project_id = $1 \
+                  ORDER BY t.parent_topic_id NULLS FIRST, t.id",
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_knowledge_topic_node).collect())
+    }
+
+    /// The topic's ancestor chain in the KNOWLEDGE READ MODEL's order: ancestors
+    /// first, the topic itself last (the context, then what it is the context
+    /// OF). `recall` keeps its own nearest-first order.
+    pub async fn topic_chain_ancestors_first(
+        &self,
+        topic_id: &str,
+    ) -> Result<Vec<TopicRow>, DbError> {
+        let mut chain = self.topic_ancestor_chain(topic_id).await?;
+        chain.reverse();
+        Ok(chain)
+    }
+
+    /// The memories of one topic, at the requested disclosure depth, WITH the
+    /// topic's ancestor chain (the same chain discipline `recall` follows: a
+    /// memory is never returned out of its context).
+    ///
+    /// `depth` is `l0` (the ~100-token summary, the default), `l1` (the ~2K
+    /// overview) or `l2` (the evidence pointer, with the line range when the
+    /// source is a transcript slice). The token budget belongs to the caller.
+    /// Superseded rows are excluded unless `include_superseded` is set, and then
+    /// each carries `superseded_by`.
+    pub async fn topic_memories(
+        &self,
+        topic_id: &str,
+        depth: MemoryLayer,
+        include_superseded: bool,
+        limit: i64,
+    ) -> Result<Vec<KnowledgeMemoryCard>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT m.id, m.topic_id, m.title, m.kind, m.confidence, m.tier, m.status, \
+                        m.l0_summary, m.l1_overview, m.l2_ref_kind, m.l2_document_id, \
+                        m.l2_file_path, m.l2_body_digest, m.l2_line_start, m.l2_line_end, \
+                        m.source_kind, m.source_ref, \
+                        (SELECT r.from_id FROM memory_relations r \
+                          WHERE r.to_id = m.id AND r.rel = 'supersedes' \
+                          ORDER BY r.from_id LIMIT 1) AS superseded_by \
+                   FROM memories m \
+                  WHERE m.topic_id = $1 \
+                    AND m.project_id = (SELECT project_id FROM topics WHERE id = $1) \
+                    AND ($2::bool OR NOT EXISTS (SELECT 1 FROM memory_relations r \
+                                                  WHERE r.to_id = m.id AND r.rel = 'supersedes')) \
+                  ORDER BY m.heat DESC, m.updated_at DESC \
+                  LIMIT $3",
+                &[&topic_id, &include_superseded, &limit],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| row_to_knowledge_memory_card(r, depth))
+            .collect())
     }
 
     // =========================================================================
@@ -2682,6 +2772,50 @@ fn row_to_memory(r: &Row) -> MemoryRow {
         resolved_at: r.get(26),
         created_at: r.get(27),
         updated_at: r.get(28),
+    }
+}
+
+fn row_to_knowledge_topic_node(r: &Row) -> KnowledgeTopicNode {
+    KnowledgeTopicNode {
+        topic_id: r.get(0),
+        title: r.get(1),
+        status: r.get(2),
+        parent_topic_id: r.get(3),
+        memory_count: r.get(4),
+    }
+}
+
+/// One memory as the knowledge panel renders it, at the requested depth. The
+/// higher layers are `None` below their depth — progressive disclosure is a
+/// property of the SHAPE, not of a post-filter.
+fn row_to_knowledge_memory_card(r: &Row, depth: MemoryLayer) -> KnowledgeMemoryCard {
+    KnowledgeMemoryCard {
+        memory_id: r.get(0),
+        topic_id: r.get(1),
+        title: r.get(2),
+        kind: r.get(3),
+        confidence: r.get(4),
+        tier: r.get(5),
+        status: r.get(6),
+        l0_summary: r.get(7),
+        l1_overview: match depth {
+            MemoryLayer::L0 => None,
+            _ => r.get(8),
+        },
+        l2: match depth {
+            MemoryLayer::L2 => Some(KnowledgeL2Pointer {
+                ref_kind: r.get(9),
+                document_id: r.get(10),
+                file_path: r.get(11),
+                body_digest: r.get(12),
+                line_start: r.get(13),
+                line_end: r.get(14),
+            }),
+            _ => None,
+        },
+        superseded_by: r.get(17),
+        source_kind: r.get(15),
+        source_ref: r.get(16),
     }
 }
 
