@@ -73,4 +73,5 @@ ready 并 `pg_notify('dispatch_ready','seat-nimbus-001')` —— waker 唤醒 Ni
 
 - Commit `1dea869`(4 文档)。
 - Dispatch:`disp-d5-lane-a-onyx`(ready)、`disp-d5-lane-b-nimbus`(blocked on gate event)。
-- 账本事件:ArtifactCreated(D5 契约+packets 产物捕获)、SupervisorMessage("(root)" 预报)。
+- 账本事件:ArtifactCreated `ev-OhKlLoJGxIVHSWNNHqRnp`(D5 契约+packets 产物捕获)、
+  SupervisorMessage `ev-aEkzUdAUVFAU2ed-17SLJ`("(root)" 13 条归属策略预报,decision_needed_from=seat-aegis-001)。
