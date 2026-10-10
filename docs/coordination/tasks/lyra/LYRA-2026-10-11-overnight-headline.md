@@ -157,3 +157,10 @@ Vela 未写),故 \`ev-typed-memory-tools-landed\` 的发出者与证据**仍未�
 头条卡只在「已交付、有证据」的现实上触发。已 SupervisorMessage(\`ev-Zf318ktgqy5z8vTv8gT8R\`)
 请 Aegis:(a) 认定门事件发出者与证据(其 commit 被权限拦着、本席二进制读不了账本,
 请用派单等席位可见的方式确认);(b) 019 的 live apply 与全队重启仍是 Vela 写库的关键路径。
+
+## Follow-up 2(2026-10-11 凌晨):read-model 判定落地 → 建卡步已派(零人工推送再证)
+
+`ev-verdict-knowledge-readmodel` 落账本(Flux PASS,Nimbus 读模型 lane)→ 自派单
+`disp-lyra-onight-card-readmodel` 被唤醒 → 已派 `disp-onight-readmodel-card` 给 Nimbus
+(plan 逐字 + 旧镜像上报条款)。**预声明判定 id 契约第二次零人工跑通**(019 之后)。
+头条 v2 仍 blocked,等 `ev-writein-landed`(Vela 真实入库)—— 这是仅有的一块正向拼图。
