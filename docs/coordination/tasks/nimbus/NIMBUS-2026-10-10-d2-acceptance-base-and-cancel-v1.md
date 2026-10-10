@@ -232,7 +232,17 @@ is the sanctioned way to make the same call.
 
 ---
 
-## 6. Not in this delivery
+## 6. Ledger capture
+
+`emit_event(ArtifactCreated)` — event `ev-DlgX5vD1wdmVu9l1Em9AE`, subject
+`ar-nimbus-d2-base-cancel-delivery` (this delivery), context
+`disp-E8BP2vKlOwMHLomm0eX8J` (the governing dispatch). Projection: `LedgerOnly`
+(the event vocabulary has no artifacts projection yet — recorded, not worked
+around).
+
+---
+
+## 7. Not in this delivery
 
 Lyra's D5 **Lane B** (MCP recall read tools,
 `NIMBUS-2026-10-10-d5-mcp-recall-tools-v1`) is a separate packet on a separate
