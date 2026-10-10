@@ -75,4 +75,4 @@
 - Commit `a6bf160`(6 文档)。
 - Dispatch:`disp-accplan-lane-c-onyx`(ready)、`disp-accplan-lane-b-nimbus` /
   `disp-accplan-lane-a-mira`(blocked on gate events)。
-- 账本事件:ArtifactCreated(本单产物捕获)。
+- 账本事件:ArtifactCreated `ev-11D8vxsq89MY4cL6JfKdG`(本单 6 产物捕获)。
