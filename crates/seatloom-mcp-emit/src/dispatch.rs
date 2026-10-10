@@ -230,6 +230,22 @@ pub enum DispatchRejection {
         base: String,
         detail: String,
     },
+    /// `request_acceptance` (containment defence): the delivery branch does not
+    /// CONTAIN the base — accepting it would merge a branch that never saw the
+    /// base's later work. The fix is to sync the branch, not to weaken the gate.
+    BranchNotSynced {
+        branch: String,
+        base: String,
+    },
+    /// `request_acceptance` (containment defence): the merge would DELETE files
+    /// tracked on the base — the failure mode that let an Accept destroy
+    /// already-merged work. The paths are listed so the caller knows exactly
+    /// what would be lost.
+    MergeWouldDelete {
+        branch: String,
+        base: String,
+        paths: Vec<String>,
+    },
     /// `cancel_acceptance`: the acceptance is not a PENDING acceptance of a
     /// dispatch owned by the calling seat (unknown id, already decided, or
     /// another seat's). Only the requesting seat may withdraw its own request.
@@ -313,6 +329,19 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::UnknownBase { base, detail } => write!(
                 f,
                 "request_acceptance rejected: merge base {base:?} does not exist ({detail}) — a delivery may only be handed to a base that exists, exactly like the delivery branch"
+            ),
+            DispatchRejection::BranchNotSynced { branch, base } => write!(
+                f,
+                "request_acceptance rejected: branch {branch:?} does not contain base {base:?} — \
+                 merge {base} into {branch} first; accepting an unsynced branch would merge work \
+                 that never saw the base's later commits"
+            ),
+            DispatchRejection::MergeWouldDelete { branch, base, paths } => write!(
+                f,
+                "request_acceptance rejected: merging {branch:?} into {base:?} would DELETE {} \
+                 file(s) tracked on {base:?}: {} — the delivery must not remove merged work",
+                paths.len(),
+                paths.join(", ")
             ),
             DispatchRejection::AcceptanceNotCancellable { acceptance_id, seat } => write!(
                 f,
@@ -1150,6 +1179,12 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 ///   0b. the acceptance plan is present and matches shape v1 (016) — a missing,
 ///      empty or malformed plan is a typed rejection before any DB contact
 ///      (acceptance-lineage milestone, value-domain contract §2);
+///   0c. CONTAINMENT: the delivery branch exists, CONTAINS the base
+///      (`merge-base --is-ancestor`), and merging it would not DELETE any file
+///      tracked on the base (previewed with `merge-tree`). An unsynced branch or
+///      a destructive merge is a typed refusal listing the paths — the
+///      product-level guarantee that accepting a card cannot destroy merged work
+///      (Aegis blocking ruling, dispatch disp-acclose-nimbus);
 ///   1. the dispatch belongs to the calling seat AND is `done`
 ///      (a `SeatDispatchCompleted` landed — the row is its projection);
 ///   2. `flux_verdict_ref` names an existing event or artifact (the merge
@@ -1185,6 +1220,50 @@ pub async fn request_acceptance(
         return Err(DispatchRejection::UnknownBase {
             base,
             detail: format!("no refs/heads/<base> in {}", repo_root.display()),
+        });
+    }
+    // The delivery branch must exist too — the merge path checks it, and the
+    // containment previews below need a resolvable ref.
+    let branch_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &args.branch)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: args.branch.clone(),
+            detail,
+        })?;
+    if !branch_exists {
+        return Err(DispatchRejection::UnknownBase {
+            base: args.branch.clone(),
+            detail: format!("no refs/heads/<branch> in {}", repo_root.display()),
+        });
+    }
+    // Containment (b): the branch must CONTAIN the base. Without this an
+    // unsynced branch could be accepted, and the merge would silently drop the
+    // base's later commits.
+    let synced = seatloom_core::git::ops::branch_contains(&repo_root, &args.branch, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !synced {
+        return Err(DispatchRejection::BranchNotSynced {
+            branch: args.branch.clone(),
+            base,
+        });
+    }
+    // Containment (c): the merge must not DELETE files tracked on the base.
+    // Previewed with `merge-tree` (no ref moves, no working-tree change).
+    let would_delete = seatloom_core::git::ops::merge_would_delete(&repo_root, &args.branch, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !would_delete.is_empty() {
+        return Err(DispatchRejection::MergeWouldDelete {
+            branch: args.branch.clone(),
+            base,
+            paths: would_delete,
         });
     }
 
@@ -1761,6 +1840,135 @@ mod tests {
         root
     }
 
+    /// The containment defence (Aegis blocking ruling, dispatch
+    /// disp-acclose-nimbus PART 2): a branch that does not contain the base, and
+    /// a branch whose merge would DELETE base-tracked files, are both refused
+    /// BEFORE any DB contact. A scratch repo supplies the three shapes; the pool
+    /// is dead, so reaching the database would fail differently — proving the
+    /// refusal happened first.
+    #[tokio::test]
+    async fn request_acceptance_refuses_unsynced_and_destructive_branches() {
+        let _guard = ENV_LOCK.lock().await;
+        let root =
+            std::env::temp_dir().join(format!("seatloom-containment-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("keep.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        // The base moves on — a delivery that never sees this is unsynced.
+        ok(&["checkout", "-b", "packet/seat/synced"]);
+        std::fs::write(root.join("added.txt"), "delivery\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "delivery"]);
+        ok(&["checkout", "track"]);
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base moves on"]);
+        // unsynced: forked from the base, never merged it back.
+        ok(&["checkout", "-b", "packet/seat/unsynced", "HEAD~1"]);
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "never synced"]);
+        // destructive: synced, but deletes a base-tracked file.
+        ok(&["checkout", "packet/seat/synced"]);
+        ok(&["merge", "--no-edit", "track"]);
+        ok(&["checkout", "-b", "packet/seat/destructive"]);
+        std::fs::remove_file(root.join("keep.txt")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes a tracked file"]);
+        // missing: a name that is not a branch at all.
+        ok(&["checkout", "track"]);
+
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track");
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let args = |branch: &str| RequestAcceptanceArgs {
+            dispatch_id: "disp-containment".into(),
+            branch: branch.into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+        };
+
+        // 1. the branch does not exist at all.
+        let err = request_acceptance(&pool, args("packet/seat/nope"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::UnknownBase { .. }),
+            "a missing branch is a typed refusal: {err}"
+        );
+
+        // 2. the branch exists but does not contain the base.
+        let err = request_acceptance(&pool, args("packet/seat/unsynced"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::BranchNotSynced { branch, base } => {
+                assert_eq!(branch, "packet/seat/unsynced");
+                assert_eq!(base, "track");
+            }
+            other => panic!("expected BranchNotSynced, got {other:?}"),
+        }
+        assert!(
+            msg.contains("does not contain base"),
+            "the refusal says what to do: {msg}"
+        );
+
+        // 3. the merge would delete a base-tracked file, and the path is named.
+        let err = request_acceptance(&pool, args("packet/seat/destructive"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::MergeWouldDelete { paths, .. } => {
+                assert_eq!(paths, vec!["keep.txt".to_string()], "{paths:?}");
+            }
+            other => panic!("expected MergeWouldDelete, got {other:?}"),
+        }
+        assert!(
+            msg.contains("keep.txt"),
+            "the refusal lists what would be lost: {msg}"
+        );
+
+        // 4. the synced, non-destructive branch passes every containment check
+        //    and reaches the database (the dead pool then proves it).
+        let err = request_acceptance(&pool, args("packet/seat/synced"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "a contained delivery gets past the defence into the DB: {err}"
+        );
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
     /// NAMED and EXISTS before a card is recorded. The old code hardcoded
     /// `'track'` — not a branch in this repository — so the error only appeared
@@ -1771,6 +1979,24 @@ mod tests {
     async fn request_acceptance_names_and_verifies_the_base_before_the_db() {
         let _guard = ENV_LOCK.lock().await;
         let root = scratch_repo_with_branch("track/infra-foundation");
+        // The delivery branch must exist (and contain the base) for the
+        // containment checks to let a request through — this test's subject is
+        // the BASE, so the branch is a well-formed fixture here.
+        {
+            let g = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap()
+            };
+            assert!(
+                g(&["branch", "packet/nimbus/x", "track/infra-foundation"])
+                    .status
+                    .success(),
+                "the delivery branch fixture"
+            );
+        }
         let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
         let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
         std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
@@ -2266,6 +2492,10 @@ mod db_itests {
         std::fs::write(root.join("f.txt"), "base\n").unwrap();
         ok(&["add", "."]);
         ok(&["commit", "-m", "base"]);
+        // The delivery branch the tests hand to the gate: created FROM the base
+        // (so it contains it) and non-destructive (so the merge preview finds
+        // nothing to delete) — the shape the containment defence requires.
+        ok(&["branch", "packet/nimbus/x", "track"]);
         std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
         root
     }
@@ -2500,7 +2730,7 @@ mod db_itests {
             &pool,
             RequestAcceptanceArgs {
                 dispatch_id: "disp-it-req".into(),
-                branch: "b".into(),
+                branch: "packet/nimbus/x".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
@@ -2546,7 +2776,7 @@ mod db_itests {
             &pool,
             RequestAcceptanceArgs {
                 dispatch_id: "disp-it-req".into(),
-                branch: "b".into(),
+                branch: "packet/nimbus/x".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
