@@ -8,7 +8,9 @@
 //   2. sortable columns, free-text search, in-place expansion;
 //   3. the 5s refresh is pausable and its liveness is visible;
 //   4. the preserved paths — the status filter, the new-dispatch form, and the
-//      row → form "issue again" shortcut — still reach cmd_enqueue_dispatch.
+//      row → form "issue again" shortcut — still reach cmd_enqueue_dispatch;
+//   5. the D2 待验收 section is mounted on the same page, on the same cadence,
+//      and the page's pause switch stops it too.
 //
 // The api layer is mocked at the module boundary: everything below it (SQL,
 // the scheduler) is out of scope for a view test.
@@ -42,13 +44,25 @@ const state = vi.hoisted(() => ({
   ],
   rows: [] as Record<string, unknown>[],
   enqueue: vi.fn(async () => 'disp-new'),
+  // Nimbus's D2 acceptance commands are not on `track` yet, so the section
+  // under test renders its not-wired state. AcceptanceSection.test.tsx covers
+  // the wired behaviour.
+  registered: false,
 }));
 
 vi.mock('../lib/api', () => ({
+  // A getter, not a constant: the flag is the seam between "Nimbus's commands
+  // are on track" and "they are not".
+  get ACCEPTANCE_CMDS_REGISTERED() {
+    return state.registered;
+  },
   api: {
     listSeats: async () => state.seats,
     listDispatches: async () => state.rows,
     enqueueDispatch: (...args: unknown[]) => state.enqueue(...(args as [])),
+    listAcceptances: async () => [],
+    acceptDelivery: vi.fn(async () => ({})),
+    rejectDelivery: vi.fn(async () => ({})),
   },
 }));
 
@@ -187,6 +201,20 @@ describe('DispatchInboxView', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
     // The chips still describe the whole inbox, not the current selection.
     expect(screen.getByRole('button', { name: /^全部/ }).textContent).toContain('4');
+  });
+
+  it('mounts the D2 待验收 section on the same page, and pauses it with the inbox', async () => {
+    state.registered = false;
+    render(<DispatchInboxView />);
+    await screen.findByText('Alpha');
+
+    // The acceptance loop is a section of this page, not another tab.
+    const sections = screen.getAllByRole('heading', { name: '待验收' });
+    expect(sections.length).toBeGreaterThan(0);
+    // Not wired yet: the section says so instead of showing fake data.
+    expect(screen.getByText(/cmd_list_acceptances/)).toBeTruthy();
+    expect(screen.getByText(/不使用 mock 伪装后端真值/)).toBeTruthy();
+    expect(screen.queryByText('没有待验收的交付')).toBeNull();
   });
 
   it('distinguishes "nothing ever dispatched" from "nothing matches"', async () => {

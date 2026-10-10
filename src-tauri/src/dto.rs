@@ -4,11 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
-    ArtifactRow, CanonicalEventRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
-    DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
-    HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, ReconcileItemRow,
-    ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow,
-    WorkItemRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow, CheckpointRow,
+    DispatchDependencyRow, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow, ProjectRoleBindingRow,
+    ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
+    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -349,6 +349,116 @@ impl DispatchDto {
             deps,
         }
     }
+}
+
+// =============================================================================
+// Acceptance gate (014, D2) — the 待验收 read model + the accept/reject result
+// =============================================================================
+
+/// The Flux green verdict, rendered for the card. `verdict` is `None` when the
+/// referenced row is an artifact (which carries no verdict payload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FluxVerdictDto {
+    pub ref_id: String,
+    pub verdict: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+/// One acceptance card (schema 014): the delivery awaiting the operator's
+/// decision, or the recorded decision. This is the DTO contract Mira's UI
+/// consumes (LYRA-2026-10-09-d2-acceptance-loop-design-v1 §4/D).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceCard {
+    pub id: String,
+    pub dispatch_id: String,
+    pub dispatch_title: String,
+    pub seat_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    pub flux_verdict: FluxVerdictDto,
+    /// 'pending' | 'accepted' | 'rejected' (accepted/rejected are terminal).
+    pub status: String,
+    pub created_at: String,
+    pub merge_commit: Option<String>,
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+}
+
+impl From<AcceptanceWithDispatchRow> for AcceptanceCard {
+    fn from(r: AcceptanceWithDispatchRow) -> Self {
+        let AcceptanceWithDispatchRow {
+            acceptance,
+            dispatch_title,
+            dispatch_seat_id,
+            // dispatch_priority / dispatch_payload serve the reject path's
+            // rework enqueue; the card does not surface them.
+            dispatch_priority: _,
+            dispatch_payload: _,
+            flux_verdict,
+            flux_verdict_occurred_at,
+        } = r;
+        let AcceptanceRow {
+            id,
+            dispatch_id,
+            project_id: _,
+            branch,
+            base,
+            how_to_verify,
+            flux_verdict_ref,
+            status,
+            feedback,
+            rework_dispatch_id,
+            merge_commit,
+            decided_by: _,
+            decided_at: _,
+            created_at,
+        } = acceptance;
+        Self {
+            id,
+            dispatch_id,
+            dispatch_title,
+            seat_id: dispatch_seat_id,
+            branch,
+            base,
+            how_to_verify,
+            flux_verdict: FluxVerdictDto {
+                ref_id: flux_verdict_ref,
+                verdict: flux_verdict,
+                occurred_at: iso_opt(flux_verdict_occurred_at),
+            },
+            status,
+            created_at: iso(created_at),
+            merge_commit,
+            feedback,
+            rework_dispatch_id,
+        }
+    }
+}
+
+/// The outcome of an accept/reject command (D2 contract D, widened by the
+/// Flux HOLD fix). A refusal (merge conflict, missing operator config,
+/// not-pending, unverified) is an `Err` carrying the reason — `error` is the
+/// soft-failure field the contract asks the UI to render, kept for contract
+/// fidelity.
+///
+/// `status` + `rework_dispatch_id` make the response a SUPERSET of the
+/// acceptance-card normaliser (`FLUX-2026-10-09-mira-d2-ui-verify-delivery-v1`
+/// §4): on a reject the UI can render the rejected badge, echo the feedback
+/// (already on the card) and jump to the rework dispatch from the decision
+/// response alone — no follow-up read, no dead-end "already handled" label.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceResult {
+    pub accepted: bool,
+    /// The decided acceptance's status: 'accepted' | 'rejected'.
+    pub status: String,
+    pub merge_commit: Option<String>,
+    /// The auto-enqueued rework dispatch on a reject (lineage jump link).
+    pub rework_dispatch_id: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

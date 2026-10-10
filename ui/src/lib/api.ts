@@ -12,6 +12,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn, Event } from '@tauri-apps/api/event';
 import type {
   ArtifactDto,
+  AcceptanceCardDto,
+  AcceptanceDecisionDto,
   CanonicalEventDto,
   CheckpointDto,
   DelegationDto,
@@ -45,6 +47,22 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/**
+ * Whether the D2 acceptance-loop commands are registered on the running build.
+ *
+ * They are Nimbus's lane and had not landed on `track` when this UI was written
+ * (dispatch `disp-me6Nm8e9D6ZRe4fKyVokY`, D2). The UI is implemented against the
+ * agreed card contract so it is ready the moment they do; until then the
+ * 待验收 section renders an explicit "未接线" state naming exactly what is
+ * missing, rather than calling a command that rejects every poll and showing
+ * the operator a permanent error. House rule: no mock stands in for a real
+ * backend value.
+ *
+ * Flip to `true` when `cmd_list_acceptances` / `cmd_accept_delivery` /
+ * `cmd_reject_delivery` are on `track` — that is the whole follow-up.
+ */
+export const ACCEPTANCE_CMDS_REGISTERED = true;
+
 export const api = {
   ping: (): Promise<string> => invoke('cmd_ping'),
 
@@ -55,8 +73,7 @@ export const api = {
 
   // --- Seats / roles / delegations ---
   listSeats: (): Promise<SeatDto[]> => invoke('cmd_list_seats'),
-  getSeat: (seatId: string): Promise<SeatDto | null> =>
-    invoke('cmd_get_seat', { seatId }),
+  getSeat: (seatId: string): Promise<SeatDto | null> => invoke('cmd_get_seat', { seatId }),
   listRoleBindings: (projectId?: string): Promise<RoleBindingDto[]> =>
     invoke('cmd_list_role_bindings', { projectId }),
   listDelegations: (): Promise<DelegationDto[]> => invoke('cmd_list_delegations'),
@@ -118,19 +135,27 @@ export const api = {
   ): Promise<string> =>
     invoke('cmd_enqueue_dispatch', { targetSeatId, title, instructions, priority }),
 
+  // --- D2 acceptance loop (a delivered milestone, decided in the UI) ---
+  // Nimbus's lane. The three commands below are NOT registered on `track` yet,
+  // which is why `ACCEPTANCE_CMDS_REGISTERED` gates them: until it is true the
+  // 待验收 section says so out loud instead of calling a command that would
+  // reject every 5 seconds. Flip this one constant when his commands land.
+  listAcceptances: (): Promise<AcceptanceCardDto[]> => invoke('cmd_list_acceptances'),
+  acceptDelivery: (acceptanceId: string): Promise<AcceptanceDecisionDto> =>
+    invoke('cmd_accept_delivery', { acceptanceId }),
+  rejectDelivery: (acceptanceId: string, feedback: string): Promise<AcceptanceDecisionDto> =>
+    invoke('cmd_reject_delivery', { acceptanceId, feedback }),
+
   // --- Supervisor IM ---
   listSupervisorMessages: (
     opts: { targetSeatId?: string; limit?: number } = {},
   ): Promise<CanonicalEventDto[]> => invoke('cmd_list_supervisor_messages', opts),
-  appendSupervisorMessage: (
-    request: {
-      targetSeatId?: string;
-      content: string;
-      eventType?: string;
-      actorRef?: string;
-    },
-  ): Promise<CanonicalEventDto> =>
-    invoke('cmd_append_supervisor_message', { request }),
+  appendSupervisorMessage: (request: {
+    targetSeatId?: string;
+    content: string;
+    eventType?: string;
+    actorRef?: string;
+  }): Promise<CanonicalEventDto> => invoke('cmd_append_supervisor_message', { request }),
   openSupervisorWindow: (): Promise<void> => invoke('cmd_open_supervisor_window'),
   closeSupervisorWindow: (): Promise<void> => invoke('cmd_close_supervisor_window'),
   supervisorWindowStatus: (): Promise<{ detached: boolean }> =>
@@ -148,36 +173,29 @@ export const api = {
     invoke('cmd_pty_write_bytes', { sessionId, bytes }),
   ptyResize: (sessionId: string, rows: number, cols: number): Promise<void> =>
     invoke('cmd_pty_resize', { sessionId, rows, cols }),
-  killSession: (sessionId: string): Promise<void> =>
-    invoke('cmd_kill_session', { sessionId }),
+  killSession: (sessionId: string): Promise<void> => invoke('cmd_kill_session', { sessionId }),
   listLiveSessions: (): Promise<string[]> => invoke('cmd_list_live_sessions'),
 
   // --- tmux-mirror (v0.0.1 A3) ---
-  listTmuxSessions: (): Promise<TmuxSessionInfo[]> =>
-    invoke('cmd_list_tmux_sessions'),
+  listTmuxSessions: (): Promise<TmuxSessionInfo[]> => invoke('cmd_list_tmux_sessions'),
   attachTmuxSession: (request: {
     seatId?: string;
     tmuxSessionName: string;
     sessionId?: string;
     rows?: number;
     cols?: number;
-  }): Promise<LiveSessionDto> =>
-    invoke('cmd_attach_tmux_session', { request }),
+  }): Promise<LiveSessionDto> => invoke('cmd_attach_tmux_session', { request }),
 };
 
 // --- Event subscriptions -----------------------------------------------------
 
-export function onSessionOutput(
-  handler: (event: SessionOutputEvent) => void,
-): Promise<UnlistenFn> {
+export function onSessionOutput(handler: (event: SessionOutputEvent) => void): Promise<UnlistenFn> {
   return listen<SessionOutputEvent>('session:output', (e: Event<SessionOutputEvent>) =>
     handler(e.payload),
   );
 }
 
-export function onSessionExit(
-  handler: (event: SessionExitEvent) => void,
-): Promise<UnlistenFn> {
+export function onSessionExit(handler: (event: SessionExitEvent) => void): Promise<UnlistenFn> {
   return listen<SessionExitEvent>('session:exit', (e: Event<SessionExitEvent>) =>
     handler(e.payload),
   );
