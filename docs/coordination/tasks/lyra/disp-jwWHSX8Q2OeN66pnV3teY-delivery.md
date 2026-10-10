@@ -73,3 +73,9 @@ D5 Phase 2 拆解完毕并全部派发。产物 5 文档(契约 + 拆解 + 协�
   (等 `ev-seat-vela-001-registered` / 等 018+typed tools 两门)—— 我的收件箱全 blocked 时,
   调度器的 stall 检测会升级一条 SupervisorMessage,这是契约规则 5 的设计行为,不是故障;
   门事件落地时 013 触发器翻 ready + pg_notify,waker 会唤醒我继续驱动 Lane C。
+
+## Follow-up(2026-10-10 晚):vela 注册门事件已落地
+
+`ev-seat-vela-001-registered` 落账本 → 自派单 `disp-lyra-wash-p1` 解封 → 已派
+`disp-wash-vela-p1`(Lane C Part 1:S0–S2.5,零 LLM,seatloom 16 sessions)给
+seat-vela-001(status=ready)。`disp-lyra-wash-p2` 仍 blocked,等 018 + typed tools 两门。
