@@ -20,6 +20,12 @@ SCHEMA_DIR="$REPO/infra/postgres/schema"
 run_sql(){ podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 -q "$@"; }
 query(){ podman exec -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -tAc "$1" 2>/dev/null; }
 
+# 文件必须走 stdin 管给容器里的 psql,**不能用 -f 传宿主机路径** ——
+# psql 跑在容器里,会去容器自己的文件系统找那个路径,必然 "No such file or directory"。
+# (2026-10-11 第一版就是这个 bug。同一个脚本家族里的第二次宿主机/容器路径混淆:
+#  第一次是 podman exec 漏了 -i,heredoc 到不了 psql。)
+apply_file(){ run_sql < "$1"; }
+
 if ! query "select 1" | grep -q 1; then
   echo "❌ 数据库连不上。先跑: podman machine start && podman start $CONTAINER"
   exit 1
@@ -36,7 +42,7 @@ for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.s
   p="$SCHEMA_DIR/$f"
   if [ ! -r "$p" ]; then echo "❌ 找不到 $f —— 仓库是不是不在 track 分支?"; failed=1; break; fi
   printf "apply %-28s " "$f"
-  if run_sql -f "$p" >/tmp/apply-$f.log 2>&1; then echo "ok"
+  if apply_file "$p" >/tmp/apply-$f.log 2>&1; then echo "ok"
   else echo "失败 —— 详情: /tmp/apply-$f.log"; tail -5 "/tmp/apply-$f.log" | sed 's/^/    /'; failed=1; break; fi
 done
 echo
