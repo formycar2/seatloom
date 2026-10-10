@@ -369,12 +369,15 @@ fn db<E: std::error::Error + 'static>(e: E) -> DispatchRejection {
 
 /// The resolved seat this server acts as, as both the `seats.id` (for
 /// `target_seat_id` comparisons) and the `actor_ref` (for event actor refs).
-struct SeatIdentity {
-    seat_id: String,
-    actor_ref: String,
+///
+/// `pub(crate)` so the memory tools (Lane B) resolve the SAME identity through
+/// the SAME function — one rule, one place, no second resolution path.
+pub(crate) struct SeatIdentity {
+    pub(crate) seat_id: String,
+    pub(crate) actor_ref: String,
 }
 
-fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
+pub(crate) fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
     let raw = std::env::var(ACTOR_REF_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -388,7 +391,7 @@ fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
     })
 }
 
-fn resolve_project(call: Option<String>) -> Result<String, DispatchRejection> {
+pub(crate) fn resolve_project(call: Option<String>) -> Result<String, DispatchRejection> {
     if let Some(v) = call {
         if !v.trim().is_empty() {
             return Ok(v);
@@ -2202,7 +2205,12 @@ mod tests {
 #[cfg(test)]
 mod db_itests {
     use super::*;
+    use crate::memory::{
+        forget, promote, recall, remember, ForgetArgs, PromoteArgs, RecallArgs, RememberArgs,
+    };
+    use crate::read;
     use deadpool_postgres::Pool;
+    use seatloom_core::db::SeatloomDb;
     use tokio_postgres::NoTls;
 
     const SEAT: &str = "seat:seat-nimbus-001";
@@ -2286,6 +2294,24 @@ mod db_itests {
              VALUES ($1,$1,NOW(),1024,1024) ON CONFLICT (id) DO NOTHING",
             &[&project],
         ).await.expect("project");
+    }
+
+    /// Clean the D5 fixtures (015): memories, topics, and the memory events.
+    async fn clean_memories(pool: &Pool, project: &str) {
+        let c = pool.get().await.expect("client");
+        // Memories are deleted by topic membership as well as by project: a
+        // memory created under another project's fixture may still point at one
+        // of this project's topics, and the FK would refuse the topic delete.
+        for sql in [
+            format!(
+                "DELETE FROM memories WHERE project_id = '{project}' \
+                  OR topic_id IN (SELECT id FROM topics WHERE project_id = '{project}')"
+            ),
+            format!("DELETE FROM topics WHERE project_id = '{project}'"),
+            format!("DELETE FROM documents WHERE project_id = '{project}'"),
+        ] {
+            c.execute(&sql, &[]).await.expect("clean");
+        }
     }
 
     async fn status_of(pool: &Pool, id: &str) -> (String, i32) {
@@ -2820,6 +2846,489 @@ mod db_itests {
             event_payload["acceptance_plan"], row_plan,
             "the event carries the same plan as the row — one transaction"
         );
+    }
+
+    /// D5 Lane B against a real database: the whole memory lifecycle through the
+    /// TOOLS — remember, recall at each depth (with the audit event and the row's
+    /// heat/recall_count moving together), promote up and down, and the soft
+    /// tombstone — plus every negative branch as a typed refusal that writes
+    /// nothing. This is the contract's §5 acceptance matrix.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn memory_tools_lifecycle_and_refusals_against_the_db() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        clean_memories(&pool, project).await;
+        as_seat();
+        let db = SeatloomDb::new(pool.clone());
+
+        // --- the scope fixture: a parent topic and a child under it, plus a
+        // document the l2 pointer can name.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by) \
+                 VALUES ('topic-parent',$1,'parent topic','open','seat:seat-lyra-001')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by,parent_topic_id) \
+                 VALUES ('topic-child',$1,'child topic','open','seat:seat-lyra-001','topic-parent')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "INSERT INTO documents (id,project_id,title,file_path,parse_status,tags,depends_on) \
+                 VALUES ('doc-mem-target',$1,'the source doc','docs/src.md','ok','{}','{}')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        }
+
+        let events = || async {
+            pool.get()
+                .await
+                .unwrap()
+                .query_one(
+                    "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                    &[&project],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        };
+        let before = events().await;
+
+        // --- remember (document pointer)
+        let msg = remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "how the gate works".into(),
+                l0_summary: "accept needs flux green plus the operator".into(),
+                l1_overview: Some("the long version".into()),
+                l2_ref_kind: "document".into(),
+                l2_document_id: Some("doc-mem-target".into()),
+                l2_file_path: None,
+                l2_body_digest: None,
+                source_kind: "document".into(),
+                source_ref: "doc-mem-target".into(),
+                tags: vec!["d2".into()],
+            },
+        )
+        .await
+        .expect("remember must succeed");
+        let memory_id = msg
+            .split_whitespace()
+            .nth(2)
+            .expect("remembered memory <id>")
+            .to_string();
+        assert_eq!(events().await, before + 1, "exactly one MemoryCreated");
+
+        // The event's subject ref names the MEMORY (015's ref_type).
+        // The subject ref of THIS memory's creation event (filtered by the
+        // memory id — the project may hold other memories' events).
+        let subject = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT r.ref_type, r.ref_id FROM event_object_refs r \
+                   JOIN canonical_events e ON e.id = r.event_id \
+                  WHERE e.event_type = 'MemoryCreated' AND r.role = 'subject' \
+                    AND r.ref_id = $1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let ref_type: String = subject.get(0);
+        let ref_id: String = subject.get(1);
+        assert_eq!(ref_type, "memory");
+        assert_eq!(ref_id, memory_id);
+
+        // --- recall at l0: only the l0 layer, and the audit moves the row.
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall l0");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["depth"], "l0");
+        assert_eq!(v["memories"].as_array().unwrap().len(), 1);
+        let m = &v["memories"][0];
+        assert!(m.get("l0_summary").is_some(), "l0 is always returned");
+        assert!(m.get("l1_overview").is_none(), "l1 is omitted at l0");
+        assert!(m.get("l2_ref_kind").is_none(), "l2 is omitted at l0");
+        // The topic's ancestor chain rides along.
+        let chain: Vec<&str> = v["topic_chain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(chain, vec!["topic-child", "topic-parent"]);
+        // heat/recall_count/last_recalled_at moved, and exactly one event landed.
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT heat, recall_count, last_recalled_at FROM memories WHERE id=$1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let heat: i32 = row.get(0);
+        let recall_count: i32 = row.get(1);
+        let last: Option<chrono::DateTime<chrono::Utc>> = row.get(2);
+        assert_eq!((heat, recall_count), (1, 1));
+        assert!(last.is_some(), "last_recalled_at must be set");
+        assert_eq!(events().await, before + 2, "one MemoryRecalled");
+
+        // --- l1 and l2 disclose their layers
+        for (depth, field) in [("l1", "l1_overview"), ("l2", "l2_ref_kind")] {
+            let out = recall(
+                &db,
+                RecallArgs {
+                    project_id: Some(project.into()),
+                    topic_id: "topic-child".into(),
+                    query: None,
+                    depth: Some(depth.into()),
+                    limit: None,
+                },
+            )
+            .await
+            .expect("recall at depth");
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert!(
+                v["memories"][0].get(field).is_some(),
+                "{depth} must disclose {field}"
+            );
+        }
+        // heat is now 3 (three recalls), each audited.
+        let heat: i32 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one("SELECT heat FROM memories WHERE id=$1", &[&memory_id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(heat, 3);
+
+        // --- promote up, then down; the same tier is refused
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "warm".into(),
+            },
+        )
+        .await
+        .expect("cold -> warm");
+        let tier: String = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one("SELECT tier FROM memories WHERE id=$1", &[&memory_id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(tier, "warm");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "warm".into(),
+            },
+        )
+        .await
+        .expect_err("the same tier is no transition");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "cold".into(),
+            },
+        )
+        .await
+        .expect("warm -> cold (down is allowed)");
+        let promoted: Vec<(String, String)> = pool
+            .get()
+            .await
+            .unwrap()
+            .query(
+                "SELECT payload->>'from_tier', payload->>'to_tier' FROM canonical_events \
+                  WHERE event_type='MemoryPromoted' AND project_id = $1 \
+                  ORDER BY occurred_at",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        assert_eq!(
+            promoted,
+            vec![
+                ("cold".to_string(), "warm".to_string()),
+                ("warm".to_string(), "cold".to_string())
+            ]
+        );
+
+        // --- forget: soft tombstone, row stays, second forget refused
+        forget(
+            &db,
+            ForgetArgs {
+                memory_id: memory_id.clone(),
+                reason: "superseded by the newer note".into(),
+            },
+        )
+        .await
+        .expect("forget");
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT status, forgotten_reason FROM memories WHERE id=$1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let status: String = row.get(0);
+        let reason: Option<String> = row.get(1);
+        assert_eq!(status, "forgotten");
+        assert_eq!(reason.as_deref(), Some("superseded by the newer note"));
+        forget(
+            &db,
+            ForgetArgs {
+                memory_id: memory_id.clone(),
+                reason: "again".into(),
+            },
+        )
+        .await
+        .expect_err("a tombstone is immutable");
+        // A forgotten memory is excluded from recall.
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall after forget");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["memories"].as_array().unwrap().len(),
+            0,
+            "a forgotten memory is not recalled"
+        );
+        assert_eq!(v["recalled"], 0, "zero hits = zero events");
+
+        // --- the negative branches, each a typed refusal that writes nothing
+        let settled = events().await;
+        for bad in [
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: Some("l3".into()),
+                limit: None,
+            },
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                limit: Some(101),
+            },
+        ] {
+            recall(&db, bad).await.expect_err("must refuse");
+        }
+        remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "t".into(),
+                l0_summary: "s".into(),
+                l1_overview: None,
+                l2_ref_kind: "file".into(),
+                l2_document_id: None,
+                l2_file_path: None,
+                l2_body_digest: None,
+                source_kind: "manual".into(),
+                source_ref: "note".into(),
+                tags: vec![],
+            },
+        )
+        .await
+        .expect_err("a file pointer without a path is refused");
+        remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "t".into(),
+                l0_summary: "s".into(),
+                l1_overview: None,
+                l2_ref_kind: "document".into(),
+                l2_document_id: Some("doc-mem-target".into()),
+                l2_file_path: Some("docs/x.md".into()),
+                l2_body_digest: None,
+                source_kind: "vibes".into(),
+                source_ref: "note".into(),
+                tags: vec![],
+            },
+        )
+        .await
+        .expect_err("an unknown source_kind is refused");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "tepid".into(),
+            },
+        )
+        .await
+        .expect_err("an unknown tier is refused");
+        assert_eq!(events().await, settled, "every refusal above wrote nothing");
+    }
+
+    /// The two pure reads against a real database: `get_dispatch` answers with
+    /// the row, its LIVE status and its edges; `query_ledger` filters and pages.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn read_tools_answer_from_the_ledger() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+        // One in_flight dispatch per seat, GLOBALLY: drain whatever an earlier
+        // test left this seat holding before pulling this test's own dispatch.
+        let held = get_next(&pool, Some(project.into())).await.unwrap();
+        if let Some(id) = held
+            .split_whitespace()
+            .nth(1)
+            .filter(|_| held.contains("delivered"))
+        {
+            complete(
+                &pool,
+                CompleteArgs {
+                    dispatch_id: id.to_string(),
+                    outcome: None,
+                    reason: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-read", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        let db = SeatloomDb::new(pool.clone());
+
+        // get_dispatch: in_flight is returned as stored (never recomputed).
+        let out = read::get_dispatch(
+            &db,
+            read::GetDispatchArgs {
+                dispatch_id: "disp-it-read".into(),
+            },
+        )
+        .await
+        .expect("the dispatch read model");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "in_flight");
+        assert_eq!(v["liveStatus"], "in_flight");
+        assert_eq!(v["title"], "itest");
+
+        // An unknown id is a typed refusal, not an empty object.
+        read::get_dispatch(
+            &db,
+            read::GetDispatchArgs {
+                dispatch_id: "disp-nope".into(),
+            },
+        )
+        .await
+        .expect_err("unknown dispatch");
+
+        // query_ledger: filter by type, and the ref filter as a pair.
+        let out = read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: Some(project.into()),
+                event_types: vec!["SeatDispatchIssued".into(), "SeatDispatchDelivered".into()],
+                ref_type: None,
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect("the ledger query");
+        let events: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(events.len(), 2, "issued + delivered");
+        assert_eq!(events[0]["eventType"], "SeatDispatchDelivered");
+
+        // A half ref filter is a malformed call, not a wider query.
+        read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: None,
+                event_types: vec![],
+                ref_type: Some("dispatch".into()),
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect_err("half a ref filter");
+        // An unknown event type is refused by the hand-written FromStr.
+        read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: None,
+                event_types: vec!["SeatDispatchReopened".into()],
+                ref_type: None,
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect_err("an unknown event type");
     }
 
     /// Defect 2 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): a pending card can

@@ -103,6 +103,13 @@ pub fn tools_list_result() -> Value {
             request_acceptance_tool(),
             cancel_acceptance_tool(),
             get_acceptance_lineage_tool(),
+            // --- D5 knowledge layer (Lane B) ---
+            recall_tool(),
+            remember_tool(),
+            promote_tool(),
+            forget_tool(),
+            get_dispatch_tool(),
+            query_ledger_tool(),
         ]
     })
 }
@@ -408,6 +415,154 @@ fn cancel_acceptance_tool() -> Value {
     })
 }
 
+/// `recall` — progressive-disclosure retrieval. Depth defaults to l0; the
+/// topic's ancestor chain rides along so a memory is never read out of context.
+fn recall_tool() -> Value {
+    json!({
+        "name": "recall",
+        "description": "Recall a project+topic's ACTIVE memories with progressive disclosure: \
+            depth l0 (default) returns only the ~100-token summaries, l1 adds the ~2K overview, l2 \
+            adds the raw pointer (document id or file path). The response carries the topic's \
+            ANCESTOR CHAIN (topics.parent_topic_id) so a memory is never read out of context. \
+            Optional text query over title + l0_summary. Side effect: exactly one MemoryRecalled \
+            event per returned memory (heat+1, recall_count+1) — every recall is audited; zero hits \
+            append zero events. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." },
+                "topic_id": { "type": "string", "minLength": 1, "description": "The topic to recall from. project + topic is the ONLY scoping framework — there is no all-projects recall." },
+                "query": { "type": "string", "description": "Text filter over title + l0_summary. Omitted = every active memory of the topic." },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed rejection." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Page size, default 20, hard ceiling 100. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
+/// `remember` — create a memory. Tier starts cold and status starts active; the
+/// caller cannot specify either.
+fn remember_tool() -> Value {
+    json!({
+        "name": "remember",
+        "description": "Create a memory (small-granularity distilled knowledge, scoped by project + \
+            topic) and append MemoryCreated in ONE transaction. l0_summary is required and is the \
+            only default layer; l1_overview and the l2 pointer are optional. The l2 pointer pair must \
+            match: l2_ref_kind 'document' requires l2_document_id (and no file path), 'file' requires \
+            l2_file_path (and no document id). source_kind/source_ref record provenance. Tier starts \
+            'cold', status starts 'active' — neither is caller-settable. Identity from \
+            SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id", "title", "l0_summary", "l2_ref_kind", "source_kind", "source_ref"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it." },
+                "topic_id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "l0_summary": { "type": "string", "minLength": 1, "description": "~100 tokens; the only default layer." },
+                "l1_overview": { "type": "string", "description": "~2K tokens; fetched only when a recall asks for depth l1." },
+                "l2_ref_kind": { "type": "string", "enum": ["document", "file"] },
+                "l2_document_id": { "type": "string", "description": "Required when l2_ref_kind is 'document'." },
+                "l2_file_path": { "type": "string", "description": "Required when l2_ref_kind is 'file'; repo-relative." },
+                "l2_body_digest": { "type": "string", "description": "sha256 hex of the referenced body, documents.body_digest style." },
+                "source_kind": { "type": "string", "enum": ["archived_session", "canonical_event", "document", "manual"] },
+                "source_ref": { "type": "string", "minLength": 1, "description": "Polymorphic provenance: '<harness>:<id>' for archived_session, an event id, a doc id, or an actor note. No FK — recorded, never guessed." },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        }
+    })
+}
+
+/// `promote` — the ONLY tier channel. Explicit target tier, up OR down; there is
+/// no automatic decay anywhere.
+fn promote_tool() -> Value {
+    json!({
+        "name": "promote",
+        "description": "Change a memory's tier — the ONLY channel, and the only way a tier ever \
+            moves. to_tier may be higher OR lower than the current tier; naming the tier the memory \
+            already has is a typed refusal (no transition, nothing written). Appends MemoryPromoted \
+            with from_tier/to_tier in ONE transaction. There is NO automatic heat decay and NO \
+            background daemon. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "to_tier"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "to_tier": { "type": "string", "enum": ["cold", "warm", "hot"] }
+            }
+        }
+    })
+}
+
+/// `forget` — the soft tombstone. The row is never hard-deleted.
+fn forget_tool() -> Value {
+    json!({
+        "name": "forget",
+        "description": "Soft-forget a memory: status active -> forgotten, the reason recorded on the \
+            row and in the MemoryForgotten event, ONE transaction. The row is NEVER hard-deleted \
+            (ledger discipline), and a second forget of a tombstone is refused. A forgotten memory is \
+            excluded from recall. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "reason"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "reason": { "type": "string", "minLength": 1, "description": "Mandatory: a tombstone with no recorded why is an unexplained edit to the ledger." }
+            }
+        }
+    })
+}
+
+/// `get_dispatch` — the dispatch read model. Pure read, no identity.
+fn get_dispatch_tool() -> Value {
+    json!({
+        "name": "get_dispatch",
+        "description": "One dispatch's read model: the row (including the ORIGINAL task statement in \
+            payload), its LIVE status (recomputed from its dependencies' existence, the same rule the \
+            pull decision uses), and each dependency edge with its referent's existence. Pure read — \
+            zero writes, zero events, no write capability. Coordination state is visible to the fleet, \
+            so no seat identity is required.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
+/// `query_ledger` — a filtered ledger query. Pure read, no identity.
+fn query_ledger_tool() -> Value {
+    json!({
+        "name": "query_ledger",
+        "description": "Query the canonical ledger: canonical_events with their event_object_refs, \
+            filtered by project, event types (validated against the closed vocabulary), a ref \
+            (ref_type + ref_id together), and an occurred_at window; newest first, paged. Pure read — \
+            zero writes, zero events. This is the tool that ends the psql era.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1 },
+                "event_types": { "type": "array", "items": { "type": "string" }, "description": "Event types from the closed vocabulary; an unknown type is a typed rejection." },
+                "ref_type": { "type": "string", "description": "With ref_id: filter to events naming that object." },
+                "ref_id": { "type": "string" },
+                "from": { "type": "string", "description": "RFC3339 inclusive lower bound on occurred_at." },
+                "to": { "type": "string", "description": "RFC3339 inclusive upper bound on occurred_at." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 50, hard ceiling 200." },
+                "offset": { "type": "integer", "minimum": 0 }
+            }
+        }
+    })
+}
+
 /// A `tools/call` result carrying one text block. `is_error` maps to the MCP
 /// `isError` flag so a rejection is a tool error, not a transport error.
 pub fn tool_call_result(text: &str, is_error: bool) -> Value {
@@ -470,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_eight_tools() {
+    fn tools_list_advertises_the_fourteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -484,7 +639,13 @@ mod tests {
                 "cancel_dispatch",
                 "request_acceptance",
                 "cancel_acceptance",
-                "get_acceptance_lineage"
+                "get_acceptance_lineage",
+                "recall",
+                "remember",
+                "promote",
+                "forget",
+                "get_dispatch",
+                "query_ledger"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).

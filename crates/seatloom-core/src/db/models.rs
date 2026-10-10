@@ -455,6 +455,85 @@ pub struct DispatchDependencyRow {
     pub dep_value: String,
 }
 
+/// One memory row (schema 015, D5 knowledge layer) — a small-granularity
+/// distilled knowledge unit scoped by project + topic (the ONLY scoping
+/// framework, contract's unchanged ruling).
+///
+/// The three layers are progressive disclosure: `l0_summary` is the ONLY default
+/// (~100 tokens), `l1_overview` is fetched on demand (~2K tokens), and the L2
+/// pointer (`l2_ref_kind` + `l2_document_id` | `l2_file_path`) leads to the raw
+/// material. Large refined products stay in `documents` (002) — memories point
+/// at them, they do not fork that model.
+#[derive(Debug, Clone)]
+pub struct MemoryRow {
+    pub id: String,
+    pub project_id: String,
+    pub topic_id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2_ref_kind: String, // 'document' | 'file'
+    pub l2_document_id: Option<String>,
+    pub l2_file_path: Option<String>,
+    pub l2_body_digest: Option<String>,
+    /// 'archived_session' | 'canonical_event' | 'document' | 'manual'.
+    pub source_kind: String,
+    /// Polymorphic provenance reference, NO FK (the 010 ref-fabric reasoning):
+    /// `'<harness>:<id>'` | event id | doc id | actor note.
+    pub source_ref: String,
+    /// +1 per recall. NO automatic decay, ever.
+    pub heat: i32,
+    pub recall_count: i32,
+    /// NULL = never recalled.
+    pub last_recalled_at: Option<DateTime<Utc>>,
+    /// 'cold' | 'warm' | 'hot'. Transitions ONLY via the promote tool.
+    pub tier: String,
+    pub tier_changed_at: DateTime<Utc>,
+    /// 'active' | 'forgotten'. forget is a SOFT tombstone; rows are never
+    /// hard-deleted.
+    pub status: String,
+    pub forgotten_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One topic row (010) as the lineage assembler needs it: the ancestor chain of
+/// a recall's topic, one entry per level.
+#[derive(Debug, Clone)]
+pub struct TopicRow {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+}
+
+/// A dispatch with its LIVE status and dependency edges — the `get_dispatch`
+/// read tool's answer. `live_status` is recomputed by the same existence rule the
+/// pull decision uses, so a reader sees what the scheduler would see.
+#[derive(Debug, Clone)]
+pub struct DispatchReadModel {
+    pub dispatch: DispatchRow,
+    pub live_status: String,
+    pub dependencies: Vec<DispatchDependencyStatus>,
+}
+
+/// One dependency edge with its referent's live existence.
+#[derive(Debug, Clone)]
+pub struct DispatchDependencyStatus {
+    pub dep_kind: String,
+    pub dep_value: String,
+    pub exists: bool,
+}
+
+/// One ledger event with its object refs — the `query_ledger` read tool's answer.
+#[derive(Debug, Clone)]
+pub struct LedgerEventWithRefs {
+    pub event: CanonicalEventRow,
+    pub refs: Vec<ObjectRefRow>,
+}
+
 /// One row of `event_object_refs` (001): how an event names an object.
 /// `role` was added by 010 and is NOT NULL there; the lineage assembler reads
 /// refs by event id, so the role rides along for callers that need it.

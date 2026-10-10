@@ -9,11 +9,12 @@ use tokio_postgres::Row;
 use crate::db::event_domain::{EventType, RefRole, RefType};
 use crate::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
-    ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
-    DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
-    HandoffRow, ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
+    ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
+    DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, LedgerEventWithRefs, MemoryRow,
+    ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
     PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    SeatDelegationRow, SeatRow, SessionRow, TopicRow, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::seat::SeatRole;
@@ -674,6 +675,466 @@ impl SeatloomDb {
         };
         let row = client.query_one(sql, &[&dep_value]).await?;
         Ok(row.get(0))
+    }
+
+    // =========================================================================
+    // Knowledge layer (D5, 015) — memories: reads + the three write paths.
+    // Every write appends its event in the SAME transaction (the 012 dispatch
+    // pattern, `append_event_in_tx`) — there is no second write path, and no
+    // seat writes a `memories` row by any other means.
+    // =========================================================================
+
+    /// One memory by id.
+    pub async fn get_memory(&self, memory_id: &str) -> Result<Option<MemoryRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        Ok(row.as_ref().map(row_to_memory))
+    }
+
+    /// The recall read: a project+topic's ACTIVE memories, optionally filtered by
+    /// a text query over `title` + `l0_summary` (002's FTS pattern — plain
+    /// `to_tsvector` matching, no embeddings), ordered for an inbox: heat DESC,
+    /// then most recently updated. Scope is mandatory — there is no
+    /// "all projects" recall.
+    pub async fn list_memories_for_recall(
+        &self,
+        project_id: &str,
+        topic_id: &str,
+        query: Option<&str>,
+        include_forgotten: bool,
+        limit: i64,
+    ) -> Result<Vec<MemoryRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
+                        l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
+                        source_kind, source_ref, heat, recall_count, last_recalled_at, \
+                        tier, tier_changed_at, status, forgotten_reason, created_at, updated_at \
+                   FROM memories \
+                  WHERE project_id = $1 AND topic_id = $2 \
+                    AND ($3::bool OR status = 'active') \
+                    AND ($4::text IS NULL OR to_tsvector('simple', title || ' ' || l0_summary) \
+                         @@ plainto_tsquery('simple', $4)) \
+                  ORDER BY heat DESC, updated_at DESC \
+                  LIMIT $5",
+                &[&project_id, &topic_id, &include_forgotten, &query, &limit],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_memory).collect())
+    }
+
+    /// A topic and its ancestor chain (001/010 `topics.parent_topic_id`), nearest
+    /// first. Recalled knowledge is returned WITH this chain so a memory is
+    /// never read out of context — "断章取义" is the failure mode the contract
+    /// names. The chain is bounded by the tree's depth; a cycle cannot exist
+    /// because 010's self-FK plus the not-self CHECK keep it a tree.
+    pub async fn topic_ancestor_chain(&self, topic_id: &str) -> Result<Vec<TopicRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "WITH RECURSIVE chain AS ( \
+                   SELECT id, project_id, title, status, parent_topic_id, 0 AS depth \
+                     FROM topics WHERE id = $1 \
+                   UNION ALL \
+                   SELECT t.id, t.project_id, t.title, t.status, t.parent_topic_id, c.depth + 1 \
+                     FROM topics t JOIN chain c ON t.id = c.parent_topic_id \
+                    WHERE c.depth < 32 \
+                 ) \
+                 SELECT id, project_id, title, status, parent_topic_id FROM chain \
+                  ORDER BY depth",
+                &[&topic_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| TopicRow {
+                id: r.get(0),
+                project_id: r.get(1),
+                title: r.get(2),
+                status: r.get(3),
+                parent_topic_id: r.get(4),
+            })
+            .collect())
+    }
+
+    /// `remember`: insert the row + append `MemoryCreated` in ONE transaction.
+    /// The caller (the tool) has already validated the shape; this is the write
+    /// path, and the only one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_memory(
+        &self,
+        memory_id: &str,
+        project_id: &str,
+        topic_id: &str,
+        title: &str,
+        tags: &[String],
+        l0_summary: &str,
+        l1_overview: Option<&str>,
+        l2_ref_kind: &str,
+        l2_document_id: Option<&str>,
+        l2_file_path: Option<&str>,
+        l2_body_digest: Option<&str>,
+        source_kind: &str,
+        source_ref: &str,
+        actor_ref: &str,
+    ) -> Result<(), DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        tx.execute(
+            "INSERT INTO memories \
+               (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
+                l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
+                source_kind, source_ref) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+            &[
+                &memory_id,
+                &project_id,
+                &topic_id,
+                &title,
+                &tags,
+                &l0_summary,
+                &l1_overview,
+                &l2_ref_kind,
+                &l2_document_id,
+                &l2_file_path,
+                &l2_body_digest,
+                &source_kind,
+                &source_ref,
+            ],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::MemoryCreated,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: actor_ref.to_string(),
+            project_id: project_id.to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "memory_id": memory_id,
+                "topic_id": topic_id,
+                "title": title,
+                "source_kind": source_kind,
+                "source_ref": source_ref,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Memory, memory_id),
+                ObjectRefDraft::new(RefType::Seat, actor_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Topic, topic_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The recall audit: `heat+1, recall_count+1, last_recalled_at=now` on the
+    /// row AND exactly one `MemoryRecalled` event, in ONE transaction (contract
+    /// §9: every recall is recorded — the ledger grows from "what happened" to
+    /// "what is known"). Returns the row as landed.
+    pub async fn record_recall(
+        &self,
+        memory_id: &str,
+        actor_ref: &str,
+    ) -> Result<MemoryRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        // Guarded: only an ACTIVE memory is recalled. A forgotten one is a
+        // tombstone — recalling it would resurrect it through the back door.
+        let row = tx
+            .query_opt(
+                &format!("{MEMORY_COLUMNS} WHERE id = $1 AND status = 'active'"),
+                &[&memory_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::MemoryNotActive {
+                id: memory_id.to_string(),
+            });
+        };
+        let project_id: String = row.get(1);
+        let topic_id: String = row.get(2);
+        let heat_before: i32 = row.get(13);
+        tx.execute(
+            "UPDATE memories \
+               SET heat = heat + 1, recall_count = recall_count + 1, \
+                   last_recalled_at = NOW(), updated_at = NOW() \
+              WHERE id = $1 AND status = 'active'",
+            &[&memory_id],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::MemoryRecalled,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: actor_ref.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "memory_id": memory_id,
+                "topic_id": topic_id,
+                "heat_delta": 1,
+                "heat": heat_before + 1,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Memory, memory_id),
+                ObjectRefDraft::new(RefType::Seat, actor_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Topic, &topic_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    /// `promote`: the ONLY tier channel — an explicit target tier, up OR down.
+    /// Same tier = no transition = refused (nothing is written, no event).
+    pub async fn set_memory_tier(
+        &self,
+        memory_id: &str,
+        to_tier: &str,
+        actor_ref: &str,
+    ) -> Result<MemoryRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::MemoryNotFound {
+                id: memory_id.to_string(),
+            });
+        };
+        let project_id: String = row.get(1);
+        let topic_id: String = row.get(2);
+        let from_tier: String = row.get(16);
+        if from_tier == to_tier {
+            return Err(DbError::MemoryNoTierChange {
+                id: memory_id.to_string(),
+                tier: from_tier,
+            });
+        }
+        tx.execute(
+            "UPDATE memories SET tier = $2, tier_changed_at = NOW(), updated_at = NOW() \
+              WHERE id = $1",
+            &[&memory_id, &to_tier],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::MemoryPromoted,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: actor_ref.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "memory_id": memory_id,
+                "topic_id": topic_id,
+                "from_tier": from_tier,
+                "to_tier": to_tier,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Memory, memory_id),
+                ObjectRefDraft::new(RefType::Seat, actor_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Topic, &topic_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    /// `forget`: the soft tombstone. `status='forgotten'` + the reason + one
+    /// `MemoryForgotten` event, in ONE transaction. The row is NEVER deleted
+    /// (ledger discipline), and a second forget of a tombstone is refused.
+    pub async fn forget_memory(
+        &self,
+        memory_id: &str,
+        reason: &str,
+        actor_ref: &str,
+    ) -> Result<MemoryRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::MemoryNotFound {
+                id: memory_id.to_string(),
+            });
+        };
+        let status: String = row.get(18);
+        if status != "active" {
+            return Err(DbError::MemoryNotActive {
+                id: memory_id.to_string(),
+            });
+        }
+        let project_id: String = row.get(1);
+        let topic_id: String = row.get(2);
+        tx.execute(
+            "UPDATE memories SET status = 'forgotten', forgotten_reason = $2, \
+               updated_at = NOW() WHERE id = $1 AND status = 'active'",
+            &[&memory_id, &reason],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::MemoryForgotten,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: actor_ref.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "memory_id": memory_id,
+                "topic_id": topic_id,
+                "reason": reason,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Memory, memory_id),
+                ObjectRefDraft::new(RefType::Seat, actor_ref, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Topic, &topic_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
+            .await?;
+        let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    // =========================================================================
+    // Read tools' back ends (D5 Lane B §3.5/§3.6) — pure reads, so no seat has
+    // to reach for psql. They expose NO write capability.
+    // =========================================================================
+
+    /// The dispatch read model: the row, its LIVE status (recomputed from its
+    /// dependencies' existence, exactly like the pull decision), and its
+    /// dependency edges with each referent's existence.
+    pub async fn dispatch_read_model(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Option<DispatchReadModel>, DbError> {
+        let Some(row) = self.get_dispatch(dispatch_id).await? else {
+            return Ok(None);
+        };
+        let deps = self.list_dispatch_dependencies(dispatch_id).await?;
+        let mut edges = Vec::with_capacity(deps.len());
+        let mut all_satisfied = true;
+        for d in deps {
+            let exists = self.referent_exists(&d.dep_kind, &d.dep_value).await?;
+            all_satisfied &= exists;
+            edges.push(DispatchDependencyStatus {
+                dep_kind: d.dep_kind,
+                dep_value: d.dep_value,
+                exists,
+            });
+        }
+        // `live_status` mirrors the scheduler: terminal and in_flight rows are
+        // returned as stored (never recomputed), and a non-terminal row is ready
+        // iff every dependency exists, else blocked.
+        let live_status = match row.status.as_str() {
+            "done" | "failed" | "cancelled" | "in_flight" => row.status.clone(),
+            _ => {
+                if all_satisfied {
+                    "ready".to_string()
+                } else {
+                    "blocked".to_string()
+                }
+            }
+        };
+        Ok(Some(DispatchReadModel {
+            dispatch: row,
+            live_status,
+            dependencies: edges,
+        }))
+    }
+
+    /// The ledger query: `canonical_events` filtered by project, event types, a
+    /// ref (`ref_type` + `ref_id`), and an `occurred_at` window, newest first,
+    /// each with its object refs. Pure read.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_ledger(
+        &self,
+        project_id: Option<&str>,
+        event_types: &[String],
+        ref_type: Option<&str>,
+        ref_id: Option<&str>,
+        from: Option<chrono::DateTime<Utc>>,
+        to: Option<chrono::DateTime<Utc>>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<LedgerEventWithRefs>, DbError> {
+        // An empty type list means "no type filter", not "match nothing": the
+        // parameter is NULL when the caller named no types, because
+        // `event_type = ANY('{}')` would exclude every row.
+        let types: Option<Vec<String>> = if event_types.is_empty() {
+            None
+        } else {
+            Some(event_types.to_vec())
+        };
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT DISTINCT e.id, e.event_type, e.occurred_at, e.actor_ref, e.payload, \
+                        e.created_at, e.project_id \
+                   FROM canonical_events e \
+                   LEFT JOIN event_object_refs r ON r.event_id = e.id \
+                  WHERE ($1::text IS NULL OR e.project_id = $1) \
+                    AND ($2::text[] IS NULL OR e.event_type = ANY($2)) \
+                    AND ($3::text IS NULL OR (r.ref_type = $3 AND r.ref_id = $4)) \
+                    AND ($5::timestamptz IS NULL OR e.occurred_at >= $5) \
+                    AND ($6::timestamptz IS NULL OR e.occurred_at <= $6) \
+                  ORDER BY e.occurred_at DESC, e.id DESC \
+                  LIMIT $7 OFFSET $8",
+                &[
+                    &project_id,
+                    &types,
+                    &ref_type,
+                    &ref_id,
+                    &from,
+                    &to,
+                    &limit,
+                    &offset,
+                ],
+            )
+            .await?;
+        // An empty type list means "no type filter", not "match nothing": pass
+        // NULL rather than an empty array, or `= ANY('{}')` excludes every row.
+        let events: Vec<CanonicalEventRow> = rows.iter().map(row_to_event).collect();
+        let refs = self
+            .list_object_refs_for_events(&events.iter().map(|e| e.id.clone()).collect::<Vec<_>>())
+            .await?;
+        Ok(events
+            .into_iter()
+            .map(|e| {
+                let event_refs: Vec<ObjectRefRow> = refs
+                    .iter()
+                    .filter(|r| r.event_id == e.id)
+                    .cloned()
+                    .collect();
+                LedgerEventWithRefs {
+                    event: e,
+                    refs: event_refs,
+                }
+            })
+            .collect())
     }
 
     /// Does the referent of a Flux verdict reference exist? The ref is
@@ -1921,6 +2382,42 @@ fn row_to_dispatch_dep(r: &Row) -> DispatchDependencyRow {
     }
 }
 
+/// The `memories` column list, in `MemoryRow`'s field order. Shared by every
+/// memory read so the row hydration has ONE definition.
+const MEMORY_COLUMNS: &str =
+    "SELECT id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
+        l2_ref_kind, l2_document_id, l2_file_path, l2_body_digest, \
+        source_kind, source_ref, heat, recall_count, last_recalled_at, \
+        tier, tier_changed_at, status, forgotten_reason, created_at, updated_at \
+          FROM memories";
+
+fn row_to_memory(r: &Row) -> MemoryRow {
+    MemoryRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        topic_id: r.get(2),
+        title: r.get(3),
+        tags: r.get(4),
+        l0_summary: r.get(5),
+        l1_overview: r.get(6),
+        l2_ref_kind: r.get(7),
+        l2_document_id: r.get(8),
+        l2_file_path: r.get(9),
+        l2_body_digest: r.get(10),
+        source_kind: r.get(11),
+        source_ref: r.get(12),
+        heat: r.get(13),
+        recall_count: r.get(14),
+        last_recalled_at: r.get(15),
+        tier: r.get(16),
+        tier_changed_at: r.get(17),
+        status: r.get(18),
+        forgotten_reason: r.get(19),
+        created_at: r.get(20),
+        updated_at: r.get(21),
+    }
+}
+
 fn row_to_acceptance(r: &Row) -> AcceptanceRow {
     AcceptanceRow {
         id: r.get(0),
@@ -2233,6 +2730,20 @@ pub enum DbError {
     /// id) — the guarded write refused, so nothing was written.
     #[error("acceptance {id:?} is not pending (already decided or unknown)")]
     AcceptanceNotPending { id: String },
+    /// `015`: the memory id names no row.
+    #[error("memory {id:?} not found")]
+    MemoryNotFound { id: String },
+    /// `015`: the memory is not `active` — a forgotten row is a tombstone, and a
+    /// recall of one would resurrect it through the back door; a second forget
+    /// would rewrite a recorded fact.
+    #[error("memory {id:?} is not active (forgotten rows are immutable tombstones)")]
+    MemoryNotActive { id: String },
+    /// `015`: `promote` was called with the tier the memory already has — no
+    /// transition, so nothing is written and no event is appended.
+    #[error(
+        "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
+    )]
+    MemoryNoTierChange { id: String, tier: String },
     /// A stored string is outside the value domain its Rust type declares.
     /// Raised only at the row-hydration parse boundary (see `check_domain`).
     #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
