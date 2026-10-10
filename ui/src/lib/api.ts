@@ -61,7 +61,7 @@ export function isTauri(): boolean {
  * Flip to `true` when `cmd_list_acceptances` / `cmd_accept_delivery` /
  * `cmd_reject_delivery` are on `track` — that is the whole follow-up.
  */
-export const ACCEPTANCE_CMDS_REGISTERED = false;
+export const ACCEPTANCE_CMDS_REGISTERED = true;
 
 export const api = {
   ping: (): Promise<string> => invoke('cmd_ping'),
