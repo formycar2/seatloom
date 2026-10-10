@@ -1,12 +1,16 @@
 // Git operations: commit, branch, diff, last-commit hash.
 // Full implementation deferred to git-ops packet.
 //
-// What IS implemented here is the one operation the governed-dispatch
-// acceptance gate (014, D2) needs before it records anything: proving that a
-// branch NAME exists in the repository. `request_acceptance` validates the
-// merge base at request time and `cmd_accept_delivery` validates both refs at
-// decision time, and both call this helper so "the branch does not exist" is
-// one refusal with one wording, not two.
+// What IS implemented here is the git vocabulary the governed-dispatch
+// acceptance gate (014, D2) needs before it records anything:
+//   - that a branch NAME exists in the repository (`local_branch_exists`);
+//   - that the delivery branch CONTAINS the base (`branch_contains`);
+//   - which files tracked on the base a merge would DELETE
+//     (`merge_would_delete`).
+// `request_acceptance` runs all three at request time and
+// `cmd_accept_delivery` re-runs them at decision time, and both call these
+// helpers so each refusal has one implementation and one wording — never a
+// second, divergent copy.
 
 use std::path::{Path, PathBuf};
 
@@ -76,6 +80,100 @@ pub async fn local_branch_exists(repo_root: &Path, branch: &str) -> Result<bool,
     Ok(false)
 }
 
+/// Is `base` an ANCESTOR of `branch`? (`git merge-base --is-ancestor`.)
+///
+/// This is the "your branch is synced" question, asked as a fact about the
+/// repository rather than as discipline: a delivery whose branch does not
+/// contain its base would, on accept, merge a branch that never saw the base's
+/// later work — reverting whatever landed on the base since the fork.
+/// `Ok(false)` means "a real work tree, and base is not an ancestor"; a root
+/// that is not a work tree is an `Err` (see `local_branch_exists`).
+pub async fn branch_contains(repo_root: &Path, branch: &str, base: &str) -> Result<bool, String> {
+    let out = tokio::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", base, branch])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("git merge-base --is-ancestor {base} {branch}: {e}"))?;
+    // Exit status 0 = ancestor, 1 = not an ancestor, anything else = git itself
+    // failed (unknown ref, not a repo). A failure must not read as "not an
+    // ancestor", so ask the work-tree question before answering.
+    if out.status.success() {
+        return Ok(true);
+    }
+    if out.status.code() == Some(1) {
+        return Ok(false);
+    }
+    let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(format!(
+        "git merge-base --is-ancestor {base} {branch} failed: {detail}"
+    ))
+}
+
+/// Which files TRACKED ON `base` would a merge of `branch` into `base` DELETE?
+///
+/// This is the structural defence against the failure mode that made Accept
+/// destroy already-merged work: a branch that deleted files the base still
+/// tracks would, on accept, delete them on the base. Previewing is cheap and
+/// side-effect-free — `git merge-tree` writes nothing, touches no ref, and
+/// leaves the working tree exactly as found (unlike a `merge --no-commit`
+/// rehearsal, which does).
+///
+/// The answer is the list of paths the merge would REMOVE relative to the base's
+/// current tree; an empty list means the merge deletes nothing tracked.
+pub async fn merge_would_delete(
+    repo_root: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<Vec<String>, String> {
+    // `merge-tree --write-tree` (git >= 2.38) prints the resulting tree oid on
+    // the first line and, on conflict, a conflicted-file-info block. We only
+    // need the tree: diffing base..tree gives the exact file-level effect.
+    let out = tokio::process::Command::new("git")
+        .args(["merge-tree", "--write-tree", base, branch])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("git merge-tree --write-tree {base} {branch}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let Some(tree) = stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    else {
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!(
+            "git merge-tree --write-tree {base} {branch} produced no tree: {detail}"
+        ));
+    };
+    // Files present on the base and absent from the merge result = deleted.
+    let diff = tokio::process::Command::new("git")
+        .args(["diff", "--name-status", &format!("{base}..{tree}")])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| format!("git diff --name-status {base}..{tree}: {e}"))?;
+    if !diff.status.success() {
+        let detail = String::from_utf8_lossy(&diff.stderr).trim().to_string();
+        return Err(format!(
+            "git diff --name-status {base}..{tree} failed: {detail}"
+        ));
+    }
+    let mut deleted = Vec::new();
+    for line in String::from_utf8_lossy(&diff.stdout).lines() {
+        // `D<tab>path` — a deletion relative to the base.
+        if let Some(rest) = line.strip_prefix("D\t") {
+            let path = rest.trim();
+            if !path.is_empty() {
+                deleted.push(path.to_string());
+            }
+        }
+    }
+    deleted.sort();
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +232,111 @@ mod tests {
             .expect_err("a non-git root must not read as 'branch absent'");
         assert!(err.contains("not a git work tree"), "{err}");
         let _ = std::fs::remove_dir_all(&not_git);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A scratch repo with a base branch, a branch that CONTAINS it, a branch
+    /// that does not, and a branch that DELETES a base-tracked file — the three
+    /// answers the containment defence depends on.
+    #[tokio::test]
+    async fn containment_helpers_answer_synced_and_would_delete() {
+        let root = std::env::temp_dir().join(format!("seatloom-git-ops-ct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("keep.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+
+        // synced: branched from the base, then the base moved on and the branch
+        // merged it in.
+        ok(&["checkout", "-b", "packet/seat/synced"]);
+        std::fs::write(root.join("added.txt"), "delivery\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "delivery"]);
+        ok(&["checkout", "track"]);
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base moves on"]);
+        ok(&["checkout", "packet/seat/synced"]);
+        ok(&["merge", "--no-edit", "track"]);
+
+        // unsynced: forked from the base and never merged it back.
+        ok(&["checkout", "track"]);
+        ok(&["checkout", "-b", "packet/seat/unsynced", "HEAD~1"]);
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "never synced"]);
+
+        // destructive: branched from the base and DELETED a base-tracked file.
+        ok(&["checkout", "track"]);
+        ok(&["checkout", "-b", "packet/seat/destructive"]);
+        std::fs::remove_file(root.join("keep.txt")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes a tracked file"]);
+
+        // The preview must not touch the working tree or any ref: capture the
+        // state and compare it after every preview below.
+        let before_status = String::from_utf8_lossy(&g(&["status", "--porcelain"]).stdout)
+            .trim()
+            .to_string();
+        let before_head = String::from_utf8_lossy(&g(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+
+        assert!(
+            branch_contains(&root, "packet/seat/synced", "track")
+                .await
+                .unwrap(),
+            "a branch that merged the base contains it"
+        );
+        assert!(
+            !branch_contains(&root, "packet/seat/unsynced", "track")
+                .await
+                .unwrap(),
+            "a branch that never merged the base does not contain it"
+        );
+        assert!(
+            merge_would_delete(&root, "packet/seat/synced", "track")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a clean delivery deletes nothing"
+        );
+        let deleted = merge_would_delete(&root, "packet/seat/destructive", "track")
+            .await
+            .unwrap();
+        assert_eq!(deleted, vec!["keep.txt".to_string()], "{deleted:?}");
+        // The unsynced branch is caught by the contains check, but its merge
+        // preview must still be answerable (it deletes nothing).
+        assert!(merge_would_delete(&root, "packet/seat/unsynced", "track")
+            .await
+            .unwrap()
+            .is_empty());
+        // The working tree is untouched by the preview: no ref moved, no file
+        // changed.
+        let after_head = String::from_utf8_lossy(&g(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        let after_status = String::from_utf8_lossy(&g(&["status", "--porcelain"]).stdout)
+            .trim()
+            .to_string();
+        assert_eq!(before_head, after_head, "the preview must not move HEAD");
+        assert_eq!(
+            before_status, after_status,
+            "the preview must not change the working tree"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -102,6 +102,15 @@ pub fn tools_list_result() -> Value {
             cancel_dispatch_tool(),
             request_acceptance_tool(),
             cancel_acceptance_tool(),
+            get_acceptance_lineage_tool(),
+            // --- D5 knowledge layer (Lane B) ---
+            recall_tool(),
+            remember_tool(),
+            promote_tool(),
+            forget_tool(),
+            resolve_tool(),
+            get_dispatch_tool(),
+            query_ledger_tool(),
         ]
     })
 }
@@ -117,7 +126,7 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 22 PascalCase values.",
+                    "description": "Event type. One of the 27 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
@@ -126,7 +135,9 @@ fn emit_event_tool() -> Value {
                         "SeatDispatchIssued", "SeatDispatchDelivered", "SeatDispatchCompleted",
                         "SeatDispatchFailed", "SeatDispatchRetried", "SeatDispatchCancelled",
                         "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
-                        "AcceptanceCancelled"
+                        "AcceptanceCancelled",
+                        "MemoryCreated", "MemoryRecalled", "MemoryPromoted",
+                        "MemoryForgotten", "MemoryResolved"
                     ]
                 },
                 "payload": {
@@ -305,18 +316,77 @@ fn request_acceptance_tool() -> Value {
             else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
             hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
             calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
-            or artifact; the dispatch must have no pending acceptance. Identity from SEATLOOM_ACTOR_REF \
-            (never a parameter).",
+            or artifact; the dispatch must have no pending acceptance; a valid acceptance_plan (shape v1) \
+            is REQUIRED — a missing or malformed plan is a typed rejection before any DB contact. \
+            Identity from SEATLOOM_ACTOR_REF (never a parameter).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref"],
+            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref", "acceptance_plan"],
             "properties": {
                 "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
                 "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
                 "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
                 "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
-                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." }
+                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." },
+                "acceptance_plan": {
+                    "type": "object",
+                    "description": "The structured acceptance plan (shape v1, PO-authored, immutable after the request). EXACTLY these keys: plan_version (integer, must be 1); scenario (non-empty string); steps (non-empty array of {action non-empty, input optional}); expected (non-empty array of {output non-empty, expect non-empty}); preconditions (optional array of non-empty strings). An unknown key or an empty object is a typed rejection before any DB contact — no plan, no card.",
+                    "required": ["plan_version", "scenario", "steps", "expected"],
+                    "properties": {
+                        "plan_version": { "type": "integer", "description": "Must be 1." },
+                        "scenario": { "type": "string", "minLength": 1 },
+                        "steps": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["action"],
+                                "properties": {
+                                    "action": { "type": "string", "minLength": 1 },
+                                    "input": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "expected": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["output", "expect"],
+                                "properties": {
+                                    "output": { "type": "string", "minLength": 1 },
+                                    "expect": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// `get_acceptance_lineage` — the pure-read lineage of one acceptance card
+/// (acceptance-lineage milestone, Lane B). No identity parameter: a read of an
+/// already-recorded card has nothing to act as, and the non-forgeable-identity
+/// rule governs writes. One shared assembler with the Tauri command, so the two
+/// surfaces cannot drift.
+fn get_acceptance_lineage_tool() -> Value {
+    json!({
+        "name": "get_acceptance_lineage",
+        "description": "Assemble one acceptance card's lineage (READ ONLY, zero writes): the \
+            card itself, the dispatch it gates (title/issuer/when/original task payload), the full \
+            event chain in occurred_at order, the Flux verdict with its evidence, the artifact/ \
+            document products, the dispatch's dependency edges with each referent's existence, and \
+            the rework dispatch when the card was rejected. Answers 'what is this card and where \
+            did it come from' without psql. An unknown acceptance id is a typed rejection, not an \
+            empty card.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to assemble, acc-<dispatch-id>." }
             }
         }
     })
@@ -343,6 +413,193 @@ fn cancel_acceptance_tool() -> Value {
             "properties": {
                 "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to withdraw, acc-<dispatch-id>." },
                 "reason": { "type": "string", "minLength": 1, "description": "One line, recorded verbatim on the row and in the AcceptanceCancelled event payload." }
+            }
+        }
+    })
+}
+
+/// `recall` — progressive-disclosure retrieval. Depth defaults to l0; the
+/// topic's ancestor chain rides along so a memory is never read out of context.
+fn recall_tool() -> Value {
+    json!({
+        "name": "recall",
+        "description": "Recall a project+topic's ACTIVE memories with progressive disclosure: \
+            depth l0 (default) returns only the ~100-token summaries, l1 adds the ~2K overview, l2 \
+            adds the raw pointer (document id or file path). The response carries the topic's \
+            ANCESTOR CHAIN (topics.parent_topic_id) so a memory is never read out of context. \
+            Optional text query over title + l0_summary. Side effect: exactly one MemoryRecalled \
+            event per returned memory (heat+1, recall_count+1) — every recall is audited; zero hits \
+            append zero events. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." },
+                "topic_id": { "type": "string", "minLength": 1, "description": "The topic to recall from. project + topic is the ONLY scoping framework — there is no all-projects recall." },
+                "query": { "type": "string", "description": "Text filter over title + l0_summary. Omitted = every active memory of the topic." },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed rejection." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories that a newer one superseded (018). They are excluded by default — a stale decision served as current is worse than no memory — and each included row carries superseded_by." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Page size, default 20, hard ceiling 100. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
+/// `remember` — create a memory. Tier starts cold and status starts active; the
+/// caller cannot specify either.
+fn remember_tool() -> Value {
+    json!({
+        "name": "remember",
+        "description": "Create a memory (small-granularity distilled knowledge, scoped by project + \
+            topic) and append MemoryCreated in ONE transaction. l0_summary is required and is the \
+            only default layer; l1_overview and the l2 pointer are optional. The l2 pointer pair must \
+            match: l2_ref_kind 'document' requires l2_document_id (and no file path), 'file' requires \
+            l2_file_path (and no document id). source_kind/source_ref record provenance. Tier starts \
+            'cold', status starts 'active' — neither is caller-settable. Identity from \
+            SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id", "title", "l0_summary", "l2_ref_kind", "source_kind", "source_ref", "kind", "confidence"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it." },
+                "topic_id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "l0_summary": { "type": "string", "minLength": 1, "description": "~100 tokens; the only default layer." },
+                "l1_overview": { "type": "string", "description": "~2K tokens; fetched only when a recall asks for depth l1." },
+                "l2_ref_kind": { "type": "string", "enum": ["document", "file"] },
+                "l2_document_id": { "type": "string", "description": "Required when l2_ref_kind is 'document'." },
+                "l2_file_path": { "type": "string", "description": "Required when l2_ref_kind is 'file'; repo-relative." },
+                "l2_body_digest": { "type": "string", "description": "sha256 hex of the referenced body, documents.body_digest style." },
+                "source_kind": { "type": "string", "enum": ["archived_session", "canonical_event", "document", "manual"] },
+                "source_ref": { "type": "string", "minLength": 1, "description": "Polymorphic provenance: '<harness>:<id>' for archived_session, an event id, a doc id, or an actor note. No FK — recorded, never guessed." },
+                "kind": { "type": "string", "enum": ["decision", "failure", "fact", "preference", "artifact", "unresolved"], "description": "REQUIRED (018). The record type; the DB default is a backfill only, never a write path." },
+                "confidence": { "type": "string", "enum": ["quoted", "inferred"], "description": "REQUIRED (018). Binary, never a score: quoted = the raw text says it, inferred = derived." },
+                "supersedes": { "type": "string", "description": "The memory this one replaces (018). Create-time only; the edge is written in BOTH spellings (the column and a memory_relations row) in the SAME transaction." },
+                "l2_line_start": { "type": "integer", "description": "First line of the L2 evidence (1-based). REQUIRED when l2_ref_kind='file' AND source_kind='archived_session'." },
+                "l2_line_end": { "type": "integer", "description": "Last line of the L2 evidence (>= l2_line_start)." },
+                "relations": {
+                    "type": "array",
+                    "description": "Extra typed edges to other memories (018). Each target must already exist; a duplicate edge in one call is refused.",
+                    "items": {
+                        "type": "object",
+                        "required": ["to_id", "rel"],
+                        "properties": {
+                            "to_id": { "type": "string", "minLength": 1 },
+                            "rel": { "type": "string", "enum": ["supersedes", "caused_by", "fixed_by", "refines"] }
+                        }
+                    }
+                },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        }
+    })
+}
+
+/// `promote` — the ONLY tier channel. Explicit target tier, up OR down; there is
+/// no automatic decay anywhere.
+fn promote_tool() -> Value {
+    json!({
+        "name": "promote",
+        "description": "Change a memory's tier — the ONLY channel, and the only way a tier ever \
+            moves. to_tier may be higher OR lower than the current tier; naming the tier the memory \
+            already has is a typed refusal (no transition, nothing written). Appends MemoryPromoted \
+            with from_tier/to_tier in ONE transaction. There is NO automatic heat decay and NO \
+            background daemon. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "to_tier"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "to_tier": { "type": "string", "enum": ["cold", "warm", "hot"] }
+            }
+        }
+    })
+}
+
+/// `forget` — the soft tombstone. The row is never hard-deleted.
+fn forget_tool() -> Value {
+    json!({
+        "name": "forget",
+        "description": "Soft-forget a memory: status active -> forgotten, the reason recorded on the \
+            row and in the MemoryForgotten event, ONE transaction. The row is NEVER hard-deleted \
+            (ledger discipline), and a second forget of a tombstone is refused. A forgotten memory is \
+            excluded from recall. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "reason"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "reason": { "type": "string", "minLength": 1, "description": "Mandatory: a tombstone with no recorded why is an unexplained edit to the ledger." }
+            }
+        }
+    })
+}
+
+/// `get_dispatch` — the dispatch read model. Pure read, no identity.
+/// `resolve` — the G3 closure path (018): the only way an `unresolved` record
+/// becomes `resolved`. No background sweep, ever.
+fn resolve_tool() -> Value {
+    json!({
+        "name": "resolve",
+        "description": "Close an ACTIVE memory: active -> resolved + MemoryResolved in ONE transaction, \
+            with resolved_by taken from the server-side SEATLOOM_ACTOR_REF (never a parameter) and \
+            resolved_at = now. This is the ONLY closure path — there is no background sweep and no \
+            automatic anything. Refused: an unknown id, an already-resolved record (immutable), a \
+            forgotten tombstone (immutable). Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
+fn get_dispatch_tool() -> Value {
+    json!({
+        "name": "get_dispatch",
+        "description": "One dispatch's read model: the row (including the ORIGINAL task statement in \
+            payload), its LIVE status (recomputed from its dependencies' existence, the same rule the \
+            pull decision uses), and each dependency edge with its referent's existence. Pure read — \
+            zero writes, zero events, no write capability. Coordination state is visible to the fleet, \
+            so no seat identity is required.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
+/// `query_ledger` — a filtered ledger query. Pure read, no identity.
+fn query_ledger_tool() -> Value {
+    json!({
+        "name": "query_ledger",
+        "description": "Query the canonical ledger: canonical_events with their event_object_refs, \
+            filtered by project, event types (validated against the closed vocabulary), a ref \
+            (ref_type + ref_id together), and an occurred_at window; newest first, paged. Pure read — \
+            zero writes, zero events. This is the tool that ends the psql era.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1 },
+                "event_types": { "type": "array", "items": { "type": "string" }, "description": "Event types from the closed vocabulary; an unknown type is a typed rejection." },
+                "ref_type": { "type": "string", "description": "With ref_id: filter to events naming that object." },
+                "ref_id": { "type": "string" },
+                "from": { "type": "string", "description": "RFC3339 inclusive lower bound on occurred_at." },
+                "to": { "type": "string", "description": "RFC3339 inclusive upper bound on occurred_at." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 50, hard ceiling 200." },
+                "offset": { "type": "integer", "minimum": 0 }
             }
         }
     })
@@ -410,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_seven_tools() {
+    fn tools_list_advertises_the_fifteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -423,7 +680,15 @@ mod tests {
                 "complete_dispatch",
                 "cancel_dispatch",
                 "request_acceptance",
-                "cancel_acceptance"
+                "cancel_acceptance",
+                "get_acceptance_lineage",
+                "recall",
+                "remember",
+                "promote",
+                "forget",
+                "resolve",
+                "get_dispatch",
+                "query_ledger"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
@@ -444,15 +709,58 @@ mod tests {
         assert!(!cancel.contains_key("seat_id"));
         assert!(!cancel.contains_key("actor_ref"));
         assert!(cancel.contains_key("reason"), "the reason is mandatory");
+        // The lineage READ exposes no identity either — it reads a recorded card.
+        let lineage = tools[7]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!lineage.contains_key("seat_id"));
+        assert!(!lineage.contains_key("actor_ref"));
+        // The five D5 memory tools expose no identity either — identity is
+        // resolved server-side from SEATLOOM_ACTOR_REF.
+        for name in ["recall", "remember", "promote", "forget", "resolve"] {
+            let t = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} must be advertised"));
+            let props = t["inputSchema"]["properties"].as_object().expect("props");
+            assert!(
+                !props.contains_key("seat_id") && !props.contains_key("actor_ref"),
+                "{name} must not expose identity"
+            );
+        }
+        // request_acceptance REQUIRES the plan on the wire (016).
+        let req = &tools[5]["inputSchema"];
+        assert!(
+            req["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "acceptance_plan"),
+            "acceptance_plan is required: {:?}",
+            req["required"]
+        );
+        // remember REQUIRES kind + confidence on the wire (018).
+        let remember = &tools[9]["inputSchema"];
+        for field in ["kind", "confidence"] {
+            assert!(
+                remember["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == field),
+                "remember must require {field}: {:?}",
+                remember["required"]
+            );
+        }
     }
 
     #[test]
-    fn tool_schema_enumerates_all_22_event_types_and_11_ref_types() {
+    fn tool_schema_enumerates_all_27_event_types_and_11_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 22);
+        assert_eq!(types.len(), 27);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()

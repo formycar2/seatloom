@@ -7,6 +7,7 @@
 //!   - `cancel_dispatch`    (the issuer, withdrawing non-terminal work)
 //!   - `request_acceptance` (the seat, handing a finished delivery to the D2 gate)
 //!   - `cancel_acceptance` (the seat, pulling back its own pending request)
+//!   - `get_acceptance_lineage` (anyone: the pure-read lineage of one card)
 //!
 //! Every status transition is an EVENT appended in the **same transaction** as
 //! the `dispatches` row change (contract rule 2), via
@@ -40,7 +41,7 @@
 
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use seatloom_core::db::event_domain::{EventType, RefRole, RefType};
@@ -145,6 +146,16 @@ pub struct RequestAcceptanceArgs {
     /// refused — a branch name is never invented at request time.
     #[serde(default)]
     pub base: Option<String>,
+    /// The structured acceptance plan (016, shape v1) — the product-operation
+    /// script the operator follows to verify a user-perceivable result:
+    /// `scenario`, `steps`, `expected` (+ optional `preconditions`).
+    ///
+    /// REQUIRED, and validated BEFORE any DB contact (value-domain contract
+    /// §2, tool layer): a missing, empty or malformed plan is a typed
+    /// rejection, so "no plan -> no card" cannot be bypassed by a caller that
+    /// skips the check. Authored by the PO; immutable after the request, same
+    /// rule as `how_to_verify`.
+    pub acceptance_plan: serde_json::Value,
 }
 
 /// `cancel_acceptance` — the seat pulls back its OWN pending acceptance request
@@ -219,6 +230,22 @@ pub enum DispatchRejection {
         base: String,
         detail: String,
     },
+    /// `request_acceptance` (containment defence): the delivery branch does not
+    /// CONTAIN the base — accepting it would merge a branch that never saw the
+    /// base's later work. The fix is to sync the branch, not to weaken the gate.
+    BranchNotSynced {
+        branch: String,
+        base: String,
+    },
+    /// `request_acceptance` (containment defence): the merge would DELETE files
+    /// tracked on the base — the failure mode that let an Accept destroy
+    /// already-merged work. The paths are listed so the caller knows exactly
+    /// what would be lost.
+    MergeWouldDelete {
+        branch: String,
+        base: String,
+        paths: Vec<String>,
+    },
     /// `cancel_acceptance`: the acceptance is not a PENDING acceptance of a
     /// dispatch owned by the calling seat (unknown id, already decided, or
     /// another seat's). Only the requesting seat may withdraw its own request.
@@ -230,6 +257,21 @@ pub enum DispatchRejection {
     /// an unexplained edit to the ledger.
     EmptyCancelReason {
         acceptance_id: String,
+    },
+    /// `get_acceptance_lineage`: no acceptance carries that id. A read of a
+    /// mistyped id must say so, not render an empty card.
+    AcceptanceNotFound {
+        acceptance_id: String,
+    },
+    /// `request_acceptance`: no acceptance plan was supplied (absent, not an
+    /// object, or the empty object — which the contract states is NOT a plan).
+    MissingAcceptancePlan,
+    /// `request_acceptance`: the plan is an object but does not match shape v1.
+    /// `detail` names the first rule broken, so the caller can fix it without
+    /// guessing (contract §1: unknown keys, empty scenario/steps/expected,
+    /// plan_version != 1, blank action/output/expect, wrong types).
+    InvalidAcceptancePlan {
+        detail: String,
     },
     Db(String),
 }
@@ -288,6 +330,19 @@ impl std::fmt::Display for DispatchRejection {
                 f,
                 "request_acceptance rejected: merge base {base:?} does not exist ({detail}) — a delivery may only be handed to a base that exists, exactly like the delivery branch"
             ),
+            DispatchRejection::BranchNotSynced { branch, base } => write!(
+                f,
+                "request_acceptance rejected: branch {branch:?} does not contain base {base:?} — \
+                 merge {base} into {branch} first; accepting an unsynced branch would merge work \
+                 that never saw the base's later commits"
+            ),
+            DispatchRejection::MergeWouldDelete { branch, base, paths } => write!(
+                f,
+                "request_acceptance rejected: merging {branch:?} into {base:?} would DELETE {} \
+                 file(s) tracked on {base:?}: {} — the delivery must not remove merged work",
+                paths.len(),
+                paths.join(", ")
+            ),
             DispatchRejection::AcceptanceNotCancellable { acceptance_id, seat } => write!(
                 f,
                 "cancel_acceptance rejected: {acceptance_id:?} is not a pending acceptance of a dispatch owned by {seat:?} (unknown id, already decided, or another seat's — only the requesting seat may withdraw its own request)"
@@ -295,6 +350,18 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::EmptyCancelReason { acceptance_id } => write!(
                 f,
                 "cancel_acceptance rejected: {acceptance_id:?} needs a reason — a void with no recorded why is an unexplained edit to the ledger"
+            ),
+            DispatchRejection::AcceptanceNotFound { acceptance_id } => write!(
+                f,
+                "get_acceptance_lineage rejected: acceptance {acceptance_id:?} not found"
+            ),
+            DispatchRejection::MissingAcceptancePlan => write!(
+                f,
+                "request_acceptance rejected: no acceptance plan — the card must carry the product-operation script (scenario/steps/expected, shape v1); an empty object is NOT a plan (no plan -> no card)"
+            ),
+            DispatchRejection::InvalidAcceptancePlan { detail } => write!(
+                f,
+                "request_acceptance rejected: the acceptance plan does not match shape v1: {detail}"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -331,12 +398,15 @@ fn db<E: std::error::Error + 'static>(e: E) -> DispatchRejection {
 
 /// The resolved seat this server acts as, as both the `seats.id` (for
 /// `target_seat_id` comparisons) and the `actor_ref` (for event actor refs).
-struct SeatIdentity {
-    seat_id: String,
-    actor_ref: String,
+///
+/// `pub(crate)` so the memory tools (Lane B) resolve the SAME identity through
+/// the SAME function — one rule, one place, no second resolution path.
+pub(crate) struct SeatIdentity {
+    pub(crate) seat_id: String,
+    pub(crate) actor_ref: String,
 }
 
-fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
+pub(crate) fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
     let raw = std::env::var(ACTOR_REF_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -350,7 +420,7 @@ fn resolve_seat() -> Result<SeatIdentity, DispatchRejection> {
     })
 }
 
-fn resolve_project(call: Option<String>) -> Result<String, DispatchRejection> {
+pub(crate) fn resolve_project(call: Option<String>) -> Result<String, DispatchRejection> {
     if let Some(v) = call {
         if !v.trim().is_empty() {
             return Ok(v);
@@ -1109,6 +1179,15 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 ///      delivery-branch check the merge path performs, moved to request time so
 ///      a wrong base is a refusal here instead of a surprise at click time
 ///      (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J, defect 1);
+///   0b. the acceptance plan is present and matches shape v1 (016) — a missing,
+///      empty or malformed plan is a typed rejection before any DB contact
+///      (acceptance-lineage milestone, value-domain contract §2);
+///   0c. CONTAINMENT: the delivery branch exists, CONTAINS the base
+///      (`merge-base --is-ancestor`), and merging it would not DELETE any file
+///      tracked on the base (previewed with `merge-tree`). An unsynced branch or
+///      a destructive merge is a typed refusal listing the paths — the
+///      product-level guarantee that accepting a card cannot destroy merged work
+///      (Aegis blocking ruling, dispatch disp-acclose-nimbus);
 ///   1. the dispatch belongs to the calling seat AND is `done`
 ///      (a `SeatDispatchCompleted` landed — the row is its projection);
 ///   2. `flux_verdict_ref` names an existing event or artifact (the merge
@@ -1126,6 +1205,13 @@ pub async fn request_acceptance(
     // dispatch, and a caller that got the base wrong should learn that without
     // a DB round-trip.
     let base = resolve_base(args.base.as_deref())?;
+    // Guard 0b — the acceptance plan (016, shape v1) is present and well-formed,
+    // ALSO before the transaction: no plan -> no card, and a malformed plan is a
+    // typed rejection here rather than a DB CHECK violation later. The DB (016)
+    // only re-checks non-emptiness; this is the shape authority.
+    let plan = validate_acceptance_plan(&args.acceptance_plan)?;
+    let plan_json =
+        serde_json::to_value(&plan).map_err(|e| DispatchRejection::Db(e.to_string()))?;
     let repo_root = seatloom_core::git::ops::resolve_repo_root();
     let base_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &base)
         .await
@@ -1137,6 +1223,50 @@ pub async fn request_acceptance(
         return Err(DispatchRejection::UnknownBase {
             base,
             detail: format!("no refs/heads/<base> in {}", repo_root.display()),
+        });
+    }
+    // The delivery branch must exist too — the merge path checks it, and the
+    // containment previews below need a resolvable ref.
+    let branch_exists = seatloom_core::git::ops::local_branch_exists(&repo_root, &args.branch)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: args.branch.clone(),
+            detail,
+        })?;
+    if !branch_exists {
+        return Err(DispatchRejection::UnknownBase {
+            base: args.branch.clone(),
+            detail: format!("no refs/heads/<branch> in {}", repo_root.display()),
+        });
+    }
+    // Containment (b): the branch must CONTAIN the base. Without this an
+    // unsynced branch could be accepted, and the merge would silently drop the
+    // base's later commits.
+    let synced = seatloom_core::git::ops::branch_contains(&repo_root, &args.branch, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !synced {
+        return Err(DispatchRejection::BranchNotSynced {
+            branch: args.branch.clone(),
+            base,
+        });
+    }
+    // Containment (c): the merge must not DELETE files tracked on the base.
+    // Previewed with `merge-tree` (no ref moves, no working-tree change).
+    let would_delete = seatloom_core::git::ops::merge_would_delete(&repo_root, &args.branch, &base)
+        .await
+        .map_err(|detail| DispatchRejection::UnknownBase {
+            base: base.clone(),
+            detail,
+        })?;
+    if !would_delete.is_empty() {
+        return Err(DispatchRejection::MergeWouldDelete {
+            branch: args.branch.clone(),
+            base,
+            paths: would_delete,
         });
     }
 
@@ -1196,8 +1326,9 @@ pub async fn request_acceptance(
     let acceptance_id = format!("acc-{}", args.dispatch_id);
     tx.execute(
         "INSERT INTO acceptances \
-         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')",
+         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, \
+          status, acceptance_plan) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
         &[
             &acceptance_id,
             &args.dispatch_id,
@@ -1206,6 +1337,7 @@ pub async fn request_acceptance(
             &base,
             &args.how_to_verify,
             &args.flux_verdict_ref,
+            &plan_json,
         ],
     )
     .await
@@ -1229,6 +1361,7 @@ pub async fn request_acceptance(
             "base": base,
             "how_to_verify": args.how_to_verify,
             "flux_verdict_ref": args.flux_verdict_ref,
+            "acceptance_plan": plan_json,
         }),
         refs: vec![
             ObjectRefDraft::subject(RefType::Acceptance, &acceptance_id),
@@ -1362,6 +1495,196 @@ pub async fn cancel_acceptance(
     ))
 }
 
+// =============================================================================
+// Tool 7 — get_acceptance_lineage (read only, acceptance-lineage Lane B)
+// =============================================================================
+
+/// Arguments of the lineage read tool. `acceptance_id` only: this is a READ of
+/// an already-recorded card, so no seat identity is resolved and none is
+/// forgeable — the non-forgeable-identity rule governs WRITES (a seat cannot
+/// act as another seat); a read has nothing to act as.
+#[derive(Debug, Deserialize)]
+pub struct GetAcceptanceLineageArgs {
+    pub acceptance_id: String,
+}
+
+/// Assemble one acceptance's lineage: the card, the dispatch it gates (with the
+/// ORIGINAL task statement), the event chain, the Flux verdict and its evidence,
+/// the products, the dependency edges, and the rework dispatch.
+///
+/// Pure read — zero writes, zero events (value-domain contract §3/§6). It exists
+/// so no seat has to `psql` the ledger to answer "what is this card and where
+/// did it come from?", which is exactly what Aegis had to do by hand before.
+/// The assembler is ONE shared function (`seatloom_core::db::lineage`); the
+/// Tauri command `cmd_get_acceptance_lineage` calls the same one, so the two
+/// surfaces cannot drift.
+pub async fn get_acceptance_lineage(
+    db: &seatloom_core::db::SeatloomDb,
+    args: GetAcceptanceLineageArgs,
+) -> Result<String, DispatchRejection> {
+    let lineage = seatloom_core::db::lineage::get_acceptance_lineage(db, &args.acceptance_id)
+        .await
+        .map_err(|e| match e {
+            seatloom_core::db::lineage::LineageError::NotFound { acceptance_id } => {
+                DispatchRejection::AcceptanceNotFound { acceptance_id }
+            }
+            other => DispatchRejection::Db(other.to_string()),
+        })?;
+    // The response is the assembled object itself: the caller asked for the
+    // lineage, so the lineage is the answer — no second, summarised shape that
+    // could drift from what the UI renders.
+    serde_json::to_string_pretty(&lineage).map_err(|e| DispatchRejection::Db(e.to_string()))
+}
+
+// =============================================================================
+// Acceptance plan — shape v1 (value-domain contract §1, Lyra sign-off 2026-10-10)
+// =============================================================================
+
+/// The structured acceptance plan: the product-operation script the operator
+/// follows to verify a user-perceivable result. Shape v1, VERBATIM from the
+/// value-domain contract:
+///
+/// ```text
+/// acceptance_plan JSONB, an object with EXACTLY these keys (unknown key =
+/// typed rejection):
+///   plan_version  INTEGER = 1
+///   scenario      STRING  non-empty   -- what the user is trying to achieve
+///   steps         ARRAY   non-empty   -- each: {action non-empty, input optional}
+///   expected      ARRAY   non-empty   -- each: {output non-empty, expect non-empty}
+///   preconditions ARRAY of STRING, optional (empty allowed)
+/// ```
+///
+/// `{}` is NOT a plan. The plan is authored by the PO at request time and is
+/// immutable afterwards — the same immutability rule as `how_to_verify`, and
+/// there is deliberately no update path.
+///
+/// The struct exists so the validated plan has ONE typed home; the tool layer
+/// validates it BEFORE any DB contact (house discipline: typed errors, never a
+/// DB-error crutch), and the database layer (016) only re-checks non-emptiness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanV1 {
+    pub plan_version: i64,
+    pub scenario: String,
+    pub steps: Vec<AcceptancePlanStep>,
+    pub expected: Vec<AcceptancePlanExpectation>,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
+}
+
+/// One product-operation step: where to click / what to fill / what to say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanStep {
+    pub action: String,
+    #[serde(default)]
+    pub input: Option<String>,
+}
+
+/// One observable output and its pass criterion ("seeing X = pass").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptancePlanExpectation {
+    pub output: String,
+    pub expect: String,
+}
+
+/// Validate a plan value against shape v1.
+///
+/// The order of the checks is the contract's order, and each failure names the
+/// rule broken — a caller that gets `plan_version: 2` back is told exactly that,
+/// not "invalid plan". Blank strings are treated as absent everywhere: a step
+/// whose `action` is `"   "` is an empty action, not a step.
+pub fn validate_acceptance_plan(
+    value: &serde_json::Value,
+) -> Result<AcceptancePlanV1, DispatchRejection> {
+    if value.is_null() {
+        return Err(DispatchRejection::MissingAcceptancePlan);
+    }
+    if !value.is_object() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: format!("the plan must be a JSON object, found {}", json_kind(value)),
+        });
+    }
+    if value.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Err(DispatchRejection::MissingAcceptancePlan);
+    }
+    // `deny_unknown_fields` on every struct makes an unknown key a serde error
+    // here, which is exactly the contract's rule.
+    let plan: AcceptancePlanV1 = serde_json::from_value(value.clone()).map_err(|e| {
+        DispatchRejection::InvalidAcceptancePlan {
+            detail: e.to_string(),
+        }
+    })?;
+    if plan.plan_version != 1 {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: format!("plan_version must be 1, found {}", plan.plan_version),
+        });
+    }
+    let scenario = plan.scenario.trim();
+    if scenario.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "scenario must be a non-empty string".to_string(),
+        });
+    }
+    if plan.steps.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "steps must be a non-empty array".to_string(),
+        });
+    }
+    for (i, step) in plan.steps.iter().enumerate() {
+        if step.action.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("steps[{i}].action must be a non-empty string"),
+            });
+        }
+        if let Some(input) = &step.input {
+            if input.trim().is_empty() {
+                return Err(DispatchRejection::InvalidAcceptancePlan {
+                    detail: format!("steps[{i}].input must be a non-empty string when present"),
+                });
+            }
+        }
+    }
+    if plan.expected.is_empty() {
+        return Err(DispatchRejection::InvalidAcceptancePlan {
+            detail: "expected must be a non-empty array".to_string(),
+        });
+    }
+    for (i, exp) in plan.expected.iter().enumerate() {
+        if exp.output.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("expected[{i}].output must be a non-empty string"),
+            });
+        }
+        if exp.expect.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("expected[{i}].expect must be a non-empty string"),
+            });
+        }
+    }
+    for (i, pre) in plan.preconditions.iter().enumerate() {
+        if pre.trim().is_empty() {
+            return Err(DispatchRejection::InvalidAcceptancePlan {
+                detail: format!("preconditions[{i}] must be a non-empty string when present"),
+            });
+        }
+    }
+    Ok(plan)
+}
+
+/// The JSON kind of a value, for an error that says what it found.
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
 /// Resolve the merge base: the explicit argument wins, then
 /// `SEATLOOM_INTEGRATION_BRANCH`. Neither naming it is a REFUSAL — the old
 /// hardcoded `'track'` was a branch that does not exist in this repository, so
@@ -1450,6 +1773,25 @@ type _KeepDb = Db;
 #[cfg(test)]
 pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// A valid shape-v1 acceptance plan, for tests whose subject is another guard
+/// (base, pending, ownership). The plan's own rules have their own matrix in
+/// `mod tests`. Shared by both test modules, so a plan-shape change cannot
+/// silently break the other guards' fixtures.
+#[cfg(test)]
+pub(crate) fn valid_plan() -> serde_json::Value {
+    serde_json::json!({
+        "plan_version": 1,
+        "scenario": "operator verifies the delivered slice end to end",
+        "steps": [
+            { "action": "open the dispatch page and expand the acceptance card" },
+            { "action": "run the one-step check", "input": "pnpm test" }
+        ],
+        "expected": [
+            { "output": "the suite passes", "expect": "seeing a green run" }
+        ]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1501,6 +1843,135 @@ mod tests {
         root
     }
 
+    /// The containment defence (Aegis blocking ruling, dispatch
+    /// disp-acclose-nimbus PART 2): a branch that does not contain the base, and
+    /// a branch whose merge would DELETE base-tracked files, are both refused
+    /// BEFORE any DB contact. A scratch repo supplies the three shapes; the pool
+    /// is dead, so reaching the database would fail differently — proving the
+    /// refusal happened first.
+    #[tokio::test]
+    async fn request_acceptance_refuses_unsynced_and_destructive_branches() {
+        let _guard = ENV_LOCK.lock().await;
+        let root =
+            std::env::temp_dir().join(format!("seatloom-containment-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("keep.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        // The base moves on — a delivery that never sees this is unsynced.
+        ok(&["checkout", "-b", "packet/seat/synced"]);
+        std::fs::write(root.join("added.txt"), "delivery\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "delivery"]);
+        ok(&["checkout", "track"]);
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base moves on"]);
+        // unsynced: forked from the base, never merged it back.
+        ok(&["checkout", "-b", "packet/seat/unsynced", "HEAD~1"]);
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "never synced"]);
+        // destructive: synced, but deletes a base-tracked file.
+        ok(&["checkout", "packet/seat/synced"]);
+        ok(&["merge", "--no-edit", "track"]);
+        ok(&["checkout", "-b", "packet/seat/destructive"]);
+        std::fs::remove_file(root.join("keep.txt")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes a tracked file"]);
+        // missing: a name that is not a branch at all.
+        ok(&["checkout", "track"]);
+
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track");
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let args = |branch: &str| RequestAcceptanceArgs {
+            dispatch_id: "disp-containment".into(),
+            branch: branch.into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+        };
+
+        // 1. the branch does not exist at all.
+        let err = request_acceptance(&pool, args("packet/seat/nope"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::UnknownBase { .. }),
+            "a missing branch is a typed refusal: {err}"
+        );
+
+        // 2. the branch exists but does not contain the base.
+        let err = request_acceptance(&pool, args("packet/seat/unsynced"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::BranchNotSynced { branch, base } => {
+                assert_eq!(branch, "packet/seat/unsynced");
+                assert_eq!(base, "track");
+            }
+            other => panic!("expected BranchNotSynced, got {other:?}"),
+        }
+        assert!(
+            msg.contains("does not contain base"),
+            "the refusal says what to do: {msg}"
+        );
+
+        // 3. the merge would delete a base-tracked file, and the path is named.
+        let err = request_acceptance(&pool, args("packet/seat/destructive"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::MergeWouldDelete { paths, .. } => {
+                assert_eq!(paths, vec!["keep.txt".to_string()], "{paths:?}");
+            }
+            other => panic!("expected MergeWouldDelete, got {other:?}"),
+        }
+        assert!(
+            msg.contains("keep.txt"),
+            "the refusal lists what would be lost: {msg}"
+        );
+
+        // 4. the synced, non-destructive branch passes every containment check
+        //    and reaches the database (the dead pool then proves it).
+        let err = request_acceptance(&pool, args("packet/seat/synced"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "a contained delivery gets past the defence into the DB: {err}"
+        );
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
     /// NAMED and EXISTS before a card is recorded. The old code hardcoded
     /// `'track'` — not a branch in this repository — so the error only appeared
@@ -1511,6 +1982,24 @@ mod tests {
     async fn request_acceptance_names_and_verifies_the_base_before_the_db() {
         let _guard = ENV_LOCK.lock().await;
         let root = scratch_repo_with_branch("track/infra-foundation");
+        // The delivery branch must exist (and contain the base) for the
+        // containment checks to let a request through — this test's subject is
+        // the BASE, so the branch is a well-formed fixture here.
+        {
+            let g = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap()
+            };
+            assert!(
+                g(&["branch", "packet/nimbus/x", "track/infra-foundation"])
+                    .status
+                    .success(),
+                "the delivery branch fixture"
+            );
+        }
         let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
         let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
         std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
@@ -1523,6 +2012,7 @@ mod tests {
             how_to_verify: "do A see B".into(),
             flux_verdict_ref: "ev-verdict".into(),
             base: base.map(str::to_string),
+            acceptance_plan: valid_plan(),
         };
 
         // 1. Nothing names the base: refuse rather than invent 'track'.
@@ -1594,6 +2084,119 @@ mod tests {
         );
     }
 
+    /// Contract §1/§2 + packet §5.2: every malformed-plan branch is a TYPED
+    /// rejection naming the rule broken, and a valid plan passes. `{}` and
+    /// `null` are MissingAcceptancePlan (not "an empty plan"); everything else
+    /// is InvalidAcceptancePlan with the first broken rule.
+    #[test]
+    fn acceptance_plan_shape_v1_rejects_every_malformed_branch() {
+        // --- the two "no plan at all" cases
+        for empty in [
+            serde_json::json!({}),
+            serde_json::Value::Null,
+            serde_json::json!("a string is not a plan"),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!(42),
+        ] {
+            let err = validate_acceptance_plan(&empty).expect_err(&format!("must refuse: {empty}"));
+            assert!(
+                matches!(
+                    err,
+                    DispatchRejection::MissingAcceptancePlan
+                        | DispatchRejection::InvalidAcceptancePlan { .. }
+                ),
+                "must be a typed plan rejection, got {err:?}"
+            );
+        }
+        assert!(matches!(
+            validate_acceptance_plan(&serde_json::json!({})).unwrap_err(),
+            DispatchRejection::MissingAcceptancePlan
+        ));
+        assert!(matches!(
+            validate_acceptance_plan(&serde_json::Value::Null).unwrap_err(),
+            DispatchRejection::MissingAcceptancePlan
+        ));
+
+        // --- plan_version
+        let mut p = valid_plan();
+        p["plan_version"] = serde_json::json!(2);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("plan_version must be 1"), "{err}");
+        p = valid_plan();
+        p["plan_version"] = serde_json::json!("1");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(!err.is_empty(), "a string version is refused");
+
+        // --- unknown key (the contract's own rule, enforced by deny_unknown_fields)
+        let mut p = valid_plan();
+        p["surprise"] = serde_json::json!("x");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("surprise"), "the unknown key is named: {err}");
+
+        // --- scenario
+        let mut p = valid_plan();
+        p["scenario"] = serde_json::json!("   ");
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("scenario"), "{err}");
+        let mut p = valid_plan();
+        p.as_object_mut().unwrap().remove("scenario");
+        assert!(
+            validate_acceptance_plan(&p).is_err(),
+            "scenario is required"
+        );
+
+        // --- steps
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps must be a non-empty array"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "  " }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps[0].action"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "do it", "input": "" }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("steps[0].input"), "{err}");
+        let mut p = valid_plan();
+        p["steps"] = serde_json::json!([{ "action": "do it", "extra": 1 }]);
+        assert!(
+            validate_acceptance_plan(&p).is_err(),
+            "an unknown step key is refused"
+        );
+
+        // --- expected
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected must be a non-empty array"), "{err}");
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([{ "output": "", "expect": "x" }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected[0].output"), "{err}");
+        let mut p = valid_plan();
+        p["expected"] = serde_json::json!([{ "output": "o", "expect": " " }]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("expected[0].expect"), "{err}");
+
+        // --- preconditions: optional, but a blank entry is refused
+        let mut p = valid_plan();
+        p["preconditions"] = serde_json::json!([]);
+        assert!(validate_acceptance_plan(&p).is_ok(), "empty is allowed");
+        let mut p = valid_plan();
+        p["preconditions"] = serde_json::json!(["db up", " "]);
+        let err = validate_acceptance_plan(&p).unwrap_err().to_string();
+        assert!(err.contains("preconditions[1]"), "{err}");
+
+        // --- the happy path returns the typed plan
+        let plan = validate_acceptance_plan(&valid_plan()).expect("a valid plan passes");
+        assert_eq!(plan.plan_version, 1);
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[1].input.as_deref(), Some("pnpm test"));
+        assert_eq!(plan.expected.len(), 1);
+        assert!(plan.preconditions.is_empty());
+    }
+
     /// The withdrawal args are strict about the shape the tool schema advertises:
     /// `reason` is required (an absent one is a bad-arguments rejection, not a
     /// silent empty reason).
@@ -1652,24 +2255,39 @@ mod tests {
         }
     }
 
-    /// `request_acceptance` stays backward compatible on the wire: a caller that
-    /// sends only the four original fields parses (base defaults to None and is
-    /// then resolved from the env or refused).
+    /// `base` stays optional on the wire (the env var can supply it), while
+    /// `acceptance_plan` does NOT: 016 made the plan part of the card, so a call
+    /// without one is a bad-arguments rejection rather than a silently
+    /// plan-less card. This is the wire contract of the two optionality rules
+    /// side by side.
     #[test]
-    fn request_acceptance_args_base_is_optional_on_the_wire() {
+    fn request_acceptance_base_is_optional_but_the_plan_is_not() {
         let legacy: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
             "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
-            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
+            "acceptance_plan": valid_plan()
         }))
         .unwrap();
-        assert_eq!(legacy.base, None);
+        assert_eq!(legacy.base, None, "base stays optional on the wire");
+        assert!(legacy.acceptance_plan.is_object());
+
         let explicit: RequestAcceptanceArgs = serde_json::from_value(serde_json::json!({
             "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
             "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1",
-            "base": "track/infra-foundation"
+            "base": "track/infra-foundation",
+            "acceptance_plan": valid_plan()
         }))
         .unwrap();
         assert_eq!(explicit.base.as_deref(), Some("track/infra-foundation"));
+
+        let no_plan: Result<RequestAcceptanceArgs, _> = serde_json::from_value(serde_json::json!({
+            "dispatch_id": "disp-1", "branch": "packet/nimbus/x",
+            "how_to_verify": "do A see B", "flux_verdict_ref": "ev-1"
+        }));
+        assert!(
+            no_plan.is_err(),
+            "a call without a plan must not parse into a plan-less card"
+        );
     }
 
     /// `013` backward compatibility: a caller that sends only `dispatch_id`
@@ -1813,7 +2431,13 @@ mod tests {
 #[cfg(test)]
 mod db_itests {
     use super::*;
+    use crate::memory::{
+        forget, promote, recall, remember, resolve, ForgetArgs, MemoryRelationArg, PromoteArgs,
+        RecallArgs, RememberArgs, ResolveArgs,
+    };
+    use crate::read;
     use deadpool_postgres::Pool;
+    use seatloom_core::db::SeatloomDb;
     use tokio_postgres::NoTls;
 
     const SEAT: &str = "seat:seat-nimbus-001";
@@ -1877,6 +2501,10 @@ mod db_itests {
         std::fs::write(root.join("f.txt"), "base\n").unwrap();
         ok(&["add", "."]);
         ok(&["commit", "-m", "base"]);
+        // The delivery branch the tests hand to the gate: created FROM the base
+        // (so it contains it) and non-destructive (so the merge preview finds
+        // nothing to delete) — the shape the containment defence requires.
+        ok(&["branch", "packet/nimbus/x", "track"]);
         std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
         root
     }
@@ -1897,6 +2525,30 @@ mod db_itests {
              VALUES ($1,$1,NOW(),1024,1024) ON CONFLICT (id) DO NOTHING",
             &[&project],
         ).await.expect("project");
+    }
+
+    /// Clean the D5 fixtures (015): memories, topics, and the memory events.
+    async fn clean_memories(pool: &Pool, project: &str) {
+        let c = pool.get().await.expect("client");
+        // Memories are deleted by topic membership as well as by project: a
+        // memory created under another project's fixture may still point at one
+        // of this project's topics, and the FK would refuse the topic delete.
+        // Edges first: 018's memory_relations references memories(id), so the
+        // memories cannot be deleted while an edge points at them.
+        for sql in [
+            format!(
+                "DELETE FROM memory_relations WHERE from_id IN (SELECT id FROM memories WHERE project_id = '{project}') \
+                  OR to_id IN (SELECT id FROM memories WHERE project_id = '{project}')"
+            ),
+            format!(
+                "DELETE FROM memories WHERE project_id = '{project}' \
+                  OR topic_id IN (SELECT id FROM topics WHERE project_id = '{project}')"
+            ),
+            format!("DELETE FROM topics WHERE project_id = '{project}'"),
+            format!("DELETE FROM documents WHERE project_id = '{project}'"),
+        ] {
+            c.execute(&sql, &[]).await.expect("clean");
+        }
     }
 
     async fn status_of(pool: &Pool, id: &str) -> (String, i32) {
@@ -2111,10 +2763,11 @@ mod db_itests {
             &pool,
             RequestAcceptanceArgs {
                 dispatch_id: "disp-it-req".into(),
-                branch: "b".into(),
+                branch: "packet/nimbus/x".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2144,6 +2797,7 @@ mod db_itests {
                 how_to_verify: "do A see B".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2155,10 +2809,11 @@ mod db_itests {
             &pool,
             RequestAcceptanceArgs {
                 dispatch_id: "disp-it-req".into(),
-                branch: "b".into(),
+                branch: "packet/nimbus/x".into(),
                 how_to_verify: "h".into(),
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await
@@ -2252,6 +2907,950 @@ mod db_itests {
         assert_eq!(status_of(&pool, "disp-it-term").await.0, "failed");
     }
 
+    /// Contract §2 (tool layer) against a real database: a missing or malformed
+    /// plan refuses with a TYPED rejection and writes NOTHING (the event count
+    /// does not move), while a valid plan lands on the row AND in the
+    /// `AcceptanceRequested` payload — the same transaction, one write path.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn request_acceptance_enforces_the_plan_and_lands_it() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-plan','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-plan", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-plan".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let events_before: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+
+        // --- the negative matrix, each refusing BEFORE any write
+        let bad: Vec<(&str, serde_json::Value)> = vec![
+            ("missing", serde_json::json!({})),
+            ("null", serde_json::Value::Null),
+            (
+                "wrong version",
+                serde_json::json!({"plan_version": 2, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "unknown key",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": "e"}],
+                "surprise": 1}),
+            ),
+            (
+                "empty steps",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "empty expected",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": []}),
+            ),
+            (
+                "blank action",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "  "}], "expected": [{"output": "o", "expect": "e"}]}),
+            ),
+            (
+                "blank expect",
+                serde_json::json!({"plan_version": 1, "scenario": "s",
+                "steps": [{"action": "a"}], "expected": [{"output": "o", "expect": " "}]}),
+            ),
+        ];
+        for (label, plan) in bad {
+            let err = request_acceptance(
+                &pool,
+                RequestAcceptanceArgs {
+                    dispatch_id: "disp-it-plan".into(),
+                    branch: "packet/nimbus/x".into(),
+                    how_to_verify: "do A see B".into(),
+                    flux_verdict_ref: "ev-it-verdict-plan".into(),
+                    base: Some("track".into()),
+                    acceptance_plan: plan,
+                },
+            )
+            .await
+            .expect_err(&format!("{label} must refuse"));
+            assert!(
+                matches!(
+                    err,
+                    DispatchRejection::MissingAcceptancePlan
+                        | DispatchRejection::InvalidAcceptancePlan { .. }
+                ),
+                "{label}: expected a typed plan rejection, got {err:?}"
+            );
+        }
+        let events_after_refusals: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            events_before, events_after_refusals,
+            "every refusal writes nothing — the event count must not move"
+        );
+        let cards: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(cards, 0, "no card was created by any refusal");
+
+        // --- a valid plan lands on the row AND in the event payload
+        request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-it-plan".into(),
+                branch: "packet/nimbus/x".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-it-verdict-plan".into(),
+                base: Some("track".into()),
+                acceptance_plan: valid_plan(),
+            },
+        )
+        .await
+        .expect("a valid plan creates the card");
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT a.acceptance_plan, e.payload \
+                   FROM acceptances a \
+                   JOIN canonical_events e ON e.id = ( \
+                         SELECT r.event_id FROM event_object_refs r \
+                          WHERE r.ref_type = 'acceptance' AND r.ref_id = a.id \
+                            AND r.role = 'subject') \
+                  WHERE a.id = 'acc-disp-it-plan'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let row_plan: serde_json::Value = row.get(0);
+        let event_payload: serde_json::Value = row.get(1);
+        assert_eq!(row_plan["scenario"], valid_plan()["scenario"]);
+        assert_eq!(row_plan["steps"][1]["input"], "pnpm test");
+        assert_eq!(
+            event_payload["acceptance_plan"], row_plan,
+            "the event carries the same plan as the row — one transaction"
+        );
+    }
+
+    /// D5 Lane B against a real database: the whole memory lifecycle through the
+    /// TOOLS — remember, recall at each depth (with the audit event and the row's
+    /// heat/recall_count moving together), promote up and down, and the soft
+    /// tombstone — plus every negative branch as a typed refusal that writes
+    /// nothing. This is the contract's §5 acceptance matrix.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn memory_tools_lifecycle_and_refusals_against_the_db() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        clean_memories(&pool, project).await;
+        as_seat();
+        let db = SeatloomDb::new(pool.clone());
+
+        // --- the scope fixture: a parent topic and a child under it, plus a
+        // document the l2 pointer can name.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by) \
+                 VALUES ('topic-parent',$1,'parent topic','open','seat:seat-lyra-001')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by,parent_topic_id) \
+                 VALUES ('topic-child',$1,'child topic','open','seat:seat-lyra-001','topic-parent')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "INSERT INTO documents (id,project_id,title,file_path,parse_status,tags,depends_on) \
+                 VALUES ('doc-mem-target',$1,'the source doc','docs/src.md','ok','{}','{}')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        }
+
+        let events = || async {
+            pool.get()
+                .await
+                .unwrap()
+                .query_one(
+                    "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                    &[&project],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        };
+        let before = events().await;
+
+        // --- remember (document pointer)
+        let msg = remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "how the gate works".into(),
+                l0_summary: "accept needs flux green plus the operator".into(),
+                l1_overview: Some("the long version".into()),
+                l2_ref_kind: "document".into(),
+                l2_document_id: Some("doc-mem-target".into()),
+                l2_file_path: None,
+                l2_body_digest: None,
+                source_kind: "document".into(),
+                source_ref: "doc-mem-target".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
+                tags: vec!["d2".into()],
+            },
+        )
+        .await
+        .expect("remember must succeed");
+        let memory_id = msg
+            .split_whitespace()
+            .nth(2)
+            .expect("remembered memory <id>")
+            .to_string();
+        assert_eq!(events().await, before + 1, "exactly one MemoryCreated");
+
+        // The event's subject ref names the MEMORY (015's ref_type).
+        // The subject ref of THIS memory's creation event (filtered by the
+        // memory id — the project may hold other memories' events).
+        let subject = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT r.ref_type, r.ref_id FROM event_object_refs r \
+                   JOIN canonical_events e ON e.id = r.event_id \
+                  WHERE e.event_type = 'MemoryCreated' AND r.role = 'subject' \
+                    AND r.ref_id = $1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let ref_type: String = subject.get(0);
+        let ref_id: String = subject.get(1);
+        assert_eq!(ref_type, "memory");
+        assert_eq!(ref_id, memory_id);
+
+        // --- recall at l0: only the l0 layer, and the audit moves the row.
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                include_superseded: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall l0");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["depth"], "l0");
+        assert_eq!(v["memories"].as_array().unwrap().len(), 1);
+        let m = &v["memories"][0];
+        assert!(m.get("l0Summary").is_some(), "l0 is always returned");
+        assert!(m.get("l1Overview").is_none(), "l1 is omitted at l0");
+        assert!(m.get("l2RefKind").is_none(), "l2 is omitted at l0");
+        // The topic's ancestor chain rides along.
+        let chain: Vec<&str> = v["topicChain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(chain, vec!["topic-child", "topic-parent"]);
+        // heat/recall_count/last_recalled_at moved, and exactly one event landed.
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT heat, recall_count, last_recalled_at FROM memories WHERE id=$1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let heat: i32 = row.get(0);
+        let recall_count: i32 = row.get(1);
+        let last: Option<chrono::DateTime<chrono::Utc>> = row.get(2);
+        assert_eq!((heat, recall_count), (1, 1));
+        assert!(last.is_some(), "last_recalled_at must be set");
+        assert_eq!(events().await, before + 2, "one MemoryRecalled");
+
+        // --- l1 and l2 disclose their layers
+        for (depth, field) in [("l1", "l1Overview"), ("l2", "l2RefKind")] {
+            let out = recall(
+                &db,
+                RecallArgs {
+                    project_id: Some(project.into()),
+                    topic_id: "topic-child".into(),
+                    query: None,
+                    depth: Some(depth.into()),
+                    include_superseded: None,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("recall at depth");
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert!(
+                v["memories"][0].get(field).is_some(),
+                "{depth} must disclose {field}"
+            );
+        }
+        // heat is now 3 (three recalls), each audited.
+        let heat: i32 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one("SELECT heat FROM memories WHERE id=$1", &[&memory_id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(heat, 3);
+
+        // --- promote up, then down; the same tier is refused
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "warm".into(),
+            },
+        )
+        .await
+        .expect("cold -> warm");
+        let tier: String = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one("SELECT tier FROM memories WHERE id=$1", &[&memory_id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(tier, "warm");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "warm".into(),
+            },
+        )
+        .await
+        .expect_err("the same tier is no transition");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "cold".into(),
+            },
+        )
+        .await
+        .expect("warm -> cold (down is allowed)");
+        let promoted: Vec<(String, String)> = pool
+            .get()
+            .await
+            .unwrap()
+            .query(
+                "SELECT payload->>'from_tier', payload->>'to_tier' FROM canonical_events \
+                  WHERE event_type='MemoryPromoted' AND project_id = $1 \
+                  ORDER BY occurred_at",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        assert_eq!(
+            promoted,
+            vec![
+                ("cold".to_string(), "warm".to_string()),
+                ("warm".to_string(), "cold".to_string())
+            ]
+        );
+
+        // --- forget: soft tombstone, row stays, second forget refused
+        forget(
+            &db,
+            ForgetArgs {
+                memory_id: memory_id.clone(),
+                reason: "superseded by the newer note".into(),
+            },
+        )
+        .await
+        .expect("forget");
+        let row = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT status, forgotten_reason FROM memories WHERE id=$1",
+                &[&memory_id],
+            )
+            .await
+            .unwrap();
+        let status: String = row.get(0);
+        let reason: Option<String> = row.get(1);
+        assert_eq!(status, "forgotten");
+        assert_eq!(reason.as_deref(), Some("superseded by the newer note"));
+        forget(
+            &db,
+            ForgetArgs {
+                memory_id: memory_id.clone(),
+                reason: "again".into(),
+            },
+        )
+        .await
+        .expect_err("a tombstone is immutable");
+        // A forgotten memory is excluded from recall.
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                include_superseded: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall after forget");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["memories"].as_array().unwrap().len(),
+            0,
+            "a forgotten memory is not recalled"
+        );
+        assert_eq!(v["recalled"], 0, "zero hits = zero events");
+
+        // --- the negative branches, each a typed refusal that writes nothing
+        let settled = events().await;
+        for bad in [
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: Some("l3".into()),
+                include_superseded: None,
+                limit: None,
+            },
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                query: None,
+                depth: None,
+                include_superseded: None,
+                limit: Some(101),
+            },
+        ] {
+            recall(&db, bad).await.expect_err("must refuse");
+        }
+        remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "t".into(),
+                l0_summary: "s".into(),
+                l1_overview: None,
+                l2_ref_kind: "file".into(),
+                l2_document_id: None,
+                l2_file_path: None,
+                l2_body_digest: None,
+                source_kind: "manual".into(),
+                source_ref: "note".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
+                tags: vec![],
+            },
+        )
+        .await
+        .expect_err("a file pointer without a path is refused");
+        remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "t".into(),
+                l0_summary: "s".into(),
+                l1_overview: None,
+                l2_ref_kind: "document".into(),
+                l2_document_id: Some("doc-mem-target".into()),
+                l2_file_path: Some("docs/x.md".into()),
+                l2_body_digest: None,
+                source_kind: "vibes".into(),
+                source_ref: "note".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
+                tags: vec![],
+            },
+        )
+        .await
+        .expect_err("an unknown source_kind is refused");
+        promote(
+            &db,
+            PromoteArgs {
+                memory_id: memory_id.clone(),
+                to_tier: "tepid".into(),
+            },
+        )
+        .await
+        .expect_err("an unknown tier is refused");
+        assert_eq!(events().await, settled, "every refusal above wrote nothing");
+    }
+
+    /// 018 (D5 Phase 2) against a real database: `remember` writes kind /
+    /// confidence / the L2 line range and the supersede edge in BOTH spellings
+    /// (the column and a `memory_relations` row) in one transaction; `recall`
+    /// hides superseded rows by default and annotates them when opted in;
+    /// `resolve` closes an ACTIVE record with `MemoryResolved`. Every malformed
+    /// input is a typed refusal that moves no ledger row.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-018 (scratch DB); run --test-threads=1"]
+    async fn memory_tools_018_typed_fields_supersede_and_resolve() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        clean_memories(&pool, project).await;
+        as_seat();
+        let db = SeatloomDb::new(pool.clone());
+
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,status,opened_by) \
+                 VALUES ('topic-018',$1,'018 topic','open','seat:seat-lyra-001')",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        }
+
+        // --- the negative matrix, each a typed refusal with zero writes
+        let events_before: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let base = || RememberArgs {
+            project_id: Some(project.into()),
+            topic_id: "topic-018".into(),
+            title: "t".into(),
+            l0_summary: "s".into(),
+            l1_overview: None,
+            l2_ref_kind: "document".into(),
+            l2_document_id: None,
+            l2_file_path: None,
+            l2_body_digest: None,
+            source_kind: "manual".into(),
+            source_ref: "note".into(),
+            kind: "fact".into(),
+            confidence: "quoted".into(),
+            supersedes: None,
+            l2_line_start: None,
+            l2_line_end: None,
+            relations: vec![],
+            tags: vec![],
+        };
+        // a document pointer needs a document id
+        remember(&db, base())
+            .await
+            .expect_err("document pointer without an id");
+        // kind out of the 6-value vocab
+        let mut a = base();
+        a.kind = "note".into();
+        remember(&db, a).await.expect_err("kind out of vocab");
+        // confidence out of the 2-value vocab
+        let mut a = base();
+        a.confidence = "0.9".into();
+        remember(&db, a).await.expect_err("confidence is binary");
+        // file + archived_session without the line range
+        let mut a = base();
+        a.l2_ref_kind = "file".into();
+        a.l2_file_path = Some("docs/x.md".into());
+        a.source_kind = "archived_session".into();
+        a.source_ref = "claude:ses-1".into();
+        remember(&db, a)
+            .await
+            .expect_err("the l2 line range is required");
+        // ... and an inverted one
+        let mut a = base();
+        a.l2_ref_kind = "file".into();
+        a.l2_file_path = Some("docs/x.md".into());
+        a.source_kind = "archived_session".into();
+        a.source_ref = "claude:ses-1".into();
+        a.l2_line_start = Some(20);
+        a.l2_line_end = Some(10);
+        remember(&db, a).await.expect_err("end before start");
+        // a relation to a memory that does not exist
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.relations = vec![MemoryRelationArg {
+            to_id: "mem-nope".into(),
+            rel: "caused_by".into(),
+        }];
+        remember(&db, a).await.expect_err("a relation to nothing");
+        let events_after: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(events_before, events_after, "every refusal wrote nothing");
+
+        // --- a valid record, with kind/confidence/l2 lines
+        let c = pool.get().await.unwrap();
+        c.execute(
+            "INSERT INTO documents (id,project_id,title,file_path,parse_status,tags,depends_on) \
+             VALUES ('doc-018',$1,'the doc','docs/018.md','ok','{}','{}')",
+            &[&project],
+        )
+        .await
+        .unwrap();
+        drop(c);
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.kind = "failure".into();
+        a.confidence = "quoted".into();
+        let msg = remember(&db, a).await.expect("a valid record");
+        let old_id = msg.split_whitespace().nth(2).unwrap().to_string();
+        let row = db.get_memory(&old_id).await.unwrap().unwrap();
+        assert_eq!(row.kind, "failure");
+        assert_eq!(row.confidence, "quoted");
+        assert_eq!(row.l2_document_id.as_deref(), Some("doc-018"));
+
+        // --- supersede: BOTH spellings, one transaction
+        let mut a = base();
+        a.l2_document_id = Some("doc-018".into());
+        a.kind = "decision".into();
+        a.supersedes = Some(old_id.clone());
+        let msg = remember(&db, a).await.expect("the superseding record");
+        let new_id = msg.split_whitespace().nth(2).unwrap().to_string();
+        let (col, rel_rows): (Option<String>, i64) = {
+            let c = pool.get().await.unwrap();
+            let r = c
+                .query_one("SELECT supersedes FROM memories WHERE id = $1", &[&new_id])
+                .await
+                .unwrap();
+            let n = c
+                .query_one(
+                    "SELECT count(*) FROM memory_relations \
+                      WHERE from_id = $1 AND to_id = $2 AND rel = 'supersedes'",
+                    &[&new_id, &old_id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            (r.get(0), n)
+        };
+        assert_eq!(col.as_deref(), Some(old_id.as_str()), "the column spelling");
+        assert_eq!(rel_rows, 1, "the relation spelling");
+
+        // --- recall hides the superseded row by default, annotates when opted in
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-018".into(),
+                query: None,
+                depth: None,
+                include_superseded: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = v["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![new_id.as_str()], "the superseded row is hidden");
+        assert_eq!(v["includeSuperseded"], false);
+
+        let out = recall(
+            &db,
+            RecallArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-018".into(),
+                query: None,
+                depth: None,
+                include_superseded: Some(true),
+                limit: None,
+            },
+        )
+        .await
+        .expect("recall with superseded");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let superseded = v["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == old_id.as_str())
+            .expect("the superseded row is now visible");
+        assert_eq!(
+            superseded["supersededBy"].as_str(),
+            Some(new_id.as_str()),
+            "and annotated with its replacement"
+        );
+
+        // --- resolve: active -> resolved + MemoryResolved, and the refusals
+        let out = resolve(
+            &db,
+            ResolveArgs {
+                memory_id: new_id.clone(),
+            },
+        )
+        .await
+        .expect("resolve");
+        assert!(out.contains("resolved memory"), "{out}");
+        let row = db.get_memory(&new_id).await.unwrap().unwrap();
+        assert_eq!(row.status, "resolved");
+        assert_eq!(row.resolved_by.as_deref(), Some("seat:seat-nimbus-001"));
+        assert!(row.resolved_at.is_some());
+        let resolved_events: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1 \
+                  AND event_type = 'MemoryResolved'",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved_events, 1);
+
+        let err = resolve(
+            &db,
+            ResolveArgs {
+                memory_id: new_id.clone(),
+            },
+        )
+        .await
+        .expect_err("a resolved record is immutable");
+        assert!(
+            err.to_string().contains("resolved"),
+            "the refusal names the status: {err}"
+        );
+        resolve(
+            &db,
+            ResolveArgs {
+                memory_id: "mem-nope".into(),
+            },
+        )
+        .await
+        .expect_err("an unknown id");
+    }
+
+    /// The two pure reads against a real database: `get_dispatch` answers with
+    /// the row, its LIVE status and its edges; `query_ledger` filters and pages.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-017 (scratch DB); run --test-threads=1"]
+    async fn read_tools_answer_from_the_ledger() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_seat();
+        // One in_flight dispatch per seat, GLOBALLY: drain whatever an earlier
+        // test left this seat holding before pulling this test's own dispatch.
+        let held = get_next(&pool, Some(project.into())).await.unwrap();
+        if let Some(id) = held
+            .split_whitespace()
+            .nth(1)
+            .filter(|_| held.contains("delivered"))
+        {
+            complete(
+                &pool,
+                CompleteArgs {
+                    dispatch_id: id.to_string(),
+                    outcome: None,
+                    reason: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        as_actor("human:supervisor");
+        enqueue(&pool, enqueue_args("disp-it-read", project, 0))
+            .await
+            .unwrap();
+        as_seat();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        let db = SeatloomDb::new(pool.clone());
+
+        // get_dispatch: in_flight is returned as stored (never recomputed).
+        let out = read::get_dispatch(
+            &db,
+            read::GetDispatchArgs {
+                dispatch_id: "disp-it-read".into(),
+            },
+        )
+        .await
+        .expect("the dispatch read model");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "in_flight");
+        assert_eq!(v["liveStatus"], "in_flight");
+        assert_eq!(v["title"], "itest");
+
+        // An unknown id is a typed refusal, not an empty object.
+        read::get_dispatch(
+            &db,
+            read::GetDispatchArgs {
+                dispatch_id: "disp-nope".into(),
+            },
+        )
+        .await
+        .expect_err("unknown dispatch");
+
+        // query_ledger: filter by type, and the ref filter as a pair.
+        let out = read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: Some(project.into()),
+                event_types: vec!["SeatDispatchIssued".into(), "SeatDispatchDelivered".into()],
+                ref_type: None,
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect("the ledger query");
+        let events: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(events.len(), 2, "issued + delivered");
+        assert_eq!(events[0]["eventType"], "SeatDispatchDelivered");
+
+        // A half ref filter is a malformed call, not a wider query.
+        read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: None,
+                event_types: vec![],
+                ref_type: Some("dispatch".into()),
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect_err("half a ref filter");
+        // An unknown event type is refused by the hand-written FromStr.
+        read::query_ledger(
+            &db,
+            read::QueryLedgerArgs {
+                project_id: None,
+                event_types: vec!["SeatDispatchReopened".into()],
+                ref_type: None,
+                ref_id: None,
+                from: None,
+                to: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+        .expect_err("an unknown event type");
+    }
+
     /// Defect 2 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): a pending card can
     /// be withdrawn by the seat that requested it, so "this card was satisfied
     /// by other means" is a RECORDED transition instead of a hand-edited row.
@@ -2299,6 +3898,7 @@ mod db_itests {
                 how_to_verify: "do A see B".into(),
                 flux_verdict_ref: "ev-it-verdict-c".into(),
                 base: Some("track".into()),
+                acceptance_plan: valid_plan(),
             },
         )
         .await

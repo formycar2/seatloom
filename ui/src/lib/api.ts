@@ -11,6 +11,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn, Event } from '@tauri-apps/api/event';
 import type {
+  AcceptanceLineageDto,
   ArtifactDto,
   AcceptanceCardDto,
   AcceptanceDecisionDto,
@@ -123,6 +124,14 @@ export const api = {
     invoke('cmd_list_events', { limit }),
   listEventsByType: (eventType: string): Promise<CanonicalEventDto[]> =>
     invoke('cmd_list_events_by_type', { eventType }),
+
+  // --- Acceptance card lineage (acceptance-lineage, Lane B) ---
+  // Pure read: assembles the card, its dispatch (with the original task
+  // statement), the event chain, the Flux verdict, the products, the dependency
+  // edges and the rework. Same assembler the MCP `get_acceptance_lineage` tool
+  // calls, so the two surfaces cannot drift.
+  getAcceptanceLineage: (acceptanceId: string): Promise<AcceptanceLineageDto> =>
+    invoke('cmd_get_acceptance_lineage', { acceptanceId }),
 
   // --- Governed dispatch (G19) — seat inboxes ---
   listDispatches: (projectId?: string, limit?: number): Promise<DispatchDto[]> =>
