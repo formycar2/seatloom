@@ -140,3 +140,20 @@ export interface KnowledgeTopicMemories {
 - Aegis 计划/裁决(主 checkout 未提交 track):`AEGIS-2026-10-11-overnight-plan.md`、
   `AEGIS-2026-10-11-topic-creation-and-verdict-wake-ruling.md`。
 - 四方案:§4 表。派单 payload 自含,packet 路径 = 各 lane 文档 + 本拆解。
+
+## Follow-up(2026-10-11 凌晨):门溯源未定 → 头条卡改绑正向证据;019 方案缺口已补
+
+**事实(按时间)**:Nimbus open_topic 交付(选新增 TopicOpened,Rust 钉 28)→ Lyra 签署契约
++ 派 Onyx 019 → Nimbus 冒烟**如实上报 blocked**(未假写、未发门)→ Onyx 019 落地 + Flux
+PASS(其卡因「Onyx 进程旧 + Lyra 019 方案未派」而 blocked)—— **019 方案是 Lyra 的缺口,
+已补**(\`2026-10-11-lyra-onyx-019-topic-opened-acceptance-plan-v1.md\` + 建卡步
+\`disp-019-onyx-card\`)→ Mira 面板 Flux PASS(诚实的不接线态)。
+
+**门溯源结论(截至本记录)**:没有任何席位在 live 上真实 remember 过(smoke blocked、
+Vela 未写),故 \`ev-typed-memory-tools-landed\` 的发出者与证据**仍未认定**。按 v1 自派单
+自带的守卫(绝不在假门上建头条卡):**未派头条卡**;v1 自派单按「等待+改绑」分支完成,
+新派 \`disp-lyra-onight-card-headline-v2\`,门改为两个**正向证据**:
+\`ev-knowledge-read-model-landed\`(读模型交付)+ \`ev-writein-landed\`(Vela 真实记录入库)。
+头条卡只在「已交付、有证据」的现实上触发。已 SupervisorMessage(\`ev-Zf318ktgqy5z8vTv8gT8R\`)
+请 Aegis:(a) 认定门事件发出者与证据(其 commit 被权限拦着、本席二进制读不了账本,
+请用派单等席位可见的方式确认);(b) 019 的 live apply 与全队重启仍是 Vela 写库的关键路径。
