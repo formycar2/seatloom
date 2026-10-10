@@ -79,3 +79,22 @@ D5 Phase 2 拆解完毕并全部派发。产物 5 文档(契约 + 拆解 + 协�
 `ev-seat-vela-001-registered` 落账本 → 自派单 `disp-lyra-wash-p1` 解封 → 已派
 `disp-wash-vela-p1`(Lane C Part 1:S0–S2.5,零 LLM,seatloom 16 sessions)给
 seat-vela-001(status=ready)。`disp-lyra-wash-p2` 仍 blocked,等 018 + typed tools 两门。
+
+## Follow-up 2(2026-10-10 晚):两门齐 → Lane C Part 2 已派 + 建卡接合已接线
+
+`ev-018-memory-hardening-landed` + `ev-typed-memory-tools-landed` 两门落地 → 自派单
+`disp-lyra-wash-p2` 解封 → 已派 `disp-wash-vela-p2`(S3/S4/S5,priority 25,与 p1 按
+issued_at 串行)。同时:
+
+1. **两份验收方案已供稿**(PO,Lane D):`…-vela-wash-p1-acceptance-plan-v1.md` /
+   `…-vela-wash-p2-acceptance-plan-v1.md`(shape v1,JSON 校验过)。
+2. **建卡接合(堵「5 绿 0 卡」复发的结构性缺口)**:实测 `pg_notify` 只在 enqueue ready
+   时发 —— Flux 判定落地后没有任何机制唤醒请求席位。处置:Part 2 的 Flux 验单必须要求
+   判定事件用**预先申判 id** `ev-flux-verdict-wash-p2`,Lyra 持 gated 自派单
+   (`disp-lyra-wash-p2-card`,已 blocked 在该 id 上)—— 判定一落即唤醒 Lyra 派建卡步给
+   vela(plan 逐字);Part 1 的判定 id 未预先申判,已派 `disp-wash-vela-card-proc`
+   (priority 26,p1 后 p2 前被拉取)给 vela 手工接合程序(query_ledger 找判定 id →
+   request_acceptance)。
+3. **结构性缺口已上报 Aegis**:SupervisorMessage `ev-EFQYKBczSufTakaIjGh9s` —— 建议产品
+   修复(ReviewVerdictIssued 命中交付时 NOTIFY 请求席位,或 waker poke issuer),否则每条
+   verify→card 链都依赖人工 nudge,正是张先生嫌的瓶颈。
