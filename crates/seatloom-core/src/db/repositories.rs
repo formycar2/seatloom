@@ -975,6 +975,117 @@ impl SeatloomDb {
         Ok(updated)
     }
 
+    // =========================================================================
+    // Topic creation (Aegis ruling 2026-10-11) — the governed opening of a
+    // recall scope. `remember` cannot create one implicitly: a typo would
+    // silently open a scope nobody ever recalls from.
+    // =========================================================================
+
+    /// One topic by id.
+    pub async fn get_topic(&self, topic_id: &str) -> Result<Option<TopicRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                  FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_topic))
+    }
+
+    /// The ancestor chain of a topic, INCLUDING itself, nearest first. Used by
+    /// the cycle check (a new topic's parent must not be its own descendant).
+    pub async fn topic_chain_inclusive(&self, topic_id: &str) -> Result<Vec<TopicRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "WITH RECURSIVE chain AS ( \
+                   SELECT id, project_id, title, status, parent_topic_id, 0 AS depth \
+                     FROM topics WHERE id = $1 \
+                   UNION ALL \
+                   SELECT t.id, t.project_id, t.title, t.status, t.parent_topic_id, c.depth + 1 \
+                     FROM topics t JOIN chain c ON t.id = c.parent_topic_id \
+                    WHERE c.depth < 64 \
+                 ) \
+                 SELECT id, project_id, title, status, parent_topic_id FROM chain \
+                  ORDER BY depth",
+                &[&topic_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_topic).collect())
+    }
+
+    /// Open a topic: insert the row + append `TopicOpened` in ONE transaction
+    /// (the remember discipline). Idempotent by id — a second open of an
+    /// existing topic writes NOTHING and emits NO event (an existing row is not
+    /// a transition), returning the row as it stands.
+    ///
+    /// Returns `(row, created)`; `created` is false when the topic already
+    /// existed.
+    pub async fn open_topic(
+        &self,
+        topic_id: &str,
+        project_id: &str,
+        title: &str,
+        parent_topic_id: Option<&str>,
+        opened_by: &str,
+    ) -> Result<(TopicRow, bool), DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let n = tx
+            .execute(
+                "INSERT INTO topics (id, project_id, title, parent_topic_id, opened_by) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (id) DO NOTHING",
+                &[&topic_id, &project_id, &title, &parent_topic_id, &opened_by],
+            )
+            .await?;
+        if n == 0 {
+            // Already open: return the existing row, write nothing, emit nothing.
+            let row = tx
+                .query_one(
+                    "SELECT id, project_id, title, status, parent_topic_id \
+                       FROM topics WHERE id = $1",
+                    &[&topic_id],
+                )
+                .await?;
+            let row = row_to_topic(&row);
+            tx.commit().await?;
+            return Ok((row, false));
+        }
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::TopicOpened,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: opened_by.to_string(),
+            project_id: project_id.to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "topic_id": topic_id,
+                "title": title,
+                "parent_topic_id": parent_topic_id,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Topic, topic_id),
+                ObjectRefDraft::new(RefType::Seat, opened_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                   FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        let row = row_to_topic(&row);
+        tx.commit().await?;
+        Ok((row, true))
+    }
+
     /// `resolve` — the G3 closure path (018): `active -> resolved` +
     /// `MemoryResolved` in ONE transaction. The ONLY closure path: there is no
     /// background sweep and no automatic anything (contract §G3).
@@ -2571,6 +2682,16 @@ fn row_to_memory(r: &Row) -> MemoryRow {
         resolved_at: r.get(26),
         created_at: r.get(27),
         updated_at: r.get(28),
+    }
+}
+
+fn row_to_topic(r: &Row) -> TopicRow {
+    TopicRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        title: r.get(2),
+        status: r.get(3),
+        parent_topic_id: r.get(4),
     }
 }
 

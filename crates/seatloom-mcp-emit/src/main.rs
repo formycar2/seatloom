@@ -13,6 +13,7 @@ mod memory;
 mod protocol;
 mod read;
 mod scheduler;
+mod topics;
 
 use deadpool_postgres::Pool;
 use serde_json::Value;
@@ -44,7 +45,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -96,13 +97,14 @@ async fn handle_request(
     }
 }
 
-/// `tools/call` dispatch. Fifteen tools: `emit_event` (step 4), the six
+/// `tools/call` dispatch. Sixteen tools: `emit_event` (step 4), the six
 /// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on), the
 /// acceptance-lineage READ (Lane B), the five D5 memory tools
-/// (`recall`/`remember`/`promote`/`forget`/`resolve`) and the two pure READS
-/// (`get_dispatch`/`query_ledger`). Any other name is a tool error. A rejection
-/// is a tool error with `isError: true`, carrying the typed message verbatim —
-/// never a transport error, and never a partial write.
+/// (`recall`/`remember`/`promote`/`forget`/`resolve`), the two pure READS
+/// (`get_dispatch`/`query_ledger`) and `open_topic` (the governed creation of a
+/// recall scope). Any other name is a tool error. A rejection is a tool error
+/// with `isError: true`, carrying the typed message verbatim — never a transport
+/// error, and never a partial write.
 async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -145,10 +147,14 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
             Ok(a) => render_read(id, read::query_ledger(db, a).await),
             Err(resp) => resp,
         },
+        "open_topic" => match read_args::<topics::OpenTopicArgs>(&id, arguments) {
+            Ok(a) => render_topic(id, topics::open_topic(db, a).await),
+            Err(resp) => resp,
+        },
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic)"),
                 true,
             ),
         ),
@@ -327,6 +333,15 @@ fn read_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> Re
 }
 
 fn render_read(id: Value, outcome: Result<String, read::ReadRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The same rendering for the topic tool's own rejection type — a typed message
+/// rendered verbatim, exactly like every other tool.
+fn render_topic(id: Value, outcome: Result<String, topics::TopicRejection>) -> Value {
     match outcome {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
         Err(e) => success(id, tool_call_result(&e.to_string(), true)),
