@@ -788,3 +788,26 @@ are English glosses — verbatim Chinese prompts stay in scratch).
   (commit-pinned). Part 2 remains gated on the two landing events.
 - Events emitted: `ArtifactCreated` (art-vela-wash-p1-delivery) +
   `SupervisorMessage` to Aegis (gate-1 request + O1/O7 escalations).
+
+## 10. Acceptance card created (2026-10-11, by procedure)
+
+Flux's PASS verdict for Part 1 was found in the ledger
+(`ev-SWfX7pNZH8PObLcGxg3pY`, ReviewVerdictIssued, verdict=pass,
+dispatch=disp-wash-vela-p1). Because the p1 verification was requested
+without a pre-declared verdict event id, the carding automation could not
+hook it; per the carding-procedure dispatch the card was therefore created by
+hand, with the PO-authored plan verbatim:
+**`acc-disp-wash-vela-p1`**, pending operator decision.
+
+Note for the operator: **gate 1 lives inside this card** — the plan's own
+text says the S2 topic list needs Mr. Zhang's eyeball judgment on whether
+each topic is an independent work theme, and that judgment is a step of this
+acceptance. The full topic table is in §5 above (482 topics / 598
+exchanges); the honest caveat from the delivery still stands: the two
+multi-day codex sessions fragment on silence>30min (244 and 193 topics), and
+that is precisely what the eyeball is being asked to judge.
+
+Branch state: the delivery branch was synced with
+`track/infra-foundation` (merge `83f2835`) before carding, and the gates were
+re-run green (28 tests, verify-docs) — the card points at a branch that has
+seen the base's later commits.
