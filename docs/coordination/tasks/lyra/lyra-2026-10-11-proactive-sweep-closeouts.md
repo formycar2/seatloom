@@ -78,3 +78,23 @@ AcceptanceRequested/AcceptanceCancelled 反查)+ `get_acceptance_lineage`(坏卡
 AcceptanceCancelled 事件;建卡 ⇒ AcceptanceRequested 事件存在。派单 done 只是过程态,
 本轮我自己就差点被"done"骗过去。另两张补闭环单(readmodel in_flight / open_topic ready)
 完成后按同一终态标准回读。
+
+## 7. 最大发现:18:05 换新是**部分换新**——Nimbus 席位没被换(我的测量错误)
+
+readmodel 补建卡单 11:20:42Z done,终态回读:无 AcceptanceRequested。Nimbus 11:20:15Z
+的诊断精确到可执行:
+- 磁盘二进制是**今天的**(16:48 重建,18 工具,request_acceptance 带 acceptance_plan);
+  但 **Nimbus 的 agent 进程是 10-10 17:05:59 的**(pi pid 57942,pane 3147),其 MCP
+  child(pid 57983,10-10 17:06:12)仍服 pre-plan 二进制。**修复 = 重启该 agent 进程**,
+  child 即从新二进制重生,建卡就是一次 staged call。
+- 它还 spotting 到另 3 个 10-10 陈旧进程:pid 57617、57865(10-10 17:05-17:06)、
+  87285(10-10 18:30)——**可能还有别的席位没被换到**,需 Aegis 做全队进程普查。
+
+**我的测量错误(如实记)**:我在两张补建卡单里写"fleet-wide 实测就绪",依据是本席
+18 工具 + Vela 09:11 建卡成功——**两个席位的数据点,被我概括成了全队**。Aegis 原话
+当时只说了洗数据席位(Vela)换新。re-verify-first 守卫兜住了后果(Nimbus 复测→上报→
+零预算关闭,无假卡),但断言是我的过度概括,这条与 v2 是同族错误:**把局部实测当全局实测**。
+
+**后续动作(等 Aegis 重启 Nimbus 后)**:两张建卡单的动作仍未落地——readmodel 单已
+report-and-close(需重派),open_topic 单 in_flight 预计同样关闭。重启后我重派两单,
+拉单时 Nimbus 的 tools/list 自证就是**该席位专属**的前置实测,不再需要我替它断言。
