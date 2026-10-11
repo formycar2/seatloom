@@ -17,6 +17,7 @@ import { ActiveWorkSection } from './ActiveWorkSection';
 import { TimelineSection } from './TimelineSection';
 import { StageProgressSection } from './StageProgressSection';
 import { GoalsSection } from './GoalsSection';
+import { KnowledgeSection } from './KnowledgeSection';
 import { InboxView } from '../views/InboxView';
 import { WorkItemsView } from '../views/WorkItemsView';
 import { ArtifactsView } from '../views/ArtifactsView';
@@ -571,6 +572,10 @@ export const ProjectDashboard: React.FC<{ channelId: string; projectId?: string 
 
       {/* 6. ── Deep Scroll Context (Goals & Stages) ── */}
       <GoalsSection goals={goals} currentGoal={currentGoal} stages={stages} />
+
+      {/* 7. Knowledge (D5: memories distilled from historical sessions)
+          Additive mount only: one line, no re-layout of the sections above. */}
+      <KnowledgeSection projectId={projectId ?? channelId} />
 
       {/* ─── Global Hover Popup ─── */}
       {hoveredItem && (
