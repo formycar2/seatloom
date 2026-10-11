@@ -45,6 +45,60 @@ line(){ say "──────────────────────�
 # 吞成了「0 行」,据此差点误判。一个永远不会报错的检查比没有检查更有害。
 q(){ podman exec -e PGPASSWORD=seatloom "$CTR" psql -U seatloom -d seatloom -tAc "$1"; }
 
+# emit_gate <事件 id> <陈述> <怎么实测的> <这个门不断言什么>
+# 发一个门事件。**id 一律由调用方给**,而且必须是等待方预先声明的那个 ——
+# 见第二段后面那段注释里 2026-10-12 的实测教训。
+# 幂等:同一 id 重复发会被工具拒绝,这里识别成"已存在"当成功。
+emit_gate(){
+  local gid="$1" stmt="$2" ver="$3" notassert="$4"
+  local tmp; tmp="$(mktemp)"
+  python3 - "$gid" "$stmt" "$ver" "$notassert" > "$tmp" <<'PY'
+import json, sys
+gid, stmt, ver, notassert = sys.argv[1:5]
+msgs = [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                "clientInfo": {"name": "aegis-land-knowledge", "version": "1"}}},
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+        "name": "emit_event",
+        "arguments": {
+            "type": "SupervisorMessage",
+            "event_id": gid,
+            "refs": [{"ref_type": "project", "ref_id": "seatloom", "role": "subject"}],
+            "payload": {
+                "gate": gid,
+                "statement": stmt,
+                "verified": ver,
+                "does_not_assert": notassert,
+                "issued_by": "seat-aegis-001",
+            },
+        }}},
+]
+for m in msgs:
+    print(json.dumps(m, ensure_ascii=False))
+PY
+  "$BIN" < "$tmp" 2>&1 | python3 -c "
+import sys, json
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try: m = json.loads(raw)
+    except Exception: print('  stderr:', raw[:200]); continue
+    if m.get('id') in (None, 1): continue
+    if 'error' in m:
+        print('  ❌ 失败:', str(m['error'].get('message'))[:240]); continue
+    r = m.get('result') or {}
+    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
+    if r.get('isError'):
+        low = txt.lower()
+        print(('  ⏭  已存在,跳过:' if ('already' in low or 'exists' in low or 'duplicate' in low) else '  ❌ 被拒:'), txt[:240])
+    else:
+        print('  ✅', (txt or json.dumps(r, ensure_ascii=False))[:200])
+"
+  rm -f "$tmp"
+}
+
 [ -x "$BIN" ] || { say "❌ 找不到程序 ${BIN} —— 先跑 cargo build --workspace"; exit 1; }
 [ -r "$MIG" ] || { say "❌ 盘上找不到 019 迁移 ${MIG} —— 仓库是不是不在 track 分支?"; exit 1; }
 podman exec "$CTR" true 2>/dev/null || {
@@ -91,6 +145,53 @@ else
   say "  ❌ 查询失败 —— 当作条件不成立"; apply_ok=0
 fi
 say "  词表值个数:$(q "select cardinality(string_to_array(regexp_replace(pg_get_constraintdef(oid),'.*ARRAY\[|\].*','','g'),','))" 2>/dev/null || echo '(数不出来,不影响判定)')"
+say ""
+
+# ══ 门事件:ev-live-019-applied ═════════════════════════════════════
+# **必须用等待方预先声明的那个 id,不是我自己起的那个。**
+# 2026-10-12 实测到我犯过这个错:洗数据席位的重派单 v3 挂着
+#   event ev-live-019-applied
+# 而我这个脚本一直准备发 `ev-knowledge-write-path-live` —— 两个不同的 id。
+# 结果会是:张先生命令跑完、019 真的落库了、写入也实证成功了,而 v3 仍然 blocked。
+# 这比我今天早上裁决的那类错误更隐蔽:链条看起来全绿,只有一个环没通电。
+#
+# 所以这里在第二段一确认就发 ev-live-019-applied —— 它的条件("019 已应用到 live")
+# 此刻就是真的,**不需要等第三段的写入实证**。这是两个不同的门,不要混为一个。
+if [ "${apply_ok}" = "1" ]; then
+  emit_gate "ev-live-019-applied" "Migration 019 is live-applied: the running database's canonical_events_event_type_vocab now admits TopicOpened." \
+    "Re-read from pg_constraint on the running seatloom-postgres immediately before emitting, not inferred from the merge. The vocab contains TopicOpened, so open_topic's row+event transaction can pass the CHECK. Source: infra/postgres/schema/019_topic_opened.sql on track 5bd500d, Flux verdict ev-019-topic-opened-flux-verdict." \
+    "Asserts ONLY that the vocabulary widening is live. It does not assert that any topic or memory row exists — that is ev-knowledge-write-path-live, earned by a real open_topic plus a real remember."
+else
+  say "门事件 ev-live-019-applied **不发** —— 019 没落到 live,发了就是向账本谎称。"
+  say "  (洗数据席位的重派单 v3 正挂在它上面,所以它会继续保持 blocked,这是对的)"
+fi
+say ""
+
+# ══ 普查:还有哪些**预先声明**的门 id 在等 ═════════════════════════
+# 2026-10-12 的教训不只是"id 起错了",而是"我怎么会不知道有别的 id 在等"。
+# 答案:我从没查过。所以这里每次都查一遍账本,把所有被 blocked 单引用的
+# `ev-live-*` id 列出来,逐个说明本脚本发不发、为什么不发。
+# 少一个环,链条看起来全绿而实际不通 —— 那比卡住更难发现。
+say "普查:被 blocked 单引用、而账本里还没有的门 id"
+waiting="$(q "select distinct dep_value from dispatch_dependencies d join dispatches p on p.id=d.dispatch_id where d.dep_kind='event' and p.status='blocked' and dep_value like 'ev-live-%' order by 1")"
+if [ -z "${waiting:-}" ]; then
+  say "  (没有 blocked 单在等 ev-live-* 门)"
+else
+  printf '%s\n' "$waiting" | while read -r wid; do
+    [ -z "${wid:-}" ] && continue
+    have="$(q "select count(*) from canonical_events where id='${wid}'")"
+    if [ "$have" != "0" ]; then
+      printf "  %-34s 已入账 ✅\n" "$wid"
+    else
+      case "$wid" in
+        ev-live-019-applied)      printf "  %-34s 本脚本第二段后发(条件:019 已应用到 live)\n" "$wid";;
+        ev-knowledge-write-path-live) printf "  %-34s 本脚本第三段实证成功后发(条件:真的写进去过)\n" "$wid";;
+        ev-knowledge-read-model-landed) printf "  %-34s 读模型能调通就发(第七段)\n" "$wid";;
+        *) printf "  %-34s ⚠️ **本脚本不发** —— 不是我验过的条件,需要张先生或对应席位处理\n" "$wid";;
+      esac
+    fi
+  done
+fi
 say ""
 
 # ══ 第三段:实证一次真实写入 ═══════════════════════════════════════
@@ -206,59 +307,19 @@ else
 fi
 say ""
 
-# ══ 第四段:只有实证通过才发门事件 ═════════════════════════════════
+# ══ 第四段:写入真的成功过,才发写入路径的门 ═══════════════════════
 line
-say "第四段 — 门事件"
+say "第四段 — 写入路径的门事件"
 line
 if [ "$proof_ok" = "1" ]; then
-  python3 - > "$CALLS" <<'PY'
-import json
-msgs = [
-    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                "clientInfo": {"name": "aegis-land-knowledge", "version": "1"}}},
-    {"jsonrpc": "2.0", "method": "notifications/initialized"},
-    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-        "name": "emit_event",
-        "arguments": {
-            "type": "SupervisorMessage",
-            "event_id": "ev-knowledge-write-path-live",
-            "refs": [{"ref_type": "project", "ref_id": "seatloom", "role": "subject"}],
-            "payload": {
-                "gate": "ev-knowledge-write-path-live",
-                "statement": "The typed memory write path is live-usable: one real open_topic and one real remember have succeeded against the running database.",
-                "verified": "019 applied to the running seatloom-postgres (event-type vocab 27 -> 28, +TopicOpened, verified by reading pg_constraint, not by trusting the apply output); open_topic created topic-aegis-fleet-operations; remember wrote one real memory row. topics and memories both non-zero in the ledger.",
-                "landed": "track 5bd500d — 019_topic_opened.sql, open_topic (topics.rs), the knowledge read model (knowledge.rs + Tauri commands + UI types), taken path-limited from packet/onyx/topic-opened-019 and packet/nimbus/knowledge-readmodel after cargo build --workspace passed.",
-                "note": "Emitted only after the proof, per the live-usable-not-code-merged rule. The three Flux verdicts behind it: ev-019-topic-opened-flux-verdict, ev-verdict-open-topic, ev-verdict-knowledge-readmodel.",
-                "issued_by": "seat-aegis-001",
-            },
-        }}},
-]
-for m in msgs:
-    print(json.dumps(m, ensure_ascii=False))
-PY
-  say "  条件成立 → 发 ev-knowledge-write-path-live"
-  "$BIN" < "$CALLS" 2>&1 | python3 -c "
-import sys, json
-for raw in sys.stdin:
-    raw = raw.strip()
-    if not raw: continue
-    try: m = json.loads(raw)
-    except Exception: print('  stderr:', raw[:200]); continue
-    if m.get('id') in (None, 1): continue
-    if 'error' in m:
-        print('  ❌ 失败:', str(m['error'].get('message'))[:240]); continue
-    r = m.get('result') or {}
-    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
-    if r.get('isError'):
-        low = txt.lower()
-        print(('  ⏭  已存在,跳过:' if ('already' in low or 'exists' in low or 'duplicate' in low) else '  ❌ 被拒:'), txt[:240])
-    else:
-        print('  ✅', (txt or json.dumps(r, ensure_ascii=False))[:240])
-"
+  emit_gate "ev-knowledge-write-path-live" \
+    "The typed memory write path is live-usable: one real open_topic and one real remember have succeeded against the running database." \
+    "Executed in stage 3 against the live database, then re-checked in the ledger: topics and memories both hold rows. The memory written is a real one (the root cause and fix of the 2026-10-11 stall), not test data." \
+    "Does not assert anything about the washing seat's 88 staged records — that is ev-writein-landed, earned by actually writing them."
 else
-  say "  跳过 —— 实证没过,门事件不发。"
+  say "  跳过 —— 实证没过,门事件不发。向账本谎称某事已发生,比卡住更糟。"
 fi
+say ""
 say ""
 
 # ══ 第五段:让全队换上带新工具的程序 ═══════════════════════════════
@@ -301,36 +362,50 @@ if [ -z "${cur_plan:-}" ]; then
 elif [ "$cur_plan" != "{}" ]; then
   say "  ⏭  已回填过($(printf '%s' "$cur_plan" | wc -c | tr -d ' ') 字符),跳过(可重复跑)"
 else
-  # 刻意**不**把 Lyra 为别的 lane 写的方案抄到这张卡上 —— 那会伪造血缘。
-  # Lyra 没有为 dispatch-ui 这张卡写过方案(夜间拆解给的是 knowledge-panel 那条),
-  # 所以这里写的是**撤卡本身**的验收方案,并在 JSON 里如实说明它是什么。
+  # **用 Lyra 为这张卡撰写的方案原文,不自己编。**
+  # 2026-10-12 更正:我第一版在这里写了一份通用的「撤卡方案」,理由写的是
+  # 「Lyra 从未为 dispatch-ui 这张卡写过方案」。这个理由是错的 ——
+  # Lyra 写过,就在 docs/coordination/acceptance/2026-10-10-lyra-mira-d2-ui-acceptance-plan-v1.md,
+  # §2 明确标注「acceptance_plan(回填 JSON,逐字)」。我当时只在
+  # docs/coordination/tasks/lyra/ 目录下找,找错了地方,于是得出了错的结论。
+  # 自己编一份不只是多做了功:它会**伪造血缘** —— 卡上挂着一个不是我该署名的方案,
+  # 以后没人分得清哪份是产品席位真的判断过的。
+  #
+  # 那份文档原先只在 packet/lyra/milestone-summary 上(track 上没有),已按路径限定取入。
+  # 脚本**从文档里读**,不在自己这儿存一份副本 —— 否则又是第二条真相。
   #
   # 整条 UPDATE 由 python 生成后从 stdin 喂给 psql。**不要用 `-c` 配 psql 变量** ——
   # psql 对 `-c` 的字符串不做变量插值,`:'plan'` 会原样送给服务器然后报语法错误
   # (实测过,所以换成美元引号)。JSON 里出现定界符就换一个,不硬着来。
-  SQL="$(python3 <<'PY'
-import json, sys
-plan = json.dumps({
-  'plan_kind': 'withdrawal',
-  'note': '这张卡是 bootstrap 装进来的,不是 request_acceptance 调用产生的:它的 base 是字符串 track(本仓没有这个分支),所以 cmd_accept_delivery 会在 checkout 处拒绝,这张卡永远不可能被 grant。本字段不是交付的验收方案 —— Lyra 从未为 dispatch-ui 这张卡写过方案 —— 而是「撤掉这张卡」这个动作本身的验收方案。dispatch-ui 的工作本身不受影响,会带血缘和结构化方案重新建卡。',
-  'steps': [
-    {'action': '打开 SeatLoom 的待验收队列', 'input': '无'},
-    {'action': '确认这张卡已经不在待验收列表里', 'input': '卡号 acc-disp-me6Nm8e9D6ZRe4fKyVokY'},
-    {'action': '确认队列里剩下的卡都能点(base 是真实分支、方案不为空)', 'input': '无'},
-  ],
-  'expected': [
-    {'output': '队列可打开', 'expect': '不报错'},
-    {'output': '这张卡状态为 cancelled,不再出现在待验收列表', 'expect': '张先生看不到点下去只会报错的卡'},
-    {'output': '剩余卡片每张都有非空方案和真实的 base 分支', 'expect': '队列里只剩人能真的判一次的卡'},
-  ],
-}, ensure_ascii=False)
+  SQL="$(python3 <<'PYEOF'
+import json, re, sys, pathlib
+
+doc = pathlib.Path(
+    "docs/coordination/acceptance/2026-10-10-lyra-mira-d2-ui-acceptance-plan-v1.md"
+).read_text(encoding="utf-8")
+m = re.search(r'^## 2\..*?\n```json\n(.*?)\n```', doc, re.S | re.M)
+if not m:
+    sys.stderr.write("抓不到 Lyra 方案文档 §2 的 json 块 —— 中止,不自己编一份\n")
+    sys.exit(1)
+plan = json.loads(m.group(1))
+# 逐字取用:不改写、不删字段。只在旁边加一个说明这个字段为何被写入的标记,
+# 而且是**新增顶层键**,不动 Lyra 的任何一个字。
+plan["backfill_note"] = (
+    "Backfilled by the supervisor on 2026-10-12 to clear 016's "
+    "acceptances_plan_required CHECK, which had left this legacy row unable to "
+    "be updated at all. The plan content above is Lyra's section 2 verbatim from "
+    "docs/coordination/acceptance/2026-10-10-lyra-mira-d2-ui-acceptance-plan-v1.md "
+    "— the PO's own authorship, not written by Aegis."
+)
 tag = '$aegisplan$'
-if tag in plan:
-    sys.stderr.write('JSON 含美元引号定界符,中止\n'); sys.exit(1)
+blob = json.dumps(plan, ensure_ascii=False)
+if tag in blob:
+    sys.stderr.write("JSON 含美元引号定界符,中止\n")
+    sys.exit(1)
 print("UPDATE acceptances SET acceptance_plan = %s%s%s::jsonb "
       "WHERE id = 'acc-disp-me6Nm8e9D6ZRe4fKyVokY' "
-      "AND acceptance_plan = '{}'::jsonb;" % (tag, plan, tag))
-PY
+      "AND acceptance_plan = '{}'::jsonb;" % (tag, blob, tag))
+PYEOF
 )"
   if [ -z "${SQL:-}" ]; then
     say "  ❌ 生成回填语句失败 —— 跳过"
@@ -372,9 +447,15 @@ cancel_acceptance 不碰那一列,但 UPDATE 会让 Postgres 重新校验整行,
   acc-disp-me6Nm8e9D6ZRe4fKyVokY 的 acceptance_plan 已回填为非空
   acceptances_plan_required 已 VALIDATE
 
-**刻意没有**把 Lyra 为别的 lane 写的方案抄到这张卡上 —— 那会伪造血缘。Lyra 从没为 dispatch-ui
-这张卡写过方案,所以回填的内容是「撤卡这个动作本身」的验收方案,JSON 里的 plan_kind='withdrawal'
-如实写明了它是什么。
+回填用的是 **Lyra 为这张卡撰写的方案原文** ——
+docs/coordination/acceptance/2026-10-10-lyra-mira-d2-ui-acceptance-plan-v1.md 的 §2,
+那份文档自己就标注了「acceptance_plan(回填 JSON,逐字)」。逐字取用,一个字没改,
+只在旁边加了一个 backfill_note 顶层键,说明这个字段为何被写入。
+
+顺带更正我自己的一个错:我先前以为 Lyra 没为这张卡写过方案,准备自己编一份通用的
+「撤卡方案」顶上。那是错的 —— 文档在 docs/coordination/acceptance/ 下,不在
+docs/coordination/tasks/lyra/ 下,我找错了目录就下了结论。自己编一份会伪造血缘:
+卡上挂着一个不该由我署名的方案,以后没人分得清哪份是产品席位真判断过的。
 
 现在请重做第六次调用,参数不变:
   cancel_acceptance(acceptance_id='acc-disp-me6Nm8e9D6ZRe4fKyVokY', reason=<你之前用的那版>)
@@ -396,15 +477,11 @@ line
 say "第七段 — 知识读模型的门事件"
 line
 # Lyra 的头条建卡单(disp-lyra-onight-card-headline-v2)挂着两条依赖边:
-#   event ev-knowledge-read-model-landed   ← 本段负责
-#   event ev-writein-landed                ← 洗数据席位真的把 88 条记录写进去才算,不由本脚本发
-# 读模型这一条**今天就已经是真的**,而且不依赖 019:它只读表,不写事件。
-# 实测(2026-10-11 17:3x,用磁盘上的二进制直连 live):
-#   get_knowledge_tree(project_id=seatloom) → 成功,返回 {"projectId":"seatloom","topics":[]}
-#   get_topic_memories(topic_id=不存在)     → 带类型的拒绝「topic not found」(在工作,不是崩)
-# 空树是**正确的空**,不是失败:库里确实还没有主题。
-# 但按 AGENTS.md 第 7 条,门事件的条件一律按「能不能真的跑成功」核 ——
-# 所以这里**重新实测一次**,不信上面这段注释,也不信代码合没合进来。
+#   event ev-knowledge-read-model-landed   <- 本段负责
+#   event ev-writein-landed                <- 洗数据席位真的把 88 条记录写进去才算,不由本脚本发
+# 读模型这一条**不依赖迁移**:它只读表,不写事件。
+# 按 AGENTS.md 第 7 条,门事件的条件一律按「能不能真的跑成功」核 ——
+# 所以这里**重新实测一次**,不信注释、不信代码是否合并。
 say "  重新实测一次读模型(不信注释、不信代码是否合并)"
 RMCALLS="$(mktemp)"
 printf '%s\n' \
@@ -439,51 +516,10 @@ case "$rm_ok" in
 esac
 
 if [ "${rm_proof:-0}" = "1" ]; then
-  python3 - > "$CALLS" <<'PY'
-import json
-msgs = [
-    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                "clientInfo": {"name": "aegis-land-knowledge", "version": "1"}}},
-    {"jsonrpc": "2.0", "method": "notifications/initialized"},
-    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-        "name": "emit_event",
-        "arguments": {
-            "type": "SupervisorMessage",
-            "event_id": "ev-knowledge-read-model-landed",
-            "refs": [{"ref_type": "project", "ref_id": "seatloom", "role": "subject"}],
-            "payload": {
-                "gate": "ev-knowledge-read-model-landed",
-                "statement": "The knowledge read model is live-usable: get_knowledge_tree returns successfully against the running database, and get_topic_memories gives a typed not-found rather than failing.",
-                "verified": "Called against the live database with the on-disk binary, not inferred from the merge. get_knowledge_tree(project_id=seatloom) succeeded and returned an empty topics array — the correct empty, since no topic has been opened yet. get_topic_memories with an unknown topic_id returned the typed rejection 'topic not found'. Re-measured by this script immediately before emitting.",
-                "landed": "track 5bd500d — crates/seatloom-mcp-emit/src/knowledge.rs, the Tauri knowledge commands, and the UI api/types surface, taken path-limited from packet/nimbus/knowledge-readmodel after cargo build --workspace passed. Flux verdict ev-verdict-knowledge-readmodel (pass).",
-                "note": "This gate asserts ONLY that the read path works. It says nothing about there being anything to read: the other edge on Lyra's headline dispatch, ev-writein-landed, belongs to the washing seat and is earned by actually writing the 88 staged records.",
-                "issued_by": "seat-aegis-001",
-            },
-        }}},
-]
-for m in msgs:
-    print(json.dumps(m, ensure_ascii=False))
-PY
-  say "  条件成立 → 发 ev-knowledge-read-model-landed"
-  "$BIN" < "$CALLS" 2>&1 | python3 -c "
-import sys, json
-for raw in sys.stdin:
-    raw = raw.strip()
-    if not raw: continue
-    try: m = json.loads(raw)
-    except Exception: print('  stderr:', raw[:200]); continue
-    if m.get('id') in (None, 1): continue
-    if 'error' in m:
-        print('  ❌ 失败:', str(m['error'].get('message'))[:240]); continue
-    r = m.get('result') or {}
-    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
-    if r.get('isError'):
-        low = txt.lower()
-        print(('  ⏭  已存在,跳过:' if ('already' in low or 'exists' in low or 'duplicate' in low) else '  ❌ 被拒:'), txt[:240])
-    else:
-        print('  ✅', (txt or json.dumps(r, ensure_ascii=False))[:240])
-"
+  emit_gate "ev-knowledge-read-model-landed" \
+    "The knowledge read model is live-usable: get_knowledge_tree returns successfully against the running database, and get_topic_memories gives a typed not-found rather than failing." \
+    "Called against the live database with the on-disk binary, not inferred from the merge, and re-measured by this script immediately before emitting. An empty topics array is the correct empty - no topic has been opened yet." \
+    "Asserts ONLY that the read path works. It says nothing about there being anything to read: the other edge on the headline dispatch, ev-writein-landed, belongs to the washing seat and is earned by actually writing the 88 staged records."
 else
   say "  条件不成立 → **不发**门事件。向账本谎称某事已发生,比卡住更糟。"
 fi
