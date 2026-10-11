@@ -168,3 +168,47 @@ on the first failure rather than skipping.
   per the payload, the dispatch closes only after the acceptance card exists
   (Lyra's gated self-dispatch fires when Flux emits
   `ev-flux-verdict-wash-p2`).
+
+## 8. Operator-directed close-out (2026-10-11, after the 17-hour stall)
+
+The carding automation never fired: Flux's verdict event
+`ev-flux-verdict-wash-p2` was never emitted, so Lyra's gated self-dispatch
+never ran, and nothing poked this seat. Per the operator's instruction —
+waiting is not a state but a blocker to report, and a dispatch left hanging
+in_flight makes the waker skip the seat permanently, which is the root cause
+of the 17-hour stall — this dispatch is closed now with the failures
+recorded, not left hanging.
+
+**Verbatim evidence captured at close-out** (sanctioned paths attempted, not
+bypassed):
+
+1. `remember` with the 018-typed signature (kind / confidence / l2 line
+   range) — rejected at validation:
+   `Error: Validation failed for tool "mcp__seatloom__remember": -
+   l2_line_start: schema is false - l2_line_end: schema is false - root: must
+   not have additional properties`
+2. `remember` with the pre-018 signature (what this process's binary does
+   accept) — rejected by the database:
+   `memory tool rejected: postgres error: db error`
+3. `open_topic` — **not present in this process's tool surface at all**
+   (`searchTools("open_topic")` returns only `recall`).
+
+Root cause, confirmed by the operator: this seat's tool subprocess started at
+2026-10-10 21:39 and holds the program image from that moment — a binary that
+predates Lane A2 and has no `open_topic`. The fleet-wide program swap
+(`scripts/land-knowledge-live.sh`) has not run yet, so no new tool can be
+called from here until it does. This is the same wall as Onyx's terminal
+acceptance-card failure and Mira's forward-recording failure.
+
+**The memory write path is not live-available** (the operator's required
+phrasing for this failure: the memory write path is not live-available), so
+completion-protocol step 4 (forward recording via `remember`) was run once as
+required, failed as captured above, and is recorded here instead of in the
+memory store. No raw SQL, no bypass files, no live-DB action.
+
+Disposition: `complete_dispatch(disp-wash-vela-p2)` is called with this
+documentation, on the operator's explicit instruction, because the
+acceptance-card branch it was waiting on is blocked behind the same
+infrastructure gap. Gates 1 and 4 remain open for the operator; the staged
+88 records remain ready for one `execute_plan` call the moment the write path
+lands.
