@@ -9,15 +9,16 @@
 # 为什么要脚本:Aegis 被权限分类器拦住**改 live 数据库**的一切操作(拦得对)。
 # 按 AGENTS.md:不绕路、不拆小块、不换工具、不让席位代跑 —— 写成可审计、可重复跑的脚本交给张先生。
 #
-# 它分八段,**前一段失败就停**(后面每一段都以前一段为真实前提):
+# 它分九段,**前一段失败就停**(后面每一段都以前一段为真实前提):
 #   第一段  把 019 应用到正在跑的数据库
 #   第二段  核对 CHECK 真的变了(不信上一段的打印)
-#   第三段  实证一次真实写入:一次 open_topic + 一次 remember
+#   第三段  实证一次真实写入:一次 open_topic + 一次 remember(019 没落成也照跑 —— 要的就是那条拒绝原文)
 #   第四段  只有第三段两步都成功,才发门事件
 #   第五段  让全队换上带新工具的程序
 #   第六段  回填那张坏卡的空方案,让界面席位能撤掉它(不依赖记忆写入路径,实证失败也会做)
-#   第七段  叫醒洗数据席位收尾它自己卡死的领单
-#   第八段  把唤醒服务那个漏洞派给后端席位修
+#   第七段  实证知识读模型真的能调通,条件成立才发它的门事件(同样不依赖记忆写入路径)
+#   第八段  叫醒洗数据席位收尾它自己卡死的领单
+#   第九段  把唤醒服务那个漏洞派给后端席位修
 #
 # 全部可重复跑:019 自带幂等守卫,open_topic 幂等,remember 用固定 id 的门事件去重。
 #
@@ -35,6 +36,8 @@ export DATABASE_URL="${DATABASE_URL:-postgresql://seatloom:seatloom@localhost:54
 export SEATLOOM_ACTOR_REF="seat:seat-aegis-001"
 export SEATLOOM_PROJECT_ID="seatloom"
 
+apply_ok=1   # 019 是否真的落到 live(第一、二段实测)。只用于告诉你接下来会发生什么;
+             # 真正的控制权在 proof_ok —— 门事件和换程序一律只看「有没有真的写进去」。
 say(){ printf '%s\n' "$*"; }
 line(){ say "────────────────────────────────────────────────────────────"; }
 # 库内查询。**刻意不吞 stderr** —— 2026-10-11 用 2>/dev/null 把一个列名写错的查询
@@ -56,8 +59,10 @@ if podman exec -i -e PGPASSWORD=seatloom "$CTR" \
      psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 -q < "$MIG"; then
   say "  ✅ 019 应用完成(它自带幂等守卫,重复跑不会二次写目录)"
 else
-  say "  ❌ 019 应用失败 —— 停。live 数据库未被改成半状态(整个文件在一个 BEGIN/COMMIT 里)。"
-  exit 1
+  say "  ❌ 019 应用失败。live 数据库未被改成半状态(整个文件在一个 BEGIN/COMMIT 里)。"
+  say "     第三段仍会实测一次 —— 它会被数据库 CHECK 拒绝,那条拒绝原文就是你要贴给我的证据。"
+  say "     第四、五段(门事件 / 换程序)因此不会执行;第六、七段照跑 —— 它们不依赖 019。"
+  apply_ok=0
 fi
 say ""
 
@@ -65,12 +70,15 @@ say ""
 line
 say "第二段 — 核对 live 的事件类型词表真的含 TopicOpened"
 line
-vocab="$(q "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'")" || {
-  say "  ❌ 查询失败 —— 停"; exit 1; }
-case "$vocab" in
-  *TopicOpened*) say "  ✅ live CHECK 已含 TopicOpened";;
-  *) say "  ❌ live CHECK 仍不含 TopicOpened —— 停。open_topic 还是会失败,不要继续。"; exit 1;;
-esac
+if vocab="$(q "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'")"; then
+  case "$vocab" in
+    *TopicOpened*) say "  ✅ live CHECK 已含 TopicOpened";;
+    *) say "  ❌ live CHECK 仍不含 TopicOpened —— open_topic 还是会失败。"
+       say "     第三段仍会实测并失败(那就是证据);第四、五段不执行;第六、七段照跑。"; apply_ok=0;;
+  esac
+else
+  say "  ❌ 查询失败 —— 当作条件不成立"; apply_ok=0
+fi
 say "  词表值个数:$(q "select cardinality(string_to_array(regexp_replace(pg_get_constraintdef(oid),'.*ARRAY\[|\].*','','g'),','))" 2>/dev/null || echo '(数不出来,不影响判定)')"
 say ""
 
@@ -372,19 +380,118 @@ else
 fi
 say ""
 
+# ══ 第七段:知识读模型的门事件 ═════════════════════════════════════
+line
+say "第七段 — 知识读模型的门事件"
+line
+# Lyra 的头条建卡单(disp-lyra-onight-card-headline-v2)挂着两条依赖边:
+#   event ev-knowledge-read-model-landed   ← 本段负责
+#   event ev-writein-landed                ← 洗数据席位真的把 88 条记录写进去才算,不由本脚本发
+# 读模型这一条**今天就已经是真的**,而且不依赖 019:它只读表,不写事件。
+# 实测(2026-10-11 17:3x,用磁盘上的二进制直连 live):
+#   get_knowledge_tree(project_id=seatloom) → 成功,返回 {"projectId":"seatloom","topics":[]}
+#   get_topic_memories(topic_id=不存在)     → 带类型的拒绝「topic not found」(在工作,不是崩)
+# 空树是**正确的空**,不是失败:库里确实还没有主题。
+# 但按 AGENTS.md 第 7 条,门事件的条件一律按「能不能真的跑成功」核 ——
+# 所以这里**重新实测一次**,不信上面这段注释,也不信代码合没合进来。
+say "  重新实测一次读模型(不信注释、不信代码是否合并)"
+RMCALLS="$(mktemp)"
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"aegis-land-knowledge","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_knowledge_tree","arguments":{"project_id":"seatloom"}}}' \
+  > "$RMCALLS"
+rm_ok="$("$BIN" < "$RMCALLS" 2>/dev/null | python3 -c "
+import sys, json
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try: m = json.loads(raw)
+    except Exception: continue
+    if m.get('id') != 2: continue
+    if 'error' in m:
+        print('0 协议级失败: ' + str(m['error'])[:200]); break
+    r = m.get('result') or {}
+    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
+    if r.get('isError'):
+        print('0 工具拒绝: ' + txt[:200])
+    else:
+        print('1 ' + txt.replace(chr(10), ' ')[:160])
+    break
+else:
+    print('0 没有收到响应')
+")"
+rm -f "$RMCALLS"
+case "$rm_ok" in
+  1\ *) say "  ✅ get_knowledge_tree 调通:${rm_ok#1 }"; rm_proof=1;;
+  *)    say "  ❌ get_knowledge_tree 没调通:${rm_ok#0 }"; rm_proof=0;;
+esac
+
+if [ "${rm_proof:-0}" = "1" ]; then
+  python3 - > "$CALLS" <<'PY'
+import json
+msgs = [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                "clientInfo": {"name": "aegis-land-knowledge", "version": "1"}}},
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+        "name": "emit_event",
+        "arguments": {
+            "type": "SupervisorMessage",
+            "event_id": "ev-knowledge-read-model-landed",
+            "refs": [{"ref_type": "project", "ref_id": "seatloom", "role": "subject"}],
+            "payload": {
+                "gate": "ev-knowledge-read-model-landed",
+                "statement": "The knowledge read model is live-usable: get_knowledge_tree returns successfully against the running database, and get_topic_memories gives a typed not-found rather than failing.",
+                "verified": "Called against the live database with the on-disk binary, not inferred from the merge. get_knowledge_tree(project_id=seatloom) succeeded and returned an empty topics array — the correct empty, since no topic has been opened yet. get_topic_memories with an unknown topic_id returned the typed rejection 'topic not found'. Re-measured by this script immediately before emitting.",
+                "landed": "track 5bd500d — crates/seatloom-mcp-emit/src/knowledge.rs, the Tauri knowledge commands, and the UI api/types surface, taken path-limited from packet/nimbus/knowledge-readmodel after cargo build --workspace passed. Flux verdict ev-verdict-knowledge-readmodel (pass).",
+                "note": "This gate asserts ONLY that the read path works. It says nothing about there being anything to read: the other edge on Lyra's headline dispatch, ev-writein-landed, belongs to the washing seat and is earned by actually writing the 88 staged records.",
+                "issued_by": "seat-aegis-001",
+            },
+        }}},
+]
+for m in msgs:
+    print(json.dumps(m, ensure_ascii=False))
+PY
+  say "  条件成立 → 发 ev-knowledge-read-model-landed"
+  "$BIN" < "$CALLS" 2>&1 | python3 -c "
+import sys, json
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try: m = json.loads(raw)
+    except Exception: print('  stderr:', raw[:200]); continue
+    if m.get('id') in (None, 1): continue
+    if 'error' in m:
+        print('  ❌ 失败:', str(m['error'].get('message'))[:240]); continue
+    r = m.get('result') or {}
+    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
+    if r.get('isError'):
+        low = txt.lower()
+        print(('  ⏭  已存在,跳过:' if ('already' in low or 'exists' in low or 'duplicate' in low) else '  ❌ 被拒:'), txt[:240])
+    else:
+        print('  ✅', (txt or json.dumps(r, ensure_ascii=False))[:240])
+"
+else
+  say "  条件不成立 → **不发**门事件。向账本谎称某事已发生,比卡住更糟。"
+fi
+say "  (另一条边 ev-writein-landed 不由本脚本发 —— 那是洗数据席位真的写进 88 条才算)"
+say ""
+
 if [ "$proof_ok" != "1" ]; then
   line
-  say "停在第六段 —— 第七、八段不执行"
+  say "停在第七段 —— 第八、九段不执行"
   line
-  say "  第七、八段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
+  say "  第八、九段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
   say "  先把上面第三段打印的那条拒绝原因贴给 Aegis。"
   exit 1
 fi
 say ""
 
-# ══ 第七段:解开洗数据席位那条卡死的领单 ═══════════════════════════
+# ══ 第八段:解开洗数据席位那条卡死的领单 ═══════════════════════════
 line
-say "第七段 — 解开洗数据席位那条卡死的领单"
+say "第八段 — 解开洗数据席位那条卡死的领单"
 line
 # 实测(/tmp/seatloom_waker.log,2026-10-11):
 #   seat-vela-001 in_flight disp-wash-vela-p2 for 63344s (pane running pi) — an agent is working; not poking
@@ -413,9 +520,9 @@ else
 fi
 say ""
 
-# ══ 第八段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
+# ══ 第九段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
 line
-say "第八段 — 把唤醒服务的这个漏洞派给后端席位修"
+say "第九段 — 把唤醒服务的这个漏洞派给后端席位修"
 line
 say "  陈旧领单检测是在跑的,它正确地算出了 17 小时;但它因为「pane 里有 pi 活着」而拒绝叫醒。"
 say "  一个空闲但活着的 agent 和一个正在干活的 agent,在这个判据下长得一模一样。"
