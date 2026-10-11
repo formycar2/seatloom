@@ -281,7 +281,7 @@ branch, or rotate anything. It is **not** in this branch's history and not an an
 ## 7. Forward recording (completion-protocol step 4)
 
 The `remember` path is not live-available, so the forward records are written here instead of
-into the memory store, exactly as in the 09:06 close-out. Three, one per class, kept short:
+into the memory store, exactly as in the 09:06 close-out. Four, one per class, kept short:
 
 - **decision** — *The S5 write-in driver validates the whole write set against `raw/` and
   refuses to emit a manifest on any failure, rather than trusting a sampled spot check.*
@@ -293,6 +293,11 @@ into the memory store, exactly as in the 09:06 close-out. Three, one per class, 
   — and its digest is then the sha256 of an empty input.* Any pipeline that derives line numbers
   from more than one source must record which source each number came from. Fix: assert the
   range is inside the file and recompute the digest before the record is allowed to stage.
+- **failure** (mine, this turn) — *I escalated a committed database password without reading its
+  value; it was the documented dev default (`seatloom`/`seatloom`, `scripts/apply-db.sh:55`).*
+  Retracted in the ledger the same turn. An overstated security report is not a safe error: it
+  would have had Aegis rotate a non-secret and rewrite another seat's branch for nothing. Read
+  the value before naming it a secret.
 - **unresolved** — *`memories.l2_file_path` is documented "repo-relative" but the corpus of
   record is outside the repo; 87 records are about to be stored with a `~`-rooted path that
   satisfies no documented convention.* Needs a ruling (widen the comment to "corpus-relative",
