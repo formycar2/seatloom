@@ -1,4 +1,4 @@
-# vela-wash — SeatLoom corpus washing pipeline (Part 1: S0/S1/S2/S2.5, zero LLM)
+# vela-wash — SeatLoom corpus washing pipeline (S0-S2.5 zero-LLM, S3 extraction, S5 write-in)
 
 Seat (Vela) tooling for dispatch `disp-wash-vela-p1`, packet
 `docs/coordination/tasks/vela/VELA-2026-10-10-washing-pipeline-v1.md` (Lane C,
@@ -14,14 +14,57 @@ automatic.
 | S1 | redact secrets — after normalization, **before any LLM or table write** | `vela_wash/s1_redact.py` |
 | S2 | topic segmentation (two-level tree; self-built heuristic — the weakest link) | `vela_wash/s2_segment.py` |
 | S2.5 | prune for the LLM stage (tool_result bodies, retry rounds, meta rows) | `vela_wash/s25_prune.py` |
+| S3 | LLM extraction of typed records (kind / confidence / L2 range) | `author_*.py` + `vela_wash/s3_extract.py` |
+| S4 | layering validation (L0 one sentence / L1 decision-grade / L2 complete) | `vela_wash/s5_store.py` |
+| S5 | write-in driver: validate the whole write set, emit the insert manifest | `s5_writein.py` |
 
 ## Run
 
 ```bash
 cd tools/wash
 python3 -m vela_wash.run --out .local/wash        # all 16 sessions, ~20 s
-python3 -m unittest discover -s tests -v          # 28 tests incl. gate 2 + L2 pointers
+python3 s5_writein.py                             # validate the write set, emit the manifest
+python3 -m unittest tests.test_l2_pointers tests.test_s0_adapters \
+                  tests.test_s1_gate2 tests.test_s2_segment \
+                  tests.test_s5_writein -v          # 37 tests
 ```
+
+`python3 -m unittest discover -s tests` does NOT work (no `tests/__init__.py`);
+name the modules explicitly as above.
+
+## S5 write-in — read this before trusting a staged record
+
+`s5_writein.py` is the gate between "staged" and "inserted". It re-validates every
+record against `~/Documents/GitHub/AgentHistory/raw/` and **refuses to emit a manifest**
+if anything is off, so a bad record can never reach `remember`. It found three real
+defects that a sampled spot check had reported as clean:
+
+1. **Anchors numbered against the live transcript, not `raw/`.** Two records cited
+   lines past the end of their raw file; their `l2_body_digest` was `e3b0c442…`, the
+   sha256 of an empty input — the signature of a range that read no lines. **A digest
+   equal to sha256(b"") means the anchor is fake; check it explicitly.**
+2. **Stale idempotency keys.** Three `record_id`s did not equal the content digest of
+   their own fields, so a re-run would have inserted duplicates.
+3. **A claim no single line range can carry.** One record's assertion spans four
+   disjoint raw regions; it is dropped with a stated reason rather than force-anchored.
+
+The driver also normalises `l2_file_path` to the `~`-rooted corpus path **before**
+computing `record_id`, so the idempotency key is a function of exactly the bytes that
+get written. (015/018 document the column as "repo-relative", but the corpus of record
+lives outside this repo; a bare `raw/...` path resolves to nothing here.)
+
+Outputs, in the gitignored scratch dir:
+
+```
+.local/wash/s5/writein_manifest.json     the insert plan: topics + memories + repair log
+.local/wash/s5/records.writein.jsonl     the corrected records the manifest was built from
+```
+
+`tests/test_s5_writein.py` asserts these gates against the real manifest — **every** L2
+pointer, not a sample — plus the accounting (`inserted + dropped == staged`, every drop
+states why), the topic forest (one root, parents before children, no empty scope), and
+the cycle detector's actual behaviour. Note `deep_cycle_detect` walks the *simple-name*
+space (what 015's 1-cycle CHECK does not cover), not the full-path space.
 
 Read-only on `~/Documents/GitHub/AgentHistory/raw`. Artifacts land in the
 scratch dir (`.local/wash`, gitignored) — Part 2 (S3/S5) consumes them:
@@ -95,3 +138,10 @@ Every canonical turn carries `src_file` + `src_line` back into `raw/`.
 sampled turns resolve to their source rows (tool_use/tool_result ids, codex
 call_ids, cursor array indices). Pruning (S2.5) never touches these pointers:
 compact tool_result records keep `{tool, ok, bytes, l2:[file, line]}`.
+
+**The sampling is the weak point.** The 2026-10-11 write-in found 3 bad anchors
+that a 5-record random sample had reported as clean, and the prior delivery's
+"0 records dropped for no line number" was an under-count produced by that
+sampling. Any gate protecting a per-record invariant must be exhaustive over the
+write set — see `s5_writein.py` and `tests/test_s5_writein.py`, which check all
+of them.
