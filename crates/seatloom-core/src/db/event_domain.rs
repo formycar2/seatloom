@@ -92,6 +92,11 @@ pub enum EventType {
     // (018, D5 Phase 2) the closure transition for 'unresolved' records — an
     // EXPLICIT tool act (resolve), never a background sweep (contract §G3).
     MemoryResolved, // active -> resolved; payload carries resolved_by/resolved_at
+    // (019, topic creation) a topic is OPENED — the governed creation of a recall
+    // scope (Aegis ruling 2026-10-11). A new object with its own lifecycle
+    // (open|closed|merged) and its own actor (`opened_by`), so it gets its own
+    // transition, exactly as 012 gave `dispatch` and 014 gave `acceptance`.
+    TopicOpened, // (none) -> open; actor = the seat that opened it
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -150,7 +155,7 @@ const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStat
                                    SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, \
                                    AcceptanceRequested, AcceptanceGranted, AcceptanceRejected, AcceptanceCancelled, \
                                    MemoryCreated, MemoryRecalled, MemoryPromoted, MemoryForgotten, \
-                                   MemoryResolved";
+                                   MemoryResolved, TopicOpened";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
@@ -160,7 +165,7 @@ const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document,
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 27] = [
+    pub const ALL: [EventType; 28] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -188,6 +193,7 @@ impl EventType {
         EventType::MemoryPromoted,
         EventType::MemoryForgotten,
         EventType::MemoryResolved,
+        EventType::TopicOpened,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -219,6 +225,7 @@ impl EventType {
             EventType::MemoryPromoted => "MemoryPromoted",
             EventType::MemoryForgotten => "MemoryForgotten",
             EventType::MemoryResolved => "MemoryResolved",
+            EventType::TopicOpened => "TopicOpened",
         }
     }
 }
@@ -255,6 +262,7 @@ impl FromStr for EventType {
             "MemoryPromoted" => Ok(EventType::MemoryPromoted),
             "MemoryForgotten" => Ok(EventType::MemoryForgotten),
             "MemoryResolved" => Ok(EventType::MemoryResolved),
+            "TopicOpened" => Ok(EventType::TopicOpened),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -429,7 +437,7 @@ mod tests {
     /// If a migration widens a domain, this test is where the Rust side must
     /// follow — kept verbatim, never loosened.
     #[test]
-    fn serialized_sets_match_schema_010_012_013_014_015_017_018_checks() {
+    fn serialized_sets_match_schema_010_012_013_014_015_017_018_019_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -468,8 +476,10 @@ mod tests {
                 "MemoryForgotten",
                 // 018 (D5 Phase 2): the closure transition
                 "MemoryResolved",
+                // 019 (topic creation): a topic is opened
+                "TopicOpened",
             ],
-            "must equal 010:141-159 + 012 + 013 + 014 + 017 + 015 + 018's canonical_events_event_type_vocab"
+            "must equal 010:141-159 + 012 + 013 + 014 + 017 + 015 + 018 + 019's canonical_events_event_type_vocab"
         );
         let roles: Vec<&str> = RefRole::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(roles, vec!["subject", "actor", "context"]);
@@ -510,12 +520,12 @@ mod tests {
     }
 
     /// `013`/`014` widened the event vocabulary by six, the D2 withdrawal
-    /// follow-on adds a seventh, the D5 knowledge layer adds four more and 018
-    /// adds the closure transition; this pins that all of them are admitted,
-    /// round-trip, and are distinct (each names one transition), while an
-    /// unknown type is still rejected.
+    /// follow-on adds a seventh, the D5 knowledge layer adds four more, 018 adds
+    /// the closure transition and 019 the topic opening; this pins that all of
+    /// them are admitted, round-trip, and are distinct (each names one
+    /// transition), while an unknown type is still rejected.
     #[test]
-    fn the_twelve_new_event_types_are_admitted_and_distinct() {
+    fn the_thirteen_new_event_types_are_admitted_and_distinct() {
         use std::collections::HashSet;
         let new = [
             EventType::SeatDispatchFailed,
@@ -530,6 +540,7 @@ mod tests {
             EventType::MemoryPromoted,
             EventType::MemoryForgotten,
             EventType::MemoryResolved,
+            EventType::TopicOpened,
         ];
         for v in new {
             assert_eq!(EventType::from_str(v.as_str()).expect("round-trip"), v);
@@ -539,8 +550,8 @@ mod tests {
         let names: HashSet<&str> = new.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             names.len(),
-            12,
-            "the twelve new event types must be distinct"
+            13,
+            "the thirteen new event types must be distinct"
         );
         assert!(EventType::from_str("SeatDispatchReopened").is_err());
         assert!(EventType::from_str("MemoryUpdated").is_err());

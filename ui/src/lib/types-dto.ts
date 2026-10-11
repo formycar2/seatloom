@@ -289,6 +289,75 @@ export interface AcceptanceLineageDto {
   rework: AcceptanceLineageDispatchDto | null;
 }
 
+// ---------------------------------------------------------------------------
+// Knowledge read model (overnight step 4) — the DTO contract Mira codes against.
+// ADDITIVE ONLY: no existing interface in this file is touched.
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeTopicNode {
+  topicId: string;
+  title: string;
+  /** 'open' | 'closed' | 'merged'. */
+  status: string;
+  parentTopicId: string | null;
+  /** ACTIVE and not-superseded memories — the count a recall would return. */
+  memoryCount: number;
+}
+
+export interface KnowledgeTopicTree {
+  projectId: string;
+  /** A flat list; the UI groups by parentTopicId. */
+  topics: KnowledgeTopicNode[];
+}
+
+export interface KnowledgeL2Pointer {
+  /** 'document' | 'file'. */
+  refKind: string;
+  documentId?: string | null;
+  filePath?: string | null;
+  bodyDigest?: string | null;
+  /** Present when the source is a slice of an archived session transcript. */
+  lineStart?: number | null;
+  lineEnd?: number | null;
+}
+
+export interface KnowledgeMemoryCard {
+  memoryId: string;
+  topicId: string;
+  title: string;
+  /** 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'. */
+  kind: string;
+  /** 'quoted' | 'inferred'. */
+  confidence: string;
+  /** 'cold' | 'warm' | 'hot'. */
+  tier: string;
+  /** 'active' | 'forgotten' | 'resolved'. */
+  status: string;
+  l0Summary: string;
+  /** Present only at depth l1/l2. */
+  l1Overview?: string | null;
+  /** Present only at depth l2. */
+  l2?: KnowledgeL2Pointer | null;
+  /** The memory that replaced this one, when it has been superseded. */
+  supersededBy?: string | null;
+  sourceKind: string;
+  sourceRef: string;
+}
+
+export interface KnowledgeTopicChainEntry {
+  topicId: string;
+  title: string;
+}
+
+export interface KnowledgeTopicMemories {
+  topicId: string;
+  /** The depth that was served: 'l0' | 'l1' | 'l2'. */
+  depth: string;
+  /** Ancestors first, the topic itself last. */
+  topicChain: KnowledgeTopicChainEntry[];
+  memories: KnowledgeMemoryCard[];
+}
+
 export interface DocumentDto {
   id: string;
   projectId: string;

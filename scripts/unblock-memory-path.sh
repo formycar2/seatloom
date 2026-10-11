@@ -45,6 +45,7 @@ AEGIS_FILES=(
   scripts/fleet-status.sh
   scripts/configure-wash-provider.sh
   scripts/register-vela-seat.sh
+  scripts/fix-db-clock.sh
   scripts/integrate-memory-tools.sh
   scripts/unblock-memory-path.sh
   .seatloom/dispatch-seats.tsv

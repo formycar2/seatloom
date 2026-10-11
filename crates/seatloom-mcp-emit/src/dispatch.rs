@@ -89,6 +89,15 @@ pub struct EnqueueArgs {
     /// means the first failure is terminal (the pre-013 behaviour).
     #[serde(default)]
     pub max_retries: Option<i64>,
+    /// The pre-declared id of the verdict event this dispatch is asking for
+    /// (Aegis ruling 2026-10-11, part 2). Only meaningful — and only accepted —
+    /// when `payload.kind == "verification"`: the tool MINTS one when the caller
+    /// omits it and VALIDATES a caller-supplied one, then returns it so the
+    /// requester can hang a gated self-dispatch on it. The verifier MUST emit
+    /// `ReviewVerdictIssued` with exactly this id; that is what makes the
+    /// blocked -> ready trigger wake the requester.
+    #[serde(default)]
+    pub verdict_event_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +225,24 @@ pub enum DispatchRejection {
     /// `request_acceptance`: the dispatch already has a pending acceptance.
     AcceptancePending {
         dispatch_id: String,
+    },
+    /// `enqueue_dispatch`: `verdict_event_id` was supplied for a payload that is
+    /// not a verification request — the pre-declaration belongs to the
+    /// verification path only, so accepting it anywhere else would create an id
+    /// nothing will ever resolve.
+    VerdictIdNotAVerification {
+        verdict_event_id: String,
+    },
+    /// `enqueue_dispatch`: the caller-supplied `verdict_event_id` is not a
+    /// well-formed event id.
+    VerdictIdMalformed {
+        verdict_event_id: String,
+    },
+    /// `enqueue_dispatch`: the caller-supplied `verdict_event_id` is already in
+    /// the ledger — a pre-declared id must be unique, or two verdicts would
+    /// share one gate.
+    VerdictIdTaken {
+        verdict_event_id: String,
     },
     /// `request_acceptance`: neither the `base` argument nor
     /// `SEATLOOM_INTEGRATION_BRANCH` named the merge base. Refusing beats the
@@ -362,6 +389,22 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::InvalidAcceptancePlan { detail } => write!(
                 f,
                 "request_acceptance rejected: the acceptance plan does not match shape v1: {detail}"
+            ),
+            DispatchRejection::VerdictIdNotAVerification { verdict_event_id } => write!(
+                f,
+                "enqueue_dispatch rejected: verdict_event_id {verdict_event_id:?} was given for a \
+                 payload whose kind is not 'verification' — the pre-declaration belongs to the \
+                 verification path only"
+            ),
+            DispatchRejection::VerdictIdMalformed { verdict_event_id } => write!(
+                f,
+                "enqueue_dispatch rejected: verdict_event_id {verdict_event_id:?} is not a \
+                 well-formed event id (expected 'ev-' followed by a non-empty token)"
+            ),
+            DispatchRejection::VerdictIdTaken { verdict_event_id } => write!(
+                f,
+                "enqueue_dispatch rejected: verdict_event_id {verdict_event_id:?} is already in the \
+                 ledger — a pre-declared id must be unique, or two verdicts would share one gate"
             ),
             DispatchRejection::Db(e) => write!(f, "dispatch rejected: {e}"),
         }
@@ -639,8 +682,64 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
             .ok_or(DispatchRejection::InvalidMaxRetries { max_retries: m })?,
     };
 
+    // The verdict-event-id contract (Aegis ruling 2026-10-11 part 2): a
+    // verification request MUST carry a pre-declared verdict event id, so the
+    // requester can hang a gated self-dispatch on it and the existing
+    // blocked -> ready trigger does the waking. Minted here (or validated when
+    // the caller supplies one) and written INTO the payload, so the id is
+    // ledger data — visible and auditable — rather than a convention.
+    let is_verification = args
+        .payload
+        .get("kind")
+        .and_then(|k| k.as_str())
+        .map(|k| k == "verification")
+        .unwrap_or(false);
+    let mut payload = args.payload.clone();
+    let verdict_event_id = if is_verification {
+        match &args.verdict_event_id {
+            Some(id) => {
+                validate_verdict_event_id(id)?;
+                Some(id.trim().to_string())
+            }
+            None => Some(format!("ev-{}", nanoid::nanoid!())),
+        }
+    } else {
+        if let Some(id) = &args.verdict_event_id {
+            return Err(DispatchRejection::VerdictIdNotAVerification {
+                verdict_event_id: id.clone(),
+            });
+        }
+        None
+    };
+    if let Some(id) = &verdict_event_id {
+        payload["verdict_event_id"] = serde_json::json!(id);
+    }
+
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
+
+    // A pre-declared id must be unique: two dispatches pre-declaring the same
+    // verdict id would share one gate, and the second verdict would silently
+    // resolve the first requester's dependency too. "Taken" means BOTH already
+    // pre-declared by another dispatch (the payload is where the pre-declaration
+    // lives) and already present in the ledger as an event — an id that exists
+    // can never be emitted again.
+    if let Some(id) = &verdict_event_id {
+        let taken = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM dispatches WHERE payload->>'verdict_event_id' = $1) \
+                     OR EXISTS (SELECT 1 FROM canonical_events WHERE id = $1)",
+                &[&id],
+            )
+            .await
+            .map_err(db)?
+            .get::<_, bool>(0);
+        if taken {
+            return Err(DispatchRejection::VerdictIdTaken {
+                verdict_event_id: id.clone(),
+            });
+        }
+    }
 
     // Initial status: ready iff every dep is already satisfied, else blocked.
     let mut status = DispatchStatus::Ready;
@@ -661,7 +760,7 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
             &identity.actor_ref,
             &project_id,
             &args.title,
-            &args.payload,
+            &payload,
             &status.as_str(),
             &priority,
             &max_retries,
@@ -704,10 +803,30 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
     }
 
     tx.commit().await.map_err(db)?;
-    Ok(format!(
-        "enqueued {dispatch_id} (status={})",
-        status.as_str()
-    ))
+    Ok(match &verdict_event_id {
+        Some(id) => format!(
+            "enqueued {dispatch_id} (status={}) | verdict_event_id={id} — \
+             the verifier MUST emit ReviewVerdictIssued with exactly this id; \
+             hang the gated self-dispatch on dep_kind=event, dep_value={id}",
+            status.as_str()
+        ),
+        None => format!("enqueued {dispatch_id} (status={})", status.as_str()),
+    })
+}
+
+/// Validate a caller-supplied pre-declared verdict event id: `ev-` followed by a
+/// non-empty, whitespace-free token. A malformed id would be unresolvable, so it
+/// is refused rather than normalised.
+fn validate_verdict_event_id(id: &str) -> Result<(), DispatchRejection> {
+    let id = id.trim();
+    let ok = id.starts_with("ev-") && id.len() > 3 && !id.chars().any(|c| c.is_whitespace());
+    if ok {
+        Ok(())
+    } else {
+        Err(DispatchRejection::VerdictIdMalformed {
+            verdict_event_id: id.to_string(),
+        })
+    }
 }
 
 // =============================================================================
@@ -2436,6 +2555,7 @@ mod db_itests {
         RecallArgs, RememberArgs, ResolveArgs,
     };
     use crate::read;
+    use crate::topics;
     use deadpool_postgres::Pool;
     use seatloom_core::db::SeatloomDb;
     use tokio_postgres::NoTls;
@@ -2588,6 +2708,7 @@ mod db_itests {
             project_id: Some(project.to_string()),
             dependencies: vec![],
             max_retries: Some(max_retries),
+            verdict_event_id: None,
         }
     }
 
@@ -2861,6 +2982,7 @@ mod db_itests {
             title: "打回重做:itest".into(),
             payload: serde_json::json!({"rework_of":"disp-it-req","feedback":"redo","branch":"packet/nimbus/x"}),
             priority: Some(15), project_id: Some(project.into()), dependencies: vec![], max_retries: Some(0),
+            verdict_event_id: None,
         }).await.unwrap();
         as_seat();
         let msg = get_next(&pool, Some(project.into())).await.unwrap();
@@ -3733,6 +3855,404 @@ mod db_itests {
         )
         .await
         .expect_err("an unknown id");
+    }
+
+    /// The verdict-event-id contract (Aegis ruling 2026-10-11 part 2): a
+    /// verification request gets a pre-declared verdict id MININTED into its
+    /// payload (or a supplied one VALIDATED), the id is returned in the result,
+    /// and a duplicate or malformed id is refused. A non-verification payload
+    /// carrying the argument is refused too.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-019 (scratch DB); run --test-threads=1"]
+    async fn enqueue_mints_and_validates_the_verdict_event_id() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_actor("human:supervisor");
+
+        // 1. A verification request gets a minted id, written into the payload
+        //    and returned in the result.
+        let msg = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-1".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "verify me".into(),
+                payload: serde_json::json!({"kind": "verification", "target_commit": "abc"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: None,
+            },
+        )
+        .await
+        .expect("a verification request enqueues");
+        assert!(
+            msg.contains("verdict_event_id=ev-"),
+            "the minted id is returned: {msg}"
+        );
+        assert!(
+            msg.contains("dep_kind=event"),
+            "the gating instruction: {msg}"
+        );
+        let stored: serde_json::Value = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT payload FROM dispatches WHERE id = 'disp-verdict-1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let minted = stored["verdict_event_id"]
+            .as_str()
+            .expect("the id rides in the payload")
+            .to_string();
+        assert!(minted.starts_with("ev-"), "{minted}");
+
+        // 2. The same id cannot be pre-declared twice (one gate, one verdict).
+        let err = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-2".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "verify me too".into(),
+                payload: serde_json::json!({"kind": "verification"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: Some(minted.clone()),
+            },
+        )
+        .await
+        .expect_err("a taken id must be refused");
+        assert!(
+            matches!(err, DispatchRejection::VerdictIdTaken { .. }),
+            "{err}"
+        );
+
+        // 3. A malformed id is refused, not normalised.
+        let err = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-3".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "verify me".into(),
+                payload: serde_json::json!({"kind": "verification"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: Some("not-an-event-id".into()),
+            },
+        )
+        .await
+        .expect_err("a malformed id must be refused");
+        assert!(
+            matches!(err, DispatchRejection::VerdictIdMalformed { .. }),
+            "{err}"
+        );
+
+        // 4. The argument is refused for a non-verification payload.
+        let err = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-4".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "ordinary work".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: Some("ev-something".into()),
+            },
+        )
+        .await
+        .expect_err("the pre-declaration belongs to the verification path");
+        assert!(
+            matches!(err, DispatchRejection::VerdictIdNotAVerification { .. }),
+            "{err}"
+        );
+
+        // 5. An ordinary payload is untouched: no id in the payload, no mention
+        //    in the result.
+        let msg = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-5".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "ordinary work".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: None,
+            },
+        )
+        .await
+        .expect("an ordinary enqueue");
+        assert!(!msg.contains("verdict_event_id"), "{msg}");
+        let stored: serde_json::Value = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT payload FROM dispatches WHERE id = 'disp-verdict-5'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(stored.get("verdict_event_id").is_none());
+
+        // 6. A well-formed caller-supplied id is accepted as-is.
+        let msg = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-verdict-6".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "verify me".into(),
+                payload: serde_json::json!({"kind": "verification"}),
+                priority: Some(5),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: Some("ev-mine-1".into()),
+            },
+        )
+        .await
+        .expect("a well-formed supplied id");
+        assert!(msg.contains("verdict_event_id=ev-mine-1"), "{msg}");
+    }
+
+    /// `open_topic` (Aegis ruling 2026-10-11): the governed creation of a recall
+    /// scope. Row + `TopicOpened` in one transaction; idempotent by id; and
+    /// every malformed call a typed refusal with zero writes.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-019 (scratch DB); run --test-threads=1"]
+    async fn open_topic_creates_idempotently_and_refuses_malformed_calls() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        clean_memories(&pool, project).await;
+        as_seat();
+        let db = SeatloomDb::new(pool.clone());
+
+        // The negative matrix, each a typed refusal with zero writes.
+        let events_before: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let base = |parent: Option<&str>| topics::OpenTopicArgs {
+            topic_id: "topic-root".into(),
+            title: "the root".into(),
+            project_id: Some(project.into()),
+            parent_topic_id: parent.map(str::to_string),
+        };
+        // parent that does not exist
+        topics::open_topic(&db, base(Some("topic-nope")))
+            .await
+            .expect_err("a parent that does not exist");
+        // project that does not exist
+        topics::open_topic(
+            &db,
+            topics::OpenTopicArgs {
+                topic_id: "topic-root".into(),
+                title: "t".into(),
+                project_id: Some("no-such-project".into()),
+                parent_topic_id: None,
+            },
+        )
+        .await
+        .expect_err("a project that does not exist");
+        // self-cycle
+        topics::open_topic(
+            &db,
+            topics::OpenTopicArgs {
+                topic_id: "topic-root".into(),
+                title: "t".into(),
+                project_id: Some(project.into()),
+                parent_topic_id: Some("topic-root".into()),
+            },
+        )
+        .await
+        .expect_err("a self-cycle");
+        let events_after: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(events_before, events_after, "every refusal wrote nothing");
+
+        // The happy path: row + event, opened_by from the server-side identity.
+        let msg = topics::open_topic(&db, base(None))
+            .await
+            .expect("open the root");
+        assert!(msg.contains("opened topic topic-root"), "{msg}");
+        let row = db.get_topic("topic-root").await.unwrap().unwrap();
+        assert_eq!(row.project_id, project);
+        assert_eq!(row.status, "open");
+        let opened_by: String = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT r.ref_id FROM event_object_refs r \
+                   JOIN canonical_events e ON e.id = r.event_id \
+                  WHERE e.event_type = 'TopicOpened' AND e.project_id = $1 \
+                    AND r.role = 'actor' AND r.ref_type = 'seat'",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(opened_by, "seat:seat-nimbus-001");
+        let subject = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT r.ref_type, r.ref_id FROM event_object_refs r \
+                   JOIN canonical_events e ON e.id = r.event_id \
+                  WHERE e.event_type = 'TopicOpened' AND e.project_id = $1 \
+                    AND r.role = 'subject'",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        let ref_type: String = subject.get(0);
+        let ref_id: String = subject.get(1);
+        assert_eq!(
+            (ref_type.as_str(), ref_id.as_str()),
+            ("topic", "topic-root")
+        );
+
+        // Idempotent: a second open succeeds, changes nothing, emits nothing.
+        let msg = topics::open_topic(&db, base(None))
+            .await
+            .expect("re-open is idempotent");
+        assert!(msg.contains("already open"), "{msg}");
+        let events_now: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM canonical_events WHERE project_id = $1 \
+                  AND event_type = 'TopicOpened'",
+                &[&project],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(events_now, 1, "no second event");
+
+        // A child, then the cross-project and cycle refusals.
+        let msg = topics::open_topic(
+            &db,
+            topics::OpenTopicArgs {
+                topic_id: "topic-child".into(),
+                title: "the child".into(),
+                project_id: Some(project.into()),
+                parent_topic_id: Some("topic-root".into()),
+            },
+        )
+        .await
+        .expect("open the child");
+        assert!(msg.contains("opened topic topic-child"), "{msg}");
+
+        // A second project, and a topic in it: parenting across is refused.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO projects (id,name,created_at,worker_budget_tokens,supervisor_budget_tokens) \
+                 VALUES ('other-project','other',NOW(),1024,1024) \
+                 ON CONFLICT (id) DO NOTHING",
+                &[],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "INSERT INTO topics (id,project_id,title,opened_by) \
+                 VALUES ('topic-other','other-project','other','seat:seat-lyra-001') \
+                 ON CONFLICT (id) DO NOTHING",
+                &[],
+            )
+            .await
+            .unwrap();
+        }
+        topics::open_topic(
+            &db,
+            topics::OpenTopicArgs {
+                topic_id: "topic-cross".into(),
+                title: "cross".into(),
+                project_id: Some(project.into()),
+                parent_topic_id: Some("topic-other".into()),
+            },
+        )
+        .await
+        .expect_err("a scope tree does not straddle projects");
+
+        // With open_topic live, remember finally works (the FK is satisfiable).
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO documents (id,project_id,title,file_path,parse_status,tags,depends_on) \
+                 VALUES ('doc-open-topic',$1,'the doc','docs/open-topic.md','ok','{}','{}') \
+                 ON CONFLICT (id) DO NOTHING",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        }
+        let msg = remember(
+            &db,
+            RememberArgs {
+                project_id: Some(project.into()),
+                topic_id: "topic-child".into(),
+                title: "a memory".into(),
+                l0_summary: "the summary".into(),
+                l1_overview: None,
+                l2_ref_kind: "document".into(),
+                l2_document_id: Some("doc-open-topic".into()),
+                l2_file_path: None,
+                l2_body_digest: None,
+                source_kind: "manual".into(),
+                source_ref: "note".into(),
+                kind: "fact".into(),
+                confidence: "quoted".into(),
+                supersedes: None,
+                l2_line_start: None,
+                l2_line_end: None,
+                relations: vec![],
+                tags: vec![],
+            },
+        )
+        .await
+        .expect("remember works once a topic exists");
+        assert!(msg.contains("remembered memory"), "{msg}");
     }
 
     /// The two pure reads against a real database: `get_dispatch` answers with
