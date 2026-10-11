@@ -20,11 +20,42 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 回退用的默认模型。真实模型**按席位从 seats.default_model 取**(见 model_for) ——
+# 写死一个值给所有席位,会在重启时静默把席位降级。2026-10-11 实测踩过:
+# 洗数据席位登记的是 stepplan-wash-anthropic(无限额,存在的意义就是不必为省 token 降低质量),
+# 重启后被换成普通额度的 stepplan-anthropic,而且面板上不会有任何告警。
 MODEL="${SEATLOOM_MODEL:-stepplan-anthropic/step-5-preview}"
 PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
 WORKTREES="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
 MAP="$REPO/.seatloom/seat-sessions.tsv"
+SEATMAP="$REPO/.seatloom/dispatch-seats.tsv"
+PG="${SEATLOOM_PG_CONTAINER:-seatloom-postgres}"
 FORCE=0
+
+# model_for <tmux 会话名> —— 从席位表查这个席位登记的模型。
+# 查不到(容器没起/席位没登记/字段为空)就回退到 $MODEL,并在启动行里说明用的是哪个来源,
+# 这样「降级了」永远是看得见的,不是静默的。
+#
+# ⚠️ 必须校验形状:seats.default_model 里有历史遗留值。实测 2026-10-11,
+#    五个席位登记的是 `claude-opus-5[1m]` —— 那是 Claude Code 时代的模型名,
+#    不是 pi 的 `provider/model` 格式,原样传给 pi 会直接起不来。
+#    所以只接受含 `/` 的值(pi 的格式),其余一律回退并说明原因。
+#    第一版漏了这个校验,会把五个席位修坏 —— 比它要修的那个回退更糟。
+model_for(){
+  local sess="$1" sid m
+  sid="$(awk -F'\t' -v s="$sess" '$2==s {print $1}' "$SEATMAP" 2>/dev/null | head -1)"
+  [ -z "${sid:-}" ] && { printf '%s\t%s' "$MODEL" "默认(席位表里没有这个会话)"; return; }
+  m="$(podman exec -e PGPASSWORD=seatloom "$PG" psql -U seatloom -d seatloom -tAc \
+        "select coalesce(default_model,'') from seats where id='$sid'" 2>/dev/null | tr -d ' ')"
+  if [ -z "${m:-}" ]; then
+    printf '%s\t%s' "$MODEL" "默认(${sid} 未登记模型)"
+  elif [ "${m#*/}" = "$m" ]; then
+    # 没有 `/` —— 不是 pi 的格式,是遗留值。不能用。
+    printf '%s\t%s' "$MODEL" "默认(席位表登记的 '${m}' 不是 pi 的 provider/model 格式,已忽略)"
+  else
+    printf '%s\t%s' "$m" "seats.default_model"
+  fi
+}
 
 mkdir -p "$(dirname "$MAP")"
 [ -f "$MAP" ] || printf 'seat\tsession_id\tlaunched_at\tmodel\n' > "$MAP"
@@ -95,11 +126,17 @@ launch_seat() {
   # --approve trusts project-local files for the run, which is what lets pi load this
   # worktree's .pi/mcp.json. Without it pi stops on an interactive "Trust project
   # folder?" dialog and the seat never reaches the MCP — i.e. the queue stalls.
-  tmux send-keys -t "$seat" \
-    "cd $wt && $PI --approve --model \"$MODEL\" --session-id $uuid" Enter
+  # 模型按席位取,不用全队写死的那一个(见顶部 model_for 的注释)
+  mline="$(model_for "$seat")"
+  seat_model="${mline%%$'\t'*}"
+  model_src="${mline#*$'\t'}"
 
-  printf '%s\t%s\t%s\t%s\n' "$seat" "$uuid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODEL" >> "$MAP"
+  tmux send-keys -t "$seat" \
+    "cd $wt && $PI --approve --model \"$seat_model\" --session-id $uuid" Enter
+
+  printf '%s\t%s\t%s\t%s\n' "$seat" "$uuid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$seat_model" >> "$MAP"
   echo "  $seat: launched on pi in $wt, session $uuid"
+  echo "         模型 $seat_model  (来源: $model_src)"
 }
 
 case "${1:---help}" in
