@@ -161,12 +161,26 @@ sl_pid="$(pgrep -f 'seatloom-tauri' 2>/dev/null | head -1)"
 if [ -z "$sl_pid" ]; then
   printf "  SeatLoom 窗口        %s\n" "没开"
 else
-  case "$(ps -o command= -p "$sl_pid" 2>/dev/null)" in
-    *release*) sl_which="release = 集成构建";;
-    *debug*)   sl_which="debug = 可能没有面板";;
-    *)         sl_which="来路不明";;
+  sl_cmd="$(ps -o command= -p "$sl_pid" 2>/dev/null)"
+  case "$sl_cmd" in
+    */Applications/SeatLoom.app/*) sl_which="装好的那份(/Applications)";;
+    *release*)                    sl_which="release = 集成构建";;
+    *debug*)                      sl_which="debug = 可能没有面板";;
+    *)                            sl_which="来路不明";;
   esac
   printf "  SeatLoom 窗口        开着(%s, pid %s)\n" "$sl_which" "$sl_pid"
+  # 装好的那份会比刚构建的二进制旧 —— 那意味着张先生从启动台点开的可能是没有面板的版本。
+  # 这是「部分换动」在应用层的同一形状:进程在跑,不等于跑的是最新的。
+  APP_BIN="/Applications/SeatLoom.app/Contents/MacOS/seatloom-tauri"
+  BUILT_BIN="$REPO/target/release/seatloom-tauri"
+  if [ -x "$APP_BIN" ] && [ -x "$BUILT_BIN" ]; then
+    app_e="$(stat -f %m "$APP_BIN")"; built_e="$(stat -f %m "$BUILT_BIN")"
+    if [ "$app_e" -lt "$built_e" ]; then
+      printf "                     ⚠️  装好的那份比刚构建的旧 —— 从启动台点开的就是没有面板的版本\n"
+      printf "                     修:cp -R target/release/bundle/macos/SeatLoom.app /Applications/\n"
+      need=1
+    fi
+  fi
 fi
 echo
 printf "  累计完成派单         %s 件\n" "$(PSQL "select count(*) from dispatches where status='done'")"
