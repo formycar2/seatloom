@@ -1677,7 +1677,20 @@ impl SeatloomDb {
     ///
     /// so both the user's outbound SupervisorMessages and the seat's own
     /// SessionStarted/HandoffSent/etc. events appear in its chat.
-    /// Sort: occurred_at ascending (chat-oriented).
+    ///
+    /// The window is the NEWEST `limit` events, returned in ascending order (a
+    /// chat reads oldest-at-top, newest-at-bottom; the UI does no client-side
+    /// sorting and appends live events at the tail). The previous shape was a
+    /// plain `ORDER BY occurred_at ASC LIMIT n`, which returns the OLDEST n
+    /// rows — on a growing ledger that silently hides everything recent (the
+    /// operator reported "no valid messages" while 115 newer events, his own
+    /// included, sat past the window). So: select the newest `limit` rows, then
+    /// reverse.
+    ///
+    /// `occurred_at` alone is not a total order (events can share a timestamp),
+    /// so `id` is the tiebreaker in BOTH directions — the window is stable
+    /// across calls and the reversal cannot reshuffle equal-timestamp rows.
+    /// Sort: occurred_at ascending within the newest-`limit` window.
     pub async fn list_supervisor_messages(
         &self,
         target_seat_id: Option<&str>,
@@ -1690,10 +1703,15 @@ impl SeatloomDb {
                 .query(
                     "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
                      project_id \
-                     FROM canonical_events \
-                     WHERE actor_ref = $1 \
-                        OR payload->>'target_seat_id' = $2 \
-                     ORDER BY occurred_at ASC LIMIT $3",
+                     FROM ( \
+                       SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
+                              project_id \
+                         FROM canonical_events \
+                        WHERE actor_ref = $1 \
+                           OR payload->>'target_seat_id' = $2 \
+                        ORDER BY occurred_at DESC, id DESC LIMIT $3 \
+                     ) recent \
+                     ORDER BY occurred_at ASC, id ASC",
                     &[&actor_ref, &seat_id, &limit],
                 )
                 .await?
@@ -1702,8 +1720,13 @@ impl SeatloomDb {
                 .query(
                     "SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
                      project_id \
-                     FROM canonical_events \
-                     ORDER BY occurred_at ASC LIMIT $1",
+                     FROM ( \
+                       SELECT id, event_type, occurred_at, actor_ref, payload, created_at, \
+                              project_id \
+                         FROM canonical_events \
+                        ORDER BY occurred_at DESC, id DESC LIMIT $1 \
+                     ) recent \
+                     ORDER BY occurred_at ASC, id ASC",
                     &[&limit],
                 )
                 .await?
