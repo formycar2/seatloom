@@ -9,7 +9,7 @@
 # 为什么要脚本:Aegis 被权限分类器拦住**改 live 数据库**的一切操作(拦得对)。
 # 按 AGENTS.md:不绕路、不拆小块、不换工具、不让席位代跑 —— 写成可审计、可重复跑的脚本交给张先生。
 #
-# 它分九段,**前一段失败就停**(后面每一段都以前一段为真实前提):
+# 它分十段,**前一段失败就停**(后面每一段都以前一段为真实前提):
 #   第一段  把 019 应用到正在跑的数据库
 #   第二段  核对 CHECK 真的变了(不信上一段的打印)
 #   第三段  实证一次真实写入:一次 open_topic + 一次 remember(019 没落成也照跑 —— 要的就是那条拒绝原文)
@@ -17,8 +17,9 @@
 #   第五段  让全队换上带新工具的程序
 #   第六段  回填那张坏卡的空方案,让界面席位能撤掉它(不依赖记忆写入路径,实证失败也会做)
 #   第七段  实证知识读模型真的能调通,条件成立才发它的门事件(同样不依赖记忆写入路径)
-#   第八段  叫醒洗数据席位收尾它自己卡死的领单
-#   第九段  把唤醒服务那个漏洞派给后端席位修
+#   第八段  把「交付公告被当成门」这个结构问题派出去修(同样不依赖记忆写入路径)
+#   第九段  叫醒洗数据席位收尾它自己卡死的领单
+#   第十段  把唤醒服务那个漏洞派给后端席位修
 #
 # 全部可重复跑:019 自带幂等守卫,open_topic 幂等,remember 用固定 id 的门事件去重。
 #
@@ -61,7 +62,7 @@ if podman exec -i -e PGPASSWORD=seatloom "$CTR" \
 else
   say "  ❌ 019 应用失败。live 数据库未被改成半状态(整个文件在一个 BEGIN/COMMIT 里)。"
   say "     第三段仍会实测一次 —— 它会被数据库 CHECK 拒绝,那条拒绝原文就是你要贴给我的证据。"
-  say "     第四、五段(门事件 / 换程序)因此不会执行;第六、七段照跑 —— 它们不依赖 019。"
+  say "     第四、五段(门事件 / 换程序)因此不会执行;第六~八段照跑 —— 它们不依赖 019。"
   apply_ok=0
 fi
 say ""
@@ -74,7 +75,7 @@ if vocab="$(q "select pg_get_constraintdef(oid) from pg_constraint where conname
   case "$vocab" in
     *TopicOpened*) say "  ✅ live CHECK 已含 TopicOpened";;
     *) say "  ❌ live CHECK 仍不含 TopicOpened —— open_topic 还是会失败。"
-       say "     第三段仍会实测并失败(那就是证据);第四、五段不执行;第六、七段照跑。"; apply_ok=0;;
+       say "     第三段仍会实测并失败(那就是证据);第四、五段不执行;第六~八段照跑。"; apply_ok=0;;
   esac
 else
   say "  ❌ 查询失败 —— 当作条件不成立"; apply_ok=0
@@ -479,19 +480,122 @@ fi
 say "  (另一条边 ev-writein-landed 不由本脚本发 —— 那是洗数据席位真的写进 88 条才算)"
 say ""
 
+# ══ 第八段:把「公告当门用」这个结构问题派出去修 ═══════════════════
+line
+say "第八段 — 把「交付公告被当成门」这个结构问题派出去修"
+line
+# 2026-10-11 逐个核了 9 个被当成门用的事件,2 个此刻为假:
+#   ev-019-topic-opened-landed    (Onyx 10-10 18:42)  live 词表不含 TopicOpened
+#   ev-typed-memory-tools-landed  (Nimbus 10-10 17:30) remember 一次也没成功过
+# 两个事件都**没有说谎** —— payload 里只有 branch/commit/migration,是席位对自己交付的公告。
+# 说谎的是**消费方式**:有人把公告当成「能力可用」的门,挂了依赖边。
+# 可测量的损失一次:disp-onight-writein 被这个门放出来,然后必然失败。
+# 裁决全文:docs/coordination/tasks/aegis/AEGIS-2026-10-11-gate-vs-announcement-ruling.md
+say "  9 个门里 2 个此刻为假;损失已发生一次(写入库那张单被放出来然后必然失败)。"
+RULING2="docs/coordination/tasks/aegis/AEGIS-2026-10-11-gate-vs-announcement-ruling.md"
+python3 - "$RULING2" > "$CALLS" <<'PY'
+import json, sys
+ruling = sys.argv[1]
+
+instructions = f"""裁决全文在 track 上:{ruling}
+你的 worktree 若没有这个文件,用这条取回:
+  git show track/infra-foundation:{ruling}
+
+== 已测到的事实(不要重测,直接用) ==
+把 dispatch_dependencies 里 dep_kind='event' 的 9 个门逐个按「live 可用」核过,2 个此刻为假:
+  ev-019-topic-opened-landed    (Onyx 10-10 18:42)  payload 只有 branch/migration;live 词表不含 TopicOpened
+  ev-typed-memory-tools-landed  (Nimbus 10-10 17:30) payload 只有 branch/commit;remember 一次也没成功过
+两个事件都没有说谎 —— 它们是席位对自己交付的公告,内容准确。
+说谎的是消费方式:有人把公告当成「这个能力现在能用」的门,挂了依赖边,
+013 的触发器看到事件入账就把下游从 blocked 翻成 ready。
+可测量的损失一次:disp-onight-writein 被 ev-typed-memory-tools-landed 放出来,
+然后必然失败(失败原因从第一秒起就是确定的),消耗了一次重试预算。
+对照:Flux 验 019 迁移代码那张单也挂在 ev-019-topic-opened-landed 上,这是合理的 ——
+验代码只需要代码落地。同一个事件,一条边用对了、一条边用错了。
+
+== 裁决(方向已定,不要改) ==
+1) 凭 payload 判定一个事件能不能当门:能当门的必须有一个字段写明怎么实测出来的
+   (调了什么、返回了什么、在哪个库上)。参照 ev-knowledge-write-path-live 和
+   ev-knowledge-read-model-landed 里的 verified 字段。
+   只有 branch/commit/migration/artifact_id 的是交付公告,不能当门。
+2) 新门 id 一律 ev-<能力>-live;公告继续用 -landed。
+   已有的 -landed 门不改名不撤回(账本只追加),但不再新增指向 -landed 的依赖边。
+3) 「等代码落地」是正当需求,不要消灭它。判据是这张下游单会不会真的去调那个能力:
+   会调 -> 必须挂 -live;只读代码/写文档/做验证 -> 挂 -landed 就对。
+
+== 要你们判定的那件事(这是派单的核心,不要跳过) ==
+机械化的**位置**我刻意没有定死,因为有一个真实的设计张力:
+门事件 id 是**预声明**的 —— gated 自派单的前提就是「边先挂上、事件后到」。
+所以「挂边时校验事件带不带 verified」做不到:那一刻事件还不存在。
+校验只能发生在**释放时刻**,也就是 013 的 fn_dispatch_recompute_ready
+把 blocked 翻成 ready 的那一刻。
+
+于是:
+  - 判据的形状(payload 里要有什么才算门)是 **Nimbus 的工具契约**
+  - 释放时刻的校验在数据库函数里,改它是 **Onyx 的迁移槽**
+请两边都出意见,**不要有人单方面定**。需要在交付说明里写明:
+  (a) 判据具体长什么样,以及一个只有 branch/commit 的 payload 会怎样被判定
+  (b) 校验放在触发器里还是别处,以及为什么;放触发器里的话,
+      一个「永远等不到合格门事件」的下游单会变成什么状态(永久 blocked?
+      还是要有一个能上报的终态?)—— 这个问题必须有答案,不能让单子静默悬着
+  (c) 对现存那些指向 -landed 的边怎么处理(我的裁决是不动,但如果你们认为
+      有更好的办法,写出来说服我)
+
+== 完成协议 ==
+按你自己 AGENTS.md 的完成协议走。这张单的产出是**一个有两边签字的方案 + 实现**,
+不是单方面的代码。方案和实现可以在同一次交付里给,但方案部分必须能看出两边都表过态。"""
+
+msgs = [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                "clientInfo": {"name": "aegis-land-knowledge", "version": "1"}}},
+    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+        "name": "enqueue_dispatch",
+        "arguments": {
+            "id": "disp-gate-vs-announcement-enforcement",
+            "target_seat_id": "seat-nimbus-001",
+            "title": "a delivery announcement is not a gate: make the blocked->ready release check for live-usability (Aegis ruling 2026-10-11)",
+            "priority": 65,
+            "payload": {"packet": ruling, "instructions": instructions},
+        }}},
+]
+for m in msgs:
+    print(json.dumps(m, ensure_ascii=False))
+PY
+"$BIN" < "$CALLS" 2>&1 | python3 -c "
+import sys, json
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try: m = json.loads(raw)
+    except Exception: print('  stderr:', raw[:200]); continue
+    if m.get('id') in (None, 1): continue
+    if 'error' in m:
+        print('  ❌ 失败:', str(m['error'].get('message'))[:240]); continue
+    r = m.get('result') or {}
+    txt = ' '.join(c.get('text','') for c in (r.get('content') or []))
+    if r.get('isError'):
+        low = txt.lower()
+        print(('  ⏭  已派过,跳过:' if ('already' in low or 'exists' in low or 'duplicate' in low) else '  ❌ 被拒:'), txt[:240])
+    else:
+        print('  ✅', (txt or json.dumps(r, ensure_ascii=False))[:240])
+"
+say ""
+
 if [ "$proof_ok" != "1" ]; then
   line
-  say "停在第七段 —— 第八、九段不执行"
+  say "停在第八段 —— 第九、十段不执行"
   line
-  say "  第八、九段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
+  say "  第九、十段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
   say "  先把上面第三段打印的那条拒绝原因贴给 Aegis。"
   exit 1
 fi
 say ""
 
-# ══ 第八段:解开洗数据席位那条卡死的领单 ═══════════════════════════
+# ══ 第九段:解开洗数据席位那条卡死的领单 ═══════════════════════════
 line
-say "第八段 — 解开洗数据席位那条卡死的领单"
+say "第九段 — 解开洗数据席位那条卡死的领单"
 line
 # 实测(/tmp/seatloom_waker.log,2026-10-11):
 #   seat-vela-001 in_flight disp-wash-vela-p2 for 63344s (pane running pi) — an agent is working; not poking
@@ -520,9 +624,9 @@ else
 fi
 say ""
 
-# ══ 第九段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
+# ══ 第十段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
 line
-say "第九段 — 把唤醒服务的这个漏洞派给后端席位修"
+say "第十段 — 把唤醒服务的这个漏洞派给后端席位修"
 line
 say "  陈旧领单检测是在跑的,它正确地算出了 17 小时;但它因为「pane 里有 pi 活着」而拒绝叫醒。"
 say "  一个空闲但活着的 agent 和一个正在干活的 agent,在这个判据下长得一模一样。"
@@ -616,6 +720,10 @@ printf "  洗数据席位待领               %s 张\n" \
   "$(q "select count(*) from dispatches where target_seat_id='seat-vela-001' and status='ready'")"
 printf "  唤醒服务修复单                %s\n" \
   "$(q "select coalesce(max(status),'未入账') from dispatches where id='disp-waker-stale-hard-floor'")"
+printf "  公告当门用的修复单            %s\n" \
+  "$(q "select coalesce(max(status),'未入账') from dispatches where id='disp-gate-vs-announcement-enforcement'")"
+printf "  读模型门 ev-knowledge-read-model-landed  %s\n" \
+  "$([ "$(q "select count(*) from canonical_events where id='ev-knowledge-read-model-landed'")" = "1" ] && echo ✅已入账 || echo '未入账')"
 printf "  那张坏卡                     %s\n" \
   "$(q "select status||'(方案'||case when acceptance_plan='{}'::jsonb then '仍为空 ❌' else '已回填 ✅' end||')' from acceptances where id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'")"
 printf "  张先生能点的卡               %s 张\n" \
