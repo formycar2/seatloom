@@ -9,8 +9,12 @@
 
 mod dispatch;
 mod emit;
+mod knowledge;
+mod memory;
 mod protocol;
+mod read;
 mod scheduler;
+mod topics;
 
 use deadpool_postgres::Pool;
 use serde_json::Value;
@@ -42,7 +46,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -94,11 +98,15 @@ async fn handle_request(
     }
 }
 
-/// `tools/call` dispatch. Seven tools: `emit_event` (step 4) and the six
-/// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on). Any other
-/// name is a tool error. A rejection is a tool error with `isError: true`,
-/// carrying the typed message verbatim — never a transport error, and never a
-/// partial write.
+/// `tools/call` dispatch. Eighteen tools: `emit_event` (step 4), the six
+/// governed-dispatch tools (step 6 + 013/014 + the D2 follow-on), the
+/// acceptance-lineage READ (Lane B), the five D5 memory tools
+/// (`recall`/`remember`/`promote`/`forget`/`resolve`), the two pure READS
+/// (`get_dispatch`/`query_ledger`), `open_topic` (the governed creation of a
+/// recall scope) and the two knowledge READS (`get_knowledge_tree` /
+/// `get_topic_memories`). Any other name is a tool error. A rejection is a tool
+/// error with `isError: true`, carrying the typed message verbatim — never a
+/// transport error, and never a partial write.
 async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -110,10 +118,57 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "cancel_dispatch" => call_cancel(pool, id, arguments).await,
         "request_acceptance" => call_request_acceptance(pool, id, arguments).await,
         "cancel_acceptance" => call_cancel_acceptance(pool, id, arguments).await,
+        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,
+        // --- D5 knowledge layer (Lane B): memory management, explicit tools ---
+        "recall" => match memory_args::<memory::RecallArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::recall(db, a).await),
+            Err(resp) => resp,
+        },
+        "remember" => match memory_args::<memory::RememberArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::remember(db, a).await),
+            Err(resp) => resp,
+        },
+        "promote" => match memory_args::<memory::PromoteArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::promote(db, a).await),
+            Err(resp) => resp,
+        },
+        "forget" => match memory_args::<memory::ForgetArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::forget(db, a).await),
+            Err(resp) => resp,
+        },
+        "resolve" => match memory_args::<memory::ResolveArgs>(&id, arguments) {
+            Ok(a) => render_memory(id, memory::resolve(db, a).await),
+            Err(resp) => resp,
+        },
+        // --- D5 knowledge layer (Lane B): the pure reads that end the psql era ---
+        "get_dispatch" => match read_args::<read::GetDispatchArgs>(&id, arguments) {
+            Ok(a) => render_read(id, read::get_dispatch(db, a).await),
+            Err(resp) => resp,
+        },
+        "query_ledger" => match read_args::<read::QueryLedgerArgs>(&id, arguments) {
+            Ok(a) => render_read(id, read::query_ledger(db, a).await),
+            Err(resp) => resp,
+        },
+        "open_topic" => match read_args::<topics::OpenTopicArgs>(&id, arguments) {
+            Ok(a) => render_topic(id, topics::open_topic(db, a).await),
+            Err(resp) => resp,
+        },
+        "get_knowledge_tree" => {
+            match read_args::<knowledge::GetKnowledgeTreeArgs>(&id, arguments) {
+                Ok(a) => render_knowledge(id, knowledge::get_knowledge_tree(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "get_topic_memories" => {
+            match read_args::<knowledge::GetTopicMemoriesArgs>(&id, arguments) {
+                Ok(a) => render_knowledge(id, knowledge::get_topic_memories(db, a).await),
+                Err(resp) => resp,
+            }
+        },
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories)"),
                 true,
             ),
         ),
@@ -229,6 +284,87 @@ async fn call_request_acceptance(pool: &Pool, id: Value, arguments: Value) -> Va
         }
     };
     match dispatch::request_acceptance(pool, args).await {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The lineage READ. Takes the shared `SeatloomDb` (not the pool) because it
+/// writes nothing — the same read handle `emit_event` uses.
+async fn call_get_acceptance_lineage(
+    db: &seatloom_core::db::SeatloomDb,
+    id: Value,
+    arguments: Value,
+) -> Value {
+    let args: dispatch::GetAcceptanceLineageArgs = match serde_json::from_value(arguments) {
+        Ok(a) => a,
+        Err(e) => {
+            return success(
+                id,
+                tool_call_result(
+                    &format!("get_acceptance_lineage rejected: bad arguments: {e}"),
+                    true,
+                ),
+            )
+        }
+    };
+    match dispatch::get_acceptance_lineage(db, args).await {
+        Ok(json) => success(id, tool_call_result(&json, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// Parse one memory tool's arguments, or return the rendered error response.
+/// The tool functions each take their own argument type, so the parsing is
+/// generic and the dispatch is explicit — no higher-ranked trait bound games.
+fn memory_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> Result<A, Value> {
+    match serde_json::from_value::<A>(arguments) {
+        Ok(a) => Ok(a),
+        Err(e) => Err(success(
+            id.clone(),
+            tool_call_result(&format!("memory tool rejected: bad arguments: {e}"), true),
+        )),
+    }
+}
+
+/// Render a memory tool's outcome: the typed rejection verbatim on failure.
+fn render_memory(id: Value, outcome: Result<String, memory::MemoryRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The same pair for the two pure reads.
+fn read_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> Result<A, Value> {
+    match serde_json::from_value::<A>(arguments) {
+        Ok(a) => Ok(a),
+        Err(e) => Err(success(
+            id.clone(),
+            tool_call_result(&format!("read tool rejected: bad arguments: {e}"), true),
+        )),
+    }
+}
+
+fn render_read(id: Value, outcome: Result<String, read::ReadRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The same rendering for the knowledge read tools' rejection type.
+fn render_knowledge(id: Value, outcome: Result<String, knowledge::KnowledgeRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// The same rendering for the topic tool's own rejection type — a typed message
+/// rendered verbatim, exactly like every other tool.
+fn render_topic(id: Value, outcome: Result<String, topics::TopicRejection>) -> Value {
+    match outcome {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
         Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }

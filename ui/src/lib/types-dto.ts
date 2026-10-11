@@ -193,6 +193,171 @@ export interface AcceptanceCardDto {
  */
 export type AcceptanceDecisionDto = AcceptanceCardDto;
 
+// ---------------------------------------------------------------------------
+// Acceptance card lineage (acceptance-lineage milestone, Lane B)
+// ---------------------------------------------------------------------------
+// Mirrors src-tauri/src/dto.rs's AcceptanceLineageDto ONE field at a time: the
+// seven blocks of the value-domain contract §3, in the operator's reading
+// order. The Rust DTO is the authority; this file is the wire shape the UI
+// consumes (Mira's card UI builds on it).
+
+/** The structured acceptance plan (016, shape v1). */
+export interface AcceptancePlanV1Dto {
+  planVersion: number;
+  scenario: string;
+  steps: { action: string; input?: string }[];
+  expected: { output: string; expect: string }[];
+  preconditions?: string[];
+}
+
+export interface AcceptanceLineageCardDto {
+  id: string;
+  dispatchId: string;
+  projectId: string;
+  branch: string;
+  base: string;
+  howToVerify: string;
+  /** null = the legacy row has no plan yet (Aegis backfill pending). */
+  acceptancePlan: AcceptancePlanV1Dto | null;
+  fluxVerdictRef: string;
+  /** 'pending' | 'accepted' | 'rejected' | 'cancelled'. */
+  status: string;
+  feedback: string | null;
+  reworkDispatchId: string | null;
+  mergeCommit: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface AcceptanceLineageDispatchDto {
+  id: string;
+  title: string;
+  issuedBy: string;
+  targetSeatId: string;
+  priority: number;
+  status: string;
+  issuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The ORIGINAL task statement (packet path / instructions), verbatim. */
+  payload: unknown | null;
+}
+
+export interface AcceptanceLineageEventDto {
+  id: string;
+  eventType: string;
+  occurredAt: string;
+  actorRef: string;
+  payload: unknown | null;
+}
+
+export interface AcceptanceLineageVerdictDto {
+  refId: string;
+  verdict: string | null;
+  evidence: string | null;
+  evidenceDetail: string | null;
+  targetBranch: string | null;
+  lane: string | null;
+  occurredAt: string | null;
+}
+
+export interface AcceptanceLineageProductDto {
+  refType: string; // 'artifact' | 'document'
+  refId: string;
+  /** null when the referent could not be joined (the id is still carried). */
+  title: string | null;
+  path: string | null;
+  /** false = the referent is not in the database. */
+  resolved: boolean;
+}
+
+export interface AcceptanceLineageDependencyDto {
+  depKind: string; // 'event' | 'artifact' | 'dispatch'
+  depValue: string;
+  /** The referent's live existence (012: readiness is an existence query). */
+  exists: boolean;
+}
+
+export interface AcceptanceLineageDto {
+  acceptance: AcceptanceLineageCardDto;
+  dispatch: AcceptanceLineageDispatchDto;
+  events: AcceptanceLineageEventDto[];
+  fluxVerdict: AcceptanceLineageVerdictDto | null;
+  products: AcceptanceLineageProductDto[];
+  dependencies: AcceptanceLineageDependencyDto[];
+  rework: AcceptanceLineageDispatchDto | null;
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge read model (overnight step 4) — the DTO contract Mira codes against.
+// ADDITIVE ONLY: no existing interface in this file is touched.
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeTopicNode {
+  topicId: string;
+  title: string;
+  /** 'open' | 'closed' | 'merged'. */
+  status: string;
+  parentTopicId: string | null;
+  /** ACTIVE and not-superseded memories — the count a recall would return. */
+  memoryCount: number;
+}
+
+export interface KnowledgeTopicTree {
+  projectId: string;
+  /** A flat list; the UI groups by parentTopicId. */
+  topics: KnowledgeTopicNode[];
+}
+
+export interface KnowledgeL2Pointer {
+  /** 'document' | 'file'. */
+  refKind: string;
+  documentId?: string | null;
+  filePath?: string | null;
+  bodyDigest?: string | null;
+  /** Present when the source is a slice of an archived session transcript. */
+  lineStart?: number | null;
+  lineEnd?: number | null;
+}
+
+export interface KnowledgeMemoryCard {
+  memoryId: string;
+  topicId: string;
+  title: string;
+  /** 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'. */
+  kind: string;
+  /** 'quoted' | 'inferred'. */
+  confidence: string;
+  /** 'cold' | 'warm' | 'hot'. */
+  tier: string;
+  /** 'active' | 'forgotten' | 'resolved'. */
+  status: string;
+  l0Summary: string;
+  /** Present only at depth l1/l2. */
+  l1Overview?: string | null;
+  /** Present only at depth l2. */
+  l2?: KnowledgeL2Pointer | null;
+  /** The memory that replaced this one, when it has been superseded. */
+  supersededBy?: string | null;
+  sourceKind: string;
+  sourceRef: string;
+}
+
+export interface KnowledgeTopicChainEntry {
+  topicId: string;
+  title: string;
+}
+
+export interface KnowledgeTopicMemories {
+  topicId: string;
+  /** The depth that was served: 'l0' | 'l1' | 'l2'. */
+  depth: string;
+  /** Ancestors first, the topic itself last. */
+  topicChain: KnowledgeTopicChainEntry[];
+  memories: KnowledgeMemoryCard[];
+}
+
 export interface DocumentDto {
   id: string;
   projectId: string;

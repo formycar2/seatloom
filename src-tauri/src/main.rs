@@ -15,7 +15,9 @@ use state::AppState;
 use std::path::PathBuf;
 
 use commands::{
-    acceptance_cmds::{cmd_accept_delivery, cmd_list_acceptances, cmd_reject_delivery},
+    acceptance_cmds::{
+        cmd_accept_delivery, cmd_get_acceptance_lineage, cmd_list_acceptances, cmd_reject_delivery,
+    },
     artifact_cmds::{cmd_get_artifact, cmd_list_artifacts},
     dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches},
     document_cmds::{
@@ -24,6 +26,7 @@ use commands::{
     },
     handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs, cmd_list_handoffs_for_project},
     inbox_cmds::cmd_get_inbox,
+    knowledge_cmds::{cmd_get_knowledge_tree, cmd_get_topic_memories},
     project_cmds::{cmd_get_project, cmd_list_projects},
     prompt_cmds::{cmd_list_active_prompts, cmd_list_prompt_actions, cmd_list_prompts_for_session},
     reconcile_cmds::{
@@ -153,6 +156,11 @@ fn main() {
             cmd_list_acceptances,
             cmd_accept_delivery,
             cmd_reject_delivery,
+            cmd_get_acceptance_lineage,
+            // knowledge read model (overnight step 4) — the topic tree + the
+            // memories-by-topic card list, progressive disclosure
+            cmd_get_knowledge_tree,
+            cmd_get_topic_memories,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

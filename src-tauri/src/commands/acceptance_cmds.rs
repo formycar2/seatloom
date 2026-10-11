@@ -13,7 +13,7 @@ use std::path::Path;
 use seatloom_core::db::models::AcceptanceWithDispatchRow;
 use tauri::State;
 
-use crate::dto::{AcceptanceCard, AcceptanceResult};
+use crate::dto::{AcceptanceCard, AcceptanceLineageDto, AcceptanceResult};
 use crate::state::AppState;
 
 /// The env var naming the operator acting on an acceptance. EXPLICIT config:
@@ -96,6 +96,28 @@ pub async fn cmd_accept_delivery(
         rework_dispatch_id: decided.rework_dispatch_id,
         error: None,
     })
+}
+
+/// Assemble one acceptance card's lineage (acceptance-lineage Lane B): the card,
+/// the dispatch it gates with the ORIGINAL task statement, the event chain, the
+/// Flux verdict and its evidence, the products, the dependency edges, and the
+/// rework dispatch.
+///
+/// Pure read — it writes nothing and appends no event (the operator's blocking
+/// feedback was a DISPLAY gap, not a data gap). It calls the SAME assembler the
+/// MCP `get_acceptance_lineage` tool calls (`seatloom_core::db::lineage`), so
+/// the two surfaces cannot drift; there is no second query implementation.
+///
+/// No operator ref is required: this reads a recorded card, it does not act.
+#[tauri::command]
+pub async fn cmd_get_acceptance_lineage(
+    state: State<'_, AppState>,
+    acceptance_id: String,
+) -> Result<AcceptanceLineageDto, String> {
+    let lineage = seatloom_core::db::lineage::get_acceptance_lineage(&state.db, &acceptance_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(AcceptanceLineageDto::from(lineage))
 }
 
 /// Reject a delivery: land `rejected` + `AcceptanceRejected` and auto-enqueue a

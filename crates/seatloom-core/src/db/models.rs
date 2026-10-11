@@ -455,6 +455,174 @@ pub struct DispatchDependencyRow {
     pub dep_value: String,
 }
 
+/// One memory row (schema 015, D5 knowledge layer) — a small-granularity
+/// distilled knowledge unit scoped by project + topic (the ONLY scoping
+/// framework, contract's unchanged ruling).
+///
+/// The three layers are progressive disclosure: `l0_summary` is the ONLY default
+/// (~100 tokens), `l1_overview` is fetched on demand (~2K tokens), and the L2
+/// pointer (`l2_ref_kind` + `l2_document_id` | `l2_file_path`) leads to the raw
+/// material. Large refined products stay in `documents` (002) — memories point
+/// at them, they do not fork that model.
+#[derive(Debug, Clone)]
+pub struct MemoryRow {
+    pub id: String,
+    pub project_id: String,
+    pub topic_id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2_ref_kind: String, // 'document' | 'file'
+    pub l2_document_id: Option<String>,
+    pub l2_file_path: Option<String>,
+    pub l2_body_digest: Option<String>,
+    /// 'archived_session' | 'canonical_event' | 'document' | 'manual'.
+    pub source_kind: String,
+    /// Polymorphic provenance reference, NO FK (the 010 ref-fabric reasoning):
+    /// `'<harness>:<id>'` | event id | doc id | actor note.
+    pub source_ref: String,
+    /// Record type (018): 'decision' | 'failure' | 'fact' | 'preference' |
+    /// 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred' (018) — binary, never a score.
+    pub confidence: String,
+    /// The memory this one supersedes (018; the same edge as a
+    /// `memory_relations` row with rel='supersedes'). Create-time only.
+    pub supersedes: Option<String>,
+    /// First line of the L2 evidence inside `l2_file_path` (1-based). REQUIRED
+    /// when l2_ref_kind='file' AND source_kind='archived_session' (018).
+    pub l2_line_start: Option<i32>,
+    /// Last line of the L2 evidence (>= l2_line_start).
+    pub l2_line_end: Option<i32>,
+    /// +1 per recall. NO automatic decay, ever.
+    pub heat: i32,
+    pub recall_count: i32,
+    /// NULL = never recalled.
+    pub last_recalled_at: Option<DateTime<Utc>>,
+    /// 'cold' | 'warm' | 'hot'. Transitions ONLY via the promote tool.
+    pub tier: String,
+    pub tier_changed_at: DateTime<Utc>,
+    /// 'active' | 'forgotten' | 'resolved' (018 widened it). forgotten is a SOFT
+    /// tombstone (reason required, rows never hard-deleted); resolved is the G3
+    /// closing state for 'unresolved' records, closed ONLY by the resolve tool.
+    pub status: String,
+    pub forgotten_reason: Option<String>,
+    /// Who closed the record (018; set by the resolve tool, never a parameter).
+    pub resolved_by: Option<String>,
+    /// When it was closed (018).
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One row of `memory_relations` (018): a typed edge between two memories.
+#[derive(Debug, Clone)]
+pub struct MemoryRelationRow {
+    pub from_id: String,
+    pub to_id: String,
+    /// 'supersedes' | 'caused_by' | 'fixed_by' | 'refines'.
+    pub rel: String,
+}
+
+/// One topic row (010) as the lineage assembler needs it: the ancestor chain of
+/// a recall's topic, one entry per level.
+#[derive(Debug, Clone)]
+pub struct TopicRow {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+}
+
+/// One node of the knowledge topic tree (overnight step 4): the topic, its
+/// parent, and how many ACTIVE, not-superseded memories it holds — the count a
+/// recall would actually return.
+#[derive(Debug, Clone)]
+pub struct KnowledgeTopicNode {
+    pub topic_id: String,
+    pub title: String,
+    /// 'open' | 'closed' | 'merged'.
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+    pub memory_count: i64,
+}
+
+/// The L2 evidence pointer of a memory, returned only at depth l2.
+#[derive(Debug, Clone)]
+pub struct KnowledgeL2Pointer {
+    /// 'document' | 'file'.
+    pub ref_kind: String,
+    pub document_id: Option<String>,
+    pub file_path: Option<String>,
+    pub body_digest: Option<String>,
+    /// Present when the source is a slice of an archived session transcript.
+    pub line_start: Option<i32>,
+    pub line_end: Option<i32>,
+}
+
+/// One memory as the knowledge panel renders it. `l1_overview` and `l2` are
+/// `None` below their disclosure depth — the caller asks for more, the shape
+/// carries more.
+#[derive(Debug, Clone)]
+pub struct KnowledgeMemoryCard {
+    pub memory_id: String,
+    pub topic_id: String,
+    pub title: String,
+    /// 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred'.
+    pub confidence: String,
+    /// 'cold' | 'warm' | 'hot'.
+    pub tier: String,
+    /// 'active' | 'forgotten' | 'resolved'.
+    pub status: String,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2: Option<KnowledgeL2Pointer>,
+    /// The memory that replaced this one, when it has been superseded.
+    pub superseded_by: Option<String>,
+    pub source_kind: String,
+    pub source_ref: String,
+}
+
+/// A dispatch with its LIVE status and dependency edges — the `get_dispatch`
+/// read tool's answer. `live_status` is recomputed by the same existence rule the
+/// pull decision uses, so a reader sees what the scheduler would see.
+#[derive(Debug, Clone)]
+pub struct DispatchReadModel {
+    pub dispatch: DispatchRow,
+    pub live_status: String,
+    pub dependencies: Vec<DispatchDependencyStatus>,
+}
+
+/// One dependency edge with its referent's live existence.
+#[derive(Debug, Clone)]
+pub struct DispatchDependencyStatus {
+    pub dep_kind: String,
+    pub dep_value: String,
+    pub exists: bool,
+}
+
+/// One ledger event with its object refs — the `query_ledger` read tool's answer.
+#[derive(Debug, Clone)]
+pub struct LedgerEventWithRefs {
+    pub event: CanonicalEventRow,
+    pub refs: Vec<ObjectRefRow>,
+}
+
+/// One row of `event_object_refs` (001): how an event names an object.
+/// `role` was added by 010 and is NOT NULL there; the lineage assembler reads
+/// refs by event id, so the role rides along for callers that need it.
+#[derive(Debug, Clone)]
+pub struct ObjectRefRow {
+    pub event_id: String,
+    pub ref_type: String, // workitem|session|handoff|artifact|document|seat|topic|project|delegation|dispatch|acceptance
+    pub ref_id: String,
+    pub role: String, // 'subject'|'actor'|'context'
+}
+
 /// One acceptance row (schema 014, D2 acceptance gate) — the UI's 待验收 card.
 /// Its own first-class object: the actor is the operator/issuer (not the seat),
 /// and it carries the delivery branch, the one-step verification, the Flux
@@ -469,6 +637,11 @@ pub struct AcceptanceRow {
     pub how_to_verify: String,
     pub flux_verdict_ref: String,
     pub status: String, // 'pending'|'accepted'|'rejected'|'cancelled'
+    /// The structured acceptance plan (016, shape v1). `'{}'::jsonb` is the
+    /// column default and means "no plan" — the legacy pending row is exempt
+    /// from the plan CHECK until Aegis backfills it. Read as-is; the lineage
+    /// assembler decides what `{}` means.
+    pub acceptance_plan: serde_json::Value,
     pub feedback: Option<String>,
     pub rework_dispatch_id: Option<String>,
     pub merge_commit: Option<String>,

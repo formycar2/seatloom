@@ -65,11 +65,24 @@ launch_seat() {
     echo "  $seat: WARNING $wt has no .pi/mcp.json — seat will have no seatloom MCP"
   fi
 
-  # Stop the current agent, leave the shell and the tmux session intact.
+  # Stop whatever is in the pane, leaving the shell and tmux session intact.
+  # Kill ALL children, not just the first: a pane can be occupied by a different
+  # agent entirely. Observed 2026-10-10 — a reboot left Onyx running
+  # `gemini --resume` stuck in an OAuth timeout, `head -1` picked the wrong pid, and
+  # every relaunch typed the command into Gemini's TUI instead of a shell. Onyx was
+  # the only seat with queued work, so the entire pipeline sat blocked on it.
   local pane child
   pane=$(tmux display-message -p -t "$seat" '#{pane_pid}')
-  child=$(pgrep -P "$pane" 2>/dev/null | head -1)
-  [ -n "$child" ] && { kill "$child" 2>/dev/null; sleep 3; }
+  for child in $(pgrep -P "$pane" 2>/dev/null); do
+    local what
+    what=$(ps -o command= -p "$child" 2>/dev/null | cut -c1-40)
+    echo "  $seat: stopping pid $child ($what)"
+    kill "$child" 2>/dev/null
+  done
+  sleep 3
+  # Anything that ignored SIGTERM gets SIGKILL — a wedged OAuth prompt will.
+  for child in $(pgrep -P "$pane" 2>/dev/null); do kill -9 "$child" 2>/dev/null; done
+  sleep 1
 
   tmux resize-window -t "$seat" -x 200 -y 50 2>/dev/null
   # Bail out of any leftover TUI prompt (pi trust dialog, a half-finished credential

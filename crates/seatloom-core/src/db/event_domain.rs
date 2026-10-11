@@ -81,6 +81,22 @@ pub enum EventType {
     // carries the reasoning) — the Rust mirror lands with the dispatch, the
     // migration with Onyx.
     AcceptanceCancelled,
+    // (015, D5 knowledge layer) the memory object's four transitions — each maps
+    // to EXACTLY ONE, so the memories projection replays unambiguously
+    // (contract §5). Lyra sign-off 2026-10-10
+    // (VALUE-DOMAIN-2026-10-10-knowledge-layer-v1 §5).
+    MemoryCreated,   // (none) -> active/cold; actor = the remembering seat
+    MemoryRecalled,  // active: heat+1, recall_count+1, last_recalled_at=now
+    MemoryPromoted,  // tier change (up OR down, explicit only)
+    MemoryForgotten, // active -> forgotten (soft tombstone, reason required)
+    // (018, D5 Phase 2) the closure transition for 'unresolved' records — an
+    // EXPLICIT tool act (resolve), never a background sweep (contract §G3).
+    MemoryResolved, // active -> resolved; payload carries resolved_by/resolved_at
+    // (019, topic creation) a topic is OPENED — the governed creation of a recall
+    // scope (Aegis ruling 2026-10-11). A new object with its own lifecycle
+    // (open|closed|merged) and its own actor (`opened_by`), so it gets its own
+    // transition, exactly as 012 gave `dispatch` and 014 gave `acceptance`.
+    TopicOpened, // (none) -> open; actor = the seat that opened it
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -124,6 +140,11 @@ pub enum RefType {
     // type of the acceptance events. Lyra sign-off 2026-10-09
     // (LYRA-2026-10-09-d2-acceptance-loop-design-v1 §3).
     Acceptance,
+    // (015, D5 knowledge layer) `memories` is its own object: the four memory
+    // events must be able to name the memory they are about. Same reasoning 010
+    // used for 'delegation', 012 for 'dispatch', 014 for 'acceptance'. Lyra
+    // sign-off 2026-10-10 (VALUE-DOMAIN-2026-10-10-knowledge-layer-v1 §6).
+    Memory,
 }
 
 const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStatusChanged, \
@@ -132,17 +153,19 @@ const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStat
                                    SeatDelegationClosed, SupervisorMessage, SeatResponse, \
                                    SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted, \
                                    SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, \
-                                   AcceptanceRequested, AcceptanceGranted, AcceptanceRejected, AcceptanceCancelled";
+                                   AcceptanceRequested, AcceptanceGranted, AcceptanceRejected, AcceptanceCancelled, \
+                                   MemoryCreated, MemoryRecalled, MemoryPromoted, MemoryForgotten, \
+                                   MemoryResolved, TopicOpened";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
 const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document, seat, topic, \
-                                 project, delegation, dispatch, acceptance";
+                                 project, delegation, dispatch, acceptance, memory";
 
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 22] = [
+    pub const ALL: [EventType; 28] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -165,6 +188,12 @@ impl EventType {
         EventType::AcceptanceGranted,
         EventType::AcceptanceRejected,
         EventType::AcceptanceCancelled,
+        EventType::MemoryCreated,
+        EventType::MemoryRecalled,
+        EventType::MemoryPromoted,
+        EventType::MemoryForgotten,
+        EventType::MemoryResolved,
+        EventType::TopicOpened,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -191,6 +220,12 @@ impl EventType {
             EventType::AcceptanceGranted => "AcceptanceGranted",
             EventType::AcceptanceRejected => "AcceptanceRejected",
             EventType::AcceptanceCancelled => "AcceptanceCancelled",
+            EventType::MemoryCreated => "MemoryCreated",
+            EventType::MemoryRecalled => "MemoryRecalled",
+            EventType::MemoryPromoted => "MemoryPromoted",
+            EventType::MemoryForgotten => "MemoryForgotten",
+            EventType::MemoryResolved => "MemoryResolved",
+            EventType::TopicOpened => "TopicOpened",
         }
     }
 }
@@ -222,6 +257,12 @@ impl FromStr for EventType {
             "AcceptanceGranted" => Ok(EventType::AcceptanceGranted),
             "AcceptanceRejected" => Ok(EventType::AcceptanceRejected),
             "AcceptanceCancelled" => Ok(EventType::AcceptanceCancelled),
+            "MemoryCreated" => Ok(EventType::MemoryCreated),
+            "MemoryRecalled" => Ok(EventType::MemoryRecalled),
+            "MemoryPromoted" => Ok(EventType::MemoryPromoted),
+            "MemoryForgotten" => Ok(EventType::MemoryForgotten),
+            "MemoryResolved" => Ok(EventType::MemoryResolved),
+            "TopicOpened" => Ok(EventType::TopicOpened),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -287,7 +328,7 @@ impl fmt::Display for RefRole {
 }
 
 impl RefType {
-    pub const ALL: [RefType; 11] = [
+    pub const ALL: [RefType; 12] = [
         RefType::WorkItem,
         RefType::Session,
         RefType::Handoff,
@@ -299,6 +340,7 @@ impl RefType {
         RefType::Delegation,
         RefType::Dispatch,
         RefType::Acceptance,
+        RefType::Memory,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -314,6 +356,7 @@ impl RefType {
             RefType::Delegation => "delegation",
             RefType::Dispatch => "dispatch",
             RefType::Acceptance => "acceptance",
+            RefType::Memory => "memory",
         }
     }
 }
@@ -334,6 +377,7 @@ impl FromStr for RefType {
             "delegation" => Ok(RefType::Delegation),
             "dispatch" => Ok(RefType::Dispatch),
             "acceptance" => Ok(RefType::Acceptance),
+            "memory" => Ok(RefType::Memory),
             _ => Err(ParseValueError {
                 domain: "RefType",
                 value: s.to_string(),
@@ -380,12 +424,20 @@ mod tests {
     /// verbatim. `010` created the 12-value event_type and 9-value ref_type
     /// vocabularies; `012` widened them to 15 and 10 (governed dispatch, G19);
     /// `013`/`014` widen them to 21 and 11 (dispatch failure states + the D2
-    /// acceptance gate); the D2 withdrawal follow-on (016, scratch pending
-    /// Onyx) adds `AcceptanceCancelled` -> 22. If a migration widens a domain,
-    /// this test is where the Rust side must follow — kept verbatim, never
-    /// loosened.
+    /// acceptance gate); the D2 withdrawal follow-on (scratch 017, pending Onyx)
+    /// adds `AcceptanceCancelled` -> 22; the D5 knowledge layer (`015`) adds the
+    /// four memory transitions -> 26 and `memory` -> 12 ref types.
+    ///
+    /// NOTE ON THE COUNT: the D5 value-domain contract says "25 event values"
+    /// because it counts from the LIVE database (21 values + 4). This branch
+    /// also carries `AcceptanceCancelled`, whose migration (017) has not landed
+    /// yet — so the honest Rust pin here is 26, and the database reaches 26 when
+    /// 017 lands alongside 015. Declared, not silently reconciled.
+    ///
+    /// If a migration widens a domain, this test is where the Rust side must
+    /// follow — kept verbatim, never loosened.
     #[test]
-    fn serialized_sets_match_schema_010_012_013_014_016_checks() {
+    fn serialized_sets_match_schema_010_012_013_014_015_017_018_019_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -414,11 +466,20 @@ mod tests {
                 "AcceptanceRequested",
                 "AcceptanceGranted",
                 "AcceptanceRejected",
-                // D2 withdrawal follow-on (016): the seat pulls back its own
-                // pending request. Terminal, like accepted/rejected.
+                // D2 withdrawal follow-on (017, scratch): the seat pulls back
+                // its own pending request. Terminal, like accepted/rejected.
                 "AcceptanceCancelled",
+                // 015 (D5 knowledge layer): the memory object's transitions
+                "MemoryCreated",
+                "MemoryRecalled",
+                "MemoryPromoted",
+                "MemoryForgotten",
+                // 018 (D5 Phase 2): the closure transition
+                "MemoryResolved",
+                // 019 (topic creation): a topic is opened
+                "TopicOpened",
             ],
-            "must equal 010:141-159 + 012 + 013 + 014 + 016's canonical_events_event_type_vocab"
+            "must equal 010:141-159 + 012 + 013 + 014 + 017 + 015 + 018 + 019's canonical_events_event_type_vocab"
         );
         let roles: Vec<&str> = RefRole::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(roles, vec!["subject", "actor", "context"]);
@@ -439,8 +500,10 @@ mod tests {
                 "dispatch",
                 // 014 (D2 acceptance gate)
                 "acceptance",
+                // 015 (D5 knowledge layer)
+                "memory",
             ],
-            "must equal 010:270-276 + 012 + 014's event_object_refs_ref_type_vocab"
+            "must equal 010:270-276 + 012 + 014 + 015's event_object_refs_ref_type_vocab"
         );
     }
 
@@ -456,12 +519,13 @@ mod tests {
         assert!(EventType::from_str("ArtifactCreated").is_ok());
     }
 
-    /// `013`/`014` widened the event vocabulary by six, and the D2 withdrawal
-    /// follow-on adds a seventh; this pins that all seven are admitted,
-    /// round-trip, and are distinct (each names one transition), while an
-    /// unknown type is still rejected.
+    /// `013`/`014` widened the event vocabulary by six, the D2 withdrawal
+    /// follow-on adds a seventh, the D5 knowledge layer adds four more, 018 adds
+    /// the closure transition and 019 the topic opening; this pins that all of
+    /// them are admitted, round-trip, and are distinct (each names one
+    /// transition), while an unknown type is still rejected.
     #[test]
-    fn the_seven_d2_event_types_are_admitted_and_distinct() {
+    fn the_thirteen_new_event_types_are_admitted_and_distinct() {
         use std::collections::HashSet;
         let new = [
             EventType::SeatDispatchFailed,
@@ -471,6 +535,12 @@ mod tests {
             EventType::AcceptanceGranted,
             EventType::AcceptanceRejected,
             EventType::AcceptanceCancelled,
+            EventType::MemoryCreated,
+            EventType::MemoryRecalled,
+            EventType::MemoryPromoted,
+            EventType::MemoryForgotten,
+            EventType::MemoryResolved,
+            EventType::TopicOpened,
         ];
         for v in new {
             assert_eq!(EventType::from_str(v.as_str()).expect("round-trip"), v);
@@ -478,8 +548,13 @@ mod tests {
         }
         // Distinct serialized forms (no two transitions share an event type).
         let names: HashSet<&str> = new.iter().map(|v| v.as_str()).collect();
-        assert_eq!(names.len(), 7, "the seven D2 event types must be distinct");
+        assert_eq!(
+            names.len(),
+            13,
+            "the thirteen new event types must be distinct"
+        );
         assert!(EventType::from_str("SeatDispatchReopened").is_err());
+        assert!(EventType::from_str("MemoryUpdated").is_err());
         // A void is NOT a rejection: the two transitions stay separate words in
         // an append-only ledger, where one word for two meanings can never be
         // split once rows carry both.
@@ -488,11 +563,12 @@ mod tests {
             EventType::AcceptanceCancelled.to_string()
         );
         assert!(EventType::from_str("AcceptanceVoided").is_err());
-        // ref_type widened by one: `acceptance` is admitted.
+        // ref_type widened: `acceptance` (014) and `memory` (015) are admitted.
         assert_eq!(
             RefType::from_str("acceptance").unwrap(),
             RefType::Acceptance
         );
+        assert_eq!(RefType::from_str("memory").unwrap(), RefType::Memory);
     }
 
     /// Casing is significant in both directions, and deliberately inconsistent
