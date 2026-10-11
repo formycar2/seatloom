@@ -1,0 +1,61 @@
+04:43:21 tmux capture-pane -p -t waker-proof-seat-2
+04:43:21 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:21 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:21 tmux capture-pane -p -t waker-proof-seat
+04:43:21 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:21 tmux send-keys -t waker-proof-seat Enter
+04:43:22 tmux capture-pane -p -t waker-proof-seat-2
+04:43:22 tmux capture-pane -p -t waker-proof-seat
+04:43:24 tmux capture-pane -p -t waker-proof-seat-2
+04:43:24 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:24 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:24 tmux capture-pane -p -t waker-proof-seat
+04:43:24 tmux list-panes -t waker-proof-seat -F #{pane_pid}
+04:43:26 tmux capture-pane -p -t waker-proof-seat-2
+04:43:26 tmux capture-pane -p -t waker-proof-seat
+04:43:26 tmux list-panes -t waker-proof-seat -F #{pane_pid}
+04:43:28 tmux capture-pane -p -t waker-proof-seat-2
+04:43:28 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:28 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:28 tmux capture-pane -p -t waker-proof-seat
+04:43:28 tmux list-panes -t waker-proof-seat -F #{pane_pid}
+04:43:30 tmux capture-pane -p -t waker-proof-seat-2
+04:43:30 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:30 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:30 tmux capture-pane -p -t waker-proof-seat
+04:43:30 tmux list-panes -t waker-proof-seat -F #{pane_pid}
+04:43:32 tmux capture-pane -p -t waker-proof-seat-2
+04:43:32 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:32 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:32 tmux capture-pane -p -t waker-proof-seat
+04:43:32 tmux list-panes -t waker-proof-seat -F #{pane_pid}
+04:43:34 tmux capture-pane -p -t waker-proof-seat-2
+04:43:34 tmux capture-pane -p -t waker-proof-seat
+04:43:34 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:34 tmux send-keys -t waker-proof-seat Enter
+04:43:36 tmux capture-pane -p -t waker-proof-seat-2
+04:43:36 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:36 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:36 tmux capture-pane -p -t waker-proof-seat
+04:43:36 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:36 tmux send-keys -t waker-proof-seat Enter
+04:43:38 tmux capture-pane -p -t waker-proof-seat-2
+04:43:38 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:38 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:38 tmux capture-pane -p -t waker-proof-seat
+04:43:38 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:38 tmux send-keys -t waker-proof-seat Enter
+04:43:40 tmux capture-pane -p -t waker-proof-seat-2
+04:43:40 tmux capture-pane -p -t waker-proof-seat
+04:43:42 tmux capture-pane -p -t waker-proof-seat-2
+04:43:42 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:42 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:42 tmux capture-pane -p -t waker-proof-seat
+04:43:42 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:42 tmux send-keys -t waker-proof-seat Enter
+04:43:44 tmux capture-pane -p -t waker-proof-seat-2
+04:43:44 tmux send-keys -t waker-proof-seat-2 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:44 tmux send-keys -t waker-proof-seat-2 Enter
+04:43:44 tmux capture-pane -p -t waker-proof-seat
+04:43:44 tmux send-keys -t waker-proof-seat 📥 new governed dispatch available — run your dispatch loop now: call get_next_dispatch repeatedly (do each payload, then complete_dispatch) until it returns "nothing ready", then stop.
+04:43:44 tmux send-keys -t waker-proof-seat Enter

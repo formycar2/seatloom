@@ -32,7 +32,17 @@ set -uo pipefail
 
 SESS="Aegis-Supervisor"
 # 短指令。payload 不走 tmux 输入行;路径只是文本,不访问文件系统。
-MSG="Aegis 自醒心跳 — Read /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/docs/coordination/tasks/aegis/AEGIS-HEARTBEAT.md in full and act on it."
+#
+# 🔴 行首那个 `#` 是**构造保证**,不是装饰。质量验证席位 2026-10-12 实测发现:
+#    捅进 pane 的文本,如果那个 pane 恰好停在裸 shell 提示符上,会被 shell 当场执行
+#    (它观察到 zsh: number expected / bash: syntax error near unexpected token `(')。
+#    今天的消息只是碰巧因为含有括号才变成语法错误 —— 那是运气,不是保证。
+#    一旦消息文本里长出 shell 元字符,或者 pane 的 shell 里压着半行没输完的输入,
+#    它就可能真的做成某件事。
+#    行首 `#` 让整行在 bash 和 zsh 里都是**注释**,无论后面是什么都不执行;
+#    而 pi 收到的只是一条以 # 开头的提示,无害。
+#    上面的 pane 守卫是第二道防线(只在 pane 跑着 agent 时才发),两道都要在。
+MSG="# Aegis 自醒心跳 — Read /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/docs/coordination/tasks/aegis/AEGIS-HEARTBEAT.md in full and act on it."
 TS="$(date '+%Y-%m-%d %H:%M:%S')"
 
 log(){ printf '%s aegis-self-wake: %s\n' "$TS" "$*"; }

@@ -14,8 +14,10 @@
 #            (the lost-NOTIFY case: the NOTIFY fired while the seat was busy)
 #   POINT 4  a seat added to the map while the daemon runs is picked up with no
 #            restart (hot reload)
-#   POINT 5  the pane-liveness rule: a recognised agent in the pane (even a
-#            DIFFERENT one) counts as working, and the log names which
+#   POINT 5  the progress rule, BOTH directions: a recognised agent whose output
+#            is ADVANCING is left to finish its turn (inside the soft window),
+#            while a stale claim past the HARD FLOOR is poked whatever the pane
+#            says — advancing or static, agent or not
 #
 # Env knobs are set small so the proof runs in seconds, not minutes.
 set -uo pipefail
@@ -170,25 +172,65 @@ grep -E "seat map loaded" "$LOG" | tail -2 | sed 's/^/    waker: /'
 tmux kill-session -t "waker-proof-seat-2" 2>/dev/null
 
 echo
-echo "########## POINT 5 — a recognised agent in the pane counts as working ##########"
-# A pane running a recognised agent (node) must NOT be poked even with a stale
-# claim: the log must say which agent it saw.
-BEFORE=$(nudges "$PROOF_SESSION")
-psql "UPDATE dispatches SET status = 'in_flight', started_at = NOW() - interval '40 minutes' WHERE id = 'disp-ready';" >/dev/null
+echo "########## POINT 5 — the progress rule, BOTH directions ##########"
+# The fix replaced "an agent is running" with "an agent is working": the soft
+# rule now skips a poke only when the pane is BOTH hosting a recognised agent
+# AND producing new output. This point asserts both directions, because the
+# old one-direction assertion (a stale claim with an agent in the pane is NEVER
+# poked) is exactly the behaviour the fix removes — a pane that merely LOOKS
+# busy held a seat's claim for seventeen hours.
+
+# --- 5a: claim inside the soft window + a recognised agent STREAMING output ---
+# The pane has both signals (running node, output advancing), so the waker must
+# leave it alone and say why. (A claim younger than stale-after is POINT 2.)
 tmux kill-session -t "$PROOF_SESSION" 2>/dev/null
-tmux new-session -d -s "$PROOF_SESSION" "node -e 'setInterval(() => {}, 1000)'"
+tmux new-session -d -s "$PROOF_SESSION" "node -e 'setInterval(() => console.log(\"tick \" + Date.now()), 500)'"
 sleep 1
+psql "UPDATE dispatches SET status = 'in_flight', started_at = NOW() - interval '30 seconds' WHERE id = 'disp-ready';" >/dev/null
+BEFORE=$(nudges "$PROOF_SESSION")
 PANE_PID=$("$REAL_TMUX" list-panes -t "$PROOF_SESSION" -F '#{pane_pid}' | head -1)
-PANE_CHILD=$(ps -ax -o pid=,ppid=,comm= | awk -v p="$PANE_PID" '$2==p {print $3}' | head -1)
-echo "pane pid ${PANE_PID}, child: ${PANE_CHILD} (a recognised agent)"
-sleep 6
+PANE_CMD=$(ps -o comm= -p "$PANE_PID" | tr -d ' ')
+echo "seeded: disp-ready in_flight for 30s (past the 20s soft threshold, under the 80s floor)"
+echo "pane pid ${PANE_PID}, command: ${PANE_CMD} (a recognised agent), output streaming every 500ms"
+sleep 10   # five sweeps, all inside the soft window
 if [ "$(nudges "$PROOF_SESSION")" -gt "$BEFORE" ]; then
-  echo "FAIL: a pane with a working agent was poked"
+  echo "FAIL: a streaming agent was poked inside the soft window"
 else
-  echo "PASS: no nudge — an agent in the pane counts as working"
+  echo "PASS: no nudge — a recognised agent whose output is advancing is left to finish its turn"
 fi
 grep -E "an agent is working" "$LOG" | tail -1 | sed 's/^/    waker: /'
-echo "    (the log names the agent it saw, so a DIFFERENT agent is visible rather than assumed)"
+
+# --- 5b: claim past the HARD FLOOR + a STREAMING pane -------------------------
+# The backstop does not consult the pane at all: even an advancing pane is
+# poked once the claim is past the floor. This is the load-bearing claim.
+BEFORE=$(nudges "$PROOF_SESSION")
+psql "UPDATE dispatches SET started_at = NOW() - interval '40 minutes' WHERE id = 'disp-ready';" >/dev/null
+echo "seeded: disp-ready in_flight for 40 minutes (far past the 80s floor); pane still streaming"
+for i in $(seq 1 20); do [ "$(nudges "$PROOF_SESSION")" -gt "$BEFORE" ] && break; sleep 1; done
+if [ "$(nudges "$PROOF_SESSION")" -gt "$BEFORE" ]; then
+  echo "PASS: the hard floor poked even an advancing pane — the floor is unconditional"
+else
+  echo "FAIL: an advancing pane suppressed the hard floor"
+fi
+grep -E "past the hard floor" "$LOG" | tail -1 | sed 's/^/    waker: /'
+
+# --- 5c: claim past the HARD FLOOR + a recognised agent that is SILENT ---------
+# The exact scenario the old POINT 5 asserted the wrong way: a recognised agent
+# (node) in the pane, producing NO output, claim 40 minutes old. A silent pane
+# is not evidence of progress, so the waker pokes.
+BEFORE=$(nudges "$PROOF_SESSION")
+tmux kill-session -t "$PROOF_SESSION" 2>/dev/null
+tmux new-session -d -s "$PROOF_SESSION" "node -e 'setInterval(() => {}, 1000)'"
+echo "seeded: pane swapped for a silent node (claim already 40 minutes past the floor)"
+sleep 10   # let the pane settle so its output is verifiably static
+for i in $(seq 1 20); do [ "$(nudges "$PROOF_SESSION")" -gt "$BEFORE" ] && break; sleep 1; done
+if [ "$(nudges "$PROOF_SESSION")" -gt "$BEFORE" ]; then
+  echo "PASS: a stale claim with a silent agent was poked — static output is not progress"
+else
+  echo "FAIL: a silent agent silenced the hard floor"
+fi
+grep -E "past the hard floor" "$LOG" | tail -1 | sed 's/^/    waker: /'
+echo "    (the claim is already past the floor here, so the pane swap cannot manufacture the poke)"
 tmux kill-session -t "$PROOF_SESSION" 2>/dev/null
 
 echo
@@ -196,4 +238,4 @@ echo "########## waker log (full) ##########"
 sed 's/^/    /' "$LOG"
 
 echo
-echo "proof complete: stale claim -> poked; fresh claim -> left alone; idle+ready -> poked by the periodic sweep; new seat -> hot-reloaded; agent in pane -> respected and named."
+echo "proof complete: stale claim -> poked; fresh claim -> left alone; idle+ready -> poked by the periodic sweep; new seat -> hot-reloaded; advancing agent in the soft window -> left to finish; past the hard floor -> poked whatever the pane says."
