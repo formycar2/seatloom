@@ -151,6 +151,22 @@ else
     printf "                     修:bash scripts/install-aegis-self-wake.sh\n"
   fi
 fi
-printf "  SeatLoom 窗口        %s\n" "$(pgrep -f 'seatloom/target/debug/seatloom-tauri' >/dev/null 2>&1 && echo 开着 || echo 没开)"
+# 按**二进制名**认,不要按路径认。2026-10-12 连着错过两次:
+#   1. 只匹配 target/debug —— 换成 release 的集成构建后报「没开」,而应用正在跑;
+#   2. 改成匹配三条绝对路径 —— 应用是用 ./target/release/... 相对路径起的,
+#      命令行里没有 seatloom/ 前缀,三条全不中,还是报「没开」;
+#      而且 pgrep -f 的模式是正则,'SeatLoom.app' 里的 . 会匹配任意字符,还误报过一次。
+# 所以:先用名字抓到 pid,再从这条进程真实的命令行判断它是哪个构建。
+sl_pid="$(pgrep -f 'seatloom-tauri' 2>/dev/null | head -1)"
+if [ -z "$sl_pid" ]; then
+  printf "  SeatLoom 窗口        %s\n" "没开"
+else
+  case "$(ps -o command= -p "$sl_pid" 2>/dev/null)" in
+    *release*) sl_which="release = 集成构建";;
+    *debug*)   sl_which="debug = 可能没有面板";;
+    *)         sl_which="来路不明";;
+  esac
+  printf "  SeatLoom 窗口        开着(%s, pid %s)\n" "$sl_which" "$sl_pid"
+fi
 echo
 printf "  累计完成派单         %s 件\n" "$(PSQL "select count(*) from dispatches where status='done'")"
