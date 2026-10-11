@@ -346,3 +346,81 @@ DATABASE_URL=postgresql://seatloom:seatloom@localhost:5432/seatloom_gate_nimbus 
 ---
 
 *本文件只描述本分支已落地部分 + 已写好的 Onyx 提案。`infra/**` 一行未动。*
+
+---
+
+## 11. 对账:Onyx 的四问已回答,双边现已对齐(2026-10-12 追加)
+
+**Onyx 裁决:** `ev-verdict-onyx-gate-release-check` = **pass**
+**证据:** `docs/coordination/tasks/onyx/ONYX-2026-10-12-gate-release-check-delivery-v1.md`,
+commit `f97d0a8` on `packet/onyx/topic-opened-019`
+**迁移:** `infra/postgres/schema/020_gate_criterion.sql`(Onyx 的槽,**我没有动 `infra/**`**)
+
+### 11.1 四问的答案,以及我因此改了什么
+
+| 问 | Onyx 的答案 | 我的动作 |
+|---|---|---|
+| Q1 `btrim` vs `coalesce` | **两个都不对,我 §4 的草稿不是字节一致的。** 裸 `coalesce` 完全不 trim;裸 `btrim` 只 trim 空格。危险方向是**子集** —— 数据库放行、席位的 `live_status` 说 blocked,席位永远拉不到。Onyx 落的是 `btrim(coalesce(x,''), <枚举的 Unicode White_Space 全集>)` | **代码零改动,但补了证明。** Rust 的 `stated()` 用 `str::trim()`,其定义就是 `char::is_whitespace` = Unicode White_Space 属性 —— 和 Onyx 枚举的全集是同一个集合。见 §11.2:我做了跨语言实测,不是照抄注释 |
+| Q2 `LIKE` 段测试 | **是,而且是被证明的**:`LIKE '%-live-%' OR LIKE '%-live'` 与 `is_gate_id()` 的 `ends_with \|\| contains` 等价,live 账本 801 个 id + 30 个对抗 id,**0 不匹配** | 无改动。把边界形状固化成测试(见 §11.2) |
+| Q3 `blocked`+上报 vs 新终态 | **接受 `blocked` + 上报,不要加终态值。** 理由比我写的更硬:`gate_unverified` 在 013 的意义上**不是终态**(合格门仍可能落地并放行它),所以它是 blocked 的子状态,买不到任何新释放路径,却要付第 7 个状态值 + 第 7 个事件类型 + Lyra 重新签字 | 无改动,Onyx 的判断更好,采纳 |
+| Q4 `requires_gate` 列 | **不要。** `BOOLEAN NOT NULL DEFAULT false` 和命名约定有**相同的 opt-in 默认值和相同的失败方向**,所以它是给洞改名,不是堵洞;而且它会是同一个 bit 的**第四份拷贝**(`emit_event` / `enqueue_dispatch` / `dep_satisfied` / 那一列)。Onyx 改为把约定唯一的保证变成**数据库强制**:一条 CHECK 拒绝门形状 `dep_value` 挂在非 event 边上 | 无改动 —— 那条 CHECK 正是我 §6.3 在 Rust 侧做的事,现在两侧都有 |
+
+### 11.2 我不是照抄 Onyx 的注释,是实测了两边一致
+
+Onyx 的 Q1 答案本身证明了**朴素版本两边确实不一致**。所以"今天一致"不够,要能一直一致。
+两件事:
+
+**(1) 把字符集钉住(新增 3 个测试)。** `UNICODE_WHITE_SPACE` 常量逐字枚举 020 在 SQL 里
+`chr(9) || ... || chr(12288)` 的那 25 个字符,断言 `stated()` 对每一个都判"未陈述";
+另立 `WHITESPACE_IMPOSTORS`(U+200B / U+180E / U+FEFF / U+00B7 —— 看着像空白但不是
+White_Space),断言 `stated()` **不** trim 它们。两个方向都钉:
+- Rust trim 得比 SQL 少 → 数据库放行、席位拒绝 → 静默悬着(危险方向)
+- Rust trim 得比 SQL 多 → 席位拒绝、数据库放行 → 同样是分歧,同样是挂单
+
+**(2) 跨语言实测,零断言。** 在全新 scratch 库 `seatloom_gate_recon`(001-014 canonical order
++ 020)上,把同一批输入分别喂给 Rust 的判据和 SQL 的 `fn_gate_is_gate_id` /
+`fn_gate_row_is_gate`:
+
+```
+id-shape agreement:    17/17 match
+payload agreement:     58/58 match
+wrong type (ArtifactCreated under a gate id): False (expect False)
+=> ZERO mismatches
+```
+
+58 个 payload 用例覆盖:全部 25 个 White_Space 字符(单独成串 + 包裹真实文本两种)、
+4 个伪装空白字符、10-10 那个公告形状(`branch`/`commit`)、`gate` 指向别的 id、
+非对象 payload(标量)、空 payload。
+
+**(3) 端到端复跑。** 020 已应用的前提下,原有集成测试
+`a_gate_shaped_dep_is_satisfied_only_by_a_measured_gate` 仍然通过 —— 即 Rust 侧与
+触发器侧在同一个库上不互相拆台;`v_dispatch_gate_held` 正确返回那一张被门卡住的单。
+
+### 11.3 我确认没有越界
+
+- `infra/**` 一行未动。020 是 Onyx 落在他自己分支上的,我只读。
+- 没有合并 `packet/onyx/topic-opened-019`,也没有合并我的分支到任何地方。
+- Onyx 明示"NOT CLAIMED"的两条我照抄继承,不替他抹平:
+  **live apply 是 Aegis 的动作**(code-landed ≠ live-applied);
+  **挂边方向仍然没有覆盖** —— 给一条真会调用的单挂 `-landed` 边,机械上判不出,
+  正是我 §8 缺口 1。
+
+### 11.4 Onyx 对 Aegis 的建议(与我 §1.1 的发现同向)
+
+Onyx 独立发现了同一个命名不一致,并建议**改裁决二的措辞**("carries live as a segment")
+而不是把测试收窄成后缀规则 —— 收窄会把一个带着完整 `verified` 的真门读成公告。
+我和 Onyx 结论一致,请 Aegis 裁定措辞。
+
+### 11.5 本轮门禁
+
+```
+cargo fmt --all --check                                              OK
+cargo clippy --workspace --all-targets -- -D warnings                0 errors / 0 warnings
+cargo check --workspace --all-targets                               OK
+cargo test -p seatloom-core                                          114 passed, 0 failed
+cargo test -p seatloom-mcp-emit --bins                               71 + 9 passed, 0 failed
+DATABASE_URL=.../seatloom_gate_recon (001-014 + 020)                 a_gate_shaped ... ok
+```
+
+**唯一的代码改动是 3 个新测试**(`gate.rs`),判据本身一行未改 —— 因为 Onyx 的四问
+没有一条要求改判据,Q1 要求的是**证明**它和 SQL 一致,而那正是我补的。

@@ -338,4 +338,110 @@ mod tests {
     fn a_missing_payload_is_never_a_gate() {
         assert!(!row_is_gate("SupervisorMessage", "ev-x-live", None));
     }
+
+    // ---- the one place Rust and SQL could still silently drift ----
+    //
+    // Onyx's answer to question 1 of the ruling was that NEITHER `coalesce(x,'')
+    // <> ''` nor a bare `btrim(x)` is byte-identical to Rust's `stated()`: the
+    // first does not trim at all, and the second trims SPACES only. The
+    // dangerous direction is a SUBSET — the database would release a dispatch
+    // the seat then refuses to pull, which is the silent hang the ruling exists
+    // to prevent. Onyx therefore enumerated Rust's whole whitespace set in the
+    // SQL (`infra/postgres/schema/020_gate_criterion.sql`, `fn_gate_row_is_gate`).
+    //
+    // That makes the two implementations agree TODAY. It does not keep them
+    // agreeing: `str::trim` is defined by `char::is_whitespace`, which is the
+    // Unicode White_Space property, and anybody who "simplifies" `stated()` to
+    // `trim_matches(' ')` — or a future Rust that changes the property — would
+    // open exactly the dangerous direction with no test failing. This test pins
+    // the set, so the divergence becomes a compile-time-visible failure here
+    // instead of a production release/pull disagreement.
+
+    /// The Unicode White_Space property, enumerated — the same list 020 ships in
+    /// SQL as `chr(9) || chr(10) || ... || chr(12288)`.
+    const UNICODE_WHITE_SPACE: [char; 25] = [
+        '\u{0009}', '\u{000A}', '\u{000B}', '\u{000C}', '\u{000D}', // U+0009-U+000D
+        '\u{0020}', // SPACE
+        '\u{0085}', // NEL
+        '\u{00A0}', // NO-BREAK SPACE
+        '\u{1680}', // OGHAM SPACE MARK
+        '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', // U+2000-U+2004
+        '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}', // U+2005-U+2009
+        '\u{200A}', // U+200A
+        '\u{2028}', // LINE SEPARATOR
+        '\u{2029}', // PARAGRAPH SEPARATOR
+        '\u{202F}', // NARROW NO-BREAK SPACE
+        '\u{205F}', // MEDIUM MATHEMATICAL SPACE
+        '\u{3000}', // IDEOGRAPHIC SPACE
+    ];
+
+    /// Characters that LOOK like whitespace and are NOT in the property. If
+    /// `stated()` ever trims one of these, Rust has become stricter than the
+    /// SQL and a gate the database accepts would be refused by the seat — the
+    /// opposite direction, still a divergence, still a hung dispatch.
+    const WHITESPACE_IMPOSTORS: [char; 4] = [
+        '\u{200B}', // ZERO WIDTH SPACE — Cf, not White_Space
+        '\u{180E}', // MONGOLIAN VOWEL SEPARATOR — Cf since Unicode 6.3
+        '\u{FEFF}', // ZERO WIDTH NO-BREAK SPACE / BOM — Cf
+        '\u{00B7}', // MIDDLE DOT
+    ];
+
+    #[test]
+    fn stated_trims_exactly_the_unicode_white_space_set_the_sql_enumerates() {
+        let id = "ev-knowledge-read-model-live";
+        // Every White_Space char, alone and surrounding real text, reads as
+        // "not stated" / "stated" respectively — the same answer the SQL's
+        // btrim(x, ws) gives.
+        for ws in UNICODE_WHITE_SPACE {
+            let blank: String = std::iter::repeat_n(ws, 3).collect();
+            let mut p = gate_payload(id);
+            p[VERIFIED_PAYLOAD_KEY] = serde_json::json!(blank);
+            assert!(
+                !gate_payload_shape("SupervisorMessage", id, &p),
+                "U+{:04X} must read as 'not stated' — the SQL trims it, so Rust must too",
+                ws as u32
+            );
+
+            let padded = format!("{ws}measured{ws}");
+            let mut p = gate_payload(id);
+            p[VERIFIED_PAYLOAD_KEY] = serde_json::json!(padded);
+            assert!(
+                gate_payload_shape("SupervisorMessage", id, &p),
+                "U+{:04X} around real text must still read as 'stated'",
+                ws as u32
+            );
+        }
+    }
+
+    #[test]
+    fn stated_does_not_trim_characters_outside_the_set() {
+        // The opposite direction: if Rust ever trims more than the SQL, a gate
+        // the database releases would be refused by the seat.
+        let id = "ev-knowledge-read-model-live";
+        for c in WHITESPACE_IMPOSTORS {
+            let mut p = gate_payload(id);
+            p[VERIFIED_PAYLOAD_KEY] = serde_json::json!(format!("{c}measured"));
+            assert!(
+                gate_payload_shape("SupervisorMessage", id, &p),
+                "U+{:04X} is not White_Space; trimming it would make Rust stricter than the SQL",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn the_id_shape_test_matches_the_sqls_like_segment_test() {
+        // 020's fn_gate_is_gate_id is `event_id LIKE '%-live-%' OR LIKE '%-live'`.
+        // Both are case-sensitive substring/suffix tests, so the encodings are
+        // equivalent — but Onyx proved that over 801 live ids plus 30
+        // adversarial ones, and a future change to either side deserves the
+        // same proof rather than my say-so. These are the shapes that actually
+        // differ between a naive suffix rule and the segment rule.
+        assert!(is_gate_id("ev-live-019-applied")); // the finding: not a suffix
+        assert!(is_gate_id("ev-knowledge-read-model-live")); // a suffix
+        assert!(is_gate_id("ev-x-live-y")); // a middle segment
+        assert!(!is_gate_id("ev-delivery")); // no segment at all
+        assert!(!is_gate_id("ev-lively-thing")); // '-live' must be its own segment
+        assert!(!is_gate_id("ev-LIVE-019-applied")); // LIKE is case-sensitive
+    }
 }
