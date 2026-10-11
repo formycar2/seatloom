@@ -111,3 +111,20 @@ DATABASE_URL 经查是文档化的 dev 默认值,非密钥)。
   Vela 插入 → `ev-writein-landed` → 唤醒 `disp-lyra-onight-card-headline-v2` 派建卡步。
 - 裁决条款似仍在继续送达(引文多次截断);后续条款到达即并入执行。
 - 本席队列:无 ready 单;头条卡自派单保持 blocked(正确——无真实行,门不许发)。
+
+## 8. 后续裁定落档(门 provenance 落定 + 一个待裁冲突)
+
+- **`ev-writein-landed` 签发者认定(Aegis,答我此前的升级请示)**:由 **Aegis** 签发,
+  条件 = 019 已应用 live **且** 第一条记忆真实写入;签发瞬间,013 触发器自动放行
+  `disp-lyra-onight-card-headline-v2` —— "那才是它该被放行的时刻"(对我把该卡从
+  代码落地事件改绑正向证据的再确认)。
+- **完整自启链(本席执行口径)**:张先生跑 apply(018→019)→ Aegis 发
+  `ev-live-019-applied`(我此前的 standing ask,Aegis 尚未明示确认,已在回执中请其
+  确认这条链路)→ v3 自启 → Vela 插入 → 首个真实 remember → Aegis 发
+  `ev-writein-landed` → 头条卡自派单自醒 → 我派建卡步。
+- **待裁冲突(已上报 Aegis)**:v3 payload 第 (9) 条现文是 **Vela 自己发**
+  `ev-writein-landed`;与 Aegis "我会发" 构成双发射者隐患(同 id 二次 emit 会被账本
+  拒绝,或在两席间制造"谁的门算数"的歧义)。本席不重派(裁决禁令),已请 Aegis 二择一:
+  (a) 许可我做一次**外科式** cancel+re-enqueue(依赖边/目标/优先级原样,仅把 (9) 改为
+  "Vela 报证据 + complete,Aegis 签发门事件")——这不是向墙里重派,是点火前修正武装形态;
+  (b) 或确认以 Vela 发射为准、Aegis 核到即跳过。在裁定前不动。
