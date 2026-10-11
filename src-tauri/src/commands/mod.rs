@@ -5,6 +5,7 @@ pub mod dispatch_cmds;
 pub mod document_cmds;
 pub mod handoff_cmds;
 pub mod inbox_cmds;
+pub mod knowledge_cmds;
 pub mod project_cmds;
 pub mod prompt_cmds;
 pub mod reconcile_cmds;

@@ -13,6 +13,8 @@ import { listen, UnlistenFn, Event } from '@tauri-apps/api/event';
 import type {
   AcceptanceLineageDto,
   ArtifactDto,
+  KnowledgeTopicMemories,
+  KnowledgeTopicTree,
   AcceptanceCardDto,
   AcceptanceDecisionDto,
   CanonicalEventDto,
@@ -132,6 +134,19 @@ export const api = {
   // calls, so the two surfaces cannot drift.
   getAcceptanceLineage: (acceptanceId: string): Promise<AcceptanceLineageDto> =>
     invoke('cmd_get_acceptance_lineage', { acceptanceId }),
+
+  // --- Knowledge read model (overnight step 4) ---
+  // Pure reads: the topic tree and the memories-by-topic card list, with
+  // progressive disclosure (l0 default, l1/l2 on demand).
+  getKnowledgeTree: (projectId?: string): Promise<KnowledgeTopicTree> =>
+    invoke('cmd_get_knowledge_tree', { projectId }),
+  getTopicMemories: (
+    topicId: string,
+    depth?: 'l0' | 'l1' | 'l2',
+    includeSuperseded?: boolean,
+    limit?: number,
+  ): Promise<KnowledgeTopicMemories> =>
+    invoke('cmd_get_topic_memories', { topicId, depth, includeSuperseded, limit }),
 
   // --- Governed dispatch (G19) — seat inboxes ---
   listDispatches: (projectId?: string, limit?: number): Promise<DispatchDto[]> =>

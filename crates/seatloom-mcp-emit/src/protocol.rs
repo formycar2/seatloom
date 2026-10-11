@@ -111,6 +111,9 @@ pub fn tools_list_result() -> Value {
             resolve_tool(),
             get_dispatch_tool(),
             query_ledger_tool(),
+            open_topic_tool(),
+            get_knowledge_tree_tool(),
+            get_topic_memories_tool(),
         ]
     })
 }
@@ -126,7 +129,7 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 27 PascalCase values.",
+                    "description": "Event type. One of the 28 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
@@ -137,7 +140,7 @@ fn emit_event_tool() -> Value {
                         "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
                         "AcceptanceCancelled",
                         "MemoryCreated", "MemoryRecalled", "MemoryPromoted",
-                        "MemoryForgotten", "MemoryResolved"
+                        "MemoryForgotten", "MemoryResolved", "TopicOpened"
                     ]
                 },
                 "payload": {
@@ -235,6 +238,11 @@ fn enqueue_dispatch_tool() -> Value {
                     "type": "integer",
                     "minimum": 0,
                     "description": "Retry budget (013): how many FAILED attempts are re-opened to ready before the failure is terminal. 0 (default) = the first failure is terminal."
+                },
+                "verdict_event_id": {
+                    "type": "string",
+                    "pattern": "^ev-.+",
+                    "description": "Only when payload.kind is 'verification' (Aegis ruling 2026-10-11 part 2). The pre-declared id of the ReviewVerdictIssued event this request asks for: the tool MINTS one when you omit it and VALIDATES yours when you supply it, then returns it in the result. The verifier MUST emit its verdict with exactly this id — hang your gated self-dispatch on dep_kind=event, dep_value=<that id> so the existing blocked -> ready trigger wakes you. Supplying it for a non-verification payload is refused."
                 }
             }
         }
@@ -561,6 +569,77 @@ fn resolve_tool() -> Value {
     })
 }
 
+/// `open_topic` — the governed creation of a recall scope (Aegis ruling
+/// 2026-10-11). `remember` cannot create one implicitly: a typo would open a
+/// scope nobody ever recalls from. `opened_by` is server-side, never a parameter.
+fn open_topic_tool() -> Value {
+    json!({
+        "name": "open_topic",
+        "description": "Open a recall scope (topic) — idempotently. A second open of the same \
+            topic_id succeeds, changes nothing and emits no event. opened_by is resolved from \
+            SEATLOOM_ACTOR_REF server-side (never a parameter). Refusals (typed, zero writes): \
+            the parent topic does not exist (open the parent first — a scope is never created \
+            implicitly); the project does not exist; the parent is in another project; the parent \
+            would make the new topic its own ancestor. On success the row and one TopicOpened \
+            event land in ONE transaction.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id", "title"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1, "description": "The scope id, e.g. 'd5-knowledge-layer'. Stable: memories reference it forever." },
+                "title": { "type": "string", "minLength": 1 },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." },
+                "parent_topic_id": { "type": "string", "description": "An existing topic in the SAME project. Omit for a root scope." }
+            }
+        }
+    })
+}
+
+/// `get_knowledge_tree` — the topic tree of a project, with memory counts.
+/// PURE READ: no write, no event (a panel query, not a recall).
+fn get_knowledge_tree_tool() -> Value {
+    json!({
+        "name": "get_knowledge_tree",
+        "description": "The knowledge topic tree for a project: every topic with its parent and its \
+            ACTIVE, not-superseded memory count. PURE READ — writes nothing, appends no event (a \
+            panel query, not a recall; recall keeps its MemoryRecalled audit). Scope is hard: one \
+            project, never an all-projects read. An empty project is an empty tree, not an error.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `get_topic_memories` — the memories of one topic, progressively disclosed.
+/// PURE READ: no write, no event.
+fn get_topic_memories_tool() -> Value {
+    json!({
+        "name": "get_topic_memories",
+        "description": "The memories of one topic at a disclosure depth, WITH the topic's ancestor \
+            chain (a memory is never returned out of its context). depth l0 (default) returns only \
+            the ~100-token summaries; l1 adds the overview; l2 adds the evidence pointer with the \
+            line range. The token budget belongs to the caller. Superseded rows are excluded unless \
+            include_superseded is set, and then each carries supersededBy. PURE READ — writes \
+            nothing, appends no event.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1 },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed refusal." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories a newer one superseded; each is annotated with supersededBy." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Page size, default 50, hard ceiling 200. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
 fn get_dispatch_tool() -> Value {
     json!({
         "name": "get_dispatch",
@@ -667,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_fifteen_tools() {
+    fn tools_list_advertises_the_eighteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -688,7 +767,10 @@ mod tests {
                 "forget",
                 "resolve",
                 "get_dispatch",
-                "query_ledger"
+                "query_ledger",
+                "open_topic",
+                "get_knowledge_tree",
+                "get_topic_memories"
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
@@ -717,7 +799,14 @@ mod tests {
         assert!(!lineage.contains_key("actor_ref"));
         // The five D5 memory tools expose no identity either — identity is
         // resolved server-side from SEATLOOM_ACTOR_REF.
-        for name in ["recall", "remember", "promote", "forget", "resolve"] {
+        for name in [
+            "recall",
+            "remember",
+            "promote",
+            "forget",
+            "resolve",
+            "open_topic",
+        ] {
             let t = tools
                 .iter()
                 .find(|t| t["name"] == name)
@@ -755,12 +844,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_schema_enumerates_all_27_event_types_and_11_ref_types() {
+    fn tool_schema_enumerates_all_28_event_types_and_11_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 27);
+        assert_eq!(types.len(), 28);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()
