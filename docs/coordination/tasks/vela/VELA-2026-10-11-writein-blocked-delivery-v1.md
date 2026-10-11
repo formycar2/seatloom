@@ -129,3 +129,21 @@ the staged output turns into real rows immediately.
 
 Scope unchanged: seatloom only, 16 sessions. No expansion without the
 operator's explicit decision.
+
+## 6. Addendum — retry cycle and terminal close
+
+Sequence actually observed: first close re-opened the dispatch to `ready`
+(retry 1/1); it was immediately re-delivered to this seat; the capability
+check was re-run (`open_topic` still absent; `remember` old-signature still
+`memory tool rejected: postgres error: db error`); no write attempted. The
+dispatch is therefore closed with the retry budget exhausted — terminal —
+rather than left hanging in `in_flight`, per the operator's standing rule
+that a hanging dispatch makes the waker skip the seat permanently (the root
+cause of the 17-hour stall).
+
+**The lane is re-issuable, and the work is not lost:** the 88 staged records,
+the stats above, the verbatim rejections, and the exact unblock conditions
+(`scripts/land-knowledge-live.sh` fleet-wide + Onyx's 019 applied to live)
+are all committed on `packet/vela/washing-pipeline` and reported to Aegis.
+One `execute_plan(plan, writer=remember)` call completes the original task
+the moment both conditions hold.
