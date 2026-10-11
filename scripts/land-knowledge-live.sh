@@ -759,15 +759,34 @@ for raw in sys.stdin:
 say ""
 
 # ══ 收尾:核对账本 ═════════════════════════════════════════════════
+# 判据必须是「这一格是不是真门」,不是「这个 id 有没有一行」。
+# 2026-10-12:ev-knowledge-read-model-landed 这一行**存在**,但它是 10-10 19:07 由
+# seat-nimbus-001 发的 ArtifactCreated **交付公告**,不是门。只数 id 存在性会让
+# 依赖边指着一个公告、从挂上起就被满足,而它断言的事当时并不为真。
+# 门事件的形状(emit_gate):event_type='SupervisorMessage' 且 payload->>'gate' = 同一个 id。
+gate_landed(){
+  local gid="$1" row
+  row="$(q "select event_type||'|'||coalesce(payload->>'gate','') from canonical_events where id='$gid'")"
+  if [ -z "$row" ]; then printf '❌未入账'; return; fi
+  case "$row" in
+    'SupervisorMessage|'"$gid") printf '✅已入账';;
+    *) printf '⚠️ 有同 id 事件但不是门(%s)—— 那是公告,不是门' "$row";;
+  esac
+}
 line
 say "核对账本(唯一可信的证据)"
 line
-printf "  live 词表含 TopicOpened      %s\n" \
-  "$(case "$(q "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'")" in *TopicOpened*) echo ✅;; *) echo ❌;; esac)"
+# 这一行原来把 case 嵌在命令替换里,;; 直接语法错误,而且它之后每一行输出都不可信。
+# 改成先算进变量再打印。
+vocab_def="$(q "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'")"
+case "$vocab_def" in
+  *TopicOpened*) vocab_ok="✅";;
+  *)             vocab_ok="❌";;
+esac
+printf "  live 词表含 TopicOpened      %s\n" "$vocab_ok"
 printf "  topics 行数                  %s\n" "$(q "select count(*) from topics")"
 printf "  memories 行数                %s\n" "$(q "select count(*) from memories")"
-printf "  门事件 ev-knowledge-write-path-live  %s\n" \
-  "$([ "$(q "select count(*) from canonical_events where id='ev-knowledge-write-path-live'")" = "1" ] && echo ✅已入账 || echo '未入账')"
+printf "  门事件 ev-knowledge-write-path-live  %s\n" "$(gate_landed ev-knowledge-write-path-live)"
 printf "  洗数据席位的卡死领单          %s\n" \
   "$(q "select coalesce(string_agg(id||'('||status||')',' '),'已清空 ✅') from dispatches where target_seat_id='seat-vela-001' and status='in_flight'")"
 printf "  洗数据席位待领               %s 张\n" \
@@ -776,8 +795,7 @@ printf "  唤醒服务修复单                %s\n" \
   "$(q "select coalesce(max(status),'未入账') from dispatches where id='disp-waker-stale-hard-floor'")"
 printf "  公告当门用的修复单            %s\n" \
   "$(q "select coalesce(max(status),'未入账') from dispatches where id='disp-gate-vs-announcement-enforcement'")"
-printf "  读模型门 ev-knowledge-read-model-landed  %s\n" \
-  "$([ "$(q "select count(*) from canonical_events where id='ev-knowledge-read-model-landed'")" = "1" ] && echo ✅已入账 || echo '未入账')"
+printf "  读模型门 ev-knowledge-read-model-landed  %s\n" "$(gate_landed ev-knowledge-read-model-landed)"
 printf "  那张坏卡                     %s\n" \
   "$(q "select status||'(方案'||case when acceptance_plan='{}'::jsonb then '仍为空 ❌' else '已回填 ✅' end||')' from acceptances where id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'")"
 printf "  张先生能点的卡               %s 张\n" \
