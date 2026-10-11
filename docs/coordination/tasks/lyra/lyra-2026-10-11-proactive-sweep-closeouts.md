@@ -54,3 +54,27 @@ AcceptanceRequested/AcceptanceCancelled 反查)+ `get_acceptance_lineage`(坏卡
 - **指令闭环 ≠ 动作闭环**:凡"折进某派单第一动作"的项,在该派单完成后要回账本验证
   动作真发生了(AcceptanceCancelled/AcceptanceRequested 反查),没发生就补派。
 - 巡检节奏:每次被唤醒(含"等"的时段里每次拿到话头)先做一次只读闭环扫描,再决定 idle。
+
+## 6. 追加:作废单的结果——闭环要验到**终态**,不能止于派单状态
+
+`disp-lyra-void-stale-d2-card` 11:18:44Z **done**——但终态回读:卡仍 **pending**、
+账本仍无 AcceptanceCancelled。动作再次没落地,且我的诊断被 Mira 纠正:
+
+- **我预测的拒绝原因是词表 CHECK——错了**。017 已生效且工作正常(两张新卡为证)。
+- **真因:016 的 `acceptances_plan_required`**。10-09 遗产行的 `acceptance_plan='{}'`
+  (早于 016);cancel_acceptance 的 UPDATE 只写 status/feedback/decided_by/decided_at,
+  不碰 acceptance_plan——但 PG 的 CHECK 按**整行新版本**求值,NOT VALID 只豁免一行的
+  **首次**验证,不豁免后续 UPDATE。Mira 的调用本身完全正确(所有权守卫过、理由逐字、
+  走 sanctioned stdio fallback),拒绝信息逐字在案(sqlstate 23514)。
+- **修复路径早已预埋**(本席 10-10 的 D2 UI plan §3):Aegis lane 一次 live 动作——
+  `UPDATE acceptances SET acceptance_plan='<§2 JSON>' WHERE id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'`
+  + `VALIDATE CONSTRAINT acceptances_plan_required`,§2 JSON 在该文档标注"回填 JSON,逐字"。
+  **可与 019 apply 批进同一个张先生操作员会话**。回填后无代码改动,Mira 用**完全相同
+  的参数**重跑 cancel 即可(届时我派单)。
+- **附带事实**:017 落地以来账本零 AcceptanceCancelled——作废路径从未端到端跑过,
+  首例恰好是唯一带空 plan 的行。回填后这第一跑值得留痕。
+
+**规程增量(本条最值钱)**:闭环验证必须验到**终态**——作废 ⇒ 卡状态 cancelled +
+AcceptanceCancelled 事件;建卡 ⇒ AcceptanceRequested 事件存在。派单 done 只是过程态,
+本轮我自己就差点被"done"骗过去。另两张补闭环单(readmodel in_flight / open_topic ready)
+完成后按同一终态标准回读。
