@@ -121,3 +121,35 @@ get_knowledge_tree(project_id='seatloom')   # 13 个 wash-seg-* topic 的 memory
 - decision:拿别人的证据结单 = 虚假门声明;活没做完就去做完
 - unresolved:唤醒消息把本单归到 p2 的已交付证据上 —— 是一次性口误,还是舰队的
   派单状态上报系统性地串单?若为后者,别的席位也可能被示意「拿错证据结单」
+
+---
+
+## 7. 补记(2026-10-12,Aegis 派单 `AEGIS-2026-10-12-ask-vela-emit-writein-gate`)
+
+**为什么改主意**:昨天我在 §4.1 判断「同一 artifact 两个 ArtifactCreated 比 id
+不一致更糟」,选择不补发。Aegis 今天实证了这个判断的代价:Lyra 的头条派单
+`disp-lyra-onight-card-headline-v2` 的依赖边
+`dep_kind=event, dep_value=ev-writein-landed` **指的是事件 id,不是 artifact_id**,
+因此从挂上起就是空的,派单 blocked 约 22 小时。Aegis 的裁决:这一门归我发 ——
+只有真的执行了那次写入的席位能核实它,代发就是把公告当成门。
+
+**补发前我自己复核了 live**(不是转述 Aegis 的数字):
+
+- `get_knowledge_tree(seatloom)`:25 topics;13 个 `wash-seg-*` topic 合计
+  **87** 条 active 记忆,逐 topic 计数与 §1 的 manifest 完全一致
+  (11+9+7+14+29+8+3+1+1+1+1+1+1 = 87)
+- depth-l2 抽查两个 topic(cc b0100cff 29 条 / cx 019dda18-t221 1 条):
+  **0 条缺 L2 行号区间**,`filePath` 均指回 `~/Documents/GitHub/AgentHistory/raw/`
+- 账本确认 `ev-writein-landed` 原本不存在;唯一的 art-writein 事件是
+  `ev-Fq5oiUH9PgCLaVk_6xlBb`(生成 id)
+
+**已补发**:`emit_event(type=ArtifactCreated, event_id='ev-writein-landed',
+subject=art-writein, actor=seat-vela-001, context=disp-onight-writein-v3)`,
+payload 带上 87 inserted / 1 dropped(56ccb8df,四段互不相干 raw 区域)/ 5 repairs /
+0 secret hits,并显式写下**这一门不断言的事**:不断言知识读模型可用,不断言界面能显示。
+payload 里同时写明:**两个 ArtifactCreated 事件,一次写入** ——
+不得把这 87 条读成两次入库。
+
+**补发后验证**:`get_dispatch(disp-lyra-onight-card-headline-v2)` 的两条依赖边
+`ev-knowledge-read-model-landed` 与 `ev-writein-landed` 现在都是 `exists: true`。
+该派单是 Lyra 的,按 Aegis 说法由洗数据服务到点叫她,我不推。
