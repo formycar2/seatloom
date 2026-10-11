@@ -98,6 +98,18 @@ pub struct EnqueueArgs {
     /// blocked -> ready trigger wake the requester.
     #[serde(default)]
     pub verdict_event_id: Option<String>,
+    /// The dispatch this one RE-ISSUES, when it is a re-issue at all (Aegis
+    /// ruling 5, 2026-10-11). Omitted on a first issue, which is the normal
+    /// case and needs no justification.
+    ///
+    /// Declaring it is what makes the re-issue rule mechanically checkable:
+    /// `disp-onight-writein-v2` was re-issued with ZERO dependency edges and a
+    /// prose precondition, and no tool could see that, because a first issue
+    /// with zero edges is perfectly legitimate. The declaration is the only
+    /// thing that distinguishes the two, and it is typed rather than prose so
+    /// the consequence can be enforced instead of merely requested.
+    #[serde(default)]
+    pub reissue_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +216,23 @@ pub enum DispatchRejection {
     /// silently clamped (`013`).
     InvalidMaxRetries {
         max_retries: i64,
+    },
+    /// `enqueue_dispatch`: the caller declared `reissue_of` (a re-issue) but
+    /// supplied no dependency edges. A re-issue is by definition the case where
+    /// a precondition was measured NOT to hold, so "no edges, straight to
+    /// ready" is the doomed-dispatch shape (Aegis ruling 5).
+    ReissueWithoutEdge {
+        reissue_of: String,
+    },
+    /// A gate-criterion violation surfaced from the dispatch layer. See
+    /// [`crate::gate`].
+    Gate(crate::gate::GateRejection),
+    /// `enqueue_dispatch`: the payload is not a JSON object, so the tool cannot
+    /// write the fields it owns (`verdict_event_id`, `reissue_of`) into it.
+    /// Refused rather than dropped: a silently un-recorded pre-declaration is
+    /// exactly the kind of quiet loss this layer keeps refusing.
+    PayloadNotAnObject {
+        detail: String,
     },
     /// `cancel_dispatch`: the dispatch is not a non-terminal row issued by the
     /// resolved actor (unknown, terminal, or another issuer's).
@@ -332,6 +361,22 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::InvalidMaxRetries { max_retries } => write!(
                 f,
                 "enqueue_dispatch rejected: max_retries {max_retries} is invalid; the retry budget is a hard ceiling and must be a non-negative integer that fits in i32 (013)"
+            ),
+            DispatchRejection::ReissueWithoutEdge { reissue_of } => write!(
+                f,
+                "enqueue_dispatch rejected: this dispatch re-issues {reissue_of:?} but carries NO dependency \
+                 edges. A re-issue is the case where a precondition was already measured NOT to hold, so \
+                 'no edges, straight to ready' is a dispatch doomed from the first second — that exact \
+                 shape burned a whole retry budget on two byte-identical failures. Hang the precondition \
+                 that caused the failure as a dependency edge (referent missing = blocked, zero cost); \
+                 or, if it has since been MEASURED to hold, drop `reissue_of` and say so in the payload \
+                 with the measurement. (Aegis ruling 5, 2026-10-11)"
+            ),
+            DispatchRejection::Gate(g) => write!(f, "{g}"),
+            DispatchRejection::PayloadNotAnObject { detail } => write!(
+                f,
+                "enqueue_dispatch rejected: {detail}; the tool writes verdict_event_id and reissue_of \
+                 into the payload, and it will not silently drop them"
             ),
             DispatchRejection::NotCancellable { dispatch_id, actor } => write!(
                 f,
@@ -482,7 +527,12 @@ pub(crate) fn resolve_project(call: Option<String>) -> Result<String, DispatchRe
 /// Does the referent of `(dep_kind, dep_value)` exist? No FK is used — Onyx's
 /// `012` deliberately has none on `dep_value`; a missing referent reads as
 /// unsatisfied (→ blocked), never an error.
-async fn dep_satisfied(
+///
+/// Split out of [`dep_satisfied`] because the gate criterion (Aegis ruling
+/// 2026-10-11) needs to distinguish three states that a single boolean cannot
+/// carry: the referent is missing, the referent exists but is not a gate, and
+/// the referent exists and IS a gate. Only the third releases the edge.
+async fn referent_exists(
     tx: &tokio_postgres::Transaction<'_>,
     dep: &Dependency,
 ) -> Result<bool, DispatchRejection> {
@@ -493,6 +543,46 @@ async fn dep_satisfied(
     };
     let rows = tx.query(sql, &[&dep.dep_value]).await.map_err(db)?;
     Ok(!rows.is_empty())
+}
+
+/// Is this edge's referent a MEASURED GATE rather than merely an existing row?
+///
+/// Only meaningful for a gate-shaped event id (`is_gate_id`); for every other
+/// edge the answer is vacuously true, because an existence edge is satisfied by
+/// existence — ruling 3 keeps "wait for the code to land" a legitimate need.
+async fn gate_qualified(
+    tx: &tokio_postgres::Transaction<'_>,
+    dep: &Dependency,
+) -> Result<bool, DispatchRejection> {
+    if dep.dep_kind != DepKind::Event || !crate::gate::is_gate_id(&dep.dep_value) {
+        return Ok(true);
+    }
+    let rows = tx
+        .query(
+            "SELECT event_type, payload FROM canonical_events WHERE id = $1",
+            &[&dep.dep_value],
+        )
+        .await
+        .map_err(db)?;
+    Ok(rows.first().is_some_and(|r| {
+        let event_type: String = r.get(0);
+        let payload: serde_json::Value = r.get(1);
+        crate::gate::row_is_gate(&event_type, &dep.dep_value, Some(&payload))
+    }))
+}
+
+/// Does the referent of `(dep_kind, dep_value)` SATISFY this edge? Existence for
+/// an ordinary edge; existence plus a measured gate for a gate-shaped one.
+///
+/// This is the criterion Aegis's ruling 1 asked for, and it is the same
+/// predicate `fn_dispatch_recompute_ready` must apply — the two MUST agree, or
+/// the database says `ready` while the seat cannot pull it, which is the silent
+/// hang the ruling exists to prevent.
+async fn dep_satisfied(
+    tx: &tokio_postgres::Transaction<'_>,
+    dep: &Dependency,
+) -> Result<bool, DispatchRejection> {
+    Ok(referent_exists(tx, dep).await? && gate_qualified(tx, dep).await?)
 }
 
 /// Compute the live status for a row given its stored status and its deps.
@@ -661,9 +751,43 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
             DepKind::parse(&d.dep_kind).ok_or_else(|| DispatchRejection::UnknownDepKind {
                 value: d.dep_kind.clone(),
             })?;
+        // A gate is always an EVENT row: the criterion reads event_type and
+        // payload, which only canonical_events has. An artifact or dispatch id
+        // shaped like a gate is a mistake, not a preference — refuse it rather
+        // than silently treating it as an ordinary existence edge.
+        if dep_kind != DepKind::Event && crate::gate::is_gate_id(&d.dep_value) {
+            return Err(DispatchRejection::Gate(
+                crate::gate::GateRejection::GateEdgeUndeclared {
+                    dep_value: d.dep_value.clone(),
+                },
+            ));
+        }
         deps.push(Dependency {
             dep_kind,
             dep_value: d.dep_value.clone(),
+        });
+    }
+
+    // Ruling 5 (Aegis 2026-10-11, question d of this dispatch): a RE-ISSUE must
+    // carry the precondition that caused the original failure as a dependency
+    // edge. "No edges, straight to ready" is only legitimate when that
+    // precondition has been MEASURED to hold — and a re-issue is by definition
+    // the case where it was measured NOT to hold.
+    //
+    // The measurable loss this closes: disp-onight-writein-v2 was re-issued with
+    // zero edges and a prose precondition, was doomed from the first second, and
+    // burned the washing seat's entire 1/1 retry budget on two byte-identical
+    // failures. The tool cannot know the failure cause; it CAN refuse the shape
+    // that carried it.
+    if args
+        .reissue_of
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        && deps.is_empty()
+    {
+        return Err(DispatchRejection::ReissueWithoutEdge {
+            reissue_of: args.reissue_of.clone().unwrap_or_default(),
         });
     }
     let dispatch_id = match args.id {
@@ -695,6 +819,26 @@ pub async fn enqueue(pool: &Pool, args: EnqueueArgs) -> Result<String, DispatchR
         .map(|k| k == "verification")
         .unwrap_or(false);
     let mut payload = args.payload.clone();
+    // A declared re-issue is written INTO the payload, not left as a tool
+    // argument: the ledger is the only durable record, and "which failure is
+    // this a retry of" is exactly the question a later audit asks. Same reason
+    // verdict_event_id is written in rather than passed through.
+    if let Some(prev) = args
+        .reissue_of
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !payload.is_object() {
+            return Err(DispatchRejection::PayloadNotAnObject {
+                detail: format!(
+                    "the payload must be a JSON object, found {}",
+                    json_kind(&payload)
+                ),
+            });
+        }
+        payload["reissue_of"] = serde_json::json!(prev);
+    }
     let verdict_event_id = if is_verification {
         match &args.verdict_event_id {
             Some(id) => {
@@ -924,6 +1068,60 @@ pub async fn get_next(
         }
     }
 
+    // A dispatch whose referents ALL EXIST but which is still held by a
+    // gate-shaped dep whose row is not a measured gate (Aegis ruling 2026-10-11,
+    // question b). The ruling's demand was explicit: this must not hang
+    // silently. It stays `blocked` — truthfully, because the precondition it is
+    // waiting on has NOT been met, whatever row landed — but it is now VISIBLE
+    // and escalatable instead of looking like an ordinary pending wait.
+    //
+    // Escalated here, in the pull path, rather than in the trigger: a plpgsql
+    // AFTER INSERT trigger on canonical_events cannot itself insert into
+    // canonical_events without recursing. The pull path runs whenever a seat is
+    // nudged, which is exactly when somebody is looking.
+    for v in &views {
+        if !matches!(v.status, DispatchStatus::Ready | DispatchStatus::Blocked) {
+            continue;
+        }
+        let mut all_exist = true;
+        let mut held_by: Vec<String> = Vec::new();
+        for d in &v.dependencies {
+            if !referent_exists(&tx, d).await? {
+                all_exist = false;
+                break;
+            }
+            if d.dep_kind == DepKind::Event
+                && crate::gate::is_gate_id(&d.dep_value)
+                && !gate_qualified(&tx, d).await?
+            {
+                held_by.push(d.dep_value.clone());
+            }
+        }
+        if !all_exist || held_by.is_empty() {
+            continue;
+        }
+        if gate_held_already_escalated(&tx, &project_id, &v.id, &held_by).await? {
+            continue;
+        }
+        escalate_tagged(
+            &tx,
+            &identity,
+            &project_id,
+            &v.id,
+            &format!(
+                "dispatch {} is blocked although every referent exists: the gate-shaped dep(s) {} \
+                 landed as an announcement, not a measured gate. It will not be released until a \
+                 gate event (SupervisorMessage whose payload.gate equals its own id, carrying \
+                 statement/verified/does_not_assert) exists under that id. This is the shape that \
+                 cost a retry budget on 10-10.",
+                v.id,
+                held_by.join(", ")
+            ),
+            Some(("gate_held", "true")),
+        )
+        .await?;
+    }
+
     match crate::scheduler::select_next(&identity.seat_id, &views) {
         PullDecision::AlreadyInFlight { dispatch_id } => {
             let (title, payload) = fetch_content(&tx, &dispatch_id).await?;
@@ -1050,6 +1248,35 @@ async fn cycle_already_escalated(
               WHERE e.project_id = $1 AND e.event_type = 'SupervisorMessage' \
                 AND r.ref_type = 'dispatch' AND r.ref_id = $2 LIMIT 1",
             &[&project_id, &first],
+        )
+        .await
+        .map_err(db)?;
+    Ok(!rows.is_empty())
+}
+
+/// Has the "held by a non-qualified gate" escalation already been emitted for
+/// this dispatch? Deduplicated on the dispatch id (the subject ref), so repeated
+/// pulls do not spam the ledger — the same discipline `cycle_already_escalated`
+/// uses, and for the same reason: an escalation that repeats is an escalation
+/// nobody reads.
+///
+/// Note this is deliberately coarser than the exact dep list: a second bad dep
+/// on the same dispatch does not earn a second message. The seat that needs to
+/// act will re-read the dispatch, not the escalation.
+async fn gate_held_already_escalated(
+    tx: &tokio_postgres::Transaction<'_>,
+    project_id: &str,
+    dispatch_id: &str,
+    _held_by: &[String],
+) -> Result<bool, DispatchRejection> {
+    let rows = tx
+        .query(
+            "SELECT 1 FROM canonical_events e \
+               JOIN event_object_refs r ON r.event_id = e.id AND r.role = 'subject' \
+              WHERE e.project_id = $1 AND e.event_type = 'SupervisorMessage' \
+                AND r.ref_type = 'dispatch' AND r.ref_id = $2 \
+                AND e.payload->>'gate_held' = 'true' LIMIT 1",
+            &[&project_id, &dispatch_id],
         )
         .await
         .map_err(db)?;
@@ -1835,6 +2062,24 @@ async fn escalate(
     offending_dispatch: &str,
     reason: &str,
 ) -> Result<(), DispatchRejection> {
+    escalate_tagged(tx, identity, project_id, offending_dispatch, reason, None).await
+}
+
+/// [`escalate`] with an extra payload marker, so a specific escalation family
+/// can be deduplicated on its own key. `cycle` leaves the payload untouched
+/// (it dedups on the subject ref); `gate_held` sets `gate_held: "true"`.
+async fn escalate_tagged(
+    tx: &tokio_postgres::Transaction<'_>,
+    identity: &SeatIdentity,
+    project_id: &str,
+    offending_dispatch: &str,
+    reason: &str,
+    tag: Option<(&str, &str)>,
+) -> Result<(), DispatchRejection> {
+    let mut payload = serde_json::json!({ "reason": reason, "scheduler": identity.actor_ref });
+    if let Some((k, v)) = tag {
+        payload[k] = serde_json::json!(v);
+    }
     let draft = EventDraft {
         event_id: format!("ev-{}", nanoid::nanoid!()),
         event_type: EventType::SupervisorMessage,
@@ -1843,7 +2088,7 @@ async fn escalate(
         actor_ref: identity.actor_ref.clone(),
         project_id: project_id.to_string(),
         turn_seq: None,
-        payload: serde_json::json!({ "reason": reason, "scheduler": identity.actor_ref }),
+        payload,
         refs: vec![
             ObjectRefDraft::subject(RefType::Dispatch, offending_dispatch),
             ObjectRefDraft::new(RefType::Seat, identity.seat_id.clone(), RefRole::Actor),
@@ -2709,6 +2954,7 @@ mod db_itests {
             dependencies: vec![],
             max_retries: Some(max_retries),
             verdict_event_id: None,
+            reissue_of: None,
         }
     }
 
@@ -2983,6 +3229,7 @@ mod db_itests {
             payload: serde_json::json!({"rework_of":"disp-it-req","feedback":"redo","branch":"packet/nimbus/x"}),
             priority: Some(15), project_id: Some(project.into()), dependencies: vec![], max_retries: Some(0),
             verdict_event_id: None,
+            reissue_of: None,
         }).await.unwrap();
         as_seat();
         let msg = get_next(&pool, Some(project.into())).await.unwrap();
@@ -3218,11 +3465,11 @@ mod db_itests {
         let Some(pool) = scratch_pool().await else {
             return;
         };
+        let db = SeatloomDb::new(pool.clone());
         let project = "seatloom_itest";
         clean(&pool, project).await;
         clean_memories(&pool, project).await;
         as_seat();
-        let db = SeatloomDb::new(pool.clone());
 
         // --- the scope fixture: a parent topic and a child under it, plus a
         // document the l2 pointer can name.
@@ -3609,11 +3856,11 @@ mod db_itests {
         let Some(pool) = scratch_pool().await else {
             return;
         };
+        let db = SeatloomDb::new(pool.clone());
         let project = "seatloom_itest";
         clean(&pool, project).await;
         clean_memories(&pool, project).await;
         as_seat();
-        let db = SeatloomDb::new(pool.clone());
 
         {
             let c = pool.get().await.unwrap();
@@ -3886,6 +4133,7 @@ mod db_itests {
                 dependencies: vec![],
                 max_retries: Some(0),
                 verdict_event_id: None,
+                reissue_of: None,
             },
         )
         .await
@@ -3923,6 +4171,7 @@ mod db_itests {
                 target_seat_id: SEAT_ID.into(),
                 title: "verify me too".into(),
                 payload: serde_json::json!({"kind": "verification"}),
+                reissue_of: None,
                 priority: Some(5),
                 project_id: Some(project.into()),
                 dependencies: vec![],
@@ -3945,6 +4194,7 @@ mod db_itests {
                 target_seat_id: SEAT_ID.into(),
                 title: "verify me".into(),
                 payload: serde_json::json!({"kind": "verification"}),
+                reissue_of: None,
                 priority: Some(5),
                 project_id: Some(project.into()),
                 dependencies: vec![],
@@ -3972,6 +4222,7 @@ mod db_itests {
                 dependencies: vec![],
                 max_retries: Some(0),
                 verdict_event_id: Some("ev-something".into()),
+                reissue_of: None,
             },
         )
         .await
@@ -3995,6 +4246,7 @@ mod db_itests {
                 dependencies: vec![],
                 max_retries: Some(0),
                 verdict_event_id: None,
+                reissue_of: None,
             },
         )
         .await
@@ -4021,6 +4273,7 @@ mod db_itests {
                 target_seat_id: SEAT_ID.into(),
                 title: "verify me".into(),
                 payload: serde_json::json!({"kind": "verification"}),
+                reissue_of: None,
                 priority: Some(5),
                 project_id: Some(project.into()),
                 dependencies: vec![],
@@ -4042,11 +4295,11 @@ mod db_itests {
         let Some(pool) = scratch_pool().await else {
             return;
         };
+        let db = SeatloomDb::new(pool.clone());
         let project = "seatloom_itest";
         clean(&pool, project).await;
         clean_memories(&pool, project).await;
         as_seat();
-        let db = SeatloomDb::new(pool.clone());
 
         // The negative matrix, each a typed refusal with zero writes.
         let events_before: i64 = pool
@@ -4286,12 +4539,12 @@ mod db_itests {
             .unwrap();
         }
         as_actor("human:supervisor");
+        let db = SeatloomDb::new(pool.clone());
         enqueue(&pool, enqueue_args("disp-it-read", project, 0))
             .await
             .unwrap();
         as_seat();
         get_next(&pool, Some(project.into())).await.unwrap();
-        let db = SeatloomDb::new(pool.clone());
 
         // get_dispatch: in_flight is returned as stored (never recomputed).
         let out = read::get_dispatch(
@@ -4512,6 +4765,309 @@ mod db_itests {
         assert!(
             matches!(err, DispatchRejection::AcceptanceNotCancellable { .. }),
             "{err}"
+        );
+    }
+
+    /// The shell of a gate emission, so the two tests below differ only in the
+    /// fields under test rather than in five lines of boilerplate each.
+    fn gate_args_shell() -> crate::emit::EmitArgs {
+        crate::emit::EmitArgs {
+            type_: "SupervisorMessage".into(),
+            payload: serde_json::json!({
+                "gate": "ev-knowledge-read-model-live",
+                "statement": "get_knowledge_tree returns topics on the live DB",
+                "verified": "called get_knowledge_tree against the scratch DB; returned topics",
+                "does_not_assert": "does not assert the panel renders them",
+                "issued_by": "seat-aegis-001"
+            }),
+            refs: vec![crate::emit::RefArg {
+                ref_type: "project".into(),
+                ref_id: "seatloom_itest".into(),
+                role: "subject".into(),
+            }],
+            schema_version: None,
+            actor_ref: Some("seat:seat-aegis-001".into()),
+            project_id: Some("seatloom_itest".into()),
+            event_id: Some("ev-knowledge-read-model-live".into()),
+            occurred_at: None,
+            turn_seq: None,
+        }
+    }
+
+    /// THE regression this whole ruling exists for (Aegis 2026-10-11).
+    ///
+    /// A gate-shaped dependency edge is NOT satisfied by a same-id announcement.
+    /// On 10-10, `ev-typed-memory-tools-landed` was an ArtifactCreated delivery
+    /// announcement; a 013 trigger released `disp-onight-writein` on its
+    /// existence alone, the washing seat pulled work whose precondition had
+    /// never once held, and it burned its entire 1/1 retry budget on two
+    /// byte-identical failures. The failure cause was knowable from the first
+    /// second; the graph said otherwise.
+    ///
+    /// This test pins BOTH halves, because a criterion that only ever says "no"
+    /// would be indistinguishable from a broken one:
+    ///   - an announcement under a gate id does NOT release the edge;
+    ///   - a measured gate under the same id DOES.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-019 (scratch DB); run --test-threads=1"]
+    async fn a_gate_shaped_dep_is_satisfied_only_by_a_measured_gate() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_actor("human:supervisor");
+        let db = SeatloomDb::new(pool.clone());
+
+        // 1. The 10-10 ledger state, reconstructed. `ev-typed-memory-tools-landed`
+        //    is an ArtifactCreated announcement under a gate-shaped id, and it is
+        //    in the live ledger FOREVER — the ledger is append-only, and ruling
+        //    (c) says those rows are not withdrawn. So the criterion MUST be
+        //    able to judge them, not only the emissions that will happen after
+        //    the fix. That is why this test writes the row directly instead of
+        //    going through emit_event: the producer-side check (below) now
+        //    refuses to CREATE this shape, which is the other half of the fix,
+        //    and a test that could only build it through the tool would be
+        //    testing nothing about the rows that already exist.
+        {
+            let c = pool.get().await.expect("client");
+            c.execute(
+                "INSERT INTO canonical_events \
+                   (id, event_type, schema_version, occurred_at, actor_ref, project_id, payload) \
+                 VALUES ($1, 'ArtifactCreated', 1, NOW(), $2, $3, $4)",
+                &[
+                    &"ev-knowledge-read-model-live",
+                    &"seat:seat-nimbus-001",
+                    &project,
+                    &serde_json::json!({"branch": "packet/nimbus/knowledge", "commit": "abc123"}),
+                ],
+            )
+            .await
+            .expect("the pre-fix ledger state is constructible — it is what exists");
+            c.execute(
+                "INSERT INTO event_object_refs (event_id, ref_type, ref_id, role) \
+                 VALUES ($1, 'project', $2, 'subject')",
+                &[&"ev-knowledge-read-model-live", &project],
+            )
+            .await
+            .expect("subject ref");
+        }
+
+        // 2. A CONTROL with no deps, so the pull has something real to hand back
+        //    and the negative assertion below cannot pass merely because nothing
+        //    was delivered at all. (The first draft of this test made exactly
+        //    that mistake and proved nothing.)
+        enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-control".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "control, no deps".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(9),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: None,
+            },
+        )
+        .await
+        .expect("enqueue control");
+
+        // 3. A dispatch hanging on the announcement's id must NOT be pullable,
+        //    while the control IS.
+        enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-gate-held".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "needs a live capability".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(1),
+                project_id: Some(project.into()),
+                dependencies: vec![DepArg {
+                    dep_kind: "event".into(),
+                    dep_value: "ev-knowledge-read-model-live".into(),
+                }],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+        as_actor(SEAT);
+        let msg = crate::dispatch::get_next(&pool, Some(project.into()))
+            .await
+            .expect("pull");
+        assert!(
+            msg.contains("disp-control"),
+            "the control should have been delivered, so the next assertion means something: {msg}"
+        );
+        assert!(
+            !msg.contains("disp-gate-held"),
+            "an announcement satisfied a gate-shaped edge — the 10-10 defect is back: {msg}"
+        );
+
+        // 4. The real gate under the SAME id is refused by the ledger: an id can
+        //    only be spent once, and this one was spent on an announcement. That
+        //    refusal is the finding, not an obstacle — the honest repair is a NEW
+        //    id, which is what step 4 does. (It is also why ruling 2's `-live`
+        //    naming matters: a gate id should never have been available to an
+        //    announcement in the first place.)
+        let gate = gate_args_shell();
+        let refusal = crate::emit::emit(&db, gate).await;
+        assert!(
+            refusal.is_err(),
+            "the ledger was expected to refuse re-using an id already spent on an announcement"
+        );
+
+        // 5. Release the in-flight slot the control is holding (one in_flight per
+        //    seat is a fact, not a preference), so the next pull can hand back
+        //    the gate-satisfied dispatch.
+        crate::dispatch::complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-control".into(),
+                outcome: Some("done".into()),
+                reason: None,
+            },
+        )
+        .await
+        .expect("complete the control");
+
+        // 6. And under a FRESH, properly measured gate id, the edge releases.
+        let gate2 = crate::emit::EmitArgs {
+            event_id: Some("ev-knowledge-read-model-live-2".into()),
+            payload: serde_json::json!({
+                "gate": "ev-knowledge-read-model-live-2",
+                "statement": "get_knowledge_tree returns topics on the live DB",
+                "verified": "called get_knowledge_tree against the scratch DB; returned topics",
+                "does_not_assert": "does not assert the panel renders them",
+                "issued_by": "seat-aegis-001"
+            }),
+            ..gate_args_shell()
+        };
+        crate::emit::emit(&db, gate2)
+            .await
+            .expect("a measured gate under a fresh id is accepted");
+        // Re-point the edge by re-enqueueing against the fresh id: the original
+        // dispatch keeps its (correctly unsatisfied) edge — the ledger is
+        // append-only, so the repair is a new edge, not an edit.
+        enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-gate-satisfied".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "needs a live capability, honestly gated".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(2),
+                project_id: Some(project.into()),
+                dependencies: vec![DepArg {
+                    dep_kind: "event".into(),
+                    dep_value: "ev-knowledge-read-model-live-2".into(),
+                }],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+        let msg = crate::dispatch::get_next(&pool, Some(project.into()))
+            .await
+            .expect("pull");
+        assert!(
+            msg.contains("disp-gate-satisfied"),
+            "a measured gate did not release its edge: {msg}"
+        );
+    }
+
+    /// Ruling 5, question (d): a RE-ISSUE with no dependency edges is refused.
+    /// That exact shape — `disp-onight-writein-v2`, zero edges, prose
+    /// precondition — was doomed from the first second and burned a whole retry
+    /// budget. A first issue with zero edges stays legal, because there the
+    /// precondition genuinely holds and there is nothing to wait for.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-019 (scratch DB); run --test-threads=1"]
+    async fn a_reissue_without_an_edge_is_refused_and_a_first_issue_is_not() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        as_actor("human:supervisor");
+
+        // A first issue with no edges: legitimate, nothing to wait for.
+        enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-first-issue".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "first issue".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(1),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: None,
+            },
+        )
+        .await
+        .expect("a first issue with no edges is legitimate");
+
+        // The same shape, declared as a re-issue: refused, with the reason.
+        let err = enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-reissue-v2".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "re-issue".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(1),
+                project_id: Some(project.into()),
+                dependencies: vec![],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: Some("disp-first-issue".into()),
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("re-issues"), "{err}");
+        assert!(err.contains("retry budget"), "{err}");
+
+        // And the honest repair: the same re-issue WITH the failing precondition
+        // as an edge is accepted (and is blocked, because the referent is absent).
+        enqueue(
+            &pool,
+            EnqueueArgs {
+                id: Some("disp-reissue-v3".into()),
+                target_seat_id: SEAT_ID.into(),
+                title: "re-issue, honestly gated".into(),
+                payload: serde_json::json!({"kind": "implementation"}),
+                priority: Some(1),
+                project_id: Some(project.into()),
+                dependencies: vec![DepArg {
+                    dep_kind: "event".into(),
+                    dep_value: "ev-live-019-applied".into(),
+                }],
+                max_retries: Some(0),
+                verdict_event_id: None,
+                reissue_of: Some("disp-first-issue".into()),
+            },
+        )
+        .await
+        .expect("a re-issue carrying the failing precondition as an edge is accepted");
+        let msg = crate::dispatch::get_next(&pool, Some(project.into()))
+            .await
+            .expect("pull");
+        assert!(
+            !msg.contains("disp-reissue-v3"),
+            "a blocked re-issue must not be pullable: {msg}"
         );
     }
 }

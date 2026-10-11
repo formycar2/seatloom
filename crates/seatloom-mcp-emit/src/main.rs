@@ -9,6 +9,7 @@
 
 mod dispatch;
 mod emit;
+mod gate;
 mod knowledge;
 mod memory;
 mod protocol;
