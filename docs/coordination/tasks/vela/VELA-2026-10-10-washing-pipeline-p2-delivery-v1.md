@@ -212,3 +212,28 @@ acceptance-card branch it was waiting on is blocked behind the same
 infrastructure gap. Gates 1 and 4 remain open for the operator; the staged
 88 records remain ready for one `execute_plan` call the moment the write path
 lands.
+
+## 9. Acceptance card created — with one precondition currently unmet (stated plainly)
+
+On 2026-10-11 the carding step ran: Flux's verdict
+`ev-flux-verdict-wash-p2` (PASS, commit-pinned) was in the ledger, the branch
+was synced with `track/infra-foundation` (merge `83f2835`, gates re-run green:
+28 tests + verify-docs), and the acceptance card was created with the
+PO-authored plan verbatim: **`acc-disp-wash-vela-p2`**, pending operator
+decision.
+
+**One precondition of that plan is currently NOT met, and the operator should
+know it before verifying:** precondition 3 says memories are queryable via
+`recall` (live or a demo DB). They are not — the S5 write-in is blocked
+because this fleet's write path is not yet live (the deployed MCP binary
+predates the typed memory tools, and the live database is still at the 014
+state; `disp-onight-writein` was closed blocked-environment with the full
+evidence and the one-call unblock path). The recall step of the acceptance
+plan will therefore return nothing until the write-in lands.
+
+What the card DOES attest, with evidence: the pipeline itself (S0-S2.5 +
+S3 + S4), the 88 staged records (every one L2-traceable, digests
+recomputable, 5/5 pre-verified), the stats, and the idempotent insert path.
+The storage execution is a separate lane, blocked on infrastructure, not on
+this delivery's quality. Gates 1 and 4 (operator eyeball on the topic list;
+human read of L0/L1) remain open as designed.
