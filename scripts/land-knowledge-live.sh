@@ -9,12 +9,15 @@
 # 为什么要脚本:Aegis 被权限分类器拦住**改 live 数据库**的一切操作(拦得对)。
 # 按 AGENTS.md:不绕路、不拆小块、不换工具、不让席位代跑 —— 写成可审计、可重复跑的脚本交给张先生。
 #
-# 它分五段,**前一段失败就停**(后面每一段都以前一段为真实前提):
+# 它分八段,**前一段失败就停**(后面每一段都以前一段为真实前提):
 #   第一段  把 019 应用到正在跑的数据库
 #   第二段  核对 CHECK 真的变了(不信上一段的打印)
 #   第三段  实证一次真实写入:一次 open_topic + 一次 remember
 #   第四段  只有第三段两步都成功,才发门事件
 #   第五段  让全队换上带新工具的程序
+#   第六段  回填那张坏卡的空方案,让界面席位能撤掉它(不依赖记忆写入路径,实证失败也会做)
+#   第七段  叫醒洗数据席位收尾它自己卡死的领单
+#   第八段  把唤醒服务那个漏洞派给后端席位修
 #
 # 全部可重复跑:019 自带幂等守卫,open_topic 幂等,remember 用固定 id 的门事件去重。
 #
@@ -257,19 +260,131 @@ say ""
 
 # 实证没过就停在这里。后面两段的措辞里写着「019 已应用、remember 已成功」——
 # 实证没过的话那是假的,而向席位谎称某事已发生,比卡住更糟:它会基于假前提开工。
+# ══ 第六段:让界面席位能撤掉那张坏卡 ═══════════════════════════════
+line
+say "第六段 — 让界面席位能撤掉那张坏卡"
+line
+# 界面席位 17:09 把根因查死了,它的分析是对的,我核过:
+#   坏卡 acc-disp-me6Nm8e9D6ZRe4fKyVokY 的 acceptance_plan 是 '{}',
+#   而 016 加的 acceptances_plan_required CHECK (acceptance_plan <> '{}') 是 NOT VALID。
+#   NOT VALID 只豁免「ALTER 那一刻的既有行不被校验」,**不豁免这一行以后被 UPDATE**。
+#   cancel_acceptance 只写 status/feedback/decided_by/decided_at、根本不碰 acceptance_plan,
+#   但 UPDATE 会让 Postgres 重新校验这一行 —— 所以任何参数组合都过不去。
+#   它调了五次、每次都被同一个 CHECK 拒绝,然后停下来上报,没有绕过。这是对的。
+# 016 当初就把这件事记在自己头上:「the one legacy pending row is exempt until
+# Aegis backfills the plan and VALIDATEs」。回填是总控的 live 动作,所以在这里做。
+say "  坏卡的 acceptance_plan 是空的,而 016 的 CHECK 会在任何 UPDATE 时重新校验这一行。"
+say "  回填这一行 → 界面席位就能撤卡。"
+
+cur_plan="$(q "select acceptance_plan::text from acceptances where id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'")"
+if [ -z "${cur_plan:-}" ]; then
+  say "  ⏭  这张卡已经不在了,跳过"
+elif [ "$cur_plan" != "{}" ]; then
+  say "  ⏭  已回填过($(printf '%s' "$cur_plan" | wc -c | tr -d ' ') 字符),跳过(可重复跑)"
+else
+  # 刻意**不**把 Lyra 为别的 lane 写的方案抄到这张卡上 —— 那会伪造血缘。
+  # Lyra 没有为 dispatch-ui 这张卡写过方案(夜间拆解给的是 knowledge-panel 那条),
+  # 所以这里写的是**撤卡本身**的验收方案,并在 JSON 里如实说明它是什么。
+  #
+  # 整条 UPDATE 由 python 生成后从 stdin 喂给 psql。**不要用 `-c` 配 psql 变量** ——
+  # psql 对 `-c` 的字符串不做变量插值,`:'plan'` 会原样送给服务器然后报语法错误
+  # (实测过,所以换成美元引号)。JSON 里出现定界符就换一个,不硬着来。
+  SQL="$(python3 <<'PY'
+import json, sys
+plan = json.dumps({
+  'plan_kind': 'withdrawal',
+  'note': '这张卡是 bootstrap 装进来的,不是 request_acceptance 调用产生的:它的 base 是字符串 track(本仓没有这个分支),所以 cmd_accept_delivery 会在 checkout 处拒绝,这张卡永远不可能被 grant。本字段不是交付的验收方案 —— Lyra 从未为 dispatch-ui 这张卡写过方案 —— 而是「撤掉这张卡」这个动作本身的验收方案。dispatch-ui 的工作本身不受影响,会带血缘和结构化方案重新建卡。',
+  'steps': [
+    {'action': '打开 SeatLoom 的待验收队列', 'input': '无'},
+    {'action': '确认这张卡已经不在待验收列表里', 'input': '卡号 acc-disp-me6Nm8e9D6ZRe4fKyVokY'},
+    {'action': '确认队列里剩下的卡都能点(base 是真实分支、方案不为空)', 'input': '无'},
+  ],
+  'expected': [
+    {'output': '队列可打开', 'expect': '不报错'},
+    {'output': '这张卡状态为 cancelled,不再出现在待验收列表', 'expect': '张先生看不到点下去只会报错的卡'},
+    {'output': '剩余卡片每张都有非空方案和真实的 base 分支', 'expect': '队列里只剩人能真的判一次的卡'},
+  ],
+}, ensure_ascii=False)
+tag = '$aegisplan$'
+if tag in plan:
+    sys.stderr.write('JSON 含美元引号定界符,中止\n'); sys.exit(1)
+print("UPDATE acceptances SET acceptance_plan = %s%s%s::jsonb "
+      "WHERE id = 'acc-disp-me6Nm8e9D6ZRe4fKyVokY' "
+      "AND acceptance_plan = '{}'::jsonb;" % (tag, plan, tag))
+PY
+)"
+  if [ -z "${SQL:-}" ]; then
+    say "  ❌ 生成回填语句失败 —— 跳过"
+  elif printf '%s\n' "$SQL" | podman exec -i -e PGPASSWORD=seatloom "$CTR" \
+         psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 -q; then
+    say "  ✅ 回填完成"
+  else
+    say "  ❌ 回填失败 —— 跳过本段剩余步骤"
+  fi
+fi
+
+# 回填之后再 VALIDATE:让「空方案的卡」从此在数据库层面不可能存在,
+# 这本来就是 016 的目的,之前只是因为那一行是空的才不得不留 NOT VALID。
+if [ "$(q "select count(*) from acceptances where acceptance_plan = '{}'::jsonb")" = "0" ]; then
+  if [ "$(q "select convalidated::text from pg_constraint where conname='acceptances_plan_required'")" = "true" ]; then
+    say "  ⏭  acceptances_plan_required 已是 VALIDATED,跳过"
+  elif podman exec -e PGPASSWORD=seatloom "$CTR" psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 -q \
+         -c "ALTER TABLE acceptances VALIDATE CONSTRAINT acceptances_plan_required"; then
+    say "  ✅ acceptances_plan_required 已 VALIDATE —— 从此空方案的卡在库层面不可能存在"
+  else
+    say "  ❌ VALIDATE 失败(不影响撤卡,继续)"
+  fi
+else
+  say "  ⏭  还有空方案的卡,不 VALIDATE(会失败)"
+fi
+
+# 回填成功才叫醒它 —— 否则等于叫它去撞第六次同一面墙
+if [ "$(q "select acceptance_plan::text from acceptances where id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'")" != "{}" ]; then
+  MS='Mira-UX/UED-seatloom'
+  if tmux has-session -t "$MS" 2>/dev/null; then
+    NUDGE="$(mktemp)"
+    cat > "$NUDGE" <<'EOF'
+Aegis:你 17:09 的根因分析是对的,我核过了 —— 失败的 CHECK 是 acceptances_plan_required,
+它作用在 acceptance_plan 列上,而 NOT VALID 只豁免「ALTER 那一刻的既有行」,不豁免这一行以后被 UPDATE。
+cancel_acceptance 不碰那一列,但 UPDATE 会让 Postgres 重新校验整行,所以任何参数组合都过不去。
+你调了五次、每次停下来上报而不是绕过,这是对的。
+
+你要的那件事已经做完了(回填是总控的 live 动作,016 当初就记在总控头上):
+  acc-disp-me6Nm8e9D6ZRe4fKyVokY 的 acceptance_plan 已回填为非空
+  acceptances_plan_required 已 VALIDATE
+
+**刻意没有**把 Lyra 为别的 lane 写的方案抄到这张卡上 —— 那会伪造血缘。Lyra 从没为 dispatch-ui
+这张卡写过方案,所以回填的内容是「撤卡这个动作本身」的验收方案,JSON 里的 plan_kind='withdrawal'
+如实写明了它是什么。
+
+现在请重做第六次调用,参数不变:
+  cancel_acceptance(acceptance_id='acc-disp-me6Nm8e9D6ZRe4fKyVokY', reason=<你之前用的那版>)
+然后按完成协议收尾。如果又被拒,把拒绝原文原样抄给我,不要绕过、不要裸 SQL。
+EOF
+    tmux load-buffer -b aegism8 "$NUDGE" && tmux paste-buffer -b aegism8 -t "$MS" && tmux delete-buffer -b aegism8 \
+      && say "  ✅ 已叫醒界面席位重做撤卡" || say "  ❌ 叫醒失败 —— 手动跟它说一声"
+    rm -f "$NUDGE"
+  else
+    say "  ⚠️ 界面席位会话不在 —— 回填已完成,等它回来自己撤"
+  fi
+else
+  say "  跳过叫醒 —— 回填没成,叫它只会撞第六次同一面墙"
+fi
+say ""
+
 if [ "$proof_ok" != "1" ]; then
   line
-  say "停在第五段 —— 第六、七段不执行"
+  say "停在第六段 —— 第七、八段不执行"
   line
-  say "  那两段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
+  say "  第七、八段要对席位说「019 已应用、记忆写入已实证成功」。实证没过,这话就是假的。"
   say "  先把上面第三段打印的那条拒绝原因贴给 Aegis。"
   exit 1
 fi
 say ""
 
-# ══ 第六段:解开洗数据席位那条卡死的领单 ═══════════════════════════
+# ══ 第七段:解开洗数据席位那条卡死的领单 ═══════════════════════════
 line
-say "第六段 — 解开洗数据席位那条卡死的领单"
+say "第七段 — 解开洗数据席位那条卡死的领单"
 line
 # 实测(/tmp/seatloom_waker.log,2026-10-11):
 #   seat-vela-001 in_flight disp-wash-vela-p2 for 63344s (pane running pi) — an agent is working; not poking
@@ -298,9 +413,9 @@ else
 fi
 say ""
 
-# ══ 第七段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
+# ══ 第八段:把唤醒服务的这个漏洞派出去修 ═══════════════════════════
 line
-say "第七段 — 把唤醒服务的这个漏洞派给后端席位修"
+say "第八段 — 把唤醒服务的这个漏洞派给后端席位修"
 line
 say "  陈旧领单检测是在跑的,它正确地算出了 17 小时;但它因为「pane 里有 pi 活着」而拒绝叫醒。"
 say "  一个空闲但活着的 agent 和一个正在干活的 agent,在这个判据下长得一模一样。"
@@ -394,5 +509,9 @@ printf "  洗数据席位待领               %s 张\n" \
   "$(q "select count(*) from dispatches where target_seat_id='seat-vela-001' and status='ready'")"
 printf "  唤醒服务修复单                %s\n" \
   "$(q "select coalesce(max(status),'未入账') from dispatches where id='disp-waker-stale-hard-floor'")"
+printf "  那张坏卡                     %s\n" \
+  "$(q "select status||'(方案'||case when acceptance_plan='{}'::jsonb then '仍为空 ❌' else '已回填 ✅' end||')' from acceptances where id='acc-disp-me6Nm8e9D6ZRe4fKyVokY'")"
+printf "  张先生能点的卡               %s 张\n" \
+  "$(q "select count(*) from acceptances where status='pending' and acceptance_plan <> '{}'::jsonb and base <> 'track'")"
 say ""
 say "全部完成。把上面这段贴给 Aegis。"
