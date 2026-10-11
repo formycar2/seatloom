@@ -10,7 +10,7 @@
 # 按 AGENTS.md:不绕路、不拆小块、不换工具、不让席位代跑 —— 写成可审计、可重复跑的脚本交给张先生。
 #
 # 它分十段,**前一段失败就停**(后面每一段都以前一段为真实前提):
-#   第一段  把 019 应用到正在跑的数据库
+#   第一段  把缺的迁移应用到正在跑的数据库(委派 apply-schema-to-live.sh,它自动发现 015+)
 #   第二段  核对 CHECK 真的变了(不信上一段的打印)
 #   第三段  实证一次真实写入:一次 open_topic + 一次 remember(019 没落成也照跑 —— 要的就是那条拒绝原文)
 #   第四段  只有第三段两步都成功,才发门事件
@@ -30,7 +30,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 BIN="$REPO/target/debug/seatloom-mcp-emit"
-MIG="$REPO/infra/postgres/schema/019_topic_opened.sql"
+MIG="$REPO/infra/postgres/schema/019_topic_opened.sql"   # 只用于「在不在盘上」的前置检查;应用由 apply-schema-to-live.sh 负责
 CTR="seatloom-postgres"
 
 export DATABASE_URL="${DATABASE_URL:-postgresql://seatloom:seatloom@localhost:5432/seatloom}"
@@ -46,23 +46,33 @@ line(){ say "──────────────────────�
 q(){ podman exec -e PGPASSWORD=seatloom "$CTR" psql -U seatloom -d seatloom -tAc "$1"; }
 
 [ -x "$BIN" ] || { say "❌ 找不到程序 ${BIN} —— 先跑 cargo build --workspace"; exit 1; }
-[ -r "$MIG" ] || { say "❌ 找不到迁移文件 ${MIG}"; exit 1; }
+[ -r "$MIG" ] || { say "❌ 盘上找不到 019 迁移 ${MIG} —— 仓库是不是不在 track 分支?"; exit 1; }
 podman exec "$CTR" true 2>/dev/null || {
   say "❌ 数据库容器 ${CTR} 不在跑 —— 先跑 podman machine start && podman start ${CTR}"; exit 1; }
 
-# ══ 第一段:把 019 应用到正在跑的数据库 ════════════════════════════
+# ══ 第一段:把缺的迁移应用到正在跑的数据库 ═════════════════════════
 line
-say "第一段 — 把 019 应用到正在跑的数据库"
+say "第一段 — 把缺的迁移应用到正在跑的数据库"
 line
-# 用 stdin 喂给容器里的 psql。**不要用 psql -f <宿主机路径>** ——
-# 容器看不到宿主机的路径(2026-10-11 栽过一次,f00b854 修的就是这个)。
-if podman exec -i -e PGPASSWORD=seatloom "$CTR" \
-     psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 -q < "$MIG"; then
-  say "  ✅ 019 应用完成(它自带幂等守卫,重复跑不会二次写目录)"
+# **委派给 scripts/apply-schema-to-live.sh,不自己手搓 psql。**
+# 它本来就是「把 track 上已验绿的表结构落到正在跑的库」那一件事的唯一入口:
+# 不碰 seed、不建库、不删东西,逐个幂等 apply,跑完打印一整块验证。
+# 而且它现在**从目录里自动发现 015 及以后的全部迁移**(不再写死文件名),
+# 所以缺的不只 019 时它也能一次补齐 —— 我这边再写一遍只会分叉出第二条真相。
+# (它自己也踩过并记下了「psql 跑在容器里,不能 -f 传宿主机路径」这条,
+#  所以它用 stdin 管文件,和 f00b854 修的是同一个坑。)
+APPLIER="$REPO/scripts/apply-schema-to-live.sh"
+if [ ! -r "$APPLIER" ]; then
+  say "  ❌ 找不到 ${APPLIER}"
+  apply_ok=0
+elif bash "$APPLIER"; then
+  say ""
+  say "  ✅ 迁移应用完成"
 else
-  say "  ❌ 019 应用失败。live 数据库未被改成半状态(整个文件在一个 BEGIN/COMMIT 里)。"
-  say "     第三段仍会实测一次 —— 它会被数据库 CHECK 拒绝,那条拒绝原文就是你要贴给我的证据。"
-  say "     第四、五段(门事件 / 换程序)因此不会执行;第六~八段照跑 —— 它们不依赖 019。"
+  say ""
+  say "  ❌ 迁移应用失败(上面那块验证结果就是证据)。"
+  say "     第三段仍会实测一次 —— 它会被数据库拒绝,那条拒绝原文也贴给我。"
+  say "     第四、五段(门事件 / 换程序)因此不会执行;第六~八段照跑 —— 它们不依赖迁移。"
   apply_ok=0
 fi
 say ""
