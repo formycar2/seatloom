@@ -94,16 +94,15 @@ export interface KnowledgeTopicMemories {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 与 lib/api.ts 的 registered-flag 同一模式（ACCEPTANCE_CMDS_REGISTERED /
- * ACCEPTANCE_LINEAGE_CMD_REGISTERED）。命名随命令。
+ * 与 lib/api.ts 的 registered-flag 同一模式(ACCEPTANCE_CMDS_REGISTERED /
+ * ACCEPTANCE_LINEAGE_CMD_REGISTERED)。命名随命令。
  *
- * 现为 false 且已实证：`track/infra-foundation` @ 85bcc06 的
- * `src-tauri/src/main.rs` 没有注册 cmd_get_knowledge_tree /
- * cmd_get_topic_memories，`src-tauri/src/commands/knowledge_cmds.rs` 尚不存在 ——
- * Nimbus 的 read-model lane（step 4）并行进行中，未落地。因此面板把「命令未上线」
- * 作为主状态渲染，绝不伪造后端真值。Nimbus 的只增补落地后翻 true 即可，无需改 UI。
+ * 已翻 true 并实证:Nimbus 的 read-model lane 已落地 —— `track/infra-foundation`
+ * (判定 ev-verdict-knowledge-readmodel,提交 5bd500d)的 `src-tauri/src/main.rs` 已注册
+ * cmd_get_knowledge_tree / cmd_get_topic_memories,`src-tauri/src/commands/knowledge_cmds.rs`
+ * 存在;本分支已与 track 同步(merge 658c26a),两条命令在此构建内。故生产真值为「已接线」。
  */
-const KNOWLEDGE_CMDS_REGISTERED = false;
+const KNOWLEDGE_CMDS_REGISTERED = true;
 
 /**
  * 本地缝：直接 invoke 两条知识命令。

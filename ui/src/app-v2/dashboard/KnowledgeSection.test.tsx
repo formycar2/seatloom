@@ -119,9 +119,10 @@ describe('KnowledgeSection', () => {
 
   // ── 1. The gate: commands not on the build ─────────────────────────────────
   it('says the commands are not wired, issues no call, and shows no fake data', () => {
-    // Rendered with NO override: the shipped default is the gate, and the shipped
-    // default is false (Nimbus's read-model commands are not on track).
-    render(<KnowledgeSection projectId="seatloom" />);
+    // Gate pinned OFF via the prop — NOT the shipped default (which is now true:
+    // the read-model commands are on track). The not-wired state must still render
+    // honestly for any build that lacks them.
+    render(<KnowledgeSection projectId="seatloom" registered={false} />);
     expect(screen.getByText(/知识面板按 D5 契约实现完毕/)).toBeTruthy();
     expect(screen.getByText(/cmd_get_knowledge_tree \/ cmd_get_topic_memories/)).toBeTruthy();
     expect(screen.getByText(/不使用 mock 伪装后端真值/)).toBeTruthy();
