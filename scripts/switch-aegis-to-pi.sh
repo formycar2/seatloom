@@ -8,7 +8,8 @@
 # 在一个即将消失的会话里手工做这件事,任何一个中间步骤失败都不会有人接着修。
 # 脚本可重复跑:每次跑之前都重新验一遍前置,失败了原地停,不留半切换状态。
 #
-# 它做四件事,顺序不能换:
+# 它做五件事,顺序不能换:
+#   零  把 .pi/mcp.json 建出来(刻意不入库,所以只存在于盘上,是唯一恢复途径)
 #   一  前置检查(配置、程序、MCP 可达)—— 缺一项就停
 #   二  修 seats 表里 Aegis 那个过期模型名(它还是 Claude Code 时代的)
 #   三  在 Aegis-Supervisor 里起 pi
@@ -29,6 +30,41 @@ CTR="seatloom-postgres"
 
 say(){ printf '%s\n' "$*"; }
 line(){ say "────────────────────────────────────────────────────────────"; }
+
+# ══ 零:把 .pi/mcp.json 建出来(缺了就建,已在就跳过) ═══════════════
+line
+say "零 — 确保 .pi/mcp.json 在"
+line
+# 这个文件**刻意不入库**(.pi 在 .gitignore 里,和各个席位一样)。
+# 所以它只存在于盘上,一旦丢了不会有任何地方能恢复它 —— 而这个脚本是唯一恢复途径。
+# 因此这里不假设它已在:缺了就按席位的形状建一份,只改 SEATLOOM_ACTOR_REF。
+# 主检出原先没有 .pi/ 目录,那正是静默失效的形状:pi 起得来、面板正常,
+# 但 MCP 从未加载,队列无声停摆。
+mkdir -p "$REPO/.pi"
+if [ -r "$CFG" ] && python3 -c "import json;json.load(open('$CFG'))" 2>/dev/null; then
+  say "  ⏭  已在且是合法 JSON,跳过(可重复跑)"
+else
+  cat > "$CFG" <<'JSON'
+{
+  "mcpServers": {
+    "seatloom": {
+      "command": "/Users/jyxc-dz-0100609/Documents/GitHub/seatloom/target/debug/seatloom-mcp-emit",
+      "env": {
+        "SEATLOOM_ACTOR_REF": "seat:seat-aegis-001",
+        "DATABASE_URL": "postgresql://seatloom:seatloom@localhost:5432/seatloom",
+        "SEATLOOM_PROJECT_ID": "seatloom"
+      }
+    }
+  }
+}
+JSON
+  if python3 -c "import json;json.load(open('$CFG'))" 2>/dev/null; then
+    say "  ✅ 已重建并验证是合法 JSON"
+  else
+    say "  ❌ 建出来了但不是合法 JSON —— 停"; exit 1
+  fi
+fi
+say ""
 
 # ══ 一:前置检查 ════════════════════════════════════════════════════
 line
