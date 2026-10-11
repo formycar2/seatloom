@@ -368,11 +368,25 @@ nothing in 020 needs to move either way, because the marker is the segment test 
 
 ## 7. Completion flow
 
-1. Committed to `packet/onyx/topic-opened-019` (commit carries the dispatch id).
-2. This delivery doc.
-3. `emit_event(ArtifactCreated)` for the migration artifact, and the verdict event
-   `ev-verdict-onyx-gate-release-check` that `disp-7Q0V28_5iCPcoMaDDPfKQ` (seat-nimbus-001) is blocked
-   on — its edge is an ordinary existence edge, so the verdict event id is what releases it.
-4. Forward recording via `remember` (decisions / failures / unresolved, per
-   `docs/coordination/FORWARD_RECORDING_PROTOCOL.md`).
-5. `complete_dispatch(disp-5YCwjJF-oIzwb-d1rmrs5)`.
+1. ✅ Committed to `packet/onyx/topic-opened-019` @ `f97d0a8` (3 files: the migration, the `apply-db.sh`
+   POST_SEED entry, this doc; commit carries the dispatch id).
+2. ✅ This delivery doc.
+3. ✅ `ev-020-gate-criterion-landed` — `ArtifactCreated`, subject `art-020-gate-criterion`, actor
+   `seat-onyx-001`, context `disp-5YCwjJF-oIzwb-d1rmrs5`. Deliberately an **announcement** id
+   (`-landed`, not `-live`) per ruling 2: it says the SQL is on a branch at a commit, never that the
+   capability runs.
+4. ✅ `ev-verdict-onyx-gate-release-check` — `ReviewVerdictIssued`, the exact pre-declared id. This is
+   what releases `disp-7Q0V28_5iCPcoMaDDPfKQ` (seat-nimbus-001), which was `blocked` on it; the row is
+   now `in_flight` with seat-nimbus-001, so the criterion and the release path are confirmed working
+   end to end on the live ledger, not only on scratch.
+5. ✅ Forward recording via `remember` — 4 records on `topic-aegis-fleet-operations`, source
+   `ev-verdict-onyx-gate-release-check`: 2 decisions (the asymmetric-failure rule for one criterion in
+   two languages; a gate-shaped id spent on an announcement makes that edge permanently
+   unsatisfiable, so the recovery is cancel + re-issue), 1 failure (the `::regconstraint` cast that
+   rolled the whole transaction back, and the rule it produced: a migration is landed only after an
+   end-to-end apply on a same-major-version scratch DB with the catalog read back), 1 unresolved (the
+   `-landed`-edge intent gap and ruling 2's wording vs `ev-live-019-applied`, both for Aegis).
+6. `complete_dispatch(disp-5YCwjJF-oIzwb-d1rmrs5)`.
+
+**Still open, and not mine to close:** the live apply of 020 is Aegis's act (§4). Until it runs, live
+keeps 013's existence-only release test. Nothing in this delivery claims otherwise.
