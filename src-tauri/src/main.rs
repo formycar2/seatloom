@@ -194,3 +194,47 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("failed to run SeatLoom Tauri app");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2026-10-12:装在 /Applications 的应用从 Launchpad 打开时 cwd 是 `/`,
+    /// repo_root 于是解析成 `/`,验收合并跑在 `/` 里被「不是 git 工作树」拒掉。
+    /// 这个测试钉住兜底路径的前提:那个已知位置必须仍然是一个仓库。
+    /// 它坏了,说明兜底失效了 —— 而不是等下一次验收在凌晨失败。
+    #[test]
+    fn the_fallback_repo_location_is_still_a_repo() {
+        let home = match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h),
+            None => return, // 没有 HOME 的环境(CI)无法判定,不假装通过
+        };
+        let cand = home.join("Documents/GitHub/seatloom");
+        assert!(
+            cand.join("Cargo.toml").is_file(),
+            "兜底路径 {} 不再有 Cargo.toml —— repo_root 的兜底已失效",
+            cand.display()
+        );
+        assert!(
+            cand.join("docs").is_dir(),
+            "兜底路径 {} 不再有 docs/ —— repo_root 的兜底已失效",
+            cand.display()
+        );
+    }
+
+    /// 兜底的判据本身:一个目录要同时有 Cargo.toml 和 docs/ 才算仓库。
+    /// 单独一个不算 —— 否则任意带 Cargo.toml 的目录都会被当成根。
+    #[test]
+    fn the_repo_judgement_requires_both_markers() {
+        let tmp = std::env::temp_dir().join("seatloom-repo-judgement-probe");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 只有 Cargo.toml:不算
+        std::fs::write(tmp.join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert!(!(tmp.join("Cargo.toml").is_file() && tmp.join("docs").is_dir()));
+        // 再加 docs/:算
+        std::fs::create_dir_all(tmp.join("docs")).unwrap();
+        assert!(tmp.join("Cargo.toml").is_file() && tmp.join("docs").is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
