@@ -47,8 +47,11 @@ else say "  crontab               ❌ 没有 —— 自醒是死的"; fi
 if [ -s "$LOG" ]; then
   say "  日志                  最近 3 行:"
   tail -3 "$LOG" | sed 's/^/      /'
-  if grep -q "Operation not permitted" "$LOG"; then
-    say "  ⚠️  日志里有 Operation not permitted —— 那个位置 cron 进不去(TCC)"
+  # 只看**最后一行**。日志是追加的,历史错误会永远留在里面 ——
+  # 拿整个文件去 grep,会让一个早就修好的问题一直报警(那同样是噪音,
+  # 而且会训练人忽略这个检查)。
+  if tail -1 "$LOG" 2>/dev/null | grep -q "Operation not permitted"; then
+    say "  ⚠️  最后一次就是 Operation not permitted —— 那个位置 cron 进不去(TCC)"
   fi
 else say "  日志                  (还没有)"; fi
 say ""
@@ -59,7 +62,8 @@ if [ "$CHECK_ONLY" = "1" ]; then
   [ -r "$DEST" ] || ok=0
   cmp -s "$SRC" "$DEST" 2>/dev/null || ok=0
   [ "$cur" = "$CRON_LINE" ] || ok=0
-  grep -q "Operation not permitted" "$LOG" 2>/dev/null && ok=0
+  # 只看最后一行(同 fleet-status.sh):日志是追加的,历史错误会永远留在里面
+  tail -1 "$LOG" 2>/dev/null | grep -q "Operation not permitted" && ok=0
   [ "$ok" = "1" ] && say "✅ 自醒健康" || say "❌ 自醒不健康 —— 跑 bash scripts/install-aegis-self-wake.sh 修"
   [ "$ok" = "1" ] && exit 0 || exit 1
 fi

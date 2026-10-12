@@ -52,6 +52,17 @@
 //!      needed a restart (`NOTIFY for unmapped seat ... — ignoring`). It is now
 //!      re-read when the file changes (checked every sweep) and once on demand
 //!      when a NOTIFY names an unmapped seat.
+//!   4. A PROGRESS SIGNAL, AND A HARD FLOOR BEHIND IT. "The pane has an agent in
+//!      it" turned out not to mean "the agent is working": an agent parked at its
+//!      prompt and an agent streaming tokens are the same process list, and that
+//!      equivalence held a seat's claim — and four ready dispatches behind it —
+//!      for seventeen hours while the daemon logged "an agent is working; not
+//!      poking" every 90 seconds. The primary signal is now whether the pane's
+//!      captured OUTPUT changes between two sweeps (an agent mid-turn streams; an
+//!      agent waiting does not). Behind it sits `SEATLOOM_STALE_HARD_AFTER_SECS`
+//!      (default 4 x the soft threshold): past that age a stale claim is poked
+//!      whatever the pane says, because the worst case of one redundant nudge is
+//!      strictly better than the worst case of another seventeen hours.
 //!
 //! What this daemon deliberately does NOT do: change a dispatch's status. A
 //! stale `in_flight` is not rewritten to `failed` or `ready` — that is ledger
@@ -60,7 +71,9 @@
 //!
 //! Env: DATABASE_URL (default postgresql://seatloom:seatloom@localhost:5432/seatloom),
 //!      SEATLOOM_SEAT_MAP (default .seatloom/dispatch-seats.tsv),
-//!      SEATLOOM_STALE_AFTER_SECS (default 900), SEATLOOM_SWEEP_SECS (default 90),
+//!      SEATLOOM_STALE_AFTER_SECS (default 900),
+//!      SEATLOOM_STALE_HARD_AFTER_SECS (default 4 x stale_after),
+//!      SEATLOOM_SWEEP_SECS (default 90),
 //!      SEATLOOM_POKE_COOLDOWN_SECS (default 120),
 //!      SEATLOOM_AGENT_PROCS (comma-separated pane-child names that count as an
 //!      agent working; default "pi,node,claude,gemini,codex,opencode,cursor,
@@ -80,6 +93,13 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// Default age after which an `in_flight` claim is considered stale.
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Multiplier applied to `stale_after` when `SEATLOOM_STALE_HARD_AFTER_SECS` is
+/// not set: the backstop age past which a stale claim is poked REGARDLESS of
+/// what the pane looks like. Four times the soft threshold — long enough that a
+/// legitimately slow turn is never interrupted by the backstop, short enough
+/// that a wedged seat costs an hour rather than a day (the stall this fixes ran
+/// for seventeen).
+const HARD_FLOOR_MULTIPLIER: u32 = 4;
 /// Default interval between periodic catch-up sweeps.
 const DEFAULT_SWEEP_EVERY: Duration = Duration::from_secs(90);
 /// Default minimum gap between two nudges to the same seat.
@@ -96,6 +116,9 @@ struct Config {
     db_url: String,
     map_path: String,
     stale_after: Duration,
+    /// The backstop: past this age a stale claim is poked even when the pane
+    /// looks busy. Defaults to `HARD_FLOOR_MULTIPLIER` x `stale_after`.
+    stale_hard_after: Duration,
     sweep_every: Duration,
     poke_cooldown: Duration,
     agent_procs: Vec<String>,
@@ -106,12 +129,17 @@ impl Config {
         let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
             "postgresql://seatloom:seatloom@localhost:5432/seatloom".to_string()
         });
+        let stale_after = secs_from_env("SEATLOOM_STALE_AFTER_SECS", DEFAULT_STALE_AFTER);
         let map_path = std::env::var("SEATLOOM_SEAT_MAP")
             .unwrap_or_else(|_| ".seatloom/dispatch-seats.tsv".to_string());
         Self {
             db_url,
             map_path,
-            stale_after: secs_from_env("SEATLOOM_STALE_AFTER_SECS", DEFAULT_STALE_AFTER),
+            stale_after,
+            stale_hard_after: secs_from_env(
+                "SEATLOOM_STALE_HARD_AFTER_SECS",
+                stale_after.saturating_mul(HARD_FLOOR_MULTIPLIER),
+            ),
             sweep_every: secs_from_env("SEATLOOM_SWEEP_SECS", DEFAULT_SWEEP_EVERY),
             poke_cooldown: secs_from_env("SEATLOOM_POKE_COOLDOWN_SECS", DEFAULT_POKE_COOLDOWN),
             agent_procs: std::env::var("SEATLOOM_AGENT_PROCS")
@@ -212,6 +240,55 @@ impl SeatMap {
 // =============================================================================
 // Pane liveness
 // =============================================================================
+
+/// Whether the pane is PROGRESSING, as opposed to merely hosting a live process.
+///
+/// The distinction the 17-hour fleet stall turned on: "an agent is running" and
+/// "an agent is working" look identical to a process check, because an idle but
+/// living agent and a busy one both have a `pi` child. What separates them is
+/// whether the pane's OUTPUT CHANGES between two sweeps — an agent mid-turn
+/// streams tokens, an agent waiting at its prompt does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PaneProgress {
+    /// The pane's captured output differs from the last sweep's.
+    Advancing,
+    /// The pane's captured output is byte-identical to the last sweep's.
+    Static,
+    /// The pane could not be captured (no tmux, no such session). Treated as
+    /// NOT advancing — we cannot prove progress, and a nudge is safe by design.
+    Unknown,
+}
+
+impl PaneProgress {
+    fn describe(&self) -> String {
+        match self {
+            PaneProgress::Advancing => "pane output advancing".to_string(),
+            PaneProgress::Static => "pane output unchanged".to_string(),
+            PaneProgress::Unknown => "pane output unknown".to_string(),
+        }
+    }
+}
+
+/// Capture the pane's visible output, hashed.
+///
+/// `tmux capture-pane -p` is the pane's own rendered content, so it moves when
+/// the agent streams, when a build prints, or when a human types — everything
+/// that means "something is happening here" — and stays put when the agent sits
+/// at its prompt. A hash keeps the comparison O(1) and keeps the (potentially
+/// large) pane text out of the daemon's memory.
+fn pane_output_hash(session: &str) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let out = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", session])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    out.stdout.hash(&mut hasher);
+    Some(hasher.finish())
+}
 
 /// What the seat's tmux pane is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,11 +505,12 @@ async fn main() {
     let seat_map = SeatMap::load(&cfg.map_path);
     eprintln!(
         "seatloom-waker: {} seat(s) mapped from {}; LISTEN dispatch_ready on {}; \
-         stale-after {:?}, sweep every {:?}, poke cooldown {:?}",
+         stale-after {:?}, hard-floor {:?}, sweep every {:?}, poke cooldown {:?}",
         seat_map.seats.len(),
         cfg.map_path,
         cfg.db_url.split('@').next_back().unwrap_or("db"),
         cfg.stale_after,
+        cfg.stale_hard_after,
         cfg.sweep_every,
         cfg.poke_cooldown,
     );
@@ -503,6 +581,8 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
     // so an unmapped NOTIFY and the sweep see the same state.
     let mut map = SeatMap::load(&cfg.map_path);
     let mut poker = Poker::new(cfg.poke_cooldown);
+    // Per-seat pane hashes from the previous sweep: the progress signal.
+    let mut pane_hashes: HashMap<String, u64> = HashMap::new();
     let mut ticker = tokio::time::interval(cfg.sweep_every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -533,7 +613,7 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
             }
             _ = ticker.tick() => {
                 // Periodic catch-up + stale-claim detection (fixes 2 and 1).
-                if let Err(e) = sweep(&client, &mut map, cfg, &mut poker).await {
+                if let Err(e) = sweep(&client, &mut map, cfg, &mut poker, &mut pane_hashes).await {
                     return format!("sweep failed: {}", describe(e));
                 }
             }
@@ -668,14 +748,20 @@ async fn seat_state(client: &Client, seat_id: &str) -> Result<SeatState, tokio_p
 // =============================================================================
 
 /// The periodic pass over every mapped seat:
-///   - idle + ready work waiting            -> poke (the lost-NOTIFY case);
-///   - stale in_flight + pane not working   -> poke (the stuck-claim case);
-///   - anything else                        -> leave alone, and say why.
+///   - idle + ready work waiting             -> poke (the lost-NOTIFY case);
+///   - stale in_flight + pane not advancing  -> poke (the stuck-claim case);
+///   - stale in_flight past the HARD FLOOR   -> poke whatever the pane says;
+///   - anything else                         -> leave alone, and say why.
+///
+/// `pane_hashes` carries the previous sweep's per-seat pane hash, so "is the
+/// pane advancing" is a comparison between two sweeps rather than a guess. It is
+/// refreshed on every sweep, including for the seats this sweep leaves alone.
 async fn sweep(
     client: &Client,
     map: &mut SeatMap,
     cfg: &Config,
     poker: &mut Poker,
+    pane_hashes: &mut HashMap<String, u64>,
 ) -> Result<(), tokio_postgres::Error> {
     map.reload(false);
     let seats: Vec<(String, String)> = map
@@ -684,6 +770,21 @@ async fn sweep(
         .collect();
     for (seat_id, session) in seats {
         let state = seat_state(client, &seat_id).await?;
+
+        // Observe the pane first, so the hash table is current for every seat
+        // whether or not this sweep acts on it.
+        let hash = pane_output_hash(&session);
+        let progress = match (hash, pane_hashes.get(&seat_id)) {
+            (Some(now), Some(prev)) if *prev == now => PaneProgress::Static,
+            (Some(_), Some(_)) => PaneProgress::Advancing,
+            // First observation (or an uncapturable pane): nothing to compare
+            // against yet, so there is no evidence of progress.
+            _ => PaneProgress::Unknown,
+        };
+        if let Some(now) = hash {
+            pane_hashes.insert(seat_id.clone(), now);
+        }
+
         match (&state.in_flight_id, state.ready_n) {
             // Idle with work waiting: the classic wakeup, now periodic so a
             // NOTIFY that fired while the seat was busy is not lost forever.
@@ -695,20 +796,39 @@ async fn sweep(
                     nudge(&session);
                 }
             }
-            // Busy: is the claim stale, and is the pane actually working?
+            // Busy: is the claim stale, and is the pane actually advancing?
             (Some(id), _) => match state.claim_age() {
+                Some(age) if age >= cfg.stale_hard_after => {
+                    // The backstop. A claim this old is poked whatever the pane
+                    // says, because "the pane looks busy" is exactly the signal
+                    // that failed for 17 hours: an agent parked at its prompt
+                    // and an agent streaming tokens look identical to a process
+                    // check. Poking is safe (the seat's own AGENTS.md rules that
+                    // an "already in_flight" answer is its current task), so the
+                    // worst case is one redundant nudge.
+                    if poker.allow(&seat_id) {
+                        eprintln!(
+                            "seatloom-waker: {seat_id} STALE claim past the hard floor: in_flight {id} for {age:?} \
+                             ({}) — poking anyway; a pane that merely looks busy is not evidence of progress",
+                            progress.describe()
+                        );
+                        nudge(&session);
+                    }
+                }
                 Some(age) if age >= cfg.stale_after => {
                     let live = pane_liveness(&session, &cfg.agent_procs);
-                    if live.is_working() {
+                    if live.is_working() && progress == PaneProgress::Advancing {
                         eprintln!(
-                            "seatloom-waker: {seat_id} in_flight {id} for {age:?} ({}) — an agent is working; not poking",
-                            live.describe()
+                            "seatloom-waker: {seat_id} in_flight {id} for {age:?} ({}, {}) — an agent is working; not poking",
+                            live.describe(),
+                            progress.describe()
                         );
                     } else if poker.allow(&seat_id) {
                         eprintln!(
-                            "seatloom-waker: {seat_id} STALE claim: in_flight {id} for {age:?} with {} — poking anyway; \
+                            "seatloom-waker: {seat_id} STALE claim: in_flight {id} for {age:?} with {} ({}) — poking anyway; \
                              the seat resumes its own task (get_next_dispatch answers 'already in_flight')",
-                            live.describe()
+                            live.describe(),
+                            progress.describe()
                         );
                         nudge(&session);
                     }
@@ -782,6 +902,86 @@ fn nudge(session: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hard floor defaults to four times the soft threshold, and the env var
+    /// overrides it. The default is derived, not a second magic number, so
+    /// changing the soft threshold moves the backstop with it.
+    #[test]
+    fn the_hard_floor_defaults_to_four_times_the_soft_threshold() {
+        assert_eq!(HARD_FLOOR_MULTIPLIER, 4);
+        let soft = Duration::from_secs(900);
+        assert_eq!(
+            soft.saturating_mul(HARD_FLOOR_MULTIPLIER),
+            Duration::from_secs(3600),
+            "the default backstop is an hour"
+        );
+    }
+
+    /// The progress signal is a COMPARISON between two sweeps: same hash means
+    /// static, different means advancing, and a missing baseline means "no
+    /// evidence" rather than "no progress".
+    #[test]
+    fn pane_progress_is_a_comparison_not_a_guess() {
+        let mut hashes: HashMap<String, u64> = HashMap::new();
+        let seat = "seat-x";
+        let first = 111u64;
+        // First observation: nothing to compare against.
+        let progress = match (Some(first), hashes.get(seat)) {
+            (Some(now), Some(prev)) if *prev == now => PaneProgress::Static,
+            (Some(_), Some(_)) => PaneProgress::Advancing,
+            _ => PaneProgress::Unknown,
+        };
+        assert_eq!(progress, PaneProgress::Unknown);
+        hashes.insert(seat.to_string(), first);
+
+        // Same output again: static — the pane is alive but not moving.
+        let progress = match (Some(first), hashes.get(seat)) {
+            (Some(now), Some(prev)) if *prev == now => PaneProgress::Static,
+            (Some(_), Some(_)) => PaneProgress::Advancing,
+            _ => PaneProgress::Unknown,
+        };
+        assert_eq!(progress, PaneProgress::Static);
+
+        // Different output: advancing.
+        let progress = match (Some(222u64), hashes.get(seat)) {
+            (Some(now), Some(prev)) if *prev == now => PaneProgress::Static,
+            (Some(_), Some(_)) => PaneProgress::Advancing,
+            _ => PaneProgress::Unknown,
+        };
+        assert_eq!(progress, PaneProgress::Advancing);
+
+        // An uncapturable pane is not evidence of progress.
+        let progress = match (None::<u64>, hashes.get(seat)) {
+            (Some(now), Some(prev)) if *prev == now => PaneProgress::Static,
+            (Some(_), Some(_)) => PaneProgress::Advancing,
+            _ => PaneProgress::Unknown,
+        };
+        assert_eq!(progress, PaneProgress::Unknown);
+    }
+
+    /// A pane that merely LOOKS busy must not suppress the hard floor: the
+    /// classification says "working" while the progress signal says "static",
+    /// which is exactly the combination that stalled the fleet. The backstop
+    /// fires on age alone.
+    #[test]
+    fn a_busy_looking_but_static_pane_is_still_past_the_hard_floor() {
+        let live = PaneLiveness::Working("pi".to_string());
+        assert!(live.is_working(), "the process check says busy");
+        let progress = PaneProgress::Static;
+        // The soft-path decision: only poke when NOT (working AND advancing).
+        let soft_pokes = !(live.is_working() && progress == PaneProgress::Advancing);
+        assert!(
+            soft_pokes,
+            "a static pane is poked even by the soft rule now"
+        );
+        // And the hard floor ignores both signals entirely.
+        let age = Duration::from_secs(4000);
+        let hard_after = Duration::from_secs(3600);
+        assert!(
+            age >= hard_after,
+            "past the floor the pane's word is not taken"
+        );
+    }
 
     /// The map parses the header/comment/blank lines away and reloads when the
     /// file's identity changes — the hot-reload primitive, without a DB.
