@@ -79,6 +79,23 @@ fn repo_root() -> PathBuf {
     if cwd.join("docs").is_dir() {
         return cwd;
     }
+    // 🔴 2026-10-12:从 Launchpad / Spotlight 打开 .app 时,cwd 是 `/`。上面两条
+    //    启发式全都落空,repo_root 解析成 `/`,于是验收那次合并跑在 `/` 里,
+    //    第一道检查「这是不是 git 工作树」就把它拒了 —— 而报错文本说的是
+    //    `/ is not a git work tree`,看上去像别的问题。曾经因此白绕一圈。
+    //    装在 /Applications 的应用不能依赖启动方式带来的 cwd,所以这里补一层
+    //    已知位置的兜底:第一个长得像仓库的目录胜出。
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for cand in [
+            home.join("Documents/GitHub/seatloom"),
+            home.join("Documents/GitHub/seatloom/seatloom"),
+        ] {
+            if cand.join("Cargo.toml").is_file() && cand.join("docs").is_dir() {
+                return cand;
+            }
+        }
+    }
     // Fallback to the current directory; reconcile will fail loudly if this is wrong.
     cwd
 }
