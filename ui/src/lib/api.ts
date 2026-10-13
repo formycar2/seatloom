@@ -158,6 +158,11 @@ export const api = {
     priority?: number,
   ): Promise<string> =>
     invoke('cmd_enqueue_dispatch', { targetSeatId, title, instructions, priority }),
+  // Supervisor intent entry (contract slice 1) — plan_intent over the same stdio path
+  // as cmd_enqueue_dispatch (actor human:supervisor). Reads only, appends nothing;
+  // returns the tool's pretty-JSON text (parse as IntentPlanResult). A rejection is
+  // thrown verbatim so the UI can show the reason rather than an empty card.
+  planIntent: (intent: string): Promise<string> => invoke('cmd_plan_intent', { intent }),
 
   // --- D2 acceptance loop (a delivered milestone, decided in the UI) ---
   // Nimbus's lane. The three commands below are NOT registered on `track` yet,

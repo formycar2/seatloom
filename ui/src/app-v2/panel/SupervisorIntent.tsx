@@ -1,16 +1,17 @@
 /**
  * SupervisorIntent.tsx
- * Supervisor Layer「意图入口」界面 — slice 2 of LYRA-2026-10-13-supervisor-intent-entry-contract-v1.
+ * Supervisor Layer「意图入口」界面 — LYRA-2026-10-13-supervisor-intent-entry-contract-v1.
  *
- * Built against the contract's shapes. NOT wired to the live intent-tool surface
- * (slice 1 = Nimbus's deterministic parser; slice 4 = the wiring). What IS live
- * here: continuity-delta and decision-answer read real backend commands; the
- * wiring-honesty rule is honoured by a MEASURED probe, never a hand-maintained
- * boolean (contract §4 / boundary 3 — the ACCEPTANCE_CMDS_REGISTERED shape).
+ * slice 4 (wiring): the 派活 entry now CALLS the live intent tool (api.planIntent →
+ * cmd_plan_intent → plan_intent, actor human:supervisor) and renders its real result —
+ * a reviewable proposal, or a clarification the tool stopped at. Confirm writes through
+ * the real governed path (api.enqueueDispatch); on failure the error is verbatim and no
+ * dispatch id is shown. A suggestion whose dependency edge the write path cannot express
+ * is refused explicitly (§3.3), never silently dropped.
  *
- * Load-bearing discipline (contract §3.3): when the intent is unclear the system
- * ASKS, it never guesses. Every ambiguity outcome below is a first-class,
- * reachable card state — not an error toast, not a silent default.
+ * Wiring honesty (contract §4 / boundary 3): wiring state is MEASURED (probe), never a
+ * hand-maintained boolean. Load-bearing discipline (§3.3): when the intent is unclear the
+ * system ASKS — plan_intent returns the question and the real choices; the UI never guesses.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -24,19 +25,11 @@ import type {
   KnowledgeTopicNode,
   KnowledgeTopicMemories,
 } from '../../lib/types-dto';
+import type { Clarification, IntentPlanResult, Proposal } from '../../lib/intent-dto';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Contract shapes (§3 / §4)
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** §3.1 step 2 — the closed verb set. Unsupported is a result, not an error. */
-const SUPPORTED_VERBS = [
-  { verb: 'create', hint: '建一个新的东西(派单 / 工作项 / 交接 / 评论)' },
-  { verb: 'route', hint: '把一件事指给某个席位' },
-  { verb: 'explain', hint: '问"为什么这么定"——要理由和证据' },
-  { verb: 'find-evidence', hint: '为某个判断找出处' },
-  { verb: 'recover', hint: '从某个卡住/失败的状态恢复' },
-] as const;
 
 type IntentMode = 'dispatch' | 'chat';
 
@@ -457,122 +450,178 @@ function DecisionAnswerCard() {
 // choices and why each is offered. Replaces the suggestion card when it fires.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type Clarification =
-  | { kind: 'verb-unclear' }
-  | { kind: 'owner-zero'; name: string; seats: string[] }
-  | { kind: 'owner-multi'; name: string; candidates: string[] }
-  | { kind: 'owner-omitted'; candidates: string[] }
-  | { kind: 'object-unclear' }
-  | { kind: 'precondition-unexpressible'; precondition: string }
-  | { kind: 'no-capable-seat'; constraints: string[] }
-  | { kind: 'tool-unavailable'; detail: string };
-
-function ClarificationCard({ c, onPick }: { c: Clarification; onPick: (choice: string) => void }) {
+/** Clarification card (§3.3) — plan_intent stopped at a question. One question, the
+ *  real choices, and why each is offered. Not a toast, not a disabled state. */
+function ClarificationCard({ c, onPick }: { c: Clarification; onPick: (label: string) => void }) {
   return (
     <div style={{ ...cardStyle, borderColor: 'var(--sl-brand)' }}>
       <div style={{ ...sectionLabel, color: 'var(--sl-brand)' }}>需要你澄清 · 我不猜</div>
-      {c.kind === 'verb-unclear' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 6 }}>
-            这句话的意图不在我可执行的五种里。你要做的是哪一种?
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>{c.question}</div>
+      <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', marginBottom: 6 }}>
+        规则 {c.ruleId} · {c.reason}
+      </div>
+      {c.choices.map((ch) => (
+        <button
+          key={ch.value}
+          type="button"
+          onClick={() => onPick(ch.label)}
+          style={{ ...linkBtn, display: 'block', marginBottom: 4 }}
+        >
+          <b>{ch.label}</b>
+          <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontWeight: 400 }}>
+            {ch.why}
           </div>
-          {SUPPORTED_VERBS.map((v) => (
-            <button
-              key={v.verb}
-              type="button"
-              onClick={() => onPick(v.verb)}
-              style={{ ...linkBtn, display: 'block', marginBottom: 3 }}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Suggestion card (§3.1 step 5 / §4) — the UX-02 field set, every field bound to the
+ *  proposal plan_intent built from real reads, plus a computed `why this seat` disclosure.
+ *  Confirm writes through the governed path; a dependency edge the write path cannot
+ *  express is refused explicitly (§3.3), never silently dropped. */
+function SuggestionCard({
+  p,
+  confirming,
+  confirmResult,
+  onConfirm,
+  onCancel,
+}: {
+  p: Proposal;
+  confirming: boolean;
+  confirmResult: { ok: string } | { error: string } | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [showRationale, setShowRationale] = useState(false);
+  const deps = p.proposedObject.suggestedDependencies;
+  // enqueueDispatch forwards only seat/title/instructions/priority — no dependency
+  // edges (the V5 wrapper gap). A suggestion carrying an edge is refused, not dropped.
+  const writeCannotExpressEdge = deps.length > 0;
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ ...sectionLabel }}>提议 · 审阅后确认(actor {p.actor})</div>
+      <Row label="意图">{p.intentRestated}</Row>
+      <Row label="对象">
+        {p.proposedObject.kind} · {p.proposedObject.title}
+      </Row>
+      <Row label="归属">
+        {p.ownership.seatName}({p.ownership.seatId})
+        {p.ownership.role ? ` · ${p.ownership.role}` : ''}
+      </Row>
+      {p.ownership.capabilityMatch.length > 0 && (
+        <Row label="能力匹配">{p.ownership.capabilityMatch.join('、')}</Row>
+      )}
+      {p.ownership.authorityDocs.length > 0 && (
+        <Row label="权威文档">{p.ownership.authorityDocs.join('、')}</Row>
+      )}
+      {p.ownership.constraints.length > 0 && (
+        <Row label="约束">{p.ownership.constraints.join('、')}</Row>
+      )}
+      <Row label="证据">
+        {p.evidence.length === 0
+          ? '(无)'
+          : p.evidence.map((e, i) => (
+              <div key={i}>
+                {e.label} — {e.source}
+              </div>
+            ))}
+      </Row>
+      <Row label="预算">
+        worker {p.budget.projectWorkerBudgetTokens ?? '—'} / supervisor{' '}
+        {p.budget.projectSupervisorBudgetTokens ?? '—'} · 在途 {p.budget.seatInFlightDispatches}
+        <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)' }}>{p.budget.note}</div>
+      </Row>
+      {p.impact.length > 0 && <Row label="影响">{p.impact.join(';')}</Row>}
+      {p.precondition.raw && (
+        <Row label="前提">
+          {p.precondition.raw}
+          {p.precondition.edge
+            ? ` → ${p.precondition.edge.depKind}=${p.precondition.edge.depValue}`
+            : p.precondition.unresolvedReason
+              ? `(未解析:${p.precondition.unresolvedReason})`
+              : ''}
+        </Row>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setShowRationale((s) => !s)}
+        style={{ ...linkBtn, fontSize: 11, marginTop: 4 }}
+      >
+        {showRationale ? '收起理由' : '为什么是这个席位?'}({p.routingRationale.length}{' '}
+        个候选的实测理由)
+      </button>
+      {showRationale && (
+        <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {p.routingRationale.map((r) => (
+            <div
+              key={r.seatId}
+              style={{
+                fontSize: 11,
+                lineHeight: 1.5,
+                borderLeft: `2px solid ${r.selected ? 'var(--sl-brand)' : 'var(--sl-divider)'}`,
+                paddingLeft: 6,
+              }}
             >
-              <b>{v.verb}</b> — {v.hint}
-            </button>
-          ))}
-        </>
-      )}
-      {c.kind === 'owner-zero' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 4 }}>没有叫 「{c.name}」 的席位。现有席位:</div>
-          <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)' }}>
-            {c.seats.join('、') || '(空)'}
-          </div>
-        </>
-      )}
-      {c.kind === 'owner-multi' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 4 }}>
-            「{c.name}」 匹配到多个席位,你要哪一个?
-          </div>
-          {c.candidates.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => onPick(s)}
-              style={{ ...linkBtn, display: 'block', marginBottom: 2 }}
-            >
-              {s}
-            </button>
-          ))}
-        </>
-      )}
-      {c.kind === 'owner-omitted' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 4 }}>你没说给谁。按能力与当前负载,候选是:</div>
-          {c.candidates.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)' }}>
-              (没有可计算的候选)
+              <b>{r.seatName}</b>({r.seatId})
+              {r.selected ? ' ← 选中' : r.eligible ? '' : ' · 不合格'}
+              <div style={{ color: 'var(--sl-text-tertiary)' }}>
+                命中能力:{r.matchedCapabilities.join('、') || '无'}
+                {r.excludingConstraint ? ` · 排除:${r.excludingConstraint}` : ''} · 在途{' '}
+                {r.inFlightDispatches} · 源:{r.source}
+              </div>
             </div>
-          ) : (
-            c.candidates.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => onPick(s)}
-                style={{ ...linkBtn, display: 'block', marginBottom: 2 }}
-              >
-                {s}
-              </button>
-            ))
-          )}
-        </>
-      )}
-      {c.kind === 'object-unclear' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 4 }}>要建哪类对象?</div>
-          {['派单(dispatch)', '工作项(workitem)', '交接(handoff)', '评论(comment)'].map((o) => (
-            <button
-              key={o}
-              type="button"
-              onClick={() => onPick(o)}
-              style={{ ...linkBtn, display: 'block', marginBottom: 2 }}
-            >
-              {o}
-            </button>
           ))}
-        </>
-      )}
-      {c.kind === 'precondition-unexpressible' && (
-        <div style={{ fontSize: 12, lineHeight: 1.6 }}>
-          这句话带一个前提:「{c.precondition}」。当前的派单写入路径<strong>无法表达依赖边</strong>
-          ,所以我不会静默丢掉它。 要我<b>先不带这个前提</b>建卡(你确认后再来补),还是先算了?
         </div>
       )}
-      {c.kind === 'no-capable-seat' && (
-        <>
-          <div style={{ fontSize: 12, marginBottom: 4 }}>没有满足条件的席位。被挡住的约束:</div>
-          <ul
-            style={{ fontSize: 12, color: 'var(--sl-text-secondary)', margin: 0, paddingLeft: 18 }}
+
+      <div
+        style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}
+      >
+        {writeCannotExpressEdge ? (
+          <span style={{ fontSize: 11, color: 'var(--sl-red)', lineHeight: 1.5 }}>
+            这条意图带依赖边({deps.map((d) => `${d.depKind}=${d.depValue}`).join(', ')});
+            当前受治理写路无法表达依赖边,我不会静默丢掉它 —— 需先补写路的 dependencies 支持。
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={confirming}
+            style={{
+              fontSize: 12,
+              padding: '5px 14px',
+              borderRadius: 'var(--sl-radius-md)',
+              border: '1px solid var(--sl-brand)',
+              background: 'var(--sl-brand)',
+              color: '#fff',
+              cursor: 'pointer',
+            }}
           >
-            {c.constraints.map((x) => (
-              <li key={x}>{x}</li>
-            ))}
-          </ul>
-        </>
+            {confirming ? '提交中…' : '确认并建卡'}
+          </button>
+        )}
+        <button type="button" onClick={onCancel} style={{ ...linkBtn, fontSize: 12 }}>
+          取消
+        </button>
+      </div>
+
+      {confirmResult && 'ok' in confirmResult && (
+        <div style={{ fontSize: 12, color: 'var(--sl-brand)', marginTop: 6 }}>
+          已建卡:派单{' '}
+          <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}>{confirmResult.ok}</span>
+        </div>
       )}
-      {c.kind === 'tool-unavailable' && (
-        <div style={{ fontSize: 12, lineHeight: 1.6 }}>
-          结构化「派活」依赖的意图工具当前不可用(实测,非猜测):
-          <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}> {c.detail}</span>
-          。这一步属于后续接线(slice 4);在此期间请用「说句话」走原始 IM,或先用 Continuity / Decision
-          两块(它们已接真读)。
+      {confirmResult && 'error' in confirmResult && (
+        <div style={{ fontSize: 12, color: 'var(--sl-red)', marginTop: 6, lineHeight: 1.5 }}>
+          建卡失败(后端原样返回,未显示派单 id):
+          <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}>
+            {' '}
+            {confirmResult.error}
+          </span>
         </div>
       )}
     </div>
@@ -584,12 +633,22 @@ function ClarificationCard({ c, onPick }: { c: Clarification; onPick: (choice: s
 // Supervisor panel; no new window, no re-layout of the skeleton (contract §4).
 // ─────────────────────────────────────────────────────────────────────────────
 
+type PlanState =
+  | { kind: 'idle' }
+  | { kind: 'planning' }
+  | { kind: 'result'; result: IntentPlanResult }
+  | { kind: 'error'; message: string };
+
 export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> = ({
   onRawSend,
 }) => {
   const [mode, setMode] = useState<IntentMode>('dispatch');
   const [text, setText] = useState('');
-  const [clarification, setClarification] = useState<Clarification | null>(null);
+  const [plan, setPlan] = useState<PlanState>({ kind: 'idle' });
+  const [confirming, setConfirming] = useState(false);
+  const [confirmResult, setConfirmResult] = useState<{ ok: string } | { error: string } | null>(
+    null,
+  );
   const { probe, run } = useMeasuredProbe();
 
   // Measure wiring once on mount — never assert, always observe (V8 / boundary 3).
@@ -597,17 +656,25 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
     run();
   }, [run]);
 
-  const submitDispatch = useCallback(() => {
+  const submitDispatch = useCallback(async () => {
     const t = text.trim();
     if (!t) return;
-    // Slice 2 does not run the deterministic parser (that is slice 1's tool,
-    // wired in slice 4). Until it is live, the honest state is a MEASURED
-    // "tool unavailable" clarification — not a guessed proposal, not a fake
-    // "not wired" flag.
-    setClarification({
-      kind: 'tool-unavailable',
-      detail: 'deterministic intent parser not yet a callable command (slice 1 pending)',
-    });
+    if (!isTauri()) {
+      setPlan({ kind: 'error', message: 'not running inside the SeatLoom app (no Tauri bridge)' });
+      return;
+    }
+    setPlan({ kind: 'planning' });
+    setConfirmResult(null);
+    try {
+      // The real call: api.planIntent → cmd_plan_intent → plan_intent (actor
+      // human:supervisor). Reads only; returns the tool's pretty-JSON.
+      const raw = await api.planIntent(t);
+      const result = JSON.parse(raw) as IntentPlanResult;
+      setPlan({ kind: 'result', result });
+    } catch (err) {
+      // Rejection verbatim — the reason, never an empty card, never a guess.
+      setPlan({ kind: 'error', message: String(err) });
+    }
   }, [text]);
 
   const submitChat = useCallback(() => {
@@ -617,12 +684,36 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
     setText('');
   }, [text, onRawSend]);
 
+  const confirmWrite = useCallback(async () => {
+    if (plan.kind !== 'result' || !plan.result.proposal) return;
+    const p = plan.result.proposal;
+    setConfirming(true);
+    setConfirmResult(null);
+    try {
+      // The real governed write path (actor human:supervisor). No dependencies:
+      // the wrapper cannot forward them, and a suggestion carrying an edge is
+      // refused in the card above rather than silently dropped.
+      const dispatchId = await api.enqueueDispatch(
+        p.ownership.seatId,
+        p.proposedObject.title,
+        p.proposedObject.payloadNote,
+      );
+      setConfirmResult({ ok: dispatchId });
+    } catch (err) {
+      // verbatim; no dispatch id is shown on failure
+      setConfirmResult({ error: String(err) });
+    } finally {
+      setConfirming(false);
+    }
+  }, [plan]);
+
   const modeBtn = (m: IntentMode, label: string, title: string) => (
     <button
       type="button"
       onClick={() => {
         setMode(m);
-        setClarification(null);
+        setPlan({ kind: 'idle' });
+        setConfirmResult(null);
       }}
       title={title}
       style={{
@@ -639,6 +730,72 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
       {label}
     </button>
   );
+
+  // Render the plan_intent result — proposal / clarification / retrieval (§3).
+  const renderPlan = () => {
+    if (plan.kind === 'planning') {
+      return <div style={{ fontSize: 12, color: 'var(--sl-text-tertiary)' }}>拆解中…</div>;
+    }
+    if (plan.kind === 'error') {
+      return (
+        <div style={{ ...cardStyle, borderColor: 'var(--sl-red)' }}>
+          <div style={{ ...sectionLabel, color: 'var(--sl-red)' }}>拆解被拒(后端原样返回)</div>
+          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+            <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}>{plan.message}</span>
+          </div>
+        </div>
+      );
+    }
+    if (plan.kind === 'result') {
+      const r = plan.result;
+      const pick = (label: string) => {
+        setText(label);
+        setPlan({ kind: 'idle' });
+      };
+      if (r.outcome === 'proposal' && r.proposal) {
+        if (r.proposal.blockingClarification) {
+          return <ClarificationCard c={r.proposal.blockingClarification} onPick={pick} />;
+        }
+        return (
+          <SuggestionCard
+            p={r.proposal}
+            confirming={confirming}
+            confirmResult={confirmResult}
+            onConfirm={confirmWrite}
+            onCancel={() => {
+              setPlan({ kind: 'idle' });
+              setConfirmResult(null);
+            }}
+          />
+        );
+      }
+      if (r.outcome === 'clarification' && r.clarification) {
+        return <ClarificationCard c={r.clarification} onPick={pick} />;
+      }
+      if (r.outcome === 'retrieval') {
+        return (
+          <div style={cardStyle}>
+            <div style={sectionLabel}>检索 · 精确读取(Why / Evidence)</div>
+            <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', lineHeight: 1.5 }}>
+              plan_intent 对 why/evidence 意图返回的是「要做的精确读取」,而非拼凑的答案:
+            </div>
+            <pre
+              style={{
+                fontSize: 11,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                color: 'var(--sl-text-primary)',
+                margin: '6px 0 0',
+              }}
+            >
+              {JSON.stringify(r.retrieval ?? {}, null, 2)}
+            </pre>
+          </div>
+        );
+      }
+    }
+    return null;
+  };
 
   return (
     <div
@@ -715,9 +872,7 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
         </button>
       </div>
 
-      {clarification && (
-        <ClarificationCard c={clarification} onPick={() => setClarification(null)} />
-      )}
+      {mode === 'dispatch' && renderPlan()}
 
       {/* the two live-wired cards */}
       <ContinuityDeltaCard />
