@@ -20,6 +20,7 @@ import { MessageBubble } from '../components/MessageBubble';
 import { ChatInput } from '../components/ChatInput';
 import { ProjectDashboard } from '../dashboard/ProjectDashboard';
 import { GlobalDashboard } from '../dashboard/GlobalDashboard';
+import { SupervisorIntent } from './SupervisorIntent';
 import { SupervisorContextMode, SupervisorViewMode, ChatMessage } from '../types';
 import { useDataStore } from '../../stores/useDataStore';
 import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
@@ -529,6 +530,8 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
                     </div>
                   </div>
                 </div>
+
+                <SupervisorIntent onRawSend={handleSend} />
 
                 {/* Messages */}
                 <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
