@@ -114,6 +114,7 @@ pub fn tools_list_result() -> Value {
             open_topic_tool(),
             get_knowledge_tree_tool(),
             get_topic_memories_tool(),
+            crate::intent::plan_intent_tool(),
         ]
     })
 }
@@ -746,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_eighteen_tools() {
+    fn tools_list_advertises_the_nineteen_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -770,7 +771,8 @@ mod tests {
                 "query_ledger",
                 "open_topic",
                 "get_knowledge_tree",
-                "get_topic_memories"
+                "get_topic_memories",
+                "plan_intent",
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).

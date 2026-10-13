@@ -19,7 +19,7 @@ use commands::{
         cmd_accept_delivery, cmd_get_acceptance_lineage, cmd_list_acceptances, cmd_reject_delivery,
     },
     artifact_cmds::{cmd_get_artifact, cmd_list_artifacts},
-    dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches},
+    dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches, cmd_plan_intent},
     document_cmds::{
         cmd_get_document, cmd_list_document_associations, cmd_list_document_sections,
         cmd_list_document_versions, cmd_list_documents,
@@ -78,23 +78,6 @@ fn repo_root() -> PathBuf {
     }
     if cwd.join("docs").is_dir() {
         return cwd;
-    }
-    // 🔴 2026-10-12:从 Launchpad / Spotlight 打开 .app 时,cwd 是 `/`。上面两条
-    //    启发式全都落空,repo_root 解析成 `/`,于是验收那次合并跑在 `/` 里,
-    //    第一道检查「这是不是 git 工作树」就把它拒了 —— 而报错文本说的是
-    //    `/ is not a git work tree`,看上去像别的问题。曾经因此白绕一圈。
-    //    装在 /Applications 的应用不能依赖启动方式带来的 cwd,所以这里补一层
-    //    已知位置的兜底:第一个长得像仓库的目录胜出。
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        for cand in [
-            home.join("Documents/GitHub/seatloom"),
-            home.join("Documents/GitHub/seatloom/seatloom"),
-        ] {
-            if cand.join("Cargo.toml").is_file() && cand.join("docs").is_dir() {
-                return cand;
-            }
-        }
     }
     // Fallback to the current directory; reconcile will fail loudly if this is wrong.
     cwd
@@ -169,6 +152,9 @@ fn main() {
             // governed dispatch (G19) — seat inboxes
             cmd_list_dispatches,
             cmd_enqueue_dispatch,
+            // Supervisor intent tool surface (LYRA contract slice 1) — one
+            // sentence in, a typed proposal/clarification out; never a write
+            cmd_plan_intent,
             // governed dispatch acceptance gate (014, D2) — the 待验收 loop
             cmd_list_acceptances,
             cmd_accept_delivery,
@@ -193,48 +179,4 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run SeatLoom Tauri app");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 2026-10-12:装在 /Applications 的应用从 Launchpad 打开时 cwd 是 `/`,
-    /// repo_root 于是解析成 `/`,验收合并跑在 `/` 里被「不是 git 工作树」拒掉。
-    /// 这个测试钉住兜底路径的前提:那个已知位置必须仍然是一个仓库。
-    /// 它坏了,说明兜底失效了 —— 而不是等下一次验收在凌晨失败。
-    #[test]
-    fn the_fallback_repo_location_is_still_a_repo() {
-        let home = match std::env::var_os("HOME") {
-            Some(h) => PathBuf::from(h),
-            None => return, // 没有 HOME 的环境(CI)无法判定,不假装通过
-        };
-        let cand = home.join("Documents/GitHub/seatloom");
-        assert!(
-            cand.join("Cargo.toml").is_file(),
-            "兜底路径 {} 不再有 Cargo.toml —— repo_root 的兜底已失效",
-            cand.display()
-        );
-        assert!(
-            cand.join("docs").is_dir(),
-            "兜底路径 {} 不再有 docs/ —— repo_root 的兜底已失效",
-            cand.display()
-        );
-    }
-
-    /// 兜底的判据本身:一个目录要同时有 Cargo.toml 和 docs/ 才算仓库。
-    /// 单独一个不算 —— 否则任意带 Cargo.toml 的目录都会被当成根。
-    #[test]
-    fn the_repo_judgement_requires_both_markers() {
-        let tmp = std::env::temp_dir().join("seatloom-repo-judgement-probe");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // 只有 Cargo.toml:不算
-        std::fs::write(tmp.join("Cargo.toml"), "[workspace]\n").unwrap();
-        assert!(!(tmp.join("Cargo.toml").is_file() && tmp.join("docs").is_dir()));
-        // 再加 docs/:算
-        std::fs::create_dir_all(tmp.join("docs")).unwrap();
-        assert!(tmp.join("Cargo.toml").is_file() && tmp.join("docs").is_dir());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 }

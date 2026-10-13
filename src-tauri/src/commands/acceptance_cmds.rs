@@ -21,9 +21,6 @@ use crate::state::AppState;
 /// a missing value refuses the command with a configuration hint.
 pub const OPERATOR_REF_ENV: &str = "SEATLOOM_OPERATOR_REF";
 
-/// 操作者身份的第二来源:一个文件,一行。优先级 环境变量 > 这个文件 > 拒绝。
-pub const OPERATOR_REF_FILE: &str = ".seatloom/operator";
-
 /// The pending-acceptance read model (the UI's 待验收区). Pending first, then
 /// the most recently decided (result states: merge commit / rework link).
 #[tauri::command]
@@ -177,34 +174,15 @@ pub async fn cmd_reject_delivery(
 // =============================================================================
 
 fn operator_ref() -> Result<String, String> {
-    if let Some(v) = std::env::var(OPERATOR_REF_ENV)
+    std::env::var(OPERATOR_REF_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
-    {
-        return Ok(v.trim().to_string());
-    }
-    // 回退:配置文件。只在 HOME 下找,不猜别的位置。
-    // 2026-10-12:装在 /Applications 的应用从启动台打开时没有任何环境变量,
-    // 于是「身份绝不现场编造」这条正确的拒绝变成一堵永远撞不动的墙。
-    // 身份仍然必须被显式写下来,只是不再依赖启动方式。
-    if let Some(home) = std::env::var_os("HOME") {
-        let path = std::path::PathBuf::from(home).join(OPERATOR_REF_FILE);
-        if let Ok(v) = std::fs::read_to_string(&path) {
-            let v = v.trim();
-            if !v.is_empty() {
-                return Ok(v.to_string());
-            }
-        }
-    }
-    Err(format!(
-        "{OPERATOR_REF_ENV} is not set — the acceptance decision is a user act; \
-         identity is never invented on the spot.\n\
-         Configure it either way, then retry:\n\
-         · file (persists across launches):  echo '<your-ref>' > ~/{OPERATOR_REF_FILE}\n\
-         · env (this launch only):            {OPERATOR_REF_ENV}='<your-ref>'\n\
-         Use a ref that already exists in your ledger — inventing a new one here \
-         would be the same defect this check exists to prevent."
-    ))
+        .ok_or_else(|| {
+            format!(
+                "{OPERATOR_REF_ENV} is not set — the acceptance decision is a user act; \
+                 configure the operator ref and retry (identity is never invented on the spot)"
+            )
+        })
 }
 
 /// Load an acceptance that is still pending. Terminal rows are immutable (014):
@@ -573,32 +551,5 @@ mod tests {
             .expect_err("a non-git root must refuse");
         assert!(err.contains("not a git work tree"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
-    }
-}
-
-#[cfg(test)]
-mod operator_ref_tests {
-    use super::*;
-
-    /// 身份的第二来源必须是「显式写下来的一个文件」,不是猜的。
-    /// 这个测试钉住判据:文件里只有空白 → 仍然算没配,必须继续拒绝。
-    #[test]
-    fn a_blank_operator_file_is_not_an_identity() {
-        let tmp = std::env::temp_dir().join("seatloom-operator-blank-probe");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("operator"), "   \n\t\n").unwrap();
-        let v = std::fs::read_to_string(tmp.join("operator")).unwrap();
-        assert!(v.trim().is_empty(), "空白文件被当成了身份");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// 回退路径必须在 HOME 下,而且是单文件单行 —— 否则它会变成
-    /// 一个到处找身份、迟早找错地方的机制。
-    #[test]
-    fn the_operator_file_is_a_single_file_under_home() {
-        assert_eq!(OPERATOR_REF_FILE, ".seatloom/operator");
-        assert!(!OPERATOR_REF_FILE.starts_with('/'), "不该是绝对路径");
-        assert!(!OPERATOR_REF_FILE.contains(".."), "不该含相对上跳");
     }
 }

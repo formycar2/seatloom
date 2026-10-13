@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod data_engine;
 pub mod db;
 pub mod git;
+pub mod intent;
 pub mod ledger;
 pub mod objects;
 pub mod pipeline;
