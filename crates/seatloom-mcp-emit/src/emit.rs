@@ -130,6 +130,9 @@ pub enum EmitRejection {
         value: String,
         detail: String,
     },
+    /// The emission claims to be a gate (its id ends in `-live`) but does not
+    /// carry the payload that makes a gate auditable. See [`crate::gate`].
+    Gate(crate::gate::GateRejection),
 }
 
 impl std::fmt::Display for EmitRejection {
@@ -175,6 +178,7 @@ impl std::fmt::Display for EmitRejection {
                 f,
                 "emit_event rejected: occurred_at {value:?} is not an RFC 3339 timestamp ({detail})"
             ),
+            EmitRejection::Gate(g) => write!(f, "{g}"),
         }
     }
 }
@@ -228,6 +232,14 @@ impl EmitArgs {
             Some(s) if !s.is_empty() => s,
             _ => format!("ev-{}", nanoid::nanoid!()),
         };
+
+        // The gate criterion, enforced on the PRODUCER side (Aegis ruling 2026-10-11).
+        // An id that claims to be a gate must carry the payload that makes the
+        // claim auditable; a generated nanoid never does, so announcements are
+        // untouched. Without this the only thing standing between an edge and
+        // an announcement was the issuer's memory.
+        crate::gate::check_gate_emission(&event_type.to_string(), &event_id, &self.payload)
+            .map_err(EmitRejection::Gate)?;
 
         // occurred_at: RFC 3339 when supplied, else now.
         let occurred_at: DateTime<Utc> = match self.occurred_at {
@@ -463,5 +475,78 @@ mod tests {
             parse(v).into_draft(),
             Err(EmitRejection::MissingActorRef)
         ));
+    }
+
+    // ---- the gate criterion, producer side (Aegis ruling 2026-10-11) ----
+
+    fn gate_args(
+        event_id: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "type": event_type,
+            "event_id": event_id,
+            "payload": payload,
+            "refs": [{"ref_type": "project", "ref_id": "seatloom", "role": "subject"}],
+            "actor_ref": "seat:seat-aegis-001",
+            "project_id": "seatloom"
+        })
+    }
+
+    #[test]
+    fn an_id_claiming_to_be_a_gate_must_carry_the_verified_payload() {
+        // The announcement payload that fooled the fleet on 10-10: branch/commit only.
+        let args = parse(gate_args(
+            "ev-knowledge-read-model-live",
+            "ArtifactCreated",
+            serde_json::json!({"branch": "packet/nimbus/x", "commit": "abc123"}),
+        ));
+        let err = args.into_draft().unwrap_err().to_string();
+        assert!(err.contains("delivery announcement"), "{err}");
+    }
+
+    #[test]
+    fn a_gate_that_declines_to_say_how_it_was_measured_is_refused() {
+        let args = parse(gate_args(
+            "ev-knowledge-read-model-live",
+            "SupervisorMessage",
+            serde_json::json!({
+                "gate": "ev-knowledge-read-model-live",
+                "statement": "the read model is live-usable",
+                "does_not_assert": "does not assert every seat has reloaded"
+            }),
+        ));
+        let err = args.into_draft().unwrap_err().to_string();
+        assert!(err.contains("verified"), "{err}");
+        assert!(err.contains("not a measurement"), "{err}");
+    }
+
+    #[test]
+    fn a_well_formed_gate_is_accepted() {
+        let args = parse(gate_args(
+            "ev-knowledge-read-model-live",
+            "SupervisorMessage",
+            serde_json::json!({
+                "gate": "ev-knowledge-read-model-live",
+                "statement": "get_knowledge_tree returns topics on the live DB",
+                "verified": "called get_knowledge_tree against postgresql://.../seatloom; returned 25 topics",
+                "does_not_assert": "does not assert the panel renders them",
+                "issued_by": "seat-aegis-001"
+            }),
+        ));
+        let d = args.into_draft().expect("a measured gate is accepted");
+        assert_eq!(d.event_id, "ev-knowledge-read-model-live");
+    }
+
+    #[test]
+    fn an_ordinary_announcement_is_untouched_by_the_gate_criterion() {
+        // The criterion must not become a tax on the 99% of events that are not
+        // gates: an ArtifactCreated with branch/commit is exactly what a seat
+        // should emit when its code lands.
+        let d = parse(base_args())
+            .into_draft()
+            .expect("announcement still fine");
+        assert!(d.event_id.starts_with("ev-"));
     }
 }
