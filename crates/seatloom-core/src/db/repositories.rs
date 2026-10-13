@@ -2,6 +2,7 @@
 /// Uses tokio-postgres (via deadpool-postgres) for async Postgres access.
 /// Sort orders are deterministic and documented inline.
 use deadpool_postgres::Pool;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use thiserror::Error;
 use tokio_postgres::Row;
@@ -677,6 +678,109 @@ impl SeatloomDb {
         };
         let row = client.query_one(sql, &[&dep_value]).await?;
         Ok(row.get(0))
+    }
+
+    // =========================================================================
+    // Supervisor intent tool surface — the ONE gatherer.
+    //
+    // Both surfaces (the `plan_intent` MCP tool and the Tauri command that
+    // shells out to it) plan over the output of this function. There is no
+    // second gatherer and no second planner; the contract's "both surfaces over
+    // the same repository functions" is enforced structurally, by this being
+    // the only function that reads for the intent surface.
+    // =========================================================================
+
+    /// The seat registry, reduced to the four columns routing needs.
+    ///
+    /// **Why not [`SeatloomDb::list_seats`]?** Because `list_seats` hydrates the
+    /// full runtime triple and validates `default_harness` against the closed
+    /// `Harness` domain — and the live registry currently contains a row
+    /// (`seat-vela-001`, `default_harness = 'Pi'`) that is out of that domain, so
+    /// the whole read fails. Routing has no opinion about which harness a seat
+    /// runs; making the intent surface fail because of an unrelated column's
+    /// domain violation would be a defect, not strictness. The domain violation
+    /// itself is reported to Aegis as data debt, not patched here.
+    pub async fn list_seat_routing_facts(&self) -> Result<Vec<SeatRoutingRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT id, name, capability_tags, status FROM seats ORDER BY name ASC",
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_seat_routing).collect())
+    }
+
+    /// Gather everything an intent plan is allowed to know about one project:
+    /// the seat registry joined to its role bindings, the project's real budget
+    /// columns, and this project's dispatch load.
+    ///
+    /// Three deliberate bounds:
+    ///
+    /// 1. **No event/artifact scan.** The caller resolves exactly the referent
+    ///    ids the intent names ([`crate::intent::facts::named_referents`]) and
+    ///    writes the answers into `named_referent_exists`.
+    /// 2. **A dispatch limit, stated.** Load counting needs the in-flight
+    ///    dispatches of one project, not history; the ceiling is a parameter so a
+    ///    caller can never silently read an unbounded table.
+    /// 3. **Absent reads stay absent.** A project with no budget row yields
+    ///    `None`, never a defaulted number.
+    pub async fn gather_intent_facts(
+        &self,
+        project_id: &str,
+        dispatch_limit: i64,
+    ) -> Result<crate::intent::IntentFacts, DbError> {
+        let seats = self.list_seat_routing_facts().await?;
+        let bindings = self.list_role_bindings_for_project(project_id).await?;
+        let project = self.get_project(project_id).await?;
+        let dispatches = self
+            .list_dispatches_for_project(project_id, dispatch_limit)
+            .await?;
+
+        let mut seat_facts: Vec<crate::intent::SeatFact> = seats
+            .iter()
+            .map(|seat| {
+                let binding = bindings.iter().find(|b| b.seat_id == seat.id);
+                crate::intent::SeatFact {
+                    seat_id: seat.id.clone(),
+                    name: seat.name.clone(),
+                    capability_tags: seat.capability_tags.clone(),
+                    status: seat.status.clone(),
+                    role: binding.map(|b| b.role.clone()),
+                    authority_docs: binding
+                        .map(|b| b.authority_doc_refs.clone())
+                        .unwrap_or_default(),
+                    constraints: binding.map(|b| b.constraints.clone()).unwrap_or_default(),
+                    active_delegation_id: binding.and_then(|b| b.active_delegation_id.clone()),
+                }
+            })
+            .collect();
+        // Name order is the planner's deterministic ordering for candidate lists.
+        seat_facts.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.seat_id.cmp(&b.seat_id)));
+
+        let mut in_flight_by_seat: BTreeMap<String, usize> = BTreeMap::new();
+        let mut dispatch_ids: BTreeSet<String> = BTreeSet::new();
+        let mut dispatch_titles: BTreeSet<String> = BTreeSet::new();
+        for dispatch in &dispatches {
+            dispatch_ids.insert(dispatch.id.clone());
+            dispatch_titles.insert(dispatch.title.clone());
+            if dispatch.status == "in_flight" {
+                *in_flight_by_seat
+                    .entry(dispatch.target_seat_id.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+
+        Ok(crate::intent::IntentFacts {
+            project_id: project_id.to_string(),
+            worker_budget_tokens: project.as_ref().map(|p| p.worker_budget_tokens),
+            supervisor_budget_tokens: project.as_ref().map(|p| p.supervisor_budget_tokens),
+            seats: seat_facts,
+            in_flight_by_seat,
+            dispatch_ids,
+            dispatch_titles,
+            named_referent_exists: BTreeMap::new(),
+        })
     }
 
     // =========================================================================
@@ -2601,6 +2705,26 @@ fn row_to_seat(r: &Row) -> Result<SeatRow, DbError> {
         row.default_agent.as_deref(),
     )?;
     Ok(row)
+}
+
+/// The seat registry reduced to what routing needs — id, name, capability
+/// tags, status. No runtime triple, therefore no `Harness`/`Agent` domain
+/// validation, therefore no failure on a row whose harness is out of domain.
+#[derive(Debug, Clone)]
+pub struct SeatRoutingRow {
+    pub id: String,
+    pub name: String,
+    pub capability_tags: Vec<String>,
+    pub status: String,
+}
+
+fn row_to_seat_routing(r: &Row) -> SeatRoutingRow {
+    SeatRoutingRow {
+        id: r.get(0),
+        name: r.get(1),
+        capability_tags: r.get(2),
+        status: r.get(3),
+    }
 }
 
 fn row_to_project(r: &Row) -> ProjectRow {

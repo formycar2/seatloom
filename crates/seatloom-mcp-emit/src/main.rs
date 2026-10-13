@@ -10,6 +10,7 @@
 mod dispatch;
 mod emit;
 mod gate;
+mod intent;
 mod knowledge;
 mod memory;
 mod protocol;
@@ -166,10 +167,15 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
                 Err(resp) => resp,
             }
         },
+        // --- Supervisor intent tool surface (LYRA contract slice 1): plan, never write ---
+        "plan_intent" => match intent_args::<intent::PlanIntentArgs>(&id, arguments) {
+            Ok(a) => render_intent(id, intent::plan_intent(db, pool, a).await),
+            Err(resp) => resp,
+        },
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent)"),
                 true,
             ),
         ),
@@ -325,6 +331,26 @@ fn memory_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> 
             id.clone(),
             tool_call_result(&format!("memory tool rejected: bad arguments: {e}"), true),
         )),
+    }
+}
+
+/// The intent tool's argument parse: a malformed call is a tool error carrying
+/// the serde message, never a transport error.
+fn intent_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> Result<A, Value> {
+    match serde_json::from_value::<A>(arguments) {
+        Ok(a) => Ok(a),
+        Err(e) => Err(success(
+            id.clone(),
+            tool_call_result(&format!("plan_intent rejected: bad arguments: {e}"), true),
+        )),
+    }
+}
+
+/// Render `plan_intent`'s outcome: the typed rejection verbatim on failure.
+fn render_intent(id: Value, outcome: Result<String, intent::IntentRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }
 }
 
