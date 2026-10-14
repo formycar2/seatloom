@@ -686,6 +686,10 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
 
   const confirmWrite = useCallback(async () => {
     if (plan.kind !== 'result' || !plan.result.proposal) return;
+    // 2026-10-14 张先生实测:「点了好几次确认建卡」→ 派单列表里 9 条一模一样的单。
+    // 根因:确认后没有禁用按钮,可以重复点;每次点都真建一条受治理派单。
+    // 修:一旦确认过(成功或失败),按钮禁用 —— 一张提案卡只对应一次写。
+    if (confirmResult) return;
     const p = plan.result.proposal;
     setConfirming(true);
     setConfirmResult(null);
