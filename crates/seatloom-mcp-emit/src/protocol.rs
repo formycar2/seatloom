@@ -327,7 +327,16 @@ fn request_acceptance_tool() -> Value {
             calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
             or artifact; the dispatch must have no pending acceptance; a valid acceptance_plan (shape v1) \
             is REQUIRED — a missing or malformed plan is a typed rejection before any DB contact. \
-            Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+            Identity from SEATLOOM_ACTOR_REF (never a parameter). \
+            \n\
+            OPTIONAL `acceptance_id`: omit it and the id is derived deterministically as \
+            `acc-<dispatch_id>` — the historical behaviour, unchanged for every existing caller. \
+            Supply it to re-open a card you cancelled under the SAME id: cancel_acceptance is terminal \
+            and never deletes the row, so without this the primary key stayed occupied and \
+            `duplicate key value violates unique constraint acceptances_pkey` was unavoidable. A \
+            supplied id must be fresh, or name a CANCELLED card whose dispatch you own; an id held by \
+            a pending, accepted or rejected card is refused, and another seat's id is never borrowable \
+            — the seat-identity guard is not bypassed by choosing an id.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -369,6 +378,11 @@ fn request_acceptance_tool() -> Value {
                         },
                         "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
                     }
+                },
+                "acceptance_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "OPTIONAL. Omit it and the id is derived as `acc-<dispatch_id>` (unchanged behaviour). Supply it to re-open a card you cancelled under the same id — the only way through the `acceptances_pkey` a cancelled row keeps occupying. Accepted values: a fresh id, or the id of a CANCELLED acceptance whose dispatch is owned by the calling seat. Refused: an id held by a pending card, an id in the terminal accepted/rejected state, another seat's id, and a cancelled card that gates a different dispatch."
                 }
             }
         }

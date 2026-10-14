@@ -177,6 +177,26 @@ pub struct RequestAcceptanceArgs {
     /// skips the check. Authored by the PO; immutable after the request, same
     /// rule as `how_to_verify`.
     pub acceptance_plan: serde_json::Value,
+    /// The acceptance id to use. OPTIONAL, and omitting it is the historical
+    /// behaviour: the id is derived deterministically as `acc-<dispatch_id>`,
+    /// which is what every existing caller gets.
+    ///
+    /// Why it exists: `cancel_acceptance` moves a row to the terminal
+    /// `cancelled` state and never deletes it (ledger discipline), so a
+    /// cancelled card keeps occupying `acceptances.id` — its primary key. A
+    /// seat that cancelled a card and then wanted to re-request the same
+    /// delivery hit `duplicate key value violates unique constraint
+    /// acceptances_pkey`, with no way through: the "no pending acceptance for
+    /// this dispatch" guard passed, and the deterministic id was already taken.
+    /// Supplying the id explicitly makes "cancel, then re-open under the same
+    /// id" a supported path.
+    ///
+    /// The guards are unchanged in kind and stricter in effect: the id may be
+    /// fresh, or it may name a **cancelled** row whose dispatch is owned by the
+    /// calling seat. A pending, accepted or rejected row is never taken over,
+    /// and another seat's id is never borrowed.
+    #[serde(default)]
+    pub acceptance_id: Option<String>,
 }
 
 /// `cancel_acceptance` — the seat pulls back its OWN pending acceptance request
@@ -254,6 +274,40 @@ pub enum DispatchRejection {
     /// `request_acceptance`: the dispatch already has a pending acceptance.
     AcceptancePending {
         dispatch_id: String,
+    },
+    /// `request_acceptance` with an explicit `acceptance_id`: that id is already
+    /// occupied by a PENDING acceptance, so taking it would displace work
+    /// somebody is still waiting on. Named with the occupant AND its owner so
+    /// the caller can see exactly whose card it is.
+    AcceptanceIdTaken {
+        acceptance_id: String,
+        occupant_dispatch_id: String,
+        occupant_seat: String,
+    },
+    /// `request_acceptance` with an explicit `acceptance_id`: that id names an
+    /// acceptance in a TERMINAL decided state. `accepted` and `rejected` rows
+    /// are recorded facts — the merge happened, or the operator's feedback
+    /// exists — so the id is not reusable. Only `cancelled` may be re-opened,
+    /// and only by the seat that cancelled it.
+    AcceptanceIdTerminal {
+        acceptance_id: String,
+        status: String,
+    },
+    /// `request_acceptance` with an explicit `acceptance_id`: that id names a
+    /// cancelled acceptance, but the dispatch it gates is owned by another
+    /// seat. The seat-identity guard is not bypassed by choosing an id — the
+    /// caller may only re-open what it cancelled itself.
+    AcceptanceIdNotYours {
+        acceptance_id: String,
+        owner_seat: String,
+    },
+    /// `request_acceptance` with an explicit `acceptance_id`: that id names a
+    /// cancelled acceptance of THIS seat, but for a DIFFERENT dispatch. Reusing
+    /// it here would break the one-card-per-dispatch lineage the id encodes.
+    AcceptanceIdWrongDispatch {
+        acceptance_id: String,
+        card_dispatch_id: String,
+        requested_dispatch_id: String,
     },
     /// `enqueue_dispatch`: `verdict_event_id` was supplied for a payload that is
     /// not a verification request — the pre-declaration belongs to the
@@ -393,6 +447,43 @@ impl std::fmt::Display for DispatchRejection {
             DispatchRejection::AcceptancePending { dispatch_id } => write!(
                 f,
                 "request_acceptance rejected: {dispatch_id:?} already has a pending acceptance (one at a time; await the operator's decision)"
+            ),
+            DispatchRejection::AcceptanceIdTaken {
+                acceptance_id,
+                occupant_dispatch_id,
+                occupant_seat,
+            } => write!(
+                f,
+                "request_acceptance rejected: acceptance id {acceptance_id:?} is already occupied \
+                 by a PENDING acceptance for dispatch {occupant_dispatch_id:?} (owned by \
+                 {occupant_seat:?}) — a pending card is somebody's live work and is never taken \
+                 over. Use the derived id (omit `acceptance_id`) or a different one."
+            ),
+            DispatchRejection::AcceptanceIdTerminal { acceptance_id, status } => write!(
+                f,
+                "request_acceptance rejected: acceptance id {acceptance_id:?} is in the terminal \
+                 state {status:?} — an accepted or rejected card is a recorded fact (the merge \
+                 happened, or the operator's feedback exists) and its id is not reusable. Only a \
+                 CANCELLED card may be re-opened, and only by the seat that cancelled it."
+            ),
+            DispatchRejection::AcceptanceIdNotYours {
+                acceptance_id,
+                owner_seat,
+            } => write!(
+                f,
+                "request_acceptance rejected: acceptance id {acceptance_id:?} gates a dispatch \
+                 owned by {owner_seat:?}, not by the calling seat — the seat-identity guard is \
+                 not bypassed by choosing an id; you may only re-open what you cancelled yourself"
+            ),
+            DispatchRejection::AcceptanceIdWrongDispatch {
+                acceptance_id,
+                card_dispatch_id,
+                requested_dispatch_id,
+            } => write!(
+                f,
+                "request_acceptance rejected: acceptance id {acceptance_id:?} already gates \
+                 dispatch {card_dispatch_id:?}, not {requested_dispatch_id:?} — reusing it here \
+                 would break the one-card-per-dispatch lineage the id encodes"
             ),
             DispatchRejection::MissingBase => write!(
                 f,
@@ -1667,28 +1758,135 @@ pub async fn request_acceptance(
         });
     }
 
-    // Deterministic id: one acceptance per dispatch, ever (a rework gets a NEW
-    // dispatch id, so the lineage stays one-to-one and self-documenting).
-    let acceptance_id = format!("acc-{}", args.dispatch_id);
-    tx.execute(
-        "INSERT INTO acceptances \
-         (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, \
-          status, acceptance_plan) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
-        &[
-            &acceptance_id,
-            &args.dispatch_id,
-            &project_id,
-            &args.branch,
-            &base,
-            &args.how_to_verify,
-            &args.flux_verdict_ref,
-            &plan_json,
-        ],
-    )
-    .await
-    .map_err(db)?;
+    // Guard 4 — the acceptance id. Omitted, it is derived deterministically as
+    // `acc-<dispatch_id>` and every existing caller is unaffected. Supplied, it
+    // must be either fresh or a CANCELLED row this seat owns for THIS dispatch —
+    // which is the "cancel, then re-open under the same id" path that the
+    // deterministic id made impossible (cancel_acceptance is terminal and never
+    // deletes the row, so the primary key stayed occupied).
+    //
+    // Read the occupant and its dispatch's owner in ONE query, so the decision
+    // cannot be made against a stale pair of reads.
+    let acceptance_id = args
+        .acceptance_id
+        .clone()
+        .unwrap_or_else(|| format!("acc-{}", args.dispatch_id));
+    // A supplied id may only re-open a row that is ALREADY in the cancelled
+    // state and owned by this seat for this dispatch. The derived id is allowed
+    // to collide with a cancelled row too — that is the same path reached
+    // without spelling the id out.
+    let mut reopening = false;
+    if let Some(row) = tx
+        .query_opt(
+            "SELECT a.status, a.dispatch_id, d.target_seat_id \
+               FROM acceptances a JOIN dispatches d ON d.id = a.dispatch_id \
+              WHERE a.id = $1",
+            &[&acceptance_id],
+        )
+        .await
+        .map_err(db)?
+    {
+        let status: String = row.get(0);
+        let card_dispatch_id: String = row.get(1);
+        let owner_seat: String = row.get(2);
+        match status.as_str() {
+            // A live card is somebody's work in progress. Never taken over.
+            "pending" => {
+                return Err(DispatchRejection::AcceptanceIdTaken {
+                    acceptance_id,
+                    occupant_dispatch_id: card_dispatch_id,
+                    occupant_seat: owner_seat,
+                });
+            }
+            // A decided card is a recorded fact: the merge happened, or the
+            // operator's feedback exists. Its id is not reusable.
+            "accepted" | "rejected" => {
+                return Err(DispatchRejection::AcceptanceIdTerminal {
+                    acceptance_id,
+                    status,
+                });
+            }
+            // Cancelled is the ONLY re-openable state, and only by the owner of
+            // the dispatch it gates, and only for that same dispatch.
+            "cancelled" => {
+                if owner_seat != identity.seat_id {
+                    return Err(DispatchRejection::AcceptanceIdNotYours {
+                        acceptance_id,
+                        owner_seat,
+                    });
+                }
+                if card_dispatch_id != args.dispatch_id {
+                    return Err(DispatchRejection::AcceptanceIdWrongDispatch {
+                        acceptance_id,
+                        card_dispatch_id,
+                        requested_dispatch_id: args.dispatch_id.clone(),
+                    });
+                }
+                reopening = true;
+            }
+            // The 014/017 CHECK makes any other value impossible; if one ever
+            // appears, refusing is the only honest answer.
+            other => {
+                return Err(DispatchRejection::AcceptanceIdTerminal {
+                    acceptance_id,
+                    status: other.to_string(),
+                });
+            }
+        }
+    }
 
+    if reopening {
+        // The row is never deleted (ledger discipline): it goes back to pending
+        // with the new card contents, and the cancel-specific fields are cleared
+        // — a pending card carrying a stale "cancelled because ..." reason
+        // would be a lie. The full history lives in the ledger, where
+        // AcceptanceCancelled is followed by this AcceptanceRequested.
+        let n = tx
+            .execute(
+                "UPDATE acceptances \
+                   SET status = 'pending', branch = $2, base = $3, how_to_verify = $4, \
+                       flux_verdict_ref = $5, acceptance_plan = $6, \
+                       feedback = NULL, decided_by = NULL, decided_at = NULL, \
+                       merge_commit = NULL, rework_dispatch_id = NULL \
+                  WHERE id = $1 AND status = 'cancelled'",
+                &[
+                    &acceptance_id,
+                    &args.branch,
+                    &base,
+                    &args.how_to_verify,
+                    &args.flux_verdict_ref,
+                    &plan_json,
+                ],
+            )
+            .await
+            .map_err(db)?;
+        if n != 1 {
+            // Raced out of the cancelled state between the guard read and here.
+            return Err(DispatchRejection::AcceptanceIdTerminal {
+                acceptance_id,
+                status: "no longer cancelled".to_string(),
+            });
+        }
+    } else {
+        tx.execute(
+            "INSERT INTO acceptances \
+             (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, \
+              status, acceptance_plan) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
+            &[
+                &acceptance_id,
+                &args.dispatch_id,
+                &project_id,
+                &args.branch,
+                &base,
+                &args.how_to_verify,
+                &args.flux_verdict_ref,
+                &plan_json,
+            ],
+        )
+        .await
+        .map_err(db)?;
+    }
     // Same transaction: the request event. Subject = the acceptance (its own
     // object, `014`); actor = the seat; context = the dispatch it gates. The
     // base rides in the payload so the ledger records WHAT the delivery will
@@ -1708,6 +1906,10 @@ pub async fn request_acceptance(
             "how_to_verify": args.how_to_verify,
             "flux_verdict_ref": args.flux_verdict_ref,
             "acceptance_plan": plan_json,
+            // Recorded so the ledger shows WHY this id already existed: a
+            // re-open is AcceptanceCancelled followed by AcceptanceRequested
+            // under the same id, and a reader must not have to infer that.
+            "reopened": reopening,
         }),
         refs: vec![
             ObjectRefDraft::subject(RefType::Acceptance, &acceptance_id),
@@ -1724,10 +1926,18 @@ pub async fn request_acceptance(
         .map_err(|e| DispatchRejection::Db(e.to_string()))?;
 
     tx.commit().await.map_err(db)?;
-    Ok(format!(
-        "requested acceptance {acceptance_id} for {} (branch {}, base {}, flux verdict {}) — pending operator decision",
-        args.dispatch_id, args.branch, base, args.flux_verdict_ref
-    ))
+    if reopening {
+        Ok(format!(
+            "re-opened acceptance {acceptance_id} for {} (branch {}, base {}, flux verdict {}) — \
+             the previously cancelled card is pending again under the same id",
+            args.dispatch_id, args.branch, base, args.flux_verdict_ref
+        ))
+    } else {
+        Ok(format!(
+            "requested acceptance {acceptance_id} for {} (branch {}, base {}, flux verdict {}) — pending operator decision",
+            args.dispatch_id, args.branch, base, args.flux_verdict_ref
+        ))
+    }
 }
 
 // =============================================================================
@@ -2271,6 +2481,7 @@ mod tests {
             flux_verdict_ref: "ev-verdict".into(),
             base: Some("track".into()),
             acceptance_plan: valid_plan(),
+            acceptance_id: None,
         };
 
         // 1. the branch does not exist at all.
@@ -2377,6 +2588,7 @@ mod tests {
             flux_verdict_ref: "ev-verdict".into(),
             base: base.map(str::to_string),
             acceptance_plan: valid_plan(),
+            acceptance_id: None,
         };
 
         // 1. Nothing names the base: refuse rather than invent 'track'.
@@ -2870,6 +3082,9 @@ mod db_itests {
         // (so it contains it) and non-destructive (so the merge preview finds
         // nothing to delete) — the shape the containment defence requires.
         ok(&["branch", "packet/nimbus/x", "track"]);
+        // A second delivery branch, so a test can prove one seat's id is not
+        // borrowable by another without the branch guard firing first.
+        ok(&["branch", "packet/flux/x", "track"]);
         std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
         root
     }
@@ -2934,6 +3149,24 @@ mod db_itests {
             "SELECT e.event_type FROM canonical_events e \
                JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
               WHERE r.ref_type='dispatch' AND r.ref_id=$1 ORDER BY e.occurred_at",
+            &[&id],
+        )
+        .await
+        .expect("events")
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect()
+    }
+
+    /// The lifecycle event types recorded against one ACCEPTANCE (subject ref),
+    /// in occurred_at order — the same shape as `dispatch_event_types` for the
+    /// acceptance object's own history.
+    async fn acceptance_event_types(pool: &Pool, id: &str) -> Vec<String> {
+        let c = pool.get().await.expect("client");
+        c.query(
+            "SELECT e.event_type FROM canonical_events e \
+               JOIN event_object_refs r ON r.event_id=e.id AND r.role='subject' \
+              WHERE r.ref_type='acceptance' AND r.ref_id=$1 ORDER BY e.occurred_at",
             &[&id],
         )
         .await
@@ -3135,6 +3368,7 @@ mod db_itests {
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
                 acceptance_plan: valid_plan(),
+                acceptance_id: None,
             },
         )
         .await
@@ -3165,6 +3399,7 @@ mod db_itests {
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
                 acceptance_plan: valid_plan(),
+                acceptance_id: None,
             },
         )
         .await
@@ -3181,6 +3416,7 @@ mod db_itests {
                 flux_verdict_ref: "ev-it-verdict".into(),
                 base: Some("track".into()),
                 acceptance_plan: valid_plan(),
+                acceptance_id: None,
             },
         )
         .await
@@ -3237,6 +3473,420 @@ mod db_itests {
             msg.contains("delivered disp-it-rework"),
             "rework must be pullable: {msg}"
         );
+    }
+
+    // =========================================================================
+    // The acceptance_id parameter — "cancel, then re-open under the same id"
+    //
+    // Why these tests exist: `cancel_acceptance` is terminal and never deletes
+    // the row (ledger discipline), so a cancelled card keeps occupying
+    // `acceptances.id`. Before the optional `acceptance_id` parameter there was
+    // no way back: the "no pending acceptance for this dispatch" guard passed
+    // and the deterministic primary key refused the insert with sqlstate 23505.
+    // The washing seat hit exactly that and had to fail its own dispatch rather
+    // than fake a success.
+    // =========================================================================
+
+    /// A completed dispatch of the calling seat, ready to be handed to the gate.
+    async fn completed_dispatch(pool: &Pool, project: &str, id: &str) {
+        as_actor("human:supervisor");
+        enqueue(pool, enqueue_args(id, project, 0)).await.unwrap();
+        as_seat();
+        get_next(pool, Some(project.into())).await.unwrap();
+        complete(
+            pool,
+            CompleteArgs {
+                dispatch_id: id.into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    fn request_args(dispatch_id: &str, acceptance_id: Option<&str>) -> RequestAcceptanceArgs {
+        RequestAcceptanceArgs {
+            dispatch_id: dispatch_id.into(),
+            branch: "packet/nimbus/x".into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-it-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+            acceptance_id: acceptance_id.map(str::to_string),
+        }
+    }
+
+    /// The acceptance row as (status, branch, base, how_to_verify, feedback).
+    async fn acceptance_row(
+        pool: &Pool,
+        id: &str,
+    ) -> (String, String, String, String, Option<String>) {
+        let c = pool.get().await.unwrap();
+        let r = c
+            .query_one(
+                "SELECT status, branch, base, how_to_verify, feedback FROM acceptances WHERE id = $1",
+                &[&id],
+            )
+            .await
+            .unwrap();
+        (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn acceptance_id_omitted_keeps_the_deterministic_id_untouched() {
+        // Criterion 1: the historical behaviour is byte-for-byte what it was.
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_seat();
+        completed_dispatch(&pool, project, "disp-it-derive").await;
+
+        let msg = request_acceptance(&pool, request_args("disp-it-derive", None))
+            .await
+            .unwrap();
+        assert!(msg.contains("acc-disp-it-derive"), "{msg}");
+        assert!(
+            !msg.contains("re-opened"),
+            "a fresh request is not a re-open: {msg}"
+        );
+        assert_eq!(
+            acceptance_row(&pool, "acc-disp-it-derive").await.0,
+            "pending"
+        );
+        // And the event records that it was not a re-open.
+        let types = acceptance_event_types(&pool, "acc-disp-it-derive").await;
+        assert_eq!(types, vec!["AcceptanceRequested"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn a_cancelled_card_re_opens_under_the_same_id() {
+        // Criterion 2 — the path that was impossible before.
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_seat();
+        completed_dispatch(&pool, project, "disp-it-reopen").await;
+
+        // Request, then cancel — the state the washing seat was stuck in.
+        request_acceptance(&pool, request_args("disp-it-reopen", None))
+            .await
+            .unwrap();
+        cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-reopen".into(),
+                reason: "the plan was rewritten in plain language".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let (status, _, _, _, feedback) = acceptance_row(&pool, "acc-disp-it-reopen").await;
+        assert_eq!(status, "cancelled");
+        assert!(feedback.is_some(), "the cancel reason is recorded");
+
+        // Re-open under the SAME id, with a different how_to_verify to prove the
+        // contents really were refreshed rather than the row merely relabelled.
+        let mut args = request_args("disp-it-reopen", Some("acc-disp-it-reopen"));
+        args.how_to_verify = "open the card and read the plain-language plan".into();
+        let msg = request_acceptance(&pool, args).await.unwrap();
+        assert!(msg.contains("re-opened"), "{msg}");
+        assert!(msg.contains("acc-disp-it-reopen"), "{msg}");
+
+        let (status, _, _, how_to_verify, feedback) =
+            acceptance_row(&pool, "acc-disp-it-reopen").await;
+        assert_eq!(status, "pending");
+        assert_eq!(
+            how_to_verify, "open the card and read the plain-language plan",
+            "the new card contents landed"
+        );
+        assert_eq!(
+            feedback, None,
+            "a pending card carries no stale cancel reason"
+        );
+        // The ledger tells the whole story: cancelled, then requested again.
+        assert_eq!(
+            acceptance_event_types(&pool, "acc-disp-it-reopen").await,
+            vec![
+                "AcceptanceRequested",
+                "AcceptanceCancelled",
+                "AcceptanceRequested"
+            ]
+        );
+        // Exactly one row, never a second: the id was reused, not duplicated.
+        let c = pool.get().await.unwrap();
+        let n: i64 = c
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE id = 'acc-disp-it-reopen'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn a_pending_id_is_never_taken_over() {
+        // Criterion 3 — refuse, and change NOTHING.
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_seat();
+        completed_dispatch(&pool, project, "disp-it-held").await;
+        request_acceptance(&pool, request_args("disp-it-held", None))
+            .await
+            .unwrap();
+        let before = acceptance_row(&pool, "acc-disp-it-held").await;
+
+        // A second, DIFFERENT dispatch tries to occupy that live id.
+        completed_dispatch(&pool, project, "disp-it-squatter").await;
+        let err = request_acceptance(
+            &pool,
+            request_args("disp-it-squatter", Some("acc-disp-it-held")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceIdTaken { .. }),
+            "{err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("acc-disp-it-held"), "{msg}");
+        assert!(msg.contains("never taken over"), "{msg}");
+
+        // The occupant is untouched, and no second row appeared.
+        assert_eq!(acceptance_row(&pool, "acc-disp-it-held").await, before);
+        let c = pool.get().await.unwrap();
+        let n: i64 = c
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE dispatch_id = 'disp-it-squatter'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "the refused request wrote nothing");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn another_seats_id_is_refused_and_a_terminal_id_is_not_reusable() {
+        // Criteria 4 and the terminal half of 3.
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+
+        // Flux owns and completes its own dispatch, then requests its card.
+        as_actor("seat:seat-flux-001");
+        let mut flux_enqueue = enqueue_args("disp-it-flux", project, 0);
+        flux_enqueue.target_seat_id = "seat-flux-001".to_string();
+        enqueue(&pool, flux_enqueue).await.unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-it-flux".into(),
+                outcome: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let flux_args = RequestAcceptanceArgs {
+            dispatch_id: "disp-it-flux".into(),
+            branch: "packet/flux/x".into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-it-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+            acceptance_id: None,
+        };
+        request_acceptance(&pool, flux_args).await.unwrap();
+
+        // Nimbus tries to borrow Flux's LIVE id. Refused, and the message names
+        // the occupant AND its owner.
+        as_seat();
+        completed_dispatch(&pool, project, "disp-it-borrow").await;
+        let err = request_acceptance(
+            &pool,
+            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceIdTaken { .. }),
+            "{err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("acc-disp-it-flux"), "{msg}");
+        assert!(msg.contains("never taken over"), "{msg}");
+        assert!(msg.contains("seat-flux-001"), "the owner is named: {msg}");
+
+        // Flux cancels its own card. Nimbus still cannot take the id — the
+        // seat-identity guard is not bypassed by choosing an id.
+        as_actor("seat:seat-flux-001");
+        cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-flux".into(),
+                reason: "superseded by a plain-language plan".into(),
+            },
+        )
+        .await
+        .unwrap();
+        as_seat();
+        let err = request_acceptance(
+            &pool,
+            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceIdNotYours { .. }),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("seat-flux-001"),
+            "the message names the owner: {err}"
+        );
+
+        // And a DECIDED card's id is not reusable either: decide Flux's card
+        // directly (the operator's act), then try again.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "UPDATE acceptances SET status='accepted', decided_by='human:supervisor', \
+                 decided_at=NOW(), merge_commit='deadbeef', feedback=NULL WHERE id='acc-disp-it-flux'",
+                &[],
+            )
+            .await
+            .unwrap();
+        }
+        let err = request_acceptance(
+            &pool,
+            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceIdTerminal { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("accepted"), "{err}");
+        assert_eq!(
+            acceptance_row(&pool, "acc-disp-it-flux").await.0,
+            "accepted"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn a_cancelled_card_of_another_dispatch_is_not_reused() {
+        // The lineage guard: an id encodes the dispatch it gates.
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_itest";
+        clean(&pool, project).await;
+        with_base_repo();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        as_seat();
+        completed_dispatch(&pool, project, "disp-it-first").await;
+        completed_dispatch(&pool, project, "disp-it-second").await;
+        request_acceptance(&pool, request_args("disp-it-first", None))
+            .await
+            .unwrap();
+        cancel_acceptance(
+            &pool,
+            CancelAcceptanceArgs {
+                acceptance_id: "acc-disp-it-first".into(),
+                reason: "superseded".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The cancelled id belongs to disp-it-first; asking for it under
+        // disp-it-second would silently re-point the lineage.
+        let err = request_acceptance(
+            &pool,
+            request_args("disp-it-second", Some("acc-disp-it-first")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::AcceptanceIdWrongDispatch { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("disp-it-first"), "{err}");
+        assert!(err.to_string().contains("disp-it-second"), "{err}");
+        assert_eq!(
+            acceptance_row(&pool, "acc-disp-it-first").await.0,
+            "cancelled"
+        );
+
+        // The correct pairing still works, which is the whole point.
+        let ok = request_acceptance(
+            &pool,
+            request_args("disp-it-first", Some("acc-disp-it-first")),
+        )
+        .await;
+        assert!(ok.is_ok(), "{ok:?}");
     }
 
     #[tokio::test]
@@ -3373,6 +4023,7 @@ mod db_itests {
                     flux_verdict_ref: "ev-it-verdict-plan".into(),
                     base: Some("track".into()),
                     acceptance_plan: plan,
+                    acceptance_id: None,
                 },
             )
             .await
@@ -3424,6 +4075,7 @@ mod db_itests {
                 flux_verdict_ref: "ev-it-verdict-plan".into(),
                 base: Some("track".into()),
                 acceptance_plan: valid_plan(),
+                acceptance_id: None,
             },
         )
         .await
@@ -4672,6 +5324,7 @@ mod db_itests {
                 flux_verdict_ref: "ev-it-verdict-c".into(),
                 base: Some("track".into()),
                 acceptance_plan: valid_plan(),
+                acceptance_id: None,
             },
         )
         .await
