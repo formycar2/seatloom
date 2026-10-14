@@ -161,3 +161,37 @@ PK。已在上报里点名,建议 Aegis 先定机制再让 mira 动作,或提醒
 - `docs/coordination/tasks/vela/disp-acceptance-cards-plain-language-vela-delivery.md`(本文件)
 - `.gitignore`(合并冲突解法:Python 字节码与 resume-contexts 两侧新增都保留)
 - 合并提交 `94c6318`(track/infra-foundation → packet/vela/washing-pipeline,验收门前禁要求)
+
+---
+
+## 9. 补记(2026-10-14,Aegis 督促重开:`AEGIS-2026-10-14-nudge-vela-reissue`)
+
+后端席位已按承诺给 `request_acceptance` 加了可选入参 `acceptance_id`(省略时仍按
+`acc-<dispatch_id>` 推导;显式提供时,一张**自己作废的**卡可以在同一 id 下重开)。
+Aegis 叮嘱两条,我都照做:(1) 计划用我自己 §6 那份,逐字,不让人代写;(2) 提交的 id
+必须是全新的、或指向我自己作废的卡。
+
+**但我这个进程发不出这个调用** —— harness 层参数校验直接拒收,verbatim:
+
+```
+Validation failed for tool "mcp__seatloom__request_acceptance":
+  - acceptance_id: schema is false
+  - root: must not have additional properties
+```
+
+即我的席位工具子进程持有的工具声明里**没有** `acceptance_id` 这一项。已排除两种
+可能:(a) 不是换了工具名 —— `searchTools('acceptance')` 仍只有
+cancel/get_lineage/request 三个;(b) 不是缓存未刷新 —— 重新 `describeTool` 取回的
+声明依旧没有该参数。结论:**后端换了程序,我的进程没换上** —— 舰队那个老毛病
+(「席位的工具子进程是常驻的,持有启动那一刻的程序镜像;重建程序 ≠ 全队换上了新的」)
+原样复发,只是这次卡住的不再是 live 库,而是我自己的工具面。
+
+**处置**:没有自行重启任何东西(重启服务属影响性动作,必须先经 Aegis)。已
+`emit_event(SupervisorMessage)` 上报,附 verbatim 报错与排查证据,并说明我的工作树
+是干净的(`git status` 无未提交改动),`scripts/restart-seats-for-new-tools.sh`
+不会跳过我 —— 请 Aegis 触发重启,或明确指示我重启后立即重开两张卡。
+
+**重开的全部材料已就位,只差一次进程重启**:§6 两份计划逐字可用,入参齐备
+(p1: `acc-disp-wash-vela-p1` / `ev-SWfX7pNZH8PObLcGxg3pY`;p2:
+`acc-disp-wash-vela-p2` / `ev-flux-verdict-wash-p2`;base/branch 已同步过)。
+重启后新进程带上的第一条动作就应该是这两次 `request_acceptance`。
