@@ -79,6 +79,22 @@ fn repo_root() -> PathBuf {
     if cwd.join("docs").is_dir() {
         return cwd;
     }
+    // 🔴     // 2026-10-14 复发,而且是我自己造成的:10-13 集成意图入口时取了界面分支的
+    // main.rs(它的基线更早),把我 10-12 加的这段兜底整个删掉了(diff 4 增 62 删)。
+    // 症状:应用从 /Applications 启动时 cwd 是 /,repo_root 解析成根,
+    // spawn /target/debug/seatloom-mcp-emit: No such file or directory。
+    // 教训:路径限定取文件会覆盖同文件里已有的修复,集成时必须核对 diff 的删除部分。
+if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for cand in [
+            home.join("Documents/GitHub/seatloom"),
+            home.join("Documents/GitHub/seatloom/seatloom"),
+        ] {
+            if cand.join("Cargo.toml").is_file() && cand.join("docs").is_dir() {
+                return cand;
+            }
+        }
+    }
     // Fallback to the current directory; reconcile will fail loudly if this is wrong.
     cwd
 }
