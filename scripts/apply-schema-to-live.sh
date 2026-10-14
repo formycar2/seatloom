@@ -34,11 +34,14 @@ fi
 echo "数据库连上了。现在的表结构状态:"
 printf "  memories 表          %s\n"         "$([ "$(query "select count(*) from pg_tables where tablename='memories'")"         = "1" ] && echo 已有 || echo 缺)"
 printf "  acceptance_plan 列   %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='acceptances' and column_name='acceptance_plan'")" = "1" ] && echo 已有 || echo 缺)"
+printf "  历史会话语料列       %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='archived_sessions' and column_name='message_count'")" = "1" ] && echo 已有 || echo 缺)"
+printf "  项目 home_path 列    %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='projects' and column_name='home_path'")" = "1" ] && echo 已有 || echo 缺)"
 echo
 
 # 按编号顺序逐个 apply。都是幂等的,已经有的会原地跳过。
+# 019/020 也在这里(它们在别的分支上落地,这个脚本按编号顺序补齐缺的)。
 failed=0
-for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql; do
+for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql 019_topic_opened.sql 020_gate_criterion.sql 021_history_sessions_corpus.sql; do
   p="$SCHEMA_DIR/$f"
   if [ ! -r "$p" ]; then echo "❌ 找不到 $f —— 仓库是不是不在 track 分支?"; failed=1; break; fi
   printf "apply %-28s " "$f"
@@ -55,7 +58,12 @@ printf "  项目层级列                 %s\n" "$([ "$(query "select count(*) f
 printf "  验收方案列                 %s\n" "$([ "$(query "select count(*) from information_schema.columns where table_name='acceptances' and column_name='acceptance_plan'")" = "1" ] && echo ✅有 || echo ❌缺)"
 printf "  作废卡片状态               %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='acceptances_status_vocab'" | grep -q cancelled && echo ✅支持 || echo ❌不支持)"
 echo
-printf "  现有数据没被动:派单 %s 条,验收卡 %s 张\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")"
+printf "  历史会话语料(021)已加载    %s\n" "$([ "$(query "select count(*) from archived_sessions where message_count is not null")" = "183" ] && echo ✅183 条 || echo ❌$(query "select count(*) from archived_sessions where message_count is not null") 条)"
+printf "  消息总数                   %s\n" "$(query "select coalesce(sum(message_count),0) from archived_sessions where message_count is not null")"
+printf "  项目数(应为 38)            %s\n" "$(query "select count(*) from projects")"
+printf "  这 8 条仓库根会话未归类    %s\n" "$([ "$(query "select count(*) from archived_sessions where message_count is not null and project='(root)'")" = "8" ] && echo ✅8 条 || echo ❌条数不对)"
+echo
+printf "  现有数据没被动:派单 %s 条,验收卡 %s 张,会话 %s 条,席位 %s 个\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")" "$(query "select count(*) from sessions")" "$(query "select count(*) from seats")"
 echo
 [ "$failed" = "0" ] && echo "全部完成。把上面这段贴给 Aegis,他会解封等着的派单。" \
                     || echo "有步骤失败了 —— 把上面这段贴给 Aegis,不要自己重试。"
