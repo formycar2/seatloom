@@ -41,7 +41,13 @@ d = os.environ.get('SEARCH_DIR', '.')
 if not terms:
     print("没有关键词"); sys.exit(1)
 
-files = sorted(glob.glob(os.path.join(d, '*.md')))
+# 两个目录都搜:resume-contexts/*.md 是按文件抽的,by-root-session/*.md 是按根对话
+# 重组过的(同一条连续对话的多个切片合成一份,子代理标注父会话)。
+# 只搜前者会漏掉重组后的结构;只搜后者会漏掉 claude-code/stepcode/cursor(它们没有根对话概念)。
+dirs = [d, os.path.join(d, 'by-root-session')]
+files = []
+for dd in dirs:
+    files.extend(sorted(glob.glob(os.path.join(dd, '*.md'))))
 hits = []
 for f in files:
     try:
@@ -67,8 +73,16 @@ for f in files:
         line_no = lm.group(1) if lm else '?'
         hits.append((proj, os.path.basename(f), line_no, src, body.strip()))
 
+# 去重:同一轮会在「按文件」和「按根对话」两个目录各出现一次(后者是把前者的多个
+# 切片合成一份)。按 (来源文件, 原文件行号) 判重,保留第一个(按文件的那份更细)。
+seen=set(); uniq=[]
+for h in hits:
+    k=(h[3], h[2])
+    if k in seen: continue
+    seen.add(k); uniq.append(h)
+hits=uniq
 print(f"关键词 {terms} ({'全部命中' if all_mode else '任一命中'})")
-print(f"扫描 {len(files)} 个上下文文件,命中 {len(hits)} 轮\n")
+print(f"扫描 {len(files)} 个上下文文件,去重后命中 {len(hits)} 轮\n")
 if not hits:
     print("没有命中。换更接近原文的词 —— 这是字面匹配,不是语义检索。")
     sys.exit(0)
