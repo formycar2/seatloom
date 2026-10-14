@@ -56,9 +56,43 @@ seatloom (live):  select count(*) from archived_sessions;                -> 271
 
 The 271 rows are the 2026-10-08 out-of-band manifest inventory (all sharing one `archived_at`), not
 the corpus. `021` has never been applied live — it exists only on `packet/onyx/topic-opened-019`,
-and the live apply is the operator's `bash scripts/apply-schema-to-live.sh`. **So D1/D2/D3 are not
-met in the live database: 271 / 1 / no counts.** Against the live DB the read path refuses with an
-honest typed error (measured, §5 below) — correct behaviour, but it means the UI has nothing.
+and the live apply is the operator's `bash scripts/apply-schema-to-live.sh`.
+
+**Live's real shape, verified by me against Aegis's correction** (`AEGIS-2026-10-14-flux-live-shape-
+correction.md`) — I do not take the nudge's numbers on trust either; every one below is my own query
+on live, and they match the nudge exactly:
+
+```
+select project, count(*) from archived_sessions group by 1 order by 2 desc;   (live)
+  OfficeBench 66 | sf-code/storage 58 | sf-code/brainpp 25 | seatloom 16 |
+  ai-assistant/sf-package 14 | SteptronOss 13 | (root) 13 | fde/field_evaluation 10 | ... total 271
+select count(*) from projects;                                              -> 1  (id=seatloom, name=SeatLoom)
+archived_sessions.message_count                                            -> column does not exist
+```
+
+So the backend DID the project attribution (the `project` text column carries the manifest's coarse
+18-project grouping) but did NOT merge the 271 files into the 183 sessions and did NOT build the 38
+home paths as `projects` rows. Accurate problem statement, judged **against live**:
+
+| Contract | Live reality | Verdict |
+|---|---|---|
+| **D1** 183 sessions | **271 unmerged rows** — `sf-code/storage`'s 58 files are one root conversation's 56 launches plus 2 others; the merge truth is `SESSIONS-FLAT.csv` (183 rows) / `by-session/` (183 files) | **NOT MET** ❌ |
+| **D2** 38 projects | **1 row** — the 38 home paths live only in a text column, so a project-organised UI cannot get them | **NOT MET** ❌ |
+| **D3** 36,680 messages | **not verifiable in the DB — no `message_count` column** | **NOT MET in the DB** ⚠️ |
+
+**Aegis's D3 question, answered explicitly (it must not be silently skipped):** the contract
+§8.2 Slice 1 already answers it — *"A message count per session, sourced from `by-session/*.md`
+(sum must be 36,680). If a column is needed, it is a migration in Onyx's slot, additive and
+idempotent."* So D3 has TWO halves and I measured both: (a) the source half — the 183 `by-session`
+headers sum to exactly 36,680 (measured, §1); (b) the data half — the corpus must carry a
+per-session count summing to 36,680, and the contract sanctions `021`'s `message_count` column as
+the mechanism. On live, half (b) does not exist at all. **D3 is NOT met on live, and the fix is the
+backend carrying the count (021's column), independently checkable against the by-session headers —
+not a redefinition of D3 to "file headers only", because then the product itself would still be
+unable to report the number.**
+
+Against the live DB the read path refuses with an honest typed error (measured, §5 below) — correct
+behaviour, but it means the UI has nothing.
 
 ## 3. The data slice (Onyx, 33f456b) — verified CORRECT on a live-faithful reproduction
 
@@ -223,9 +257,19 @@ corpus rows, the labelled `(root)` group, one implementation exposed twice.
 
 ## Verdict: FAIL — and the exact gap
 
-The **data slice is correct** (183/38/36680, row-by-row against the source, idempotent, zero
-session/seat writes, no bodies, root unmapped). The **delivery chain is not**, for two independent
-reasons, either of which alone is a fail against §8.2 Slice 4:
+**Judged against the live database, as Aegis requires: D1 ❌ (271 unmerged rows vs 183), D2 ❌ (1
+projects row vs 38), D3 ❌ in the DB (no message_count column; the source sum of 36,680 is real but
+the product cannot report it).** The operator's card cannot pass today: the read path refuses on
+live because the corpus is not loaded, and the projects tree does not exist.
+
+What my verification ALSO establishes, so the fix is not guesswork: the **data slice's artifact is
+correct** — `021` at `33f456b`, applied to a faithful reproduction of the live shape, produces
+exactly 183 / 38 / 36,680, row-by-row against the source, idempotent with zero writes, zero
+session/seat writes, no bodies, root unmapped. And the **read path has an independent defect that
+would survive the apply**: it double-counts the 89-row inventory (261 sessions instead of 183;
+10 of 38 projects wrong — `sf-code/storage` 58 vs 2, `seatloom` 16 vs 14, `(root)` 13 vs 8),
+because the two project-grouped reads lack the `message_count IS NOT NULL` filter that `021`'s own
+header mandates. So there are two independent failures, either of which alone fails Slice 4:
 
 1. **The corpus is not in the live database.** `021` lives on `packet/onyx/topic-opened-019`
    (`33f456b`); the live apply is the operator's `bash scripts/apply-schema-to-live.sh` and has not
@@ -240,7 +284,8 @@ Required to reach PASS (in order): (a) Nimbus adds the `message_count IS NOT NUL
 two project-grouped reads and fixes the `dated` flag; (b) the six numbers are re-measured against a
 **live-shaped** scratch DB (271-row inventory + 021), not a fresh one — the proof script must be
 extended to reproduce the manifest load, or it will keep passing while the product is wrong;
-(c) the operator runs `apply-schema-to-live.sh` and the counts are confirmed on the live DB;
+(c) the operator runs `apply-schema-to-live.sh` and the counts are confirmed on the live DB — D1
+183, D2 38, D3 36,680 measured there, with the by-session headers as the independent check;
 (d) only then does `ev-history-sessions-read-live` become emittable and Mira's UI slice
 unblockable. No merge, no integration, no restart, no deploy was performed by Flux; no product
 code was changed.
