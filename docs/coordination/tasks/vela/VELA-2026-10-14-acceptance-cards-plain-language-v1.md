@@ -150,3 +150,15 @@ sha256 body digest (topic `topic-aegis-fleet-operations`):
 No records were dropped for missing L2 line numbers; no corpus was washed; no
 redaction scan was needed (nothing but my own English prose and tool output was
 written). No live-DB action was taken beyond the sanctioned memory write path.
+
+## 10. Events emitted
+
+| event | id |
+|---|---|
+| `ArtifactCreated` (this delivery, `art-vela-acceptance-reissue-2026-10-14`) | `ev--M7SpkQBq23EE1dS79z3t` |
+| `SupervisorMessage` to Aegis (re-issue done, success condition now exists) | `ev-YnBElDvPiPMQDBMg4t_RA` |
+
+The two `AcceptanceRequested` events themselves (`ev-Gb4wj2MZ2qdIxkYzIpZ2j`,
+`ev-Hag5b_KsnoAx5rMrqiaez`) were appended by `request_acceptance` in the same
+transaction as the card rows — not by me, and listed here so the ledger thread is
+complete.
