@@ -36,6 +36,30 @@ mkdir -p "$OUT"
 python3 - "$@" <<'PY'
 import json, os, sys, csv, datetime
 
+# 🔴 role=user 不等于「人说的」。2026-10-14 张先生发现:预览页里有一条标成「你」,
+#    内容是 "<turn_aborted>The user interrupted the previous turn on purpose..." ——
+#    那是系统通知,不是他打的。全 codex 语料查证:26412 条 role=user 里 **3071 条(12%)是系统注入**,
+#    其中 <turn_aborted> 1503、<environment_context> 1385、AGENTS.md 注入 111、
+#    <subagent_notification> 70。真人发言只有 23341 条。
+#    不区分就把系统的通知当成用户的话,上下文切换时会误导接手的 agent。
+import re as _re
+_SYS_PATTERNS = [
+    (r'^<turn_aborted',          '系统·中断通知'),
+    (r'^<environment_context',   '系统·环境上下文'),
+    (r'^<subagent_notification', '系统·子代理通知'),
+    (r'AGENTS\.md instructions', '系统·角色指令'),
+    (r'activated as',            '系统·角色激活'),
+    (r'^<[a-z_]+>',              '系统·其它注入'),
+]
+def _classify(role, t):
+    """把系统注入的 role=user 改判成 system,不当成用户原话。"""
+    if role != 'user':
+        return role
+    for pat, label in _SYS_PATTERNS:
+        if _re.search(pat, t[:300]):
+            return 'system:' + label
+    return 'user'
+
 def text_of(j):
     """三种 harness 的内容位置都覆盖。返回 (role, text)。"""
     pl = j.get('payload') or j
@@ -51,7 +75,8 @@ def text_of(j):
                 t += x
     elif isinstance(c, str):
         t = c
-    return role, (t.strip() if t else '')
+    t = t.strip() if t else ''
+    return _classify(role, t), t
 
 def project_of(cwd):
     if not cwd: return None
@@ -84,7 +109,11 @@ def extract(path, project=None):
             try: j = json.loads(line)
             except Exception: continue
             role, t = text_of(j)
-            if role in ('user', 'assistant') and t:
+            # _classify 可能把系统注入判成 'system:...' —— 必须收进来,
+            # 否则它们既不显示也不标注,而系统通知对「接着做」是关键上下文
+            # (它告诉你上一轮为什么断了)。第一版这里写 role in ('user','assistant'),
+            # 把 system: 全丢了,同时又没拦住原始的 user 标注 —— 两个 bug 叠成一个。
+            if t and role and (role in ('user', 'assistant') or role.startswith('system:')):
                 turns.append((i, role, t))
     safe = proj.replace('/', '__')
     fn = os.path.join(os.environ.get('OUT_DIR', '.'), f"{safe}__{os.path.basename(path)[:44]}.md")
@@ -99,7 +128,13 @@ def extract(path, project=None):
         o.write(f"工作目录   {cwd or '<无 cwd,归属靠内容判断>'}\n")
         o.write(f"最后修改   {datetime.datetime.fromtimestamp(os.path.getmtime(path)):%Y-%m-%d %H:%M}\n```\n\n---\n\n")
         for i, role, t in turns:
-            o.write(f"## [原文件第 {i} 行] {'你' if role == 'user' else '助手'}\n\n{t}\n\n")
+            if role == 'user':
+                who = '你'
+            elif role.startswith('system:'):
+                who = f'⚙️ {role[7:]}'
+            else:
+                who = '助手'
+            o.write(f"## [原文件第 {i} 行] {who}\n\n{t}\n\n")
     return fn, len(turns), chars, proj
 
 # ── cursor:目录形状,另一种解析 ───────────────────────────────────────
