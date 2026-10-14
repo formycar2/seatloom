@@ -398,3 +398,30 @@ describe('SupervisorIntent', () => {
     expect(screen.queryByText('发送')).toBeNull();
   });
 });
+
+// 2026-10-14 张先生实测:「点了 create 没反应」。
+// 根因:pick 只把选项文字填回输入框、清掉卡片,不重新拆解 —— 用户必须自己再按一次拆解。
+// 修好后的行为:点了选项直接再调一次 planIntent(用模块级 state.planCalls 断言调用次数)。
+describe('澄清选项被点后必须直接继续,不要把活推回给用户', () => {
+  it('pick 之后 planIntent 被再调一次,用户不需要按第二次拆解', async () => {
+    state.planRaw = JSON.stringify({
+      outcome: 'clarification',
+      clarification: {
+        question: '这句话里没有我能确定执行的动作。你要做下面哪一种?',
+        choices: [
+          { label: 'create — 给 nimbus 派个活,把唤醒服务的硬底兜底接上', value: 'create', why: 'one of the five verbs' },
+        ],
+      },
+    });
+    render(<SupervisorIntent onRawSend={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/说你想干什么/), { target: { value: '给后端席位派一张单' } });
+    fireEvent.click(screen.getByText('拆解'));
+    await screen.findByText(/你要做下面哪一种/);
+    expect(state.planCalls).toHaveLength(1);
+    // 点选项 —— 这一下就必须自己往下走
+    fireEvent.click(screen.getByText(/create — 给 nimbus 派个活/));
+    await waitFor(() => expect(state.planCalls).toHaveLength(2));
+    // 第二次调用带上了选项原文(而不是空、也不是原来那句)
+    expect(state.planCalls[1]).toContain('create');
+  });
+});

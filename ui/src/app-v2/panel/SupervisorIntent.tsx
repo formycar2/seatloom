@@ -748,9 +748,22 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
     }
     if (plan.kind === 'result') {
       const r = plan.result;
+      // 2026-10-14:点了澄清选项必须**直接继续**,不该把文字填回去让用户再按一次拆解。
+      // 张先生实测:「点了 create 没反应」—— 代码原本只 setText + 清卡片,
+      // 用户合理预期是"直接往下走",而不是"我帮你填好了,你自己再点一次"。
       const pick = (label: string) => {
         setText(label);
-        setPlan({ kind: 'idle' });
+        setPlan({ kind: 'planning' });
+        // 直接拿选项文字重新拆解,不再要一次手动提交。
+        void (async () => {
+          try {
+            const raw = await api.planIntent(label);
+            setPlan({ kind: 'result', result: JSON.parse(raw) as IntentPlanResult });
+          } catch (err) {
+            // 拒绝逐字 —— 理由,而不是一张空卡,更不是猜。
+            setPlan({ kind: 'error', message: String(err) });
+          }
+        })();
       };
       if (r.outcome === 'proposal' && r.proposal) {
         if (r.proposal.blockingClarification) {
