@@ -52,18 +52,33 @@ while IFS=$'\t' read -r sid sess; do
     done
   done
 
-  # 它自己的 worktree 有没有未存盘的工作
+  # 它自己的 worktree 有没有**没存盘的工作**
+  #
+  # ⚠️ 2026-10-11 实测踩过,而且是我这个守卫自己造成的部分换动:
+  #    只数 `git status --porcelain` 的行数,会把**未跟踪文件**(`??`)也算成"没存盘"。
+  #    于是 nimbus 8 个 .scratch/ 草稿 + mira 2 篇交付笔记 + flux/onyx 各 1 个
+  #    rollout-ack.txt,四个席位全被跳过 —— 而它们**没有一个有已跟踪文件的改动**。
+  #    杀掉 agent 进程不会让盘上的文件消失,所以未跟踪文件本来就没有风险。
+  #    真正有风险的是**已跟踪文件被改过但没提交**:那一轮的工作只存在于进程里。
+  # 另外 .scratch/ 和 .seatloom/ 按设计就是不入库的(前者是"NOT FOR COMMIT"的验证材料,
+  #    后者是席位注册/确认标记),拿它们拦重启等于让守卫永远生效不了。
   wt="$WT/$short"
   dirty="?"
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
-    dirty="$(git -C "$wt" status --porcelain 2>/dev/null | grep -vE '^\?\? (\.pi/|AGENTS\.md)$' | wc -l | tr -d ' ')"
+    # 只看已跟踪文件的改动(M/D/R/A/C/U 开头的状态),忽略 ?? 未跟踪。
+    dirty="$(git -C "$wt" status --porcelain 2>/dev/null \
+             | grep -E '^[ MADRCU]{1,2}[^ ]' | wc -l | tr -d ' ')"
   fi
+  # 未跟踪的草稿/标记文件单独数出来,只用于告知,不拦重启
+  untracked="$(git -C "$wt" status --porcelain 2>/dev/null | grep -c '^??' | tr -d ' ')"
+  untracked="${untracked:-0}"
 
   if [ "${dirty}" != "0" ] && [ "${dirty}" != "?" ]; then
-    printf "  %-8s ⛔ 有 %s 个未提交改动 —— **不重启**(会丢掉没存盘的工作)\n" "$short" "$dirty"
-    git -C "$wt" status --short 2>/dev/null | grep -vE '^\?\? (\.pi/|AGENTS\.md)$' | head -3 | sed 's/^/           /'
+    printf "  %-8s ⛔ 有 %s 个**已跟踪文件**的未提交改动 —— **不重启**(那一轮的工作只在进程里)\n" "$short" "$dirty"
+    git -C "$wt" status --short 2>/dev/null | grep -E '^[ MADRCU]{1,2}[^ ]' | head -3 | sed 's/^/           /'
   else
-    printf "  %-8s ✅ 工作已提交,工具进程起于 %s → 重启\n" "$short" "${started:-未知}"
+    printf "  %-8s ✅ 已跟踪文件全部已提交(另有 %s 个未跟踪草稿,不影响重启),工具进程起于 %s → 重启\n" \
+      "$short" "${untracked:-0}" "${started:-未知}"
     todo="$todo $sess"
   fi
 done < "$MAP"

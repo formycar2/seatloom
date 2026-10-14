@@ -19,7 +19,7 @@ use commands::{
         cmd_accept_delivery, cmd_get_acceptance_lineage, cmd_list_acceptances, cmd_reject_delivery,
     },
     artifact_cmds::{cmd_get_artifact, cmd_list_artifacts},
-    dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches},
+    dispatch_cmds::{cmd_enqueue_dispatch, cmd_list_dispatches, cmd_plan_intent},
     document_cmds::{
         cmd_get_document, cmd_list_document_associations, cmd_list_document_sections,
         cmd_list_document_versions, cmd_list_documents,
@@ -152,6 +152,9 @@ fn main() {
             // governed dispatch (G19) — seat inboxes
             cmd_list_dispatches,
             cmd_enqueue_dispatch,
+            // Supervisor intent tool surface (LYRA contract slice 1) — one
+            // sentence in, a typed proposal/clarification out; never a write
+            cmd_plan_intent,
             // governed dispatch acceptance gate (014, D2) — the 待验收 loop
             cmd_list_acceptances,
             cmd_accept_delivery,

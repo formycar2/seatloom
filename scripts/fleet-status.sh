@@ -119,6 +119,68 @@ else
   printf "  记忆功能             ❌ 未上线(memories 表还没建到数据库里)\n"
 fi
 printf "  唤醒服务             %s\n" "$(tmux has-session -t seatloom-waker 2>/dev/null && echo 在跑 || echo '❌ 停了')"
-printf "  SeatLoom 窗口        %s\n" "$(pgrep -f 'seatloom/target/debug/seatloom-tauri' >/dev/null 2>&1 && echo 开着 || echo 没开)"
+# Aegis 的自醒必须由自醒之外的东西来查。心跳协议里那句"看日志验证自醒活着"
+# 只有心跳跑得起来才执行 —— 自醒死了就不会有心跳,那是循环依赖。
+# 所以这项检查放在任何人都会跑的这个脚本里(张先生随时会跑)。
+WLOG="/tmp/seatloom_aegis_waker.log"
+if [ ! -s "$WLOG" ]; then
+  printf "  Aegis 自醒           ❌ 没有日志(%s)—— 它可能从来没跑过,或日志被清\n" "$WLOG"
+  need=1
+else
+  # 日志里最后一行的分钟数(宿主机时钟,只和宿主机时钟比,不碰数据库时钟)
+  last_epoch="$(date -j -f "%Y-%m-%d %H:%M:%S" "$(grep -o '^[0-9-]* [0-9:]*' "$WLOG" | tail -1)" +%s 2>/dev/null)"
+  case "$last_epoch" in
+    ''|*[!0-9]*)
+      printf "  Aegis 自醒           ⚠️  日志有时间戳但解析不出来 —— 别当成正常\n"; need=1;;
+    *)
+      ago=$(( ( $(date +%s) - last_epoch ) / 60 ))
+      if [ "$ago" -le 35 ]; then
+        printf "  Aegis 自醒           在跑(%s 分钟前最后一次)\n" "$ago"
+      else
+        printf "  Aegis 自醒           ❌ %s 分钟没有记录了(每 :11/:41 一次,超过 35 分钟就是死了)\n" "$ago"
+        need=1
+        printf "                     修:bash scripts/install-aegis-self-wake.sh\n"
+      fi;;
+  esac
+  # 位置错了也会静默失效:cron 进不了 ~/Documents,脚本一行都不跑。
+  # 只看**最后一行** —— 日志是追加的,历史错误会永远留在里面,
+  # 拿整个日志去 grep 会让一个早就修好的问题一直报警(那同样是噪音)。
+  if tail -1 "$WLOG" | grep -q "Operation not permitted"; then
+    printf "                     ⚠️  最后一次就是 Operation not permitted —— cron 进不去那个目录\n"
+    need=1
+    printf "                     修:bash scripts/install-aegis-self-wake.sh\n"
+  fi
+fi
+# 按**二进制名**认,不要按路径认。2026-10-12 连着错过两次:
+#   1. 只匹配 target/debug —— 换成 release 的集成构建后报「没开」,而应用正在跑;
+#   2. 改成匹配三条绝对路径 —— 应用是用 ./target/release/... 相对路径起的,
+#      命令行里没有 seatloom/ 前缀,三条全不中,还是报「没开」;
+#      而且 pgrep -f 的模式是正则,'SeatLoom.app' 里的 . 会匹配任意字符,还误报过一次。
+# 所以:先用名字抓到 pid,再从这条进程真实的命令行判断它是哪个构建。
+sl_pid="$(pgrep -f 'seatloom-tauri' 2>/dev/null | head -1)"
+if [ -z "$sl_pid" ]; then
+  printf "  SeatLoom 窗口        %s\n" "没开"
+else
+  sl_cmd="$(ps -o command= -p "$sl_pid" 2>/dev/null)"
+  case "$sl_cmd" in
+    */Applications/SeatLoom.app/*) sl_which="装好的那份(/Applications)";;
+    *release*)                    sl_which="release = 集成构建";;
+    *debug*)                      sl_which="debug = 可能没有面板";;
+    *)                            sl_which="来路不明";;
+  esac
+  printf "  SeatLoom 窗口        开着(%s, pid %s)\n" "$sl_which" "$sl_pid"
+  # 装好的那份会比刚构建的二进制旧 —— 那意味着张先生从启动台点开的可能是没有面板的版本。
+  # 这是「部分换动」在应用层的同一形状:进程在跑,不等于跑的是最新的。
+  APP_BIN="/Applications/SeatLoom.app/Contents/MacOS/seatloom-tauri"
+  BUILT_BIN="$REPO/target/release/seatloom-tauri"
+  if [ -x "$APP_BIN" ] && [ -x "$BUILT_BIN" ]; then
+    app_e="$(stat -f %m "$APP_BIN")"; built_e="$(stat -f %m "$BUILT_BIN")"
+    if [ "$app_e" -lt "$built_e" ]; then
+      printf "                     ⚠️  装好的那份比刚构建的旧 —— 从启动台点开的就是没有面板的版本\n"
+      printf "                     修:cp -R target/release/bundle/macos/SeatLoom.app /Applications/\n"
+      need=1
+    fi
+  fi
+fi
 echo
 printf "  累计完成派单         %s 件\n" "$(PSQL "select count(*) from dispatches where status='done'")"

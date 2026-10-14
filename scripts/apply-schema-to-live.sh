@@ -37,10 +37,18 @@ printf "  acceptance_plan 列   %s\n"         "$([ "$(query "select count(*) fro
 echo
 
 # 按编号顺序逐个 apply。都是幂等的,已经有的会原地跳过。
+# **不写死文件名** —— 从目录里取 015 及以后的全部迁移,按编号排序。
+# 理由:2026-10-11 写死 015-018 之后,019 落地时整条链又卡了一次,
+# 而卡住的表现是"建主题的事件写不进去"(库里的事件类型值域不认 TopicOpened),
+# 离根因很远、排查花了几跳。让脚本自己发现新迁移,就不会再有这一类卡。
 failed=0
-for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql; do
+files="$(ls "$SCHEMA_DIR"/0*.sql 2>/dev/null | sed 's#.*/##' | awk -F_ '$1+0>=15' | sort)"
+if [ -z "$files" ]; then echo "❌ $SCHEMA_DIR 里找不到 015 及以后的迁移 —— 仓库是不是不在 track 分支?"; exit 1; fi
+echo "待 apply:$(printf '%s' "$files" | tr '\n' ' ')"
+echo
+for f in $files; do
   p="$SCHEMA_DIR/$f"
-  if [ ! -r "$p" ]; then echo "❌ 找不到 $f —— 仓库是不是不在 track 分支?"; failed=1; break; fi
+  if [ ! -r "$p" ]; then echo "❌ 读不到 $f"; failed=1; break; fi
   printf "apply %-28s " "$f"
   if apply_file "$p" >/tmp/apply-$f.log 2>&1; then echo "ok"
   else echo "失败 —— 详情: /tmp/apply-$f.log"; tail -5 "/tmp/apply-$f.log" | sed 's/^/    /'; failed=1; break; fi
@@ -54,6 +62,11 @@ printf "  memories 行级溯源列        %s\n" "$([ "$(query "select count(*) f
 printf "  项目层级列                 %s\n" "$([ "$(query "select count(*) from information_schema.columns where table_name='projects' and column_name='parent_project_id'")" = "1" ] && echo ✅有 || echo ❌缺)"
 printf "  验收方案列                 %s\n" "$([ "$(query "select count(*) from information_schema.columns where table_name='acceptances' and column_name='acceptance_plan'")" = "1" ] && echo ✅有 || echo ❌缺)"
 printf "  作废卡片状态               %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='acceptances_status_vocab'" | grep -q cancelled && echo ✅支持 || echo ❌不支持)"
+# 019:建主题的事件类型。缺它 → open_topic 报 "event write rejected",
+# 主题建不了 → 记忆卡在 memories.topic_id 的外键上 → 整条写入链断。
+printf "  建主题的事件类型           %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'" | grep -q TopicOpened && echo ✅认得 || echo '❌不认得(写入链会断在这里)')"
+# 这一项是整条链能不能通的终局判据:工具能不能真的建出一个主题
+printf "  主题/记忆现有行数           主题 %s 条,记忆 %s 条\n" "$(query "select count(*) from topics")" "$(query "select count(*) from memories")"
 echo
 printf "  现有数据没被动:派单 %s 条,验收卡 %s 张\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")"
 echo

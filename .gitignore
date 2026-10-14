@@ -34,3 +34,5 @@ gitlab_pat.txt
 # Python bytecode (tools/wash pipeline)
 __pycache__/
 *.pyc
+
+resume-contexts/
