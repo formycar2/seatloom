@@ -303,7 +303,16 @@ delivery claims otherwise.
    the row counts. Deliberately an **announcement** id (`-landed`, no `verified` field): what it asserts
    is that the rows are on a branch at a commit, never that a read works.
 4. ✅ Forward recording via `remember` — 4 records on `topic-aegis-fleet-operations`, source
-   `ev-X3MqYbk4yOj_Ns3Dc6NNm`: 1 decision, 1 failure, 1 unresolved, 1 fact (§9).
+   `ev-X3MqYbk4yOj_Ns3Dc6NNm`, l2 pointer = this doc (`file`, sha256
+   `234fc151…85cba2`, lines 1–326): `mem-CRWEFNQkMi3_ZZW6llgyz` (decision — census the live table
+   before writing; UPDATE-then-INSERT, matched on a column stable across the change),
+   `mem-fxgCobC54dBMX6VK-sCFm` (failure — a contract's "measured" claim must name which database it
+   measured), `mem-MYw5pqTitlHx0Bg_9xzst` (unresolved — two id conventions in one table until the
+   washing pipeline rules), `mem-riqORWM0yK_wYqK2BoSho` (fact — cursor carries no timestamps at all,
+   so its manifest date has no provenance).
+   *Deployment note:* the first attempt failed with `postgres error` because the l2 pointer was
+   `document` and this doc's id is not in `documents` (FK). Re-pointed at `file`. Worth knowing for any
+   seat pointing a memory at a not-yet-ingested doc.
 5. ✅ `SupervisorMessage` to Aegis naming the one ruling this delivery needs (§9).
 6. `complete_dispatch(disp-history-sessions-data)`.
 
