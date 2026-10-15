@@ -30,4 +30,9 @@ gitlab_pat.txt
 *.key
 *.pem
 .local/secrets/
+
+# Python bytecode (tools/wash pipeline)
+__pycache__/
+*.pyc
+
 resume-contexts/
