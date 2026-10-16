@@ -36,6 +36,36 @@ program he is running. If he follows either card he will still see bare English 
 supervisor feed and still be asked to reconnect on every menu switch. He will either conclude the
 fix failed, or click Accept on something he never saw.
 
+### 1.1 The timeline, because it changes what the fix is
+
+All times local. This is the difference between "the rule was ignored" and "the rule had nothing
+enforcing it", and only one of those is fixable by a gate.
+
+| Time | What happened |
+|---|---|
+ 10-15 17:52 | `packet/vela/washing-pipeline` merged to track (`dea224b`) |
+ 14:16 | `prepare-verification-build.sh` committed (`a505558`) — today's new rule, in prose |
+ 14:33 | Mira's branch tip is `0e1a184`-era; her worktree bundle is built at **14:38:11** |
+ 14:44:41 | `e48ef7e` — track synced into Mira's branch before the icon card |
+ **14:54** | **Five cards granted by the operator.** Verified below: those were sound |
+ 14:54:27 | `4cfd230` — Mira's branch merged to track |
+ **15:05:07** | A release bundle is built from **`track/infra-foundation`** and installed at 15:05:32 — correct, because every then-pending card's work was on track |
+ **15:20:58** | `18aa027` — the Live Seats fix, committed to **Mira's branch** |
+ **15:23** | Its acceptance card is opened |
+ **15:35:28** | `62e535a` — the supervisor feed fix, committed to **Mira's branch** |
+ **15:37** | Its acceptance card is opened |
+
+**The five 14:54 grants were sound, so this is not systemic.** Two were for
+`packet/vela/washing-pipeline`, whose work was on track since 10-15 and therefore inside the
+14:38 bundle through the sync; three were for Mira's own work, which was on her branch. Each was
+verified against a build that carried it.
+
+**What actually went wrong is narrow.** At 15:05 the running program was *replaced* with a build of
+track — the right thing to do, since every pending card's work was on track. Two fixes were then
+committed to a seat's branch *after* that replacement, and cards were opened for them **without
+anyone running the build script again**. At no point did any build on this machine contain either
+fix. Nothing in the process could notice, because nothing checks.
+
 ## 2. Findings (inference, labelled as such)
 
 **2.1 The rule was violated 32 minutes after it was written, and nothing noticed.** Aegis's
