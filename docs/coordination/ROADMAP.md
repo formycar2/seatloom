@@ -435,3 +435,46 @@ either, and I am not pushing them back to Aegis: what the product shows by defau
 | U2 | The column showed raw ids rather than names. Should it show a live title instead? | **Largely answered by delivered work.** `62e535a` on `packet/mira/knowledge-panel` resolves dispatch rows to their title, target seat and status, and memory rows to their title and topic, reading the real data rather than inventing labels. Its acceptance card is one of the two that cannot currently be verified (§1), so the answer exists but is not yet something he has seen. |
 
 U1 is the one that still needs him. U2 needs him only to confirm the fix is what he meant.
+
+### 7. The pattern behind today's three broken checks — a token is not the thing
+
+Three things failed today, and they look unrelated until you ask what each one actually measured.
+This section is the synthesis; each row was measured by the seat named, and the lineage row was
+re-measured independently.
+
+| # | The check | What it measured | What it should have measured |
+|---|---|---|---|
+| 1 | The acceptance card | that a build was *prepared* | that the build is the one the operator is *running* (§1 above) |
+| 2 | A `-live` gate event | that a capability *runs somewhere* | that it is *in the tree the dependent slice builds against* |
+| 3 | `prepare-verification-build.sh` step 4 | `strings` on a compressed binary — which can never match a frontend change | presence in the artifact the operator will actually open |
+
+**Row 2 cost a slice, and it was my decomposition error.** `disp-lineage-ui` was edged on
+`ev-lineage-readmodel-live`. The gate was real and correctly measured — Nimbus called `lineage`
+over stdio against the **live** database from `packet/nimbus/gate-vs-announcement` @ `36194e8`,
+answering eight referents including the designed refusal. And the slice still could not be built,
+because the capability is entirely on that unmerged branch: the fleet's binary serves 22 tools and
+no `lineage` (re-measured independently through the real MCP `tools/list`), there is no
+`cmd_lineage` anywhere in `src-tauri`, `api.ts` and `types-dto.ts` carry no lineage entry, and none
+of it is on `track/infra-foundation`.
+
+Mira measured all four, refused the `KnowledgeSection` local-seam precedent on the correct grounds
+that `cmd_lineage` is not registered at all (that precedent's precondition is a registered command
+with only the `api.ts` wrapper missing), and completed as `failed` under 013 with the reason
+stated. That is the right behaviour and it reopens the slice for any seat once integration happens.
+
+**Why this is the finding and not an anecdote.** Each of the three checks is load-bearing, each
+was written by someone who understood the risk, and each one passes while the thing it stands for
+is absent. A measurement that cannot fail is not a measurement; a measurement of the wrong thing is
+worse than none, because it is believed. Row 3 is the one that would have prevented row 1 — so
+fixing row 3 is not janitorial, it is the fix for row 1.
+
+**What I changed because of it.** `LYRA-2026-10-16-session-work-bridge-contract-v1` §11.1: the
+`-live` gate id is spelled `SupervisorMessage`, not `ArtifactCreated` — the enforced criterion
+refuses the announcement spelling, and my previous plan spelled it the same wrong way, which is
+why Nimbus had to deviate. §11.3: slice 4 now carries a **tree measurement** as a payload
+precondition (grep the MCP tool name, the `cmd_*` registration, and the `api.ts` / `types-dto.ts`
+entries in its own tree) instead of trusting a gate alone.
+
+**The one thing no primitive measures today, and it is the next round's milestone:** *is the
+capability in the tree the dependent builds against?* That is an integration question, it is
+measurable, and nothing measures it.
