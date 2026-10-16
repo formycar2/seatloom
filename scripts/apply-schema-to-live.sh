@@ -41,7 +41,7 @@ echo
 # 按编号顺序逐个 apply。都是幂等的,已经有的会原地跳过。
 # 019/020 也在这里(它们在别的分支上落地,这个脚本按编号顺序补齐缺的)。
 failed=0
-for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql 019_topic_opened.sql 020_gate_criterion.sql 021_history_sessions_corpus.sql; do
+for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql 019_topic_opened.sql 020_gate_criterion.sql 021_history_sessions_corpus.sql 022_session_work_bridge_view.sql; do
   p="$SCHEMA_DIR/$f"
   if [ ! -r "$p" ]; then echo "❌ 找不到 $f —— 仓库是不是不在 track 分支?"; failed=1; break; fi
   printf "apply %-28s " "$f"
@@ -62,6 +62,11 @@ printf "  历史会话语料(021)已加载    %s\n" "$([ "$(query "select count(
 printf "  消息总数                   %s\n" "$(query "select coalesce(sum(message_count),0) from archived_sessions where message_count is not null")"
 printf "  项目数(应为 38)            %s\n" "$(query "select count(*) from projects")"
 printf "  这 8 条仓库根会话未归类    %s\n" "$([ "$(query "select count(*) from archived_sessions where message_count is not null and project='(root)'")" = "8" ] && echo ✅8 条 || echo ❌条数不对)"
+echo
+# 022 是一个只读视图,不插一行数据。它的验收不是"表在不在",而是那个承重数字问得出来。
+printf "  会话↔成果 连接视图(022)   %s\n" "$([ "$(query "select count(*) from pg_views where viewname='v_memory_session_join'")" = "1" ] && echo ✅建好了 || echo ❌没有)"
+printf "  视图行数(应为带会话溯源的记忆条数) %s\n" "$(query "select count(*) from v_memory_session_join")"
+printf "  ★ 溯源指向不存在会话的记忆 %s\n" "$([ "$(query "select count(*) from v_memory_session_join where not a2_resolves")" = "3" ] && echo ✅3 条(与 022 落地时实测一致) || echo ❌$(query "select count(*) from v_memory_session_join where not a2_resolves") 条 —— 与 022 交付说明记的不一致,先问 Aegis 再动)"
 echo
 printf "  现有数据没被动:派单 %s 条,验收卡 %s 张,会话 %s 条,席位 %s 个\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")" "$(query "select count(*) from sessions")" "$(query "select count(*) from seats")"
 echo
