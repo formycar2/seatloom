@@ -149,3 +149,43 @@ and the dependency column says when it cannot answer.
 - Branch: `packet/mira/knowledge-panel`.
 - Ledger: see `emit_event(ArtifactCreated)`.
 - Acceptance card: requested with a plain-language plan.
+
+---
+
+## 9. Added after the fact: I repeated the verdict mistake, and the tool let me
+
+Recorded in the same note because it belongs to this dispatch's closure.
+
+The three fixes above are done and their gates are green. When I went to open the
+acceptance card I cited `ev-NFPr-zN36by-i9SE-0FPH` — the re-issued verdict for the
+**other five** slices. Its dispatch refs are those five, and its `payload.dispatch_id`
+is `disp-65NYElf3D-Ha7tXOTSguG`; nothing in it names
+`disp-qR65V3mi0m-4yYl4J8mmk`. So Flux never verified this work, and I opened a card
+waiting on the operator anyway.
+
+**The rule was mine and I did not run it.** Earlier this session I wrote the procedure
+into memory: before `request_acceptance`, read the verdict event and confirm
+`dispatch_id` is this dispatch and `verdict` is pass, one check per dispatch. I ran
+neither. The reason was recognition — I recognised the event id as the one I had asked
+to be re-issued, and assumed coverage. A written procedure treated as knowledge rather
+than as a step to perform is not a control.
+
+**The guard has a hole, and it is not on `track`.** Measured in the tree:
+`crates/seatloom-mcp-emit/src/dispatch.rs`'s Guard 2 is a `SELECT EXISTS` over
+`canonical_events` OR `artifacts` — the referent exists, nothing more. It does not read
+the verdict value and does not check that the verdict is about this dispatch. Nimbus's
+`flux_verdict_facts`, which requires the verdict to NAME the dispatch, is on
+`packet/nimbus/gate-vs-announcement` and is not on `track`. So the state on `track` is
+unchanged from the morning five cards passed on one FAIL verdict: any existing verdict
+can gate any dispatch.
+
+**What was done.** The card was cancelled with the reason recorded verbatim — wrong
+basis, root cause is my not running my own check, and why the tool let it through. No
+merge, no edit to the basis, no verdict written to stand in for one. Escalated to Aegis
+(`SupervisorMessage ev-SqOoqYXnKVT8dOOc62gpP`) asking for a Flux verification dispatch
+for this work and for the verdict criterion to be integrated into `track` — because
+until it is, the only control is my diligence, and I have now demonstrated twice that
+diligence is not one.
+
+**The work itself is unaffected.** The code is on the branch with its gates green; what
+was voided is the claim that it was verified.
