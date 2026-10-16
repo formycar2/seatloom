@@ -16,10 +16,13 @@ use tauri::State;
 use crate::dto::{AcceptanceCard, AcceptanceLineageDto, AcceptanceResult};
 use crate::state::AppState;
 
-/// The env var naming the operator acting on an acceptance. EXPLICIT config:
-/// the decision is a user act, so the identity is never invented on the spot —
-/// a missing value refuses the command with a configuration hint.
-pub const OPERATOR_REF_ENV: &str = "SEATLOOM_OPERATOR_REF";
+/// The operator identity's two channels and their precedence live in
+/// [`seatloom_core::config`] — one home, unit-tested without Tauri. The env var
+/// named there is the SECOND channel, not the only one: the first is a
+/// single-line file at `~/.seatloom/operator`, because an app launched from the
+/// Launchpad has no environment at all and a correct guard must not become a wall
+/// the operator can never get past. Both channels are explicit configuration by a
+/// person; neither is a default, and there is no third channel.
 
 /// The pending-acceptance read model (the UI's 待验收区). Pending first, then
 /// the most recently decided (result states: merge commit / rework link).
@@ -185,16 +188,17 @@ pub async fn cmd_reject_delivery(
 // Helpers
 // =============================================================================
 
+/// The operator acting on this decision, resolved from the configuration file
+/// first and the environment second.
+///
+/// The resolution itself — and every rule about what counts as an identity —
+/// lives in [`seatloom_core::config`], so it is unit-testable without Tauri and
+/// there is exactly one place that decides. This function only renders the typed
+/// refusal into the message the operator sees; it never substitutes a value.
 fn operator_ref() -> Result<String, String> {
-    std::env::var(OPERATOR_REF_ENV)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{OPERATOR_REF_ENV} is not set — the acceptance decision is a user act; \
-                 configure the operator ref and retry (identity is never invented on the spot)"
-            )
-        })
+    seatloom_core::config::read_operator_ref()
+        .map(|r| r.value)
+        .map_err(|e| seatloom_core::config::operator_ref_refusal_message(&e))
 }
 
 /// The merge criterion's verdict half, rendered for the operator.

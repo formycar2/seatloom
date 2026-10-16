@@ -1,4 +1,7 @@
 pub mod adapter;
+/// The operator's explicitly-configured identity — one file, read at decision
+/// time, never invented.
+pub mod config;
 pub mod data_engine;
 pub mod db;
 pub mod git;
