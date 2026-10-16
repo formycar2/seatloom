@@ -106,6 +106,16 @@ pub struct AttachTmuxRequest {
     /// Initial pane size (used by `tmux resize-pane`).
     pub rows: Option<u16>,
     pub cols: Option<u16>,
+    /// How many lines of pane scrollback to backfill into the mirror at attach
+    /// time. `None` uses `seatloom_core::pty::DEFAULT_BACKFILL_LINES`. Bounded by
+    /// the pane's tmux `history-limit`, so asking for more silently returns less.
+    #[serde(default)]
+    pub backfill_lines: Option<usize>,
+    /// The tmux `history-limit` to ask for. `None` uses
+    /// `seatloom_core::pty::DESIRED_HISTORY_LIMIT`. Affects panes created after
+    /// it is set — an already-running pane keeps the limit it was born with.
+    #[serde(default)]
+    pub history_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +200,11 @@ pub async fn cmd_attach_tmux_session(
         cols: request.cols.unwrap_or(120),
         env: LaunchOptions::default_env(),
         transcripts_dir,
+        // Forwarded verbatim; `None` means "use the documented default", which
+        // `attach_tmux` resolves. An omitted field is never rewritten to a number
+        // here, so the default has exactly one home.
+        backfill_lines: request.backfill_lines,
+        history_limit: request.history_limit,
     };
 
     let session = PtySession::attach_tmux(&id, &request.tmux_session_name, opts)
@@ -288,6 +303,10 @@ pub async fn cmd_launch_session(
         session_id: None,
         rows: request.rows,
         cols: request.cols,
+        // The legacy shim carries no backfill preference, so the documented
+        // default applies — never a number invented here.
+        backfill_lines: None,
+        history_limit: None,
     };
     cmd_attach_tmux_session(state, app, attach).await
 }

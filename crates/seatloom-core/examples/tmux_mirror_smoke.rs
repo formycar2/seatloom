@@ -53,6 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cols: 80,
         env: LaunchOptions::default_env(),
         transcripts_dir,
+        backfill_lines: None,
+        history_limit: None,
     };
 
     let session = PtySession::attach_tmux("smoke-001", &target, opts)?;
