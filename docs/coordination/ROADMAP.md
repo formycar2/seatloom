@@ -357,244 +357,75 @@ designed; do not invent it.
 **以后的排序判据(一句话):一件活是让「结构化界面」更能用,还是让「过渡态」更好看?前者优先。**
 镜像类工作只在服务「钻进原始终端」这个具体用途时才做。
 
-### 5. This round's milestone sits on the right side of today's priority correction
-
-Aegis's correction above (`8d0ad95`, from the operator's own words) sets the ranking rule: **does a
-piece of work make the *structured interface* more usable, or the *transitional state* prettier? The
-former wins**, and mirror-class work is done only when it serves the one concrete use of dropping
-into a seat's raw terminal.
-
-Round 2's milestone is on the structured side, and measurably so:
-
-| The milestone | Where it lives | Which side |
-|---|---|---|
-| Before clicking Accept-and-merge, the card names which dispatch the verdict was about, what it concluded, and when | the acceptance card in the dispatch page — a structured surface reading the ledger | **structured** |
-| The Accept button is not offered when the verdict is not about this work | same | **structured** |
-| Accepting over a red verdict records a reason | the ledger, and the card that writes it | **structured** |
-
-It is also the first of today's four token-not-thing failures that lives *on the surface he decides
-on* rather than in a build script or a gate check, which is why it is the one worth a whole round.
-
 ---
 
-## 2026-10-16 · Lyra heartbeat round 1 (no dispatch) — two cards must not be clicked, and a gate that cannot report
+## 2026-10-16 · Lyra — the first screen contract (UM2, finally scoped)
 
-Written under `tasks/lyra/LYRA-HEARTBEAT.md` §3: no dispatch was waiting, so this round did what
-that file calls the main job — look at real state, find where the product is worse than it claims,
-and decide the next step. Facts and inference are kept separate. The operator-facing version is
-`docs/coordination/acceptance/2026-10-16-two-cards-not-yet.zhs.md`.
+Raised by Aegis's dispatch `disp-598TQuyRewCXs8aG8GKmK`. Contract:
+`tasks/lyra/LYRA-2026-10-16-first-screen-contract-v1.md`. Operator-facing version:
+`docs/coordination/acceptance/2026-10-16-first-screen.zhs.md`. The hard constraint is honoured:
+existing partitions, existing components, existing information architecture, no new interaction.
 
-### 1. Facts (each reproducible)
+### The decision
 
-1. **Two acceptance cards are pending the operator's click**: the supervisor activity feed showing
-   a bare English type name on ~80% of rows (requested 07:37 UTC) and Live Seats demanding a
-   Connect on every menu switch (07:23 UTC), both on `packet/mira/knowledge-panel`.
-2. **The running SeatLoom is byte-identical to the main checkout's 15:05:07 bundle** — same sha256
-   (`3bf9037e…`). It was built from `ui/dist` produced at 15:03:20 from
-   `track/infra-foundation` @ `8a2d733`.
-3. **Neither fix is on `track/infra-foundation`.** `ui/src/app-v2/lib/eventText.ts` and
-   `ui/src/stores/useLiveSeatsMirrorStore.ts` do not exist there; both exist on Mira's branch.
-4. **Both fixes were committed after the running build existed**: `18aa027` at 15:20:58 and
-   `62e535a` at 15:35:28, against a binary built at 15:05:31.
-5. **No build on this machine carries either fix.** The newest release binary anywhere is 15:05:31
-   (main checkout); Mira's worktree's is 14:38:34.
-6. Confirmed at the artifact level rather than by timestamp inference: the fix's marker strings are
-   PRESENT in Mira's branch `ui/dist` (rebuilt 15:44) and ABSENT from the main checkout's
-   `ui/dist` (15:03) that produced the running app. The control string, a long-standing UI label, is present in both, so the method
-   discriminates.
-7. **`prepare-verification-build.sh` step 4 — "prove this build really carries the work" — cannot
-   report for any frontend change.** It greps the binary with `strings`, and the frontend is
-   embedded compressed: on this very binary `strings` finds a long-standing UI label **0 times**,
-   while the dist it was built from contains it.
+**The first screen is the existing dispatch page, and it becomes the default landing** — one line,
+`App.tsx:92` from `'live-seats'` to `'dispatches'`. It is the only surface in the product that reads
+a real, non-seed, non-mock table at scale (177 dispatches with live statuses and real dependency
+edges), and its existing composition already answers the operator's first question outright: the
+table is grouped by seat with a per-seat status strip as the group header.
 
-**Conclusion: the operator is being asked to Accept two fixes that are not in the program he is
-running.** Following either card, he sees the old behaviour.
+The ⌘K panel and the first screen **coexist with different jobs** — ⌘K is where he talks to the
+fleet, the first screen is where he sees how it is going. Merging them would be a new interaction.
+The mirror keeps its NavRail tab, undeleted, as the drop-into-the-raw-terminal detail view.
 
-### 2. Inference (labelled as such)
+### The measurement that decided it
 
-- **The rule was violated 32 minutes after it was written and nothing noticed.** "The card and the
-  build arrive together" is correct, but it is prose with nothing checking it. Two cards opened 18
-  and 32 minutes after the only build, and no build was ever made for them.
-- **That gate is a check that cannot report** — the same family as the two checks fixed today
-  (`fleet-status` treating a wrapper process as the app window; the must-have argument sitting in
-  `$3` so it was always empty while the script printed a warning and continued). **Three in one
-  day.** This is the worst of them, because it is the only thing standing between the operator and
-  accepting a card he cannot verify.
-- **The acceptance gate validates everything except the thing the card is about.** Plan shape,
-  verdict reference, branch-contains-base, operator identity — all checked. It never asks whether a
-  build carrying the fix exists, let alone whether it is the one running.
+The partition whose *layout* most resembles his three questions is `ProjectDashboard`, and its work
+graph **can never fill**: `ProjectDashboard.tsx:454` feeds `DagWorkflow` from
+`MOCK_CHANNEL_DATA[channelId]`, whose keys are `ch-p1/p2/p3` while the only live project id is
+`seatloom`. So it renders `{nodes: [], edges: []}` forever regardless of what the ledger holds, and
+he reads empty as broken — which he has already been unhappy about once today. So the first screen
+is not the dashboard; it stays inside the ⌘K panel, unchanged, and re-feeding its DAG from real
+dispatches is deferred with its own contract rather than folded in as a detail.
 
-### 3. Decisions (PO side)
+### The criterion for "what needs my decision" — and why two kinds are not enough
 
-- **These two cards must not be clicked as they stand.** Withdraw or rebuild-and-reissue is Aegis's
-  call; the requesting seat is Mira, so I cannot withdraw them myself.
-- **Next round's milestone: before clicking an acceptance card, you can see whether the program in
-  your hands actually carries this fix.** The acceptance request carries a **measured build
-  attestation** — branch, commit, when the build was made, and a marker string proven present in the
-  artifact the operator is actually running. The card renders it. No attestation, or one that does
-  not verify, and the card says plainly that this build does not carry the fix and the build must
-  come first. User-perceivable by construction.
-- **The attestation must be proven in the artifact he is running, not in a build directory.** F7
-  kills `strings`-on-the-binary for anything frontend. The proof must run against something that
-  can actually be searched — the `ui/dist` the bundle was produced from, or the decompressed
-  embedded asset — and it must be able to fail.
-- **A claim like the old §5's "all four cards are verifiable with the currently installed program"
-  must name its build** (install timestamp + commit). Without that it goes stale silently, which is
-  exactly what happened here.
+Aegis measured two kinds: cards awaiting his click, and things blocked on Aegis. **The third kind is
+the one he has been asking about all day.** The criterion, stated once: *a thing needs his decision
+if and only if the next action is one only he can take.*
 
-### 4. Work in flight at the end of this round
+- **K1 only he can click** — acceptance cards with `status='pending'`; the merge happens only on his
+  Accept click. Has a partition already.
+- **K2 only he or Aegis can produce** — a gate ruling only Aegis emits, a branch only Aegis
+  integrates, a live-database command only the operator can run. `disp-session-key-ui` is the live
+  example: its referent was deliberately deferred at 09:29 because the bridge view is not on live,
+  so no seat is producing it.
+- **K3 only he can decide** — product judgments, not technical ones. U1 (default-collapse
+  memory-type internal actions in the supervisor column) and U2 (is the id→title fix what he meant).
+  **K3 has no home on any screen.** It lives in this roadmap and in SupervisorMessages to Aegis.
 
-3 in flight, 7 ready or waiting. Aegis's three real defects: the live mirror cannot see history,
-the acceptance count over-counts cancelled cards, the waker never calls an idle seat. My lineage
-and session-bridge chains: the view landed (Onyx), the write-in guard self-pulled (Vela); the read
-model, UI and verification slices wait on their gates.
+Explicitly not his: anything a seat can measure and decide.
 
-### 5. Waiting on Aegis
+### Two gaps flagged rather than built, because building them would violate his second sentence
 
-1. What to do with the two cards (withdraw / rebuild-and-reissue), and whether Mira rebuilds.
-2. Whether the acceptance gate gains a build attestation — gate conditions are his authority.
-3. A ruling on a doc-gate conflict this round surfaced: `verify-docs.sh` §10 requires new docs to
-   be English, while this file's operator-facing sections are Chinese by deliberate choice (he has
-   twice said he cannot read the abbreviated English). My section here is English and the
-   operator-facing version is a separate `.zhs.md`, but the underlying conflict is unresolved and
-   it is his to rule on.
+1. **"Is anyone working on the thing I am blocked on" is not answerable from the data.** A blocked
+   dispatch's edge names the event it waits for; if that event exists, its `actor_ref` says who
+   produced it. If it does not exist, **no row says who will produce it** — the mapping lives in
+   prose (the contracts' event tables), not in a table. So the first screen can say *what* a row
+   waits for and *whether it exists yet*, and cannot say *whether anyone is on it*. Adding a
+   producer column would be a schema change and new information architecture.
+2. **K3 has no home.** The nearest existing surface is the timeline's event-type filter, and whether
+   filtering the timeline to "awaiting a decision" is using an existing partition or inventing an
+   interaction is precisely the judgment his second sentence reserves to him.
 
-### 6. Two product decisions that are the operator's, and were recorded nowhere he would look
+### The decomposition
 
-Aegis's heartbeat file records two Review findings on the supervisor panel as *product judgments
-waiting on the operator*, and says to decompose them only after he decides. They existed only in
-that file — not in this roadmap, not in a contract — so there was no surface where he would ever
-meet them. Recording them here, as his, is the whole of my action on them. I am not deciding
-either, and I am not pushing them back to Aegis: what the product shows by default is his call.
+Four slices, small on purpose: make the dispatch page the default landing (Mira, no edges); add
+referent-existence to `DispatchDependencyDto` (Nimbus, no edges — `dto.rs` is his fence); render it
+in the existing dependency column (Mira, edged on the DTO announcement, because Mira cannot render
+a fact the DTO does not carry — the lesson of `disp-lineage-ui` failing this morning); verify
+adversarially (Flux, pre-declared verdict `ev-verdict-first-screen`).
 
-| # | The question, in his terms | Status |
-|---|---|---|
-| U1 | The supervisor column is currently one global stream of everything that ever happened. Should memory-type internal actions (a memory recalled, a memory created, a topic opened) be collapsed by default, so the column leads with work rather than bookkeeping? | **Open, and genuinely his.** It is a decision about what he sees by default. Note the measured context: of the 400 newest rows the column loads, 321 fall into exactly these internal types, so this is not a cosmetic question — it is most of the column. |
-| U2 | The column showed raw ids rather than names. Should it show a live title instead? | **Largely answered by delivered work.** `62e535a` on `packet/mira/knowledge-panel` resolves dispatch rows to their title, target seat and status, and memory rows to their title and topic, reading the real data rather than inventing labels. Its acceptance card is one of the two that cannot currently be verified (§1), so the answer exists but is not yet something he has seen. |
-
-U1 is the one that still needs him. U2 needs him only to confirm the fix is what he meant.
-
-### 7. The pattern behind today's three broken checks — a token is not the thing
-
-Three things failed today, and they look unrelated until you ask what each one actually measured.
-This section is the synthesis; each row was measured by the seat named, and the lineage row was
-re-measured independently.
-
-| # | The check | What it measured | What it should have measured |
-|---|---|---|---|
-| 1 | The acceptance card | that a build was *prepared* | that the build is the one the operator is *running* (§1 above) |
-| 2 | A `-live` gate event | that a capability *runs somewhere* | that it is *in the tree the dependent slice builds against* |
-| 3 | `prepare-verification-build.sh` step 4 | `strings` on a compressed binary — which can never match a frontend change | presence in the artifact the operator will actually open |
-
-**Row 2 cost a slice, and it was my decomposition error.** `disp-lineage-ui` was edged on
-`ev-lineage-readmodel-live`. The gate was real and correctly measured — Nimbus called `lineage`
-over stdio against the **live** database from `packet/nimbus/gate-vs-announcement` @ `36194e8`,
-answering eight referents including the designed refusal. And the slice still could not be built,
-because the capability is entirely on that unmerged branch: the fleet's binary serves 22 tools and
-no `lineage` (re-measured independently through the real MCP `tools/list`), there is no
-`cmd_lineage` anywhere in `src-tauri`, `api.ts` and `types-dto.ts` carry no lineage entry, and none
-of it is on `track/infra-foundation`.
-
-Mira measured all four, refused the `KnowledgeSection` local-seam precedent on the correct grounds
-that `cmd_lineage` is not registered at all (that precedent's precondition is a registered command
-with only the `api.ts` wrapper missing), and completed as `failed` under 013 with the reason
-stated. That is the right behaviour and it reopens the slice for any seat once integration happens.
-
-**Why this is the finding and not an anecdote.** Each of the three checks is load-bearing, each
-was written by someone who understood the risk, and each one passes while the thing it stands for
-is absent. A measurement that cannot fail is not a measurement; a measurement of the wrong thing is
-worse than none, because it is believed. Row 3 is the one that would have prevented row 1 — so
-fixing row 3 is not janitorial, it is the fix for row 1.
-
-**What I changed because of it.** `LYRA-2026-10-16-session-work-bridge-contract-v1` §11.1: the
-`-live` gate id is spelled `SupervisorMessage`, not `ArtifactCreated` — the enforced criterion
-refuses the announcement spelling, and my previous plan spelled it the same wrong way, which is
-why Nimbus had to deviate. §11.3: slice 4 now carries a **tree measurement** as a payload
-precondition (grep the MCP tool name, the `cmd_*` registration, and the `api.ts` / `types-dto.ts`
-entries in its own tree) instead of trusting a gate alone.
-
-**The one thing no primitive measures today, and it is the next round's milestone:** *is the
-capability in the tree the dependent builds against?* That is an integration question, it is
-measurable, and nothing measures it.
-
----
-
-## 2026-10-16 · Lyra heartbeat round 2 — the merge gate promised green and checked existence, and the operator already clicked through it
-
-Written under `tasks/lyra/LYRA-HEARTBEAT.md` §3, round 2, no dispatch waiting. Facts measured by me
-on `track/infra-foundation` and the live ledger; nothing taken on trust from another seat's report.
-Full contract: `tasks/lyra/LYRA-2026-10-16-acceptance-card-verdict-contract-v1.md`. Operator-facing
-version: `docs/coordination/acceptance/2026-10-16-acceptance-card-verdict-zhs.md`.
-
-### 1. Facts
-
-1. **`cmd_accept_delivery` — the code behind the operator's Accept button — is existence-only on
-   track.** Its comment says *"the Flux green verdict must exist NOW"* and its refusal says
-   *"cannot merge without a green verdict"*, while the code calls `event_or_artifact_exists(flux_verdict_ref)`. The product
-   states a guarantee in its own words that its code does not implement.
-2. **It already happened, twice.** `acc-disp-history-sessions-ui` (05:53) and
-   `acc-disp-ol420Y586tNIsbbeh5nlU` (06:45) both cited `ev-verdict-history-sessions` — `verdict =
-   "fail"`, `dispatch_id = "disp-history-sessions-verify"`, a different dispatch from either card.
-   Both granted at 06:54, two seconds apart, merged in `4cfd2302`. A third card cited the same fail
-   verdict and was withdrawn at 07:49 before a decision.
-3. **He was shown a red badge.** `fluxVerdictStyle("fail")` returns the label **Flux-verified-red** with a rose style. He saw red and
-   accepted. **Not a claim that he was misled** — the 10-14 fail verdict's own text says the data
-   migration is correct and lists a fix path completed before he clicked, so his override may well
-   have been informed.
-4. **The card could not have made it informed.** `FluxVerdictDto` carries `ref_id`, `verdict`,
-   `occurred_at` — and **no subject**. The UI cannot show which dispatch the verdict was about,
-   because the information is not in the DTO. So an informed override and a blind click are
-   indistinguishable in the ledger.
-5. **Accept records nothing; reject requires a written reason.** `cmd_accept_delivery` takes only
-   `acceptance_id`. The reject button is disabled without feedback; the accept button is not.
-6. **The fix is written, correct, and not integrated.** On `packet/nimbus/gate-vs-announcement`,
-   `cmd_accept_delivery` calls `flux_verdict_facts(ref, dispatch_id)` and refuses with a message
-   naming the verdict, what it said and why it does not count — with a comment recording the exact
-   measured harm. Track still carries fact 1. Flux is verifying Nimbus's four fixes on a clean
-   branch (`disp-8x5OErFkgktn49IN6tB-c`, priority 99).
-7. **The two merges' work is genuinely verified, but 1h37m after the merge.** Flux's
-   `ev-0idwakl17abEU75LNED24` (08:31, pass) covers Mira's five slices; its re-issue
-   `ev-NFPr-zN36by-i9SE-0FPH` (08:46) names all five by `event_object_refs` rows and states plainly
-   it is not a second verification. The record is coherent only because it was repaired afterwards.
-
-### 2. Findings
-
-- **The gate failed open.** Had the 08:31 verdict come back fail, two merges would be on track with
-  no green verdict and only a revert as remedy. Nothing would have flagged it. "It turned out all
-  right" is not a control.
-- **Fourth instance today of one shape, and the first to reach his finger.** The acceptance card
-  checked a build was *prepared*, not that it is the one *running*. A `-live` gate checked a
-  capability *runs somewhere*, not that it is *integrated*. `prepare-verification-build.sh` step 4
-  grepped a compressed binary. Now the merge guard checks a verdict *exists*, not what it *says* or
-  *about whom*. Three of the four are fixed or fixed-in-branch.
-- **The deeper defect is the card, not the gate.** Even integrated, a red-verdict card is still
-  offered with an enabled merge button and still cannot show its subject. A refusal after the click
-  is a worse experience than a card that never offered the button — Aegis has already said this
-  about a sibling error string.
-
-### 3. Decisions (PO side)
-
-- **Next round's milestone: before clicking Accept-and-merge, you can see whether the verdict this
-  card cites is about this work, and what it said.** The card names the verdict's subject dispatch, its conclusion and its date in words; if
-  the verdict is not about this work the card says so and does not offer the button; a red verdict
-  requires a written reason to accept, a green one does not.
-- **The card carries the verdict's subject — a DTO contract, so mine to write.** `FluxVerdictDto`
-  gains the subject dispatch id, the evidence reference and a one-line finding summary. Without the
-  subject in the DTO no UI can be honest here, so this is the load-bearing half.
-- **Not decided by me:** whether `4cfd2302` stands (Aegis's ruling; my reading is that it does,
-  because fact 7, but the inversion is his to accept or revert), and whether to integrate Nimbus's
-  branch (Aegis's action).
-
-### 4. Also measured this round, so the record is complete
-
-- `disp-session-key-readmodel` is **done** and `disp-session-key-verify` is **done with a fail
-  verdict** (`ev-verdict-session-key`, 09:49). Nimbus **deferred** his `-live` gate because the
-  bridge view (022) is not on live — the gate would have asserted something false. That is the
-  correct call and it is the §11.3 precondition working.
-- My `disp-session-key-ui` stays blocked on that absent gate. Correct, not a stall.
-- Aegis has topped up three items my 10-16 plan missed (`disp-qR65V3mi0m-4yYl4J8mmk`: the empty
-  goals/stages bands, the machine-code dependency column, the knowledge panel's hand-written
-  constant) and re-dispatched the free-text message loss (`disp-I-0ITMoupZLl-QeYkjeZ9`) that my
-  `disp-wiring-honesty-backend` already covers. One in-flight per seat is a database fact, so they
-  serialize rather than collide — flagged to Aegis so he can collapse the overlap deliberately.
-- `disp-sc2-verify` has been in flight since **10-08**, eight days. Still wedged.
+Already dispatched by Aegis and therefore not repeated here: the machine-code dependency column, the
+empty goals/stages bands, and the knowledge panel's hand-written constant
+(`disp-qR65V3mi0m-4yYl4J8mmk`).
