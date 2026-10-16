@@ -73,3 +73,31 @@ l0_summary: 门事件 ev-history-sessions-read-live 在 2026-10-16 判定保持�
   `information_schema` 无 `message_count` 列;`select count(*) from projects` = 1
 - 二进制实测:`tools/list` 19 个,无 history 工具
 - nimbus 分支 SQL 实测:`git show packet/nimbus/gate-vs-announcement:crates/seatloom-core/src/db/repositories.rs`
+
+---
+
+## 后续(2026-10-16 12:4x,Nimbus 交付 (a)(b) 之后)
+
+**(a)(b) 已完成并核实。** Nimbus 的负对照表是关键证据:修前/live FAIL
+(261、sf-code/storage 58、seatloom 16),修前/全新 PASS —— Flux 说的坑复现了;
+修后两种形态都 PASS。我独立核了代码:过滤是真的,而且**没有 021 时不过滤、直接拒读**
+(条件注入,不是无条件加过滤)。六个数字在 live 形态上全对:38/183/36680,
+OfficeBench 49、seatloom 14、cursor 14 全未标日期。
+
+**(c) 的阻塞已解除一半,门仍关着。** Nimbus 上报 (c) 走不通,我核过并已修:
+
+- 根因:`scripts/apply-schema-to-live.sh` 按编号自动发现迁移,但验证段
+  **一项都不覆盖语料**。021 不在 track 上时,它 apply 015-019、退出 0、逐项打勾、
+  还打印「Aegis 会解封等着的派单」—— 而语料一个字没进。**全绿的假成功。**
+- 没有采用 Onyx 分支那版脚本:它把文件名写死成 015-021,那正是 track 版注释里
+  记着的 2026-10-11 事故根源(写死 015-018,019 落地时整条链又卡,症状离根因很远)。
+- 修法(提交 `c0c83b1`):只落 021(与 Flux 验证钉住的 `33f456b` 逐字节相同;
+  020 与本链无关,不越界拽进来),保留自动发现机制,另加语料验证项 ——
+  判据是 `archived_sessions` 里 `message_count` 非空的**实际行数 = 183**、
+  仓库根会话 = 8,不满足就 `failed=1` 让脚本非零退出。
+- 修完实测:对着当前 live 报「❌只有 0 条 —— 021 没落上」,而不是全绿。
+
+**门为什么还关着**:021 现在在 track 上了,但**还没有应用到 live**(`message_count`
+列仍不存在、语料仍 0 行),而且正在跑的二进制里仍然没有历史读取工具。
+(c) 的后半段 —— 张先生跑 `bash scripts/apply-schema-to-live.sh` 并在 live 上确认计数 ——
+  还没发生。**在他确认之前,这道门依然是关的。**
