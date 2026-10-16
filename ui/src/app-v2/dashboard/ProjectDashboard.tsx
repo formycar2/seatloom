@@ -10,7 +10,7 @@ import { Zap, ArrowRight, Info, ChevronRight, FileText } from 'lucide-react';
 import { StageWorkflow } from '../dag-model';
 import DagWorkflow from '../DagWorkflow';
 import { useDataStore } from '../../stores/useDataStore';
-import { TimelineEntry } from '../types';
+import { PlanPhase, ProjectChannelData, TimelineEntry } from '../types';
 import { MOCK_CHANNEL_DATA } from '../mock-data';
 import { BlockersSection } from './BlockersSection';
 import { ActiveWorkSection } from './ActiveWorkSection';
@@ -428,14 +428,39 @@ export const ProjectDashboard: React.FC<{ channelId: string; projectId?: string 
       </div>
     );
 
-  const { goals, currentGoal, justNow, earlierToday, yesterday } = mockPlanData || {
-    goals: [],
-    currentGoal: { name: '', stages: [], currentStageIndex: 0 },
+  const { justNow, earlierToday, yesterday } = mockPlanData || {
     justNow: [],
     earlierToday: '',
     yesterday: '',
   };
-  const stages = currentGoal?.stages || [];
+
+  // ── Goals & stages: NO DATA SOURCE, and that is now said out loud ──────────
+  //
+  // These two used to come from `MOCK_CHANNEL_DATA[channelId]`, whose only keys
+  // are the three demo channels 'ch-p1' / 'ch-p2' / 'ch-p3'. `channelId` is built
+  // by useContacts as 'ch-' + a REAL project id, so for every project that
+  // actually exists the lookup is `undefined` and the section rendered an empty
+  // shell — the operator read two permanently blank bands and concluded the
+  // product had no goals.
+  //
+  // Measured before changing anything: there is no real source either. No goals
+  // or stages column in the schema, no DTO, no Tauri command, no entry in
+  // lib/api.ts — grep across src-tauri, crates/seatloom-core, the schema files
+  // and the api layer all come back empty. So this is not a rewiring job, it is
+  // a "say what is missing" job. Faking a band to make it non-empty is exactly
+  // the shape this dispatch forbids.
+  //
+  // The same dead mock read still feeds the DAG scaffolding and the timeline
+  // below (currentStage.workflow / nextStep / workItemsDone). Those have real
+  // counterparts in `truthData` and are outside this dispatch's scope; they are
+  // reported in the delivery note rather than quietly changed here.
+  const goals: ProjectChannelData['goals'] = [];
+  const currentGoal: ProjectChannelData['currentGoal'] = {
+    name: '',
+    stages: [],
+    currentStageIndex: 0,
+  };
+  const stages: PlanPhase[] = [];
 
   const useTruth =
     truthData &&

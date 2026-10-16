@@ -16,7 +16,8 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
+import { CanonicalEventDto, DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
+import { eventToText } from '../app-v2/lib/eventText';
 import AcceptanceSection from '../components/AcceptanceSection';
 
 // DispatchInboxView — the governed-dispatch (G19) seat inbox. Reads the live
@@ -233,9 +234,85 @@ function monogram(label: string, id: string): string {
   return (m ? m[0] : '?').toUpperCase();
 }
 
-function depsTitle(deps: DispatchDependencyDto[]): string {
-  if (deps.length === 0) return '';
-  return deps.map((x) => `${x.depKind}: ${x.depValue}`).join('\n');
+/**
+ * How many of the newest ledger events a dependency lookup covers.
+ *
+ * `cmd_list_events` is the only read the UI has for this, and it is BOUNDED — the
+ * repository function is `... ORDER BY occurred_at DESC LIMIT $1`. So a referent
+ * found in the window is a fact; a referent NOT found in it is NOT a fact, and the
+ * UI must not say "does not exist". The bound is stated wherever the answer is
+ * shown, so nobody reads absence as proof.
+ */
+const EVENT_WINDOW = 500;
+
+/** One dependency, resolved into something a person can read. */
+interface ResolvedDep {
+  dep: DispatchDependencyDto;
+  /** The event, when the newest EVENT_WINDOW rows contain it. */
+  event?: CanonicalEventDto;
+}
+
+/**
+ * Resolve `event:<id>` dependencies against the newest EVENT_WINDOW ledger rows.
+ *
+ * What it can say: what that event is, who did it, when, and — through the shared
+ * translator — one line of plain language. What it cannot say from here: whether a
+ * referent outside the window exists. The unbounded existence answer lives in the
+ * MCP `get_dispatch` tool, which is not registered as a Tauri command in this tree
+ * (measured: no `cmd_get_dispatch` in src-tauri), so this view does not pretend to
+ * it. A missing referent renders as "not in the newest N" — never as "not
+ * satisfied" and never as "satisfied".
+ */
+function useResolvedDeps(deps: DispatchDependencyDto[]): ResolvedDep[] {
+  const [events, setEvents] = useState<CanonicalEventDto[]>([]);
+
+  // Only event-kind deps need the ledger; a dispatch-kind dep is resolved from the
+  // dispatch list the view already holds.
+  const eventValues = useMemo(
+    () =>
+      deps
+        .filter((d) => d.depKind === 'event')
+        .map((d) => d.depValue)
+        .join('\u0000'),
+    [deps],
+  );
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listEvents(EVENT_WINDOW)
+      .then((rows) => {
+        if (alive) setEvents(rows);
+      })
+      .catch(() => {
+        if (alive) setEvents([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [eventValues]);
+
+  return useMemo(() => {
+    const byId = new Map(events.map((e) => [e.id, e]));
+    return deps.map((dep) => ({
+      dep,
+      event: dep.depKind === 'event' ? byId.get(dep.depValue) : undefined,
+    }));
+  }, [deps, events]);
+}
+
+/** One dependency as a human sentence. The id may appear, but never alone. */
+function depSentence(r: ResolvedDep): string {
+  const { dep, event } = r;
+  if (dep.depKind !== 'event') {
+    // A dispatch-kind dep: the row's own seat/status columns already say what it
+    // is, so this names the kind and points at the row rather than repeating it.
+    return `等另一张派单(${dep.depValue})`;
+  }
+  if (!event) {
+    return `这条不在最近 ${EVENT_WINDOW} 条账本记录里 —— 从这里判断不了它是什么、在不在`;
+  }
+  return eventToText(event);
 }
 
 // ── Presentational pieces ───────────────────────────────────────────────────
@@ -358,6 +435,10 @@ const DispatchRow: React.FC<DispatchRowProps> = ({
   const note = payloadNote(d.payload);
   const elapsed = elapsedMs(d, now);
   const highPriority = d.priority >= 5;
+  // Resolved here, not in a helper: a hook has to live in a component. One ledger
+  // read per mounted row, keyed on this row's event-kind dep values.
+  const resolved = useResolvedDeps(d.deps);
+  const depsSentence = resolved.map(depSentence).join('\n');
 
   return (
     <>
@@ -434,12 +515,15 @@ const DispatchRow: React.FC<DispatchRowProps> = ({
             {fmtTime(d.issuedAt)}
           </span>
         </td>
-        {/* Dependencies — direction + count, never drawn edges */}
+        {/* Dependencies — direction + count, never drawn edges. The count badge is
+            unchanged (he scans by it); the tooltip used to be raw
+            `dep_kind: dep_value` strings, which told him it was blocked on
+            something but not what. It is now one plain sentence per dependency. */}
         <td className="px-2 py-1.5">
           {d.deps.length > 0 ? (
             <span
               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-600 border border-amber-500/25 whitespace-nowrap"
-              title={depsTitle(d.deps)}
+              title={depsSentence}
             >
               <Link2 size={9} />↑{d.deps.length}
             </span>
@@ -492,11 +576,7 @@ const DispatchRow: React.FC<DispatchRowProps> = ({
                 <Meta label="完成时间" value={fmtTime(d.completedAt)} />
                 <Meta
                   label="依赖"
-                  value={
-                    d.deps.length > 0
-                      ? d.deps.map((x) => `${x.depKind}:${x.depValue}`).join(' · ')
-                      : '无'
-                  }
+                  value={d.deps.length > 0 ? resolved.map(depSentence).join('\n') : '无'}
                 />
               </dl>
             </div>
