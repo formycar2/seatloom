@@ -318,4 +318,110 @@ describe('AcceptanceSection', () => {
     // live=false: no poll is armed, so nothing is fetched and no card appears.
     await waitFor(() => expect(screen.queryByText('重设计派单页交互')).toBeNull());
   });
+  // ── The voided-card defect (2026-10-16) ────────────────────────────────────
+  //
+  // Mr. Zhang counted 7 待决策 where 5 were actually waiting on him. The extra
+  // two were cards that had been voided days earlier: `isDecided` did not know
+  // `cancelled` was a settled state, so they stayed in the awaiting list AND in
+  // the number. The live card set at the time of the fix is 10 cards — 6
+  // accepted, 2 cancelled, 2 pending — which with the bug renders as 4 项待决策
+  // instead of 2.
+
+  it('does not count a voided card as waiting on the operator', async () => {
+    state.registered = true;
+    state.cards = [
+      card({ id: 'acc-live', dispatch_title: '活一' }),
+      card({ id: 'acc-live-2', dispatch_title: '活二' }),
+      card({
+        id: 'acc-void',
+        dispatch_title: '作废的那张',
+        status: 'cancelled',
+        feedback: 'base 记成不存在的 track;内容早已由 Aegis 合并,按裁决作废。',
+      }),
+    ];
+    renderSection();
+    await screen.findByText('活一');
+    // Two are waiting, not three.
+    expect(screen.getByText('2 项待决策')).toBeTruthy();
+    expect(screen.queryByText('3 项待决策')).toBeNull();
+    // The voided card is not in the actionable list at all — not even collapsed,
+    // because the 已作废 area only opens on a click.
+    expect(screen.queryByText('作废的那张')).toBeNull();
+  });
+
+  it('keeps a voided card findable, collapsed, with its reason', async () => {
+    state.registered = true;
+    state.cards = [
+      card({ id: 'acc-live', dispatch_title: '活一' }),
+      card({
+        id: 'acc-void',
+        dispatch_title: '作废的那张',
+        status: 'cancelled',
+        feedback: '原卡的验收描述满是技术术语,张先生看不懂,所以用大白话重开一张。',
+      }),
+    ];
+    renderSection();
+    await screen.findByText('活一');
+
+    // Collapsed by default: it is a record, not work.
+    const toggle = screen.getByText('已作废 1 项');
+    expect(screen.queryByText('作废的那张')).toBeNull();
+
+    fireEvent.click(toggle);
+    // Open: the title and the reason are both readable.
+    expect(screen.getByText('作废的那张')).toBeTruthy();
+    expect(screen.getByText(/原卡的验收描述满是技术术语/)).toBeTruthy();
+    expect(screen.getByText(/不算在待决策里/)).toBeTruthy();
+  });
+
+  it('says the reason lives in the ledger when the card carries none', async () => {
+    state.registered = true;
+    state.cards = [
+      card({ id: 'acc-live', dispatch_title: '活一' }),
+      card({
+        id: 'acc-void',
+        dispatch_title: '没写理由的那张',
+        status: 'cancelled',
+        feedback: null,
+      }),
+    ];
+    renderSection();
+    await screen.findByText('活一');
+    fireEvent.click(screen.getByText('已作废 1 项'));
+    expect(screen.getByText(/没记作废理由/)).toBeTruthy();
+    expect(screen.getByText(/AcceptanceCancelled/)).toBeTruthy();
+  });
+
+  it('leaves already-accepted and already-rejected cards out of the count, as before', async () => {
+    // Unchanged behaviour, asserted so the cancelled fix cannot quietly widen:
+    // a settled card has never been rendered by this section — only a card the
+    // operator decides in this session shows its result (covered by the
+    // accept/reject tests above).
+    state.registered = true;
+    state.cards = [
+      card({ id: 'acc-live', dispatch_title: '活一' }),
+      card({
+        id: 'acc-acc',
+        dispatch_title: '已接受的那张',
+        status: 'accepted',
+        merge_commit: 'abc123',
+      }),
+      card({
+        id: 'acc-rej',
+        dispatch_title: '已打回的那张',
+        status: 'rejected',
+        rework_dispatch_id: 'disp-rework',
+      }),
+      card({ id: 'acc-void', dispatch_title: '作废的那张', status: 'cancelled', feedback: '撤了' }),
+    ];
+    renderSection();
+    await screen.findByText('活一');
+    expect(screen.getByText('1 项待决策')).toBeTruthy();
+    // Only the voided one gets a 已作废 area — settled cards are simply absent.
+    expect(screen.getByText('已作废 1 项')).toBeTruthy();
+    fireEvent.click(screen.getByText('已作废 1 项'));
+    expect(screen.getByText('作废的那张')).toBeTruthy();
+    expect(screen.queryByText('已接受的那张')).toBeNull();
+    expect(screen.queryByText('已打回的那张')).toBeNull();
+  });
 });
