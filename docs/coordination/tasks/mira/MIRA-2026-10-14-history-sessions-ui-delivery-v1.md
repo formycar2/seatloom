@@ -178,10 +178,22 @@ be the first one.
 ## 10. Artifact index
 
 - Branch: `packet/mira/knowledge-panel` (with a merge of `track/infra-foundation` so the
-  read path is present for slice 3 to compile and be measured against).
+  read path is present for slice 3 to compile and be measured against; re-synced to
+  `a587f57` immediately before the acceptance request, because the gate refuses a branch
+  that does not contain its base).
 - Measured snapshot and the script that refreshes it:
   `ui/src/app-v2/panel/__fixtures__/history-measured.json`,
   `scripts/refresh-history-ui-fixture.sh`.
 - Ledger: see `emit_event(ArtifactCreated)`.
 - Acceptance card: requested with contract §6 verbatim; merges only on the operator's
   Accept click.
+
+## 11. One ordering fact worth recording
+
+The dispatch's done-definition lists the acceptance-card request *before*
+`complete_dispatch`. The tool will not accept that order: `request_acceptance` refuses a
+dispatch that is not `done` (013/014: only a done dispatch of the calling seat may be
+handed to the gate). So the actual order had to be **`complete_dispatch` first, then
+`request_acceptance`** — the guard is the constraint, and the prose cannot be followed
+literally. Recorded here so the next seat does not lose time discovering it, and so a
+reader of the ledger does not mistake the sequence for a seat that skipped its card.
