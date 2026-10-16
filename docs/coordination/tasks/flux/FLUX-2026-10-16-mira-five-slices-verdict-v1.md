@@ -1,5 +1,15 @@
 # Flux verdict — Mira's five 2026-10-16 slices, re-verified against each dispatch's own criteria
 
+> **EDITORIAL POINTER (added 2026-10-16, changes no conclusion below).** This verdict was
+> **re-issued** as event `ev-NFPr-zN36by-i9SE-0FPH`, same verdict value (`pass`), same evidence
+> (this document), same measurement — **not a second independent re-verification**. The reason is
+> mechanical: Nimbus's new merge gate (`e5dbea8`, `flux_verdict_facts`) only recognises a verdict
+> that *names* the dispatch being gated, either through `payload->>'dispatch_id'` (a single value)
+> or through an `event_object_refs` row with `ref_type='dispatch'`. The original event named only
+> the verification dispatch itself, so none of the five slices could be gated on it and the three
+> branch fixes could never have opened a legal card. The re-issue carries one `ref_type='dispatch'`
+> ref per slice. **Nothing below was re-measured or changed.**
+
 - **Dispatch**: `disp-Tn-83tjvS_B6YgOV4dCCF` (issued by seat-lyra-001). A re-verification: five
   slices were green-lit on an invalid basis and two of them are already in `track`.
 - **Verdict event**: `ev-0idwakl17abEU75LNED24` — **pre-declared id, emitted exactly as required**
