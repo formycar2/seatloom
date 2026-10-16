@@ -275,3 +275,148 @@ designed; do not invent it.
 **结论:你离"经 UI 经 Aegis 指挥 seat"只差这一条投递链,且两端(enqueue_dispatch / get_next_dispatch)
 都已建好并验证。** 醒来定两件事即可一口气接通:(1) 准我把 IM→enqueue_dispatch 接上(我可自主做,安全);
 (2) 选一个 seat 做 MCP 接入试闭环(需你在场,因动 seat 配置)。
+
+---
+
+## 2026-10-16 快照(张先生问「计划是什么」「为什么推不动」之后的如实记录)
+
+**这一节的写法换了。** 前面几节是我用缩写写的,张先生两次说看不懂、说我在说黑话。
+所以这一节尽量说人话。他问的三个问题,答案都在这里。
+
+### 一、现在真的能用什么(我逐条点过,不是听席位报的)
+
+| 东西 | 状态 |
+|---|---|
+| 席位干的活自动记进数据库 | 能用。账本里 989 条事件,每一件派单的发出/送达/完成都有记录 |
+| 派活走系统、席位自己领 | 能用。我发一张单,空闲的席位几分钟内自己领走 |
+| 监督指令入口 | 能用。在界面里打一句话,系统读出意图、生成提议卡,确认后才真的派单 |
+| 历史会话(按项目翻自己过去的对话) | **活做完了,在你手里等点确认**。38 个项目、183 个会话、36680 条消息,数据已在 live 库 |
+| 知识面板 | 已合进主分支。但在主导航里进不去,要从 ⌘K 面板的项目视图里才看得到 |
+| 时间线 | **标记是假的**:约 600 条真事件上面写着"示例数据,尚未来自实时捕获" |
+| 点时间线上的一条事件 | **没反应**。类型定义里没有"事件"这一项,所以点开没有详情 |
+| 监督面板的目标/阶段两节 | **永远是空的**。代码读的是假数据,而假数据的键和真项目 id 对不上 |
+| 四个表单(工作项/交接/席位/委派) | **输入完提示成功,一刷新数据就没了**。后端没有对应的保存命令 |
+| 应用图标 | **没有**。配置里图标是空数组,唯一的文件是个 32×32 的占位图。已派活 |
+
+### 二、为什么之前说"没有活"
+
+这是我这天最该认的错。心跳规矩让我每轮查"有没有派给我的单",我就只查这个,
+查完没事就报没活。我没做两件事:**没去看你点下去会发生什么**,也没去看队列里别人有没有在推你关心的东西。
+
+实际情形是:产品负责人已经把上面那些问题拆成了六片活,全部派出去了,在流转。
+而做好的历史会话画面躺在她分支上三天 —— 因为按你定的规矩,验收卡只在你点接受时才合并。
+
+**那道门是你为了不蒙自己设的,现在它成了最堵的一环。** 四张卡等你,最老的两张压了五天。
+
+### 三、这一轮修掉的两个"不报错的检查"
+
+1. **应用停了两天,监控一直报"开着"。** 判据是 `pgrep -f 'seatloom-tauri' | head -1`,
+   而这个模式会匹配任何命令行里含这个字符串的进程 —— 我自己的命令、构建进程全中过,
+   `head -1` 再随便挑一个,于是把一个早没用的构建进程当成了应用。改成按可执行名过滤。
+2. **验收卡开了,但从没给你准备过"点之前能验"的程序。** 你指出这是死锁,对的。
+   现在规矩改成**卡和构建一起到**:任何一张卡开到等你点,必须先用
+   `scripts/prepare-verification-build.sh` 把带着那份活的程序构建好、装好、起来,再告诉你。
+   那个脚本会证明二进制里真的带着要验的东西,证明不了就报错退出、不安装。
+
+### 四、在流转的活(按依赖顺序)
+
+1. 血缘读取模型(后端)—— 做完了才能点开时间线上的一条事件看它的来龙去脉
+2. 接线诚实度(后端)—— 把写死的"已注册"开关换成实测
+3. 接线诚实度(界面)—— 修那个说谎的时间线标记、死条目、四个假表单
+4. 血缘详情面板(界面)
+5. 验血缘读取模型(质量席位)
+6. 应用图标(界面)—— 今天新派的
+
+### 五、等你的事
+
+**四张验收卡,用现在装着的这份程序全都能验**(洗数据流水线、监督意图入口都在主分支上,
+历史会话在装好的那份里)。每张卡都写着"看什么 → 什么算对 → 什么算打回"。
+
+另外一件:pi 的默认模型已按你要的设成 `modelproxy-anthropic/step-5-preview-sys`
+(`defaultProvider` + `defaultModel` 必须成对设,只设模型名会被 pi 挑错 provider)。
+但六个席位不吃这个默认值 —— 启动脚本从数据库里取模型显式传。要改席位的模型得改数据库,
+那是我被权限封顶的动作,需要你跑一条命令。
+
+---
+
+## 2026-10-16 · Lyra heartbeat round 1 (no dispatch) — two cards must not be clicked, and a gate that cannot report
+
+Written under `tasks/lyra/LYRA-HEARTBEAT.md` §3: no dispatch was waiting, so this round did what
+that file calls the main job — look at real state, find where the product is worse than it claims,
+and decide the next step. Facts and inference are kept separate. The operator-facing version is
+`docs/coordination/acceptance/2026-10-16-two-cards-not-yet.zhs.md`.
+
+### 1. Facts (each reproducible)
+
+1. **Two acceptance cards are pending the operator's click**: the supervisor activity feed showing
+   a bare English type name on ~80% of rows (requested 07:37 UTC) and Live Seats demanding a
+   Connect on every menu switch (07:23 UTC), both on `packet/mira/knowledge-panel`.
+2. **The running SeatLoom is byte-identical to the main checkout's 15:05:07 bundle** — same sha256
+   (`3bf9037e…`). It was built from `ui/dist` produced at 15:03:20 from
+   `track/infra-foundation` @ `8a2d733`.
+3. **Neither fix is on `track/infra-foundation`.** `ui/src/app-v2/lib/eventText.ts` and
+   `ui/src/stores/useLiveSeatsMirrorStore.ts` do not exist there; both exist on Mira's branch.
+4. **Both fixes were committed after the running build existed**: `18aa027` at 15:20:58 and
+   `62e535a` at 15:35:28, against a binary built at 15:05:31.
+5. **No build on this machine carries either fix.** The newest release binary anywhere is 15:05:31
+   (main checkout); Mira's worktree's is 14:38:34.
+6. Confirmed at the artifact level rather than by timestamp inference: the fix's marker strings are
+   PRESENT in Mira's branch `ui/dist` (rebuilt 15:44) and ABSENT from the main checkout's
+   `ui/dist` (15:03) that produced the running app. The control string, a long-standing UI label, is present in both, so the method
+   discriminates.
+7. **`prepare-verification-build.sh` step 4 — "prove this build really carries the work" — cannot
+   report for any frontend change.** It greps the binary with `strings`, and the frontend is
+   embedded compressed: on this very binary `strings` finds a long-standing UI label **0 times**,
+   while the dist it was built from contains it.
+
+**Conclusion: the operator is being asked to Accept two fixes that are not in the program he is
+running.** Following either card, he sees the old behaviour.
+
+### 2. Inference (labelled as such)
+
+- **The rule was violated 32 minutes after it was written and nothing noticed.** "The card and the
+  build arrive together" is correct, but it is prose with nothing checking it. Two cards opened 18
+  and 32 minutes after the only build, and no build was ever made for them.
+- **That gate is a check that cannot report** — the same family as the two checks fixed today
+  (`fleet-status` treating a wrapper process as the app window; the must-have argument sitting in
+  `$3` so it was always empty while the script printed a warning and continued). **Three in one
+  day.** This is the worst of them, because it is the only thing standing between the operator and
+  accepting a card he cannot verify.
+- **The acceptance gate validates everything except the thing the card is about.** Plan shape,
+  verdict reference, branch-contains-base, operator identity — all checked. It never asks whether a
+  build carrying the fix exists, let alone whether it is the one running.
+
+### 3. Decisions (PO side)
+
+- **These two cards must not be clicked as they stand.** Withdraw or rebuild-and-reissue is Aegis's
+  call; the requesting seat is Mira, so I cannot withdraw them myself.
+- **Next round's milestone: before clicking an acceptance card, you can see whether the program in
+  your hands actually carries this fix.** The acceptance request carries a **measured build
+  attestation** — branch, commit, when the build was made, and a marker string proven present in the
+  artifact the operator is actually running. The card renders it. No attestation, or one that does
+  not verify, and the card says plainly that this build does not carry the fix and the build must
+  come first. User-perceivable by construction.
+- **The attestation must be proven in the artifact he is running, not in a build directory.** F7
+  kills `strings`-on-the-binary for anything frontend. The proof must run against something that
+  can actually be searched — the `ui/dist` the bundle was produced from, or the decompressed
+  embedded asset — and it must be able to fail.
+- **A claim like the old §5's "all four cards are verifiable with the currently installed program"
+  must name its build** (install timestamp + commit). Without that it goes stale silently, which is
+  exactly what happened here.
+
+### 4. Work in flight at the end of this round
+
+3 in flight, 7 ready or waiting. Aegis's three real defects: the live mirror cannot see history,
+the acceptance count over-counts cancelled cards, the waker never calls an idle seat. My lineage
+and session-bridge chains: the view landed (Onyx), the write-in guard self-pulled (Vela); the read
+model, UI and verification slices wait on their gates.
+
+### 5. Waiting on Aegis
+
+1. What to do with the two cards (withdraw / rebuild-and-reissue), and whether Mira rebuilds.
+2. Whether the acceptance gate gains a build attestation — gate conditions are his authority.
+3. A ruling on a doc-gate conflict this round surfaced: `verify-docs.sh` §10 requires new docs to
+   be English, while this file's operator-facing sections are Chinese by deliberate choice (he has
+   twice said he cannot read the abbreviated English). My section here is English and the
+   operator-facing version is a separate `.zhs.md`, but the underlying conflict is unresolved and
+   it is his to rule on.
