@@ -59,6 +59,8 @@ fn main() {
         cols: 220,
         env: LaunchOptions::default_env(),
         transcripts_dir: std::env::temp_dir().join(&session),
+        backfill_lines: None,
+        history_limit: None,
     };
     let sess = PtySession::attach_tmux(&session, &session, opts).expect("attach_tmux");
 
