@@ -21,7 +21,14 @@
 // The two discovery states exist so the live mirror cannot claim LIVE when
 // there is provably nothing live behind it (UM0 HOLD-3).
 
-export type Provenance = 'live' | 'seed' | 'fixture' | 'no-live' | 'discovery-failed';
+export type Provenance =
+  | 'live'
+  /** The canonical ledger, read for real — not a tmux mirror, and not a fixture. */
+  | 'ledger'
+  | 'seed'
+  | 'fixture'
+  | 'no-live'
+  | 'discovery-failed';
 
 /**
  * Live seat discovery status, published by LiveSeatsView while it polls
@@ -38,6 +45,20 @@ export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
  * here is seed- or fixture-backed until its capture path lands.
  */
 export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions', 'dispatches']);
+
+/**
+ * Tabs whose rows come from the canonical ledger, read for real.
+ *
+ * 2026-10-16: the timeline was NOT in this set and NOT in LIVE_TABS, so
+ * `provenanceForTab('timeline', …)` returned 'seed' or 'fixture' and the badge read
+ * "SAMPLE DATA — not yet from live capture". That is false in the unsafe direction:
+ * `useDataStore.refreshEvents()` calls `api.listEvents(400)` and `App.tsx` polls it
+ * every 8s, so those rows ARE captured events from the ledger — including the ones
+ * other processes emit through MCP. Measured before changing anything: the read is
+ * real, the cadence is real, and the only way the surface is not live is the backend
+ * being unreachable, which `backendHydrated` already reports.
+ */
+export const LEDGER_TABS: ReadonlySet<string> = new Set(['timeline']);
 
 /** The live-mirror tab: the one surface whose LIVE claim depends on discovery. */
 export const LIVE_MIRROR_TAB = 'live-seats';
@@ -63,6 +84,7 @@ export function provenanceForTab(
     return 'live';
   }
   if (LIVE_TABS.has(tab)) return 'live';
+  if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
   return backendHydrated ? 'seed' : 'fixture';
 }
 
@@ -84,6 +106,19 @@ export interface ProvenanceMeta {
 const SAMPLE_HEADLINE = 'SAMPLE DATA — not yet from live capture';
 
 export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
+  ledger: {
+    badge: 'LIVE',
+    headline: 'LIVE — read from the canonical ledger',
+    detail:
+      'These rows are real captured events, read from PostgreSQL through ' +
+      'cmd_list_events and re-polled every 8 seconds — including events other processes ' +
+      'append through MCP. Not a fixture, and not a tmux mirror. It stops being live only ' +
+      'if the backend becomes unreachable, and then the badge says so instead of showing ' +
+      'an empty list.',
+    fg: 'var(--sl-green)',
+    bg: 'var(--sl-green-subtle)',
+    border: 'var(--sl-green)',
+  },
   live: {
     badge: 'LIVE',
     headline: 'LIVE — mirrored from tmux as it happens',

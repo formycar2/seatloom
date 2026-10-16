@@ -12,6 +12,7 @@ import AllProjectsView from './views/AllProjectsView';
 import LiveSeatsView from './views/LiveSeatsView';
 import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
+import EventDetail from './components/EventDetail';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
 import HandoffDetail from './components/HandoffDetail';
@@ -36,7 +37,7 @@ import { useLiveSessionsStore } from './stores/useLiveSessionsStore';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { ProvenanceFrame } from './components/ProvenanceBanner';
 import { provenanceForTab } from './lib/provenance';
-import { ArtifactSubtype, ArtifactTemplate, SelectedObjectType } from './types';
+import { ArtifactSubtype, ArtifactTemplate, CanonicalEvent, SelectedObjectType } from './types';
 
 type Tab =
   | 'live-seats'
@@ -51,7 +52,14 @@ type Tab =
   | 'sessions'
   | 'all-projects';
 type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress' | 'addSeat';
-type SelectedObject = { type: SelectedObjectType; id: string } | null;
+// `event` carries the whole canonical event through for the 'Event' type: a timeline
+// row is its own object and there is nothing to look up in the store, so dropping the
+// payload here would leave the detail pane with an id and nothing to show.
+type SelectedObject = {
+  type: SelectedObjectType;
+  id: string;
+  event?: CanonicalEvent;
+} | null;
 
 const App: React.FC = () => {
   const {
@@ -266,7 +274,11 @@ const App: React.FC = () => {
       return;
     }
     const id = typeof data === 'string' ? data : data.id;
-    setSelectedObject({ type: type as any, id });
+    setSelectedObject({
+      type: type as any,
+      id,
+      ...(type === 'Event' && typeof data !== 'string' ? { event: data } : {}),
+    });
     setActiveForm('none');
     if (type === 'Session') {
       const session =
@@ -355,6 +367,12 @@ const App: React.FC = () => {
         return currentProjectData.artifacts.find((a) => a.id === selectedObject.id) ?? null;
       case 'Handoff':
         return currentProjectData.handoffs.find((h) => h.id === selectedObject.id) ?? null;
+      // A timeline row is its own object: the event arrives whole from the click, so
+      // there is nothing to look up in the store. Before 'Event' existed in
+      // SelectedObjectType this fell to `default` -> null -> no detail pane -> a click
+      // that did nothing.
+      case 'Event':
+        return selectedObject.event ?? null;
       default:
         return null;
     }
@@ -374,6 +392,10 @@ const App: React.FC = () => {
       );
     if (!selectedObject || !resolvedData) return <ProjectOverview />;
     switch (selectedObject.type) {
+      case 'Event':
+        // `resolvedData` for this type IS `selectedObject.event` (see resolvedData);
+        // read it off the selection so no cast over the union is needed.
+        return <EventDetail event={selectedObject.event as CanonicalEvent} />;
       case 'Seat':
         return <SeatDetail seat={resolvedData as any} />;
       case 'Session':

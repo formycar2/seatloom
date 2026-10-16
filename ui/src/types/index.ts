@@ -11,13 +11,24 @@ export type EventId = string;
 export type ProjectId = string;
 
 // Enums
-export type SeatRole = 'ProductOwner' | 'Architect' | 'Verifier' | 'Designer' | 'Developer' | { Custom: string };
+export type SeatRole =
+  'ProductOwner' | 'Architect' | 'Verifier' | 'Designer' | 'Developer' | { Custom: string };
 export type SeatStatus = 'Active' | 'Paused' | 'Archived';
 
 export type Runtime = 'ClaudeCode' | 'Codex' | 'CursorCli' | 'GeminiCli' | { Custom: string };
-export type SessionStatus = 'Launching' | 'Running' | 'InputRequired' | 'Suspended' | 'Completed' | 'Failed' | 'Interrupted';
+export type SessionStatus =
+  'Launching' | 'Running' | 'InputRequired' | 'Suspended' | 'Completed' | 'Failed' | 'Interrupted';
 
-export type WorkItemStatus = 'Draft' | 'Ready' | 'Active' | 'Blocked' | 'InReview' | 'Verified' | 'Done' | 'Reopened' | 'Drifted';
+export type WorkItemStatus =
+  | 'Draft'
+  | 'Ready'
+  | 'Active'
+  | 'Blocked'
+  | 'InReview'
+  | 'Verified'
+  | 'Done'
+  | 'Reopened'
+  | 'Drifted';
 export type Priority = 'Low' | 'Medium' | 'High' | 'Critical';
 
 export type ArtifactTemplate = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7';
@@ -46,7 +57,8 @@ export type ArtifactSubtype =
   | 'collaboration_protocol'
   | 'document_templates';
 
-export type HandoffStatus = 'Drafted' | 'Sent' | 'Received' | 'Accepted' | 'Working' | 'Returned' | 'Completed' | 'Expired';
+export type HandoffStatus =
+  'Drafted' | 'Sent' | 'Received' | 'Accepted' | 'Working' | 'Returned' | 'Completed' | 'Expired';
 export type ActorRef = 'Human' | { Seat: SeatId } | 'Automation';
 
 export type ReviewTier = 'L1' | 'L2' | 'L3';
@@ -133,7 +145,11 @@ export type EventType =
   | 'DriftDetected'
   | 'WorkItemDelegated';
 
-export type SelectedObjectType = 'Seat' | 'Session' | 'WorkItem' | 'Artifact' | 'Handoff';
+// 'Event' was missing until 2026-10-16: TimelineView's row click calls
+// onSelectObject('Event', event), which produced a selection no branch of
+// MasterDetail could resolve — so the click opened nothing at all. Adding it here
+// makes the selection resolvable; what the detail shows is in EventDetail.tsx.
+export type SelectedObjectType = 'Seat' | 'Session' | 'WorkItem' | 'Artifact' | 'Handoff' | 'Event';
 
 export type ObjectRef =
   | { Seat: SeatId }
