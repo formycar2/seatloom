@@ -131,7 +131,14 @@ fi
 rm -rf "$APP" || fail "删不掉旧的 $APP"
 cp -R "$BUILT" "$APP" || fail "复制到 $APP 失败"
 say "  ✅ 已安装:$APP"
-open -a "$APP" 2>/dev/null
+# 用带操作者身份的启动器起,不要直接 open ——
+# 从启动台/open 起的应用没有 SEATLOOM_OPERATOR_REF,点合并必然失败
+# (2026-10-16 实测)。身份那一套逻辑在 launch-seatloom.sh 里,不在这里重复。
+if [ -x "$REPO/scripts/launch-seatloom.sh" ]; then
+  bash "$REPO/scripts/launch-seatloom.sh" 2>&1 | sed 's/^/    /'
+else
+  open -a "$APP" 2>/dev/null
+fi
 
 # ---- 验证真的起来了 ----
 say "  等它起来…"
