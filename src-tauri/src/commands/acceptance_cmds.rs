@@ -23,7 +23,7 @@ use crate::state::AppState;
 /// Launchpad has no environment at all and a correct guard must not become a wall
 /// the operator can never get past. Both channels are explicit configuration by a
 /// person; neither is a default, and there is no third channel.
-
+///
 /// The pending-acceptance read model (the UI's 待验收区). Pending first, then
 /// the most recently decided (result states: merge commit / rework link).
 #[tauri::command]
