@@ -212,6 +212,12 @@ this):
 |---|---|---|
 | `mem-z0DVqyt3z6YDL074VlNwE` | decision | The third arm, the two separate cooldowns and why, the document guard, and "check for an established convention before defining a new path". Changes what a future seat does when asked to make an idle seat do something; exists nowhere else; evidenced by the old `(None, _) => {}` arm and the 1-of-6 measurement. |
 
+**Reported to Aegis, outside this dispatch's boundary:** the waker rebuild and
+restart the change needs before it does anything, as
+`ev-heartbeat-call-needs-waker-restart`. I did not restart the daemon — it holds
+the fleet's wakeup path, and a botched restart could stop autonomous dispatch
+entirely.
+
 Nothing else was recorded. The 30-minute figure is stated as a judgement in §9
 rather than remembered as a fact, and no preference was touched — Mr Zhang's
 corrections are Aegis's to record.
