@@ -4,7 +4,7 @@ project_id: seatloom
 topic_id: aegis-gate-rulings
 kind: decision
 confidence: quoted
-status: active
+status: resolved
 tier: hot
 source_kind: canonical_event
 source_ref: ev-flux-history-sessions-verdict-artifact
@@ -101,3 +101,36 @@ OfficeBench 49、seatloom 14、cursor 14 全未标日期。
 列仍不存在、语料仍 0 行),而且正在跑的二进制里仍然没有历史读取工具。
 (c) 的后半段 —— 张先生跑 `bash scripts/apply-schema-to-live.sh` 并在 live 上确认计数 ——
   还没发生。**在他确认之前,这道门依然是关的。**
+
+---
+
+## 解除(2026-10-16 13:04,门已发)
+
+张先生跑了 `bash scripts/apply-schema-to-live.sh`,输出全绿。**我没有拿那段输出当证据**,
+自己重新量了 live 并和磁盘上的源文件逐项对过:语料 183、消息 36680、项目 38、
+仓库根 8 条未归类、89 行清单仍在(没被重复算)、总 272 行;源文件侧 183 个会话文件、
+183 行数据、消息数合计 36680、38 个 home path —— 四项全对。
+
+但发现门还不能开:**正在跑的二进制还是 10-14 构建的,19 个工具里一个历史读取工具都没有。**
+数据就位不等于读取可用。于是把 Nimbus 的读取链路集成到 track(10 文件 1848 行,
+提交前编译:check --workspace 干净、测试 151+81+9 全过、clippy 干净),
+重建二进制,重启全队让工具子进程换上新的。重启同时把 6 个席位拉回账本登记的模型 ——
+洗数据席位也回到了它那个无限额度模型,之前那个静默换模型的问题一并修好了。
+
+**最终判据是实测**:用新二进制对着 **live** 真调了一次 `list_history_projects` ——
+38 个项目、36680 条消息、各项目会话数合计 **183**(修前是 261)、
+OfficeBench 49 个会话 808 条消息。
+
+门事件已发:`ev-history-sessions-read-live`,类型 `SupervisorMessage`
+(不是 `ArtifactCreated` —— 工具拦了我一次:以 `-live` 结尾自称门的事件必须用前者,
+后者只能说明"代码在哪儿")。Mira 那张单已从 blocked 翻成 **ready**。
+
+**发门被工具连续拦了五次,每次都对,值得记下来**:
+1. `ArtifactCreated` → 必须是 `SupervisorMessage`
+2. `gate` 必须是事件自己的 id,不能是 `true`(否则以后没法复核,同 id 的别类行会蒙混过关)
+3. 缺 `statement` —— 这门断言的那一句话
+4. 缺 `verified` —— 调了什么、返回什么、在哪个库上;而且它要**字符串**,我给对象被打回
+5. 缺 `does_not_assert` —— 这门刻意不声称什么,防止读者过度解读
+
+这五道就是 020 门判据在执行。它没有因为我"是 Aegis"而放宽,而是逼着我
+把测量说成测量、把边界划出来。**这是权限系统在起作用,不是障碍。**
