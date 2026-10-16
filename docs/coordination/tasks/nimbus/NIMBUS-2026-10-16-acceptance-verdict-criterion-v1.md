@@ -206,3 +206,23 @@ anything.
 The merge logic itself, the dispatch state machine, the live database, and the
 acceptance card's state machine. The only behavioural changes are where the
 operator identity's verdict comes from and what the refusal says.
+
+## 12. Forward recording (D5 Phase 2 Lane B)
+
+Two memories, both `source_kind=canonical_event`, `source_ref` =
+`ev-nimbus-unverified-merges-on-track`, both `confidence=quoted`, in topic
+`topic-acceptance-verdict-criterion` (opened for this):
+
+| Memory | Kind | Why it passes the three-way test |
+|---|---|---|
+| `mem-fLY1IufMt0G5N91D5Q-Zr` | decision | The four-part merge criterion, and the two lessons: a comment promising green above code checking only existence is how it survived, and a half-criterion must not be a method. Changes what a future seat does when writing a gate; exists nowhere else; evidenced by the five live cards and the measured `green=true` on a foreign verdict. |
+
+Nothing else was recorded. The `reject`-is-not-green ruling and the artifact branch
+being a measured dead end are consequences of the one decision, and no preference
+was touched — Mr Zhang's corrections are Aegis's to record.
+
+**Reported to Aegis, outside this dispatch's boundary:** the two unverified merges
+in §7, as `ev-nimbus-unverified-merges-on-track` (a `SupervisorMessage` naming the
+cards, the verdict, the merge commit, what I did, what I did not do, and the one
+question for him: does `4cfd2302` stand). Nothing was reverted and the live
+database was not touched.
