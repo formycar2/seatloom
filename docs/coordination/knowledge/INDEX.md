@@ -30,10 +30,11 @@ Aegis 的记忆落在这里,而不是 Aegis 自己那个 agent memory 目录。
 
 ## 现状
 
-**已迁入:7 条**(Aegis 新写的)。
+**已迁入:8 条**(Aegis 新写的)。
 
 | 记忆 | 类型 | 置信度 | 一句话 |
 |---|---|---|---|
+| [pi_default_model_needs_default_provider_too](pi_default_model_needs_default_provider_too.md) | fact | inferred | 同名模型跨 provider 存在时,只设 `defaultModel` 会被 pi 自己挑一个;必须同时设 `defaultProvider`。这也可能是上午全队静默换模型的根因 |
 | [gate_history_sessions_read_live_stays_closed](gate_history_sessions_read_live_stays_closed.md) | decision | quoted | 门事件 ev-history-sessions-read-live 保持关闭:Flux 写死的 (a)(b)(c) 一条都没满足,live 库连 message_count 列都没有 |
 | [pi_upgrade_changes_disk_not_running_processes](pi_upgrade_changes_disk_not_running_processes.md) | fact | inferred | `pi update` 只改磁盘,跑着的进程全是旧版;而重启脚本比的是 MCP 程序不是 pi,永远不为 pi 升级重启席位 |
 | [macos_pgrep_cannot_see_the_callers_ancestors](macos_pgrep_cannot_see_the_callers_ancestors.md) | failure | inferred | macOS 的 pgrep 静默看不见调用者的祖先进程,查 Aegis 自己必然拿到空结果,而空结果的形状是「没在跑」 |
