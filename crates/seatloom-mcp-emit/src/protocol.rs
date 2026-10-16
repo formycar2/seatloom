@@ -329,8 +329,11 @@ fn request_acceptance_tool() -> Value {
             else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
             hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
             calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
-            or artifact; the dispatch must have no pending acceptance; a valid acceptance_plan (shape v1) \
-            is REQUIRED — a missing or malformed plan is a typed rejection before any DB contact. \
+            or artifact AND is a ReviewVerdictIssued whose payload->>'verdict' is 'pass' AND which is about \
+            THIS dispatch (payload->>'dispatch_id' = <dispatch_id>, or an event_object_refs row with \
+            ref_type='dispatch'); the dispatch must have no pending acceptance; a valid \
+            acceptance_plan (shape v1) is REQUIRED — a missing or malformed plan is a typed rejection \
+            before any DB contact. \
             Identity from SEATLOOM_ACTOR_REF (never a parameter). \
             \n\
             OPTIONAL `acceptance_id`: omit it and the id is derived deterministically as \
@@ -349,7 +352,7 @@ fn request_acceptance_tool() -> Value {
                 "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
                 "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
                 "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
-                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
+                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux GREEN verdict for THIS dispatch: a ReviewVerdictIssued event id whose payload->>'verdict' is 'pass' and which names this dispatch. Must exist, must be a ReviewVerdictIssued, must pass, and must be about this dispatch — a verdict about another unit of work, or a red one, is a typed refusal. Measured on live: three pending cards had named a FAIL verdict about a different dispatch." },
                 "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." },
                 "acceptance_plan": {
                     "type": "object",
