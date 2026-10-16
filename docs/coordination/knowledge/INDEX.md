@@ -30,10 +30,11 @@ Aegis 的记忆落在这里,而不是 Aegis 自己那个 agent memory 目录。
 
 ## 现状
 
-**已迁入:5 条**(Aegis 新写的)。
+**已迁入:6 条**(Aegis 新写的)。
 
 | 记忆 | 类型 | 置信度 | 一句话 |
 |---|---|---|---|
+| [pi_upgrade_changes_disk_not_running_processes](pi_upgrade_changes_disk_not_running_processes.md) | fact | inferred | `pi update` 只改磁盘,跑着的进程全是旧版;而重启脚本比的是 MCP 程序不是 pi,永远不为 pi 升级重启席位 |
 | [aegis_never_launder_permissions_through_seats](aegis_never_launder_permissions_through_seats.md) | failure | quoted | 让席位去做 Aegis 自己被拦住的事,是绕过权限而不是解决问题 |
 | [waker_idle_agent_looks_identical_to_a_working_one](waker_idle_agent_looks_identical_to_a_working_one.md) | failure | inferred | 「pane 里有 pi 活着」不是进度信号,全队因此停摆 17 小时 |
 | [gate_events_conflate_code_landed_with_live_usable](gate_events_conflate_code_landed_with_live_usable.md) | failure | inferred | 席位的交付公告被当成能力可用的门;事件没说谎,说谎的是那条依赖边 |
