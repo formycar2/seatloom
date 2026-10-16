@@ -1,5 +1,15 @@
 import { create } from 'zustand';
-import { Artifact, CanonicalEvent, Handoff, InboxItem, Project, ProjectData, Seat, Session, WorkItem } from '../types';
+import {
+  Artifact,
+  CanonicalEvent,
+  Handoff,
+  InboxItem,
+  Project,
+  ProjectData,
+  Seat,
+  Session,
+  WorkItem,
+} from '../types';
 import { api, isTauri } from '../lib/api';
 import {
   artifactFromDocument,
@@ -55,9 +65,27 @@ const at = (time: string) => `${LOG_DAY}T${time}:00+08:00`;
 const seededAt = (time: string) => `${LOG_DAY} ${time}`;
 
 const INITIAL_PROJECTS: Project[] = [
-  { id: 'p-1', name: 'SeatLoom 协调核心', path: '~/Documents/GitHub/seatloom', isPinned: true, last_accessed: at('20:44') },
-  { id: 'p-2', name: 'ThoughtOnly 叙事引擎', path: '~/Documents/GitHub/ThoughtOnly', isPinned: true, last_accessed: at('11:10') },
-  { id: 'p-3', name: 'DeepSpeed 推理优化', path: '~/Documents/GitHub/deepspeed', isPinned: false, last_accessed: at('08:30') },
+  {
+    id: 'p-1',
+    name: 'SeatLoom 协调核心',
+    path: '~/Documents/GitHub/seatloom',
+    isPinned: true,
+    last_accessed: at('20:44'),
+  },
+  {
+    id: 'p-2',
+    name: 'ThoughtOnly 叙事引擎',
+    path: '~/Documents/GitHub/ThoughtOnly',
+    isPinned: true,
+    last_accessed: at('11:10'),
+  },
+  {
+    id: 'p-3',
+    name: 'DeepSpeed 推理优化',
+    path: '~/Documents/GitHub/deepspeed',
+    isPinned: false,
+    last_accessed: at('08:30'),
+  },
 ];
 
 const P1_SEEDED_ARTIFACTS: Artifact[] = [
@@ -70,15 +98,23 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'lyra',
     date: '2026-04-28',
     version: 'v1',
-    depends_on: ['docs/archive/product-history/prd-v0.4.md', 'docs/archive/product-history/interaction-spec-v1.0.md'],
+    depends_on: [
+      'docs/archive/product-history/prd-v0.4.md',
+      'docs/archive/product-history/interaction-spec-v1.0.md',
+    ],
     tags: ['sg-01', 'repair', 'acting-mira'],
-    summary: 'Execution packet for Flux to act as the temporary Mira replacement and repair the SG-01 UI contract baseline without redesigning product meaning.',
+    summary:
+      'Execution packet for Flux to act as the temporary Mira replacement and repair the SG-01 UI contract baseline without redesigning product meaning.',
     summary_points: [
       'Freezes terminal, Inbox, and Timeline behaviors as contract truths.',
       'Restricts scope to approved fixes and preserves the existing main information architecture.',
       'Requires durable English delivery with Chinese terminal progress summaries.',
     ],
-    content_preview: ['Role: acting Mira replacement', 'Gate: SG-01 UI Contract Baseline', 'Execution mode: need-to-know / token-efficient'],
+    content_preview: [
+      'Role: acting Mira replacement',
+      'Gate: SG-01 UI Contract Baseline',
+      'Execution mode: need-to-know / token-efficient',
+    ],
     source_workitem_id: 'wi-401',
     source_handoff_id: 'ho-401',
     storage_path: 'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md',
@@ -95,16 +131,22 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md'],
     tags: ['sg-01', 'delivery', 'verification'],
-    summary: 'Delivery artifact claiming that the acting-Mira repair set is implemented and ready for Lyra acceptance review.',
+    summary:
+      'Delivery artifact claiming that the acting-Mira repair set is implemented and ready for Lyra acceptance review.',
     summary_points: [
       'Lists changed files, repaired flows, and build results.',
       'Requests Lyra acceptance verdict before Nimbus handoff proceeds.',
       'Acts as the proof package attached to the acceptance gate.',
     ],
-    content_preview: ['Build result: PASS', 'Timeline filters implemented', 'Inbox row selection repaired'],
+    content_preview: [
+      'Build result: PASS',
+      'Timeline filters implemented',
+      'Inbox row selection repaired',
+    ],
     source_workitem_id: 'wi-402',
     source_handoff_id: 'ho-402',
-    storage_path: 'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
+    storage_path:
+      'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
     created_at: at('17:38'),
   },
   {
@@ -116,15 +158,22 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'lyra',
     date: '2026-04-28',
     version: 'v1',
-    depends_on: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md'],
+    depends_on: [
+      'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
+    ],
     tags: ['recovery', 'review', 'sg-01'],
-    summary: 'Lyra recovered Flux feedback into a durable review file and documented why the SG-01 gate could not be accepted immediately.',
+    summary:
+      'Lyra recovered Flux feedback into a durable review file and documented why the SG-01 gate could not be accepted immediately.',
     summary_points: [
       'Confirms build and flow claims that were observable in code.',
       'Captures the Inbox normalization risk and the delivery-note inconsistency.',
       'Keeps Nimbus blocked until the review can be closed in files.',
     ],
-    content_preview: ['Status: recovered, not accepted', 'Gate impact: SG-01 remains pending', 'Required next move: recheck Inbox mapping'],
+    content_preview: [
+      'Status: recovered, not accepted',
+      'Gate impact: SG-01 remains pending',
+      'Required next move: recheck Inbox mapping',
+    ],
     source_workitem_id: 'wi-403',
     source_handoff_id: 'ho-403',
     storage_path: 'docs/coordination/reviews/2026-04-28-flux-feedback-recovery.md',
@@ -141,13 +190,18 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/archive/product-history/prd-v0.4.md'],
     tags: ['typography', 'readability', 'ux'],
-    summary: 'Packet defining the typography and readability correction goals that should be preserved during the current UI baseline repair.',
+    summary:
+      'Packet defining the typography and readability correction goals that should be preserved during the current UI baseline repair.',
     summary_points: [
       'Unifies Chinese and Latin rhythm for titles, body copy, and labels.',
       'Treats readability as a gate concern, not a cosmetic afterthought.',
       'Provides the reference packet tied to the active typography follow-up.',
     ],
-    content_preview: ['Focus: title hierarchy', 'Focus: label readability', 'Focus: information density'],
+    content_preview: [
+      'Focus: title hierarchy',
+      'Focus: label readability',
+      'Focus: information density',
+    ],
     source_workitem_id: 'wi-407',
     source_handoff_id: 'ho-404',
     storage_path: 'docs/coordination/tasks/mira/MIRA-2026-04-27-typography-harmony-fix-v1.md',
@@ -164,16 +218,22 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/PRODUCT_TRUTH.md', 'docs/prd-v0.5.md', 'docs/interaction-spec-v1.1.md'],
     tags: ['nimbus', 'architecture', 'alignment'],
-    summary: 'Packet that instructs Nimbus to align the architecture docs upward to the active v0.5 contract before implementation begins.',
+    summary:
+      'Packet that instructs Nimbus to align the architecture docs upward to the active v0.5 contract before implementation begins.',
     summary_points: [
       'Uses Product Truth as the entrypoint for architecture work.',
       'Limits Nimbus scope to baseline alignment and known drift areas.',
       'Supports the blocked handoff state while architecture stays ahead of implementation.',
     ],
-    content_preview: ['Owner: Nimbus', 'Scope: architecture baseline alignment', 'Mode: contract-first'],
+    content_preview: [
+      'Owner: Nimbus',
+      'Scope: architecture baseline alignment',
+      'Mode: contract-first',
+    ],
     source_workitem_id: 'wi-404',
     source_handoff_id: 'ho-405',
-    storage_path: 'docs/coordination/tasks/nimbus/NIMBUS-2026-04-28-architecture-baseline-alignment-v1.md',
+    storage_path:
+      'docs/coordination/tasks/nimbus/NIMBUS-2026-04-28-architecture-baseline-alignment-v1.md',
     created_at: at('18:24'),
   },
   {
@@ -187,7 +247,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/archive/product-history/prd-v0.4.md'],
     tags: ['design', 'adoption', 'temporary-seat'],
-    summary: 'Review artifact that captured which Flux design suggestions were accepted, rejected, or narrowed before the acting-Mira repair packet was issued.',
+    summary:
+      'Review artifact that captured which Flux design suggestions were accepted, rejected, or narrowed before the acting-Mira repair packet was issued.',
     summary_points: [
       'Protects the product contract from opportunistic redesign during emergency seat replacement.',
       'Lets the acting seat work from an explicit adoption set instead of tmux memory.',
@@ -196,7 +257,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     content_preview: ['Accepted set', 'Rejected set', 'Rationale preserved'],
     source_workitem_id: 'wi-401',
     source_handoff_id: 'ho-406',
-    storage_path: 'docs/coordination/reviews/2026-04-27-flux-acting-mira-design-suggestion-review.md',
+    storage_path:
+      'docs/coordination/reviews/2026-04-27-flux-acting-mira-design-suggestion-review.md',
     created_at: at('16:48'),
   },
   {
@@ -210,13 +272,18 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v0.5',
     depends_on: ['docs/coordination/reviews/2026-04-28-core-value-deep-dive.md'],
     tags: ['contract', 'prd', 'value-gate'],
-    summary: 'Active product requirements candidate that integrates the five core-value modules and the hard value gate for every scoped feature.',
+    summary:
+      'Active product requirements candidate that integrates the five core-value modules and the hard value gate for every scoped feature.',
     summary_points: [
       'Defines why each feature exists, what breaks if it is omitted, and how user behavior changes.',
       'Promotes typed coordination artifacts to first-class product objects.',
       'Acts as the main source for current product semantics before implementation.',
     ],
-    content_preview: ['User stories with value fields', 'Artifact review system', 'Dual-key artifact classification'],
+    content_preview: [
+      'User stories with value fields',
+      'Artifact review system',
+      'Dual-key artifact classification',
+    ],
     source_workitem_id: 'wi-410',
     storage_path: 'docs/prd-v0.5.md',
     created_at: at('20:50'),
@@ -232,7 +299,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.1',
     depends_on: ['docs/prd-v0.5.md'],
     tags: ['contract', 'interaction', 'flows'],
-    summary: 'Interaction contract that defines success, failure, and empty states for the active artifact-objectization and work-loop behaviors.',
+    summary:
+      'Interaction contract that defines success, failure, and empty states for the active artifact-objectization and work-loop behaviors.',
     summary_points: [
       'Specifies the typed-artifact rule and fallback behavior for invalid metadata.',
       'Defines how artifact detail, review, and search flows behave end to end.',
@@ -254,7 +322,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.1',
     depends_on: ['docs/prd-v0.5.md', 'docs/interaction-spec-v1.1.md'],
     tags: ['contract', 'ux', 'screens'],
-    summary: 'Screen-level specification describing how artifact badges, subtype chips, filters, and detail panes should appear in the product.',
+    summary:
+      'Screen-level specification describing how artifact badges, subtype chips, filters, and detail panes should appear in the product.',
     summary_points: [
       'Defines the artifact reader, summary cards, filter controls, and evidence search surfaces.',
       'Makes P0-P2 capabilities visible to the user instead of keeping them architecture-only.',
@@ -276,13 +345,18 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.1',
     depends_on: ['docs/prd-v0.5.md', 'docs/interaction-spec-v1.1.md', 'docs/ux-spec-v1.1.md'],
     tags: ['acceptance', 'gate', 'verification'],
-    summary: 'Verification contract that turns the active v0.5 product semantics into deterministic evidence requirements and gate criteria.',
+    summary:
+      'Verification contract that turns the active v0.5 product semantics into deterministic evidence requirements and gate criteria.',
     summary_points: [
       'Defines the dual-key typed artifact acceptance expectations.',
       'Aligns story coverage with interaction and UX surfaces.',
       'Creates pass/hold conditions that can be proven from files and prototype behavior.',
     ],
-    content_preview: ['P-10 typed coordination artifacts', 'U-08 typed artifact legibility', 'E-08 metadata indexing'],
+    content_preview: [
+      'P-10 typed coordination artifacts',
+      'U-08 typed artifact legibility',
+      'E-08 metadata indexing',
+    ],
     source_workitem_id: 'wi-410',
     storage_path: 'docs/acceptance-spec-v1.1.md',
     created_at: at('20:50'),
@@ -298,7 +372,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.1',
     depends_on: ['docs/prd-v0.5.md', 'docs/interaction-spec-v1.1.md'],
     tags: ['architecture', 'design', 'alignment'],
-    summary: 'Architecture design describing how the Seat, Data Engine, retrieval, and artifact-objectization concepts land in implementation structure.',
+    summary:
+      'Architecture design describing how the Seat, Data Engine, retrieval, and artifact-objectization concepts land in implementation structure.',
     summary_points: [
       'Translates product modules into code-level responsibilities.',
       'Captures typed artifact handling as a first-class engineering concern.',
@@ -320,7 +395,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.1',
     depends_on: ['docs/architecture-design.md'],
     tags: ['architecture', 'adr', 'alignment'],
-    summary: 'Architecture decision record collection aligned upward to the active v0.5 contract set.',
+    summary:
+      'Architecture decision record collection aligned upward to the active v0.5 contract set.',
     summary_points: [
       'Records the governing technical choices behind the updated baseline.',
       'Documents the tradeoffs that protect product semantics during implementation.',
@@ -340,18 +416,29 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'lyra',
     date: '2026-04-28',
     version: 'v1',
-    depends_on: ['docs/prd-v0.5.md', 'docs/interaction-spec-v1.1.md', 'docs/ux-spec-v1.1.md', 'docs/coordination/DOCUMENT_TEMPLATES.md'],
+    depends_on: [
+      'docs/prd-v0.5.md',
+      'docs/interaction-spec-v1.1.md',
+      'docs/ux-spec-v1.1.md',
+      'docs/coordination/DOCUMENT_TEMPLATES.md',
+    ],
     tags: ['artifact', 'template-subtype', 'prototype'],
-    summary: 'Lyra-owned packet for turning document paths into typed Artifact objects across the active prototype and product contract.',
+    summary:
+      'Lyra-owned packet for turning document paths into typed Artifact objects across the active prototype and product contract.',
     summary_points: [
       'Defines the baseline scope, non-goals, done definition, and acceptance references.',
       'Requires UI objectization, filter support, and contract closure in files.',
       'Serves as the driver artifact for the current milestone.',
     ],
-    content_preview: ['Goal: objectize docs in prototype', 'Scope: Timeline, Inbox, Detail', 'Done definition: dual-key visibility'],
+    content_preview: [
+      'Goal: objectize docs in prototype',
+      'Scope: Timeline, Inbox, Detail',
+      'Done definition: dual-key visibility',
+    ],
     source_session_id: 'ses-406',
     source_workitem_id: 'wi-410',
-    storage_path: 'docs/coordination/tasks/lyra/LYRA-2026-04-28-artifact-objectization-baseline-v1.md',
+    storage_path:
+      'docs/coordination/tasks/lyra/LYRA-2026-04-28-artifact-objectization-baseline-v1.md',
     created_at: at('20:46'),
   },
   {
@@ -365,7 +452,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/coordination/acceptance/2026-04-27-mira-ui-acceptance.md'],
     tags: ['gate', 'sg-01', 'ui'],
-    summary: 'Stage-gate decision that keeps the SG-01 UI baseline on hold until contract-critical repairs and acceptance closure are complete.',
+    summary:
+      'Stage-gate decision that keeps the SG-01 UI baseline on hold until contract-critical repairs and acceptance closure are complete.',
     summary_points: [
       'Separates allowed prep work from blocked implementation work.',
       'Creates the audit anchor for why Nimbus handoff stayed frozen.',
@@ -385,9 +473,13 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'lyra',
     date: '2026-04-27',
     version: 'v1',
-    depends_on: ['docs/archive/product-history/prd-v0.4.md', 'docs/archive/product-history/interaction-spec-v1.0.md'],
+    depends_on: [
+      'docs/archive/product-history/prd-v0.4.md',
+      'docs/archive/product-history/interaction-spec-v1.0.md',
+    ],
     tags: ['acceptance', 'mira', 'ui'],
-    summary: 'Formal acceptance review that failed Mira’s earlier redesign against the SG-01 baseline and listed the required repair set.',
+    summary:
+      'Formal acceptance review that failed Mira’s earlier redesign against the SG-01 baseline and listed the required repair set.',
     summary_points: [
       'Enumerates Critical, High, Medium, and Low findings.',
       'Defines the exact fix targets before another handoff can proceed.',
@@ -409,7 +501,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/coordination/MEMORY.md'],
     tags: ['memory', 'daily-log', 'coordination'],
-    summary: 'Append-only coordination memory for the day, capturing decisions, active priorities, blockers, and milestone writebacks.',
+    summary:
+      'Append-only coordination memory for the day, capturing decisions, active priorities, blockers, and milestone writebacks.',
     summary_points: [
       'Preserves same-day context across seat swaps and runtime changes.',
       'Stores accepted milestone writebacks in file-first form.',
@@ -432,7 +525,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.0',
     depends_on: ['docs/coordination/COLLABORATION_PROTOCOL.md'],
     tags: ['governance', 'taxonomy', 'templates'],
-    summary: 'Governance document defining the seven template families, subtype allow-list, and the universal header fields used for artifact objectization.',
+    summary:
+      'Governance document defining the seven template families, subtype allow-list, and the universal header fields used for artifact objectization.',
     summary_points: [
       'Owns the template+subtype allow-list enforced by the prototype.',
       'Prevents taxonomy drift by making subtype validation explicit.',
@@ -454,7 +548,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: [],
     tags: ['governance', 'rules', 'coordination'],
-    summary: 'Operational coordination rules covering file-first reporting, language policy, seat dispatch expectations, and writeback obligations.',
+    summary:
+      'Operational coordination rules covering file-first reporting, language policy, seat dispatch expectations, and writeback obligations.',
     summary_points: [
       'Defines how durable artifacts and screen summaries must differ.',
       'Locks artifact language to English while keeping terminal output in Chinese.',
@@ -476,7 +571,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1.0',
     depends_on: ['docs/coordination/COORDINATION_RULES.md'],
     tags: ['governance', 'ai-native', 'workflow'],
-    summary: 'Workflow doctrine describing need-to-know execution, token efficiency, supervisor-only global view, and delta-first coordination rules.',
+    summary:
+      'Workflow doctrine describing need-to-know execution, token efficiency, supervisor-only global view, and delta-first coordination rules.',
     summary_points: [
       'Constrains how packets are scoped and how much context each seat should hold.',
       'Protects the team from over-reading and coordination sprawl.',
@@ -496,9 +592,13 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'aegis',
     date: '2026-04-28',
     version: 'v1.0',
-    depends_on: ['docs/coordination/COORDINATION_RULES.md', 'docs/coordination/DOCUMENT_TEMPLATES.md'],
+    depends_on: [
+      'docs/coordination/COORDINATION_RULES.md',
+      'docs/coordination/DOCUMENT_TEMPLATES.md',
+    ],
     tags: ['governance', 'protocol', 'messages'],
-    summary: 'Role-collaboration protocol defining authority hierarchy, trigger-action tables, message contracts, prohibited paths, and escalation routes.',
+    summary:
+      'Role-collaboration protocol defining authority hierarchy, trigger-action tables, message contracts, prohibited paths, and escalation routes.',
     summary_points: [
       'Gives the team a shared interaction contract outside the product UI itself.',
       'Makes message schemas explicit enough to become future product objects.',
@@ -520,7 +620,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/prd-v0.5.md'],
     tags: ['benchmark', 'multica', 'product-patterns'],
-    summary: 'Competitive benchmark artifact comparing Multica with SeatLoom and extracting product patterns worth borrowing or rejecting.',
+    summary:
+      'Competitive benchmark artifact comparing Multica with SeatLoom and extracting product patterns worth borrowing or rejecting.',
     summary_points: [
       'Highlights runtime capability truth, activity visibility, and artifact visibility as useful cues.',
       'Rejects issue-board centrality and server-first assumptions for SeatLoom.',
@@ -540,9 +641,13 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     author: 'aegis',
     date: '2026-04-28',
     version: 'v1',
-    depends_on: ['docs/coordination/memory/2026-04-27.md', 'docs/coordination/memory/2026-04-28.md'],
+    depends_on: [
+      'docs/coordination/memory/2026-04-27.md',
+      'docs/coordination/memory/2026-04-28.md',
+    ],
     tags: ['process', 'mapping', 'gaps'],
-    summary: 'Review mapping two days of real collaboration into the SeatLoom object model and identifying missing product semantics.',
+    summary:
+      'Review mapping two days of real collaboration into the SeatLoom object model and identifying missing product semantics.',
     summary_points: [
       'Reconstructs seats, work items, sessions, handoffs, artifacts, and Timeline evidence.',
       'Finds delegation, Supervisor rehydration, and WorkItem rejection gaps.',
@@ -564,13 +669,18 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
     version: 'v1',
     depends_on: ['docs/coordination/COORDINATION_RULES.md'],
     tags: ['role', 'lyra', 'po'],
-    summary: 'Role definition for Lyra as product owner and product-truth driver, including authority, responsibilities, and collaboration boundaries.',
+    summary:
+      'Role definition for Lyra as product owner and product-truth driver, including authority, responsibilities, and collaboration boundaries.',
     summary_points: [
       'Defines Lyra as the owner of product truth coherence and acceptance discipline.',
       'Separates day-to-day drive from Aegis stage-gate review responsibility.',
       'Provides the seat contract behind the current execution cadence.',
     ],
-    content_preview: ['Role: Product Owner', 'Authority: product truth', 'Responsibilities: acceptance and cadence'],
+    content_preview: [
+      'Role: Product Owner',
+      'Authority: product truth',
+      'Responsibilities: acceptance and cadence',
+    ],
     source_workitem_id: 'wi-410',
     storage_path: 'docs/coordination/roles/LYRA.md',
     created_at: at('20:54'),
@@ -580,12 +690,18 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
 const INITIAL_DATA: Record<string, ProjectData> = {
   'p-1': {
     seats: [
-      { id: 'seat-1', name: 'lyra', role: 'ProductOwner', status: 'Active', created_at: '2026-04-20T10:00:00+08:00' },
-      { 
-        id: 'seat-2', 
-        name: 'nimbus', 
-        role: 'Architect', 
-        status: 'Active', 
+      {
+        id: 'seat-1',
+        name: 'lyra',
+        role: 'ProductOwner',
+        status: 'Active',
+        created_at: '2026-04-20T10:00:00+08:00',
+      },
+      {
+        id: 'seat-2',
+        name: 'nimbus',
+        role: 'Architect',
+        status: 'Active',
         created_at: '2026-04-20T10:00:00+08:00',
         capabilities: ['架构对齐 (Architecture Alignment)', '工程设计', '差异分析'],
         accepted_input_types: ['PRD v0.5', '交互规格书', '验收标准'],
@@ -595,9 +711,27 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         constraints: ['必须使用文件优先的证据链', '严禁在未授权情况下进行重构'],
         attached_skills: ['基线巩固 (Baseline Consolidation)', '跨席位依赖拆解'],
       },
-      { id: 'seat-3', name: 'mira', role: 'Designer', status: 'Paused', created_at: '2026-04-20T10:00:00+08:00' },
-      { id: 'seat-4', name: 'flux', role: 'Verifier', status: 'Active', created_at: '2026-04-20T10:00:00+08:00' },
-      { id: 'seat-5', name: 'aegis', role: { Custom: '阶段闸门复核' }, status: 'Paused', created_at: '2026-04-24T09:00:00+08:00' },
+      {
+        id: 'seat-3',
+        name: 'mira',
+        role: 'Designer',
+        status: 'Paused',
+        created_at: '2026-04-20T10:00:00+08:00',
+      },
+      {
+        id: 'seat-4',
+        name: 'flux',
+        role: 'Verifier',
+        status: 'Active',
+        created_at: '2026-04-20T10:00:00+08:00',
+      },
+      {
+        id: 'seat-5',
+        name: 'aegis',
+        role: { Custom: '阶段闸门复核' },
+        status: 'Paused',
+        created_at: '2026-04-24T09:00:00+08:00',
+      },
     ],
     sessions: [
       {
@@ -671,11 +805,12 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         prompt_state: {
           classification: 'deterministic',
           policy: 'needs_approval',
-          preview: '检测到 docs/architecture-design.md 中存在未提交的更改。\n是否要在继续之前暂存这些更改？\n1. 是，全部暂存\n2. 否，跳过暂存\n3. 中止',
+          preview:
+            '检测到 docs/architecture-design.md 中存在未提交的更改。\n是否要在继续之前暂存这些更改？\n1. 是，全部暂存\n2. 否，跳过暂存\n3. 中止',
           expected_next: '正在生成用于 v0.5 对齐的更新版 ADR...',
           step_count: 12,
           token_budget: 15000,
-        }
+        },
       },
       {
         id: 'ses-408',
@@ -690,23 +825,23 @@ const INITIAL_DATA: Record<string, ProjectData> = {
             seat_id: 'seat-1',
             runtime: 'Codex',
             workItem_id: 'wi-410',
-            branch: 'main'
+            branch: 'main',
           },
           tier_1_state: {
             ac_progress: ['AC-01 通过', 'AC-02 通过', 'AC-03 通过'],
             latest_commit: '7a2b9d1',
-            current_blocker: '无'
+            current_blocker: '无',
           },
           tier_2_decisions: {
             summary: '统一使用 template+subtype 双键作为所有协调产物的真值索引，禁止路径裸传。',
-            evidence_refs: ['docs/coordination/DOCUMENT_TEMPLATES.md']
+            evidence_refs: ['docs/coordination/DOCUMENT_TEMPLATES.md'],
           },
           seat_skills: ['产品完整性控制', '评审环路管理'],
           playbook_matches: ['冷启动 R0 序列'],
           budget_estimate: 250000,
-          fallback_path: 'docs/PRODUCT_TRUTH.md'
-        }
-      }
+          fallback_path: 'docs/PRODUCT_TRUTH.md',
+        },
+      },
     ],
     workItems: [
       {
@@ -878,7 +1013,7 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         acceptance_criteria: [
           'Handoff 状态条显示准确',
           'WorkItem 评审阶层记录可见',
-          'Session 提示阻塞与启动包预览正常'
+          'Session 提示阻塞与启动包预览正常',
         ],
         owner_seat_id: 'seat-1',
         status: 'Active',
@@ -894,9 +1029,11 @@ const INITIAL_DATA: Record<string, ProjectData> = {
           executor: { Seat: 'seat-3' },
           reviewer: { Seat: 'seat-1' },
           ack_mode: 'CompactAck',
-          evidence_refs: ['docs/coordination/tasks/mira/MIRA-2026-04-28-serial-restart-s5-queue-control-v1.md']
-        }
-      }
+          evidence_refs: [
+            'docs/coordination/tasks/mira/MIRA-2026-04-28-serial-restart-s5-queue-control-v1.md',
+          ],
+        },
+      },
     ],
     artifacts: P1_SEEDED_ARTIFACTS,
     handoffs: [
@@ -905,7 +1042,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         from_ref: { Seat: 'seat-1' },
         to_ref: { Seat: 'seat-4' },
         workitem_id: 'wi-401',
-        purpose: '按 Lyra 审批过的修补清单执行代 Mira 合同修复，严格保持现有侧栏/主区信息架构不变。',
+        purpose:
+          '按 Lyra 审批过的修补清单执行代 Mira 合同修复，严格保持现有侧栏/主区信息架构不变。',
         expected_outcome: '交付一套通过构建验证的 P0 / P1 修补结果，并附带可追溯的交付说明。',
         artifact_ids: ['ar-401'],
         required_receipt: true,
@@ -944,7 +1082,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         from_ref: { Seat: 'seat-1' },
         to_ref: { Seat: 'seat-4' },
         workitem_id: 'wi-407',
-        purpose: '统一原型中的中文字体、字号和信息密度，优先消除中英字重不协调、标签过小和正文压缩导致的阅读疲劳。',
+        purpose:
+          '统一原型中的中文字体、字号和信息密度，优先消除中英字重不协调、标签过小和正文压缩导致的阅读疲劳。',
         expected_outcome: '回传一轮带前后差异说明的视觉微调结果，便于 Lyra 继续验收。',
         artifact_ids: ['ar-404'],
         required_receipt: true,
@@ -986,7 +1125,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         occurred_at: at('10:10'),
         actor_ref: { Seat: 'seat-1' },
         object_refs: [{ WorkItem: 'wi-401' }],
-        evidence_refs: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md'],
+        evidence_refs: [
+          'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md',
+        ],
         payload: { title: 'Lyra 建立代 Mira 合同修复工作项，并冻结信息架构边界。' },
       },
       {
@@ -995,7 +1136,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         occurred_at: at('10:30'),
         actor_ref: { Seat: 'seat-1' },
         object_refs: [{ Handoff: 'ho-401' }, { WorkItem: 'wi-401' }],
-        evidence_refs: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md'],
+        evidence_refs: [
+          'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-v1.md',
+        ],
         payload: { title: '修补任务包已发送给 Flux，作为 Mira 的临时替补执行席位。' },
       },
       {
@@ -1041,7 +1184,10 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         actor_ref: 'Automation',
         object_refs: [{ WorkItem: 'wi-408' }],
         evidence_refs: [],
-        payload: { summary: '显式对账完成：核心 UI 修补已对齐，漂移提醒改为短暂摘要，后续仍待 Lyra 做正式验收。' },
+        payload: {
+          summary:
+            '显式对账完成：核心 UI 修补已对齐，漂移提醒改为短暂摘要，后续仍待 Lyra 做正式验收。',
+        },
       },
       {
         event_id: 'ev-408',
@@ -1049,7 +1195,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         occurred_at: at('17:38'),
         actor_ref: { Seat: 'seat-4' },
         object_refs: [{ WorkItem: 'wi-401' }],
-        evidence_refs: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md'],
+        evidence_refs: [
+          'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
+        ],
         payload: { title: 'Flux 写入代 Mira 修补交付产物。' },
       },
       {
@@ -1058,7 +1206,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         occurred_at: at('17:40'),
         actor_ref: { Seat: 'seat-4' },
         object_refs: [{ Handoff: 'ho-402' }, { WorkItem: 'wi-402' }],
-        evidence_refs: ['docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md'],
+        evidence_refs: [
+          'docs/coordination/tasks/flux/FLUX-2026-04-28-acting-mira-contract-repair-delivery-v1.md',
+        ],
         payload: { title: 'Flux 请求 Lyra 进入 SG-01 正式验收复核。' },
       },
       {
@@ -1086,7 +1236,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         actor_ref: { Seat: 'seat-1' },
         object_refs: [{ WorkItem: 'wi-403' }],
         evidence_refs: ['ui/src/App.tsx', 'ui/src/stores/useDataStore.ts'],
-        payload: { summary: '收件箱引用归一化在真实数据上复核通过，后续关注点转向视觉一致性与信息密度。' },
+        payload: {
+          summary: '收件箱引用归一化在真实数据上复核通过，后续关注点转向视觉一致性与信息密度。',
+        },
       },
       {
         event_id: 'ev-413',
@@ -1140,7 +1292,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         actor_ref: { Seat: 'seat-1' },
         object_refs: [{ WorkItem: 'wi-406' }],
         evidence_refs: ['ui/src/stores/useDataStore.ts', 'ui/src/views/TimelineView.tsx'],
-        payload: { summary: '主视图已切换到中文高密度叙事版本，正在继续清理细节页与弹窗残留英文。' },
+        payload: {
+          summary: '主视图已切换到中文高密度叙事版本，正在继续清理细节页与弹窗残留英文。',
+        },
       },
       {
         event_id: 'ev-419',
@@ -1149,7 +1303,10 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         actor_ref: 'Automation',
         object_refs: [{ WorkItem: 'wi-406' }, { WorkItem: 'wi-407' }],
         evidence_refs: [],
-        payload: { summary: '内容对账完成：核心数据规模已贴近今日协作量级，剩余关注点收敛到字体协调与信息密度细修。' },
+        payload: {
+          summary:
+            '内容对账完成：核心数据规模已贴近今日协作量级，剩余关注点收敛到字体协调与信息密度细修。',
+        },
       },
     ],
     inboxItems: [
@@ -1159,7 +1316,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '待处理交接',
         actor: 'flux -> lyra',
         object_ref: 'WI-402',
-        summary: '代 Mira 修复包已交付，Lyra 需要给出 SG-01 验收结论，并明确是否允许 Nimbus 接手后续工程实现。',
+        summary:
+          '代 Mira 修复包已交付，Lyra 需要给出 SG-01 验收结论，并明确是否允许 Nimbus 接手后续工程实现。',
         timestamp: seededAt('17:40'),
         linked_artifact_ids: ['ar-402', 'ar-415'],
       },
@@ -1169,7 +1327,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '需确认范围',
         actor: 'lyra',
         object_ref: 'WI-404',
-        summary: 'Nimbus 接力包仍被 SG-01 基线拦截，在通过 / 保持阻塞结论明确之前，任何实现推进都应继续冻结。',
+        summary:
+          'Nimbus 接力包仍被 SG-01 基线拦截，在通过 / 保持阻塞结论明确之前，任何实现推进都应继续冻结。',
         timestamp: seededAt('18:24'),
         linked_artifact_ids: ['ar-405', 'ar-414'],
       },
@@ -1179,7 +1338,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '背景记录',
         actor: 'mira/gemini',
         object_ref: 'SES-402',
-        summary: '原设计会话因运行时限制中断，后续界面修整需要保留这段恢复背景，避免误判为设计主动中止。',
+        summary:
+          '原设计会话因运行时限制中断，后续界面修整需要保留这段恢复背景，避免误判为设计主动中止。',
         timestamp: seededAt('14:05'),
       },
       {
@@ -1188,7 +1348,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '待处理交接',
         actor: 'lyra -> flux',
         object_ref: 'WI-407',
-        summary: '请统一中文字体、字号与信息密度，优先解决标题、标签和正文在同屏阅读时节奏割裂的问题。',
+        summary:
+          '请统一中文字体、字号与信息密度，优先解决标题、标签和正文在同屏阅读时节奏割裂的问题。',
         timestamp: seededAt('18:36'),
         linked_artifact_ids: ['ar-404'],
       },
@@ -1198,7 +1359,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '需要验收',
         actor: 'lyra',
         object_ref: 'WI-406',
-        summary: '中文演示数据已切换为高密度叙事草案，仍需逐页检查详情面板、总览卡片与弹窗是否有英文残留。',
+        summary:
+          '中文演示数据已切换为高密度叙事草案，仍需逐页检查详情面板、总览卡片与弹窗是否有英文残留。',
         timestamp: seededAt('20:36'),
         linked_artifact_ids: ['ar-413'],
       },
@@ -1208,7 +1370,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '已记录决策',
         actor: 'automation',
         object_ref: 'WI-408',
-        summary: '漂移项统一进入收件箱 / 工作项；显式对账后只保留 5 秒“对账摘要”提示，不再维持独立漂移浮层。',
+        summary:
+          '漂移项统一进入收件箱 / 工作项；显式对账后只保留 5 秒“对账摘要”提示，不再维持独立漂移浮层。',
         timestamp: seededAt('17:32'),
       },
       {
@@ -1217,7 +1380,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '待补产物',
         actor: 'flux',
         object_ref: 'HO-404',
-        summary: '字体与信息密度修整完成后，需要补一份前后差异说明产物，便于 Lyra 做下一轮验收归档。',
+        summary:
+          '字体与信息密度修整完成后，需要补一份前后差异说明产物，便于 Lyra 做下一轮验收归档。',
         timestamp: seededAt('18:55'),
         linked_artifact_ids: ['ar-404'],
       },
@@ -1227,7 +1391,8 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         type: '需要同步',
         actor: 'aegis',
         object_ref: 'WI-402',
-        summary: 'Aegis 只保留阶段闸门复核职责；Lyra 的验收结论必须落到可追溯产物中，不能只写在终端沟通里。',
+        summary:
+          'Aegis 只保留阶段闸门复核职责；Lyra 的验收结论必须落到可追溯产物中，不能只写在终端沟通里。',
         timestamp: seededAt('20:20'),
         linked_artifact_ids: ['ar-414', 'ar-415'],
       },
@@ -1235,8 +1400,20 @@ const INITIAL_DATA: Record<string, ProjectData> = {
   },
   'p-2': {
     seats: [
-      { id: 'seat-lo', name: 'lyra', role: 'ProductOwner', status: 'Active', created_at: '2026-04-10T10:00:00+08:00' },
-      { id: 'seat-nm', name: 'nimbus', role: 'Architect', status: 'Active', created_at: '2026-04-10T10:00:00+08:00' },
+      {
+        id: 'seat-lo',
+        name: 'lyra',
+        role: 'ProductOwner',
+        status: 'Active',
+        created_at: '2026-04-10T10:00:00+08:00',
+      },
+      {
+        id: 'seat-nm',
+        name: 'nimbus',
+        role: 'Architect',
+        status: 'Active',
+        created_at: '2026-04-10T10:00:00+08:00',
+      },
     ],
     sessions: [
       {
@@ -1267,7 +1444,11 @@ const INITIAL_DATA: Record<string, ProjectData> = {
         id: 'wi-202',
         title: '角色状态快照压缩实验',
         goal: '验证在不损失叙事一致性的情况下，把角色状态快照压缩到适合长流程回放的体量。',
-        acceptance_criteria: ['单次快照小于 64KB', '角色心智状态字段可回放', '压缩后可通过一致性校验'],
+        acceptance_criteria: [
+          '单次快照小于 64KB',
+          '角色心智状态字段可回放',
+          '压缩后可通过一致性校验',
+        ],
         owner_seat_id: 'seat-lo',
         status: 'Ready',
         priority: 'Medium',
@@ -1312,7 +1493,13 @@ const INITIAL_DATA: Record<string, ProjectData> = {
   },
   'p-3': {
     seats: [
-      { id: 'seat-fx', name: 'flux', role: 'Verifier', status: 'Active', created_at: '2026-04-22T10:00:00+08:00' },
+      {
+        id: 'seat-fx',
+        name: 'flux',
+        role: 'Verifier',
+        status: 'Active',
+        created_at: '2026-04-22T10:00:00+08:00',
+      },
     ],
     sessions: [
       {
@@ -1395,167 +1582,182 @@ export const useDataStore = create<DataState>((set, get) => ({
   backendHydrated: false,
   backendHydrateError: null,
 
-  setActiveProject: (id) => set((state) => ({
-    activeProjectId: id,
-    projects: state.projects.map((p) => (p.id === id ? { ...p, last_accessed: new Date().toISOString() } : p)),
-  })),
+  setActiveProject: (id) =>
+    set((state) => ({
+      activeProjectId: id,
+      projects: state.projects.map((p) =>
+        p.id === id ? { ...p, last_accessed: new Date().toISOString() } : p,
+      ),
+    })),
 
-  addProject: (project, data) => set((state) => ({
-    projects: [project, ...state.projects],
-    projectData: { ...state.projectData, [project.id]: data },
-  })),
+  addProject: (project, data) =>
+    set((state) => ({
+      projects: [project, ...state.projects],
+      projectData: { ...state.projectData, [project.id]: data },
+    })),
 
-  pinProject: (id, pinned) => set((state) => ({
-    projects: state.projects.map((p) => (p.id === id ? { ...p, isPinned: pinned } : p)),
-  })),
+  pinProject: (id, pinned) =>
+    set((state) => ({
+      projects: state.projects.map((p) => (p.id === id ? { ...p, isPinned: pinned } : p)),
+    })),
 
-  addSeat: (seat) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: { ...data, seats: [...data.seats, seat] },
-      },
-    };
-  }),
-
-  addSession: (session) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: { ...data, sessions: [...data.sessions, session] },
-      },
-    };
-  }),
-
-  updateSession: (id, updates) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: {
-          ...data,
-          sessions: data.sessions.map((s) => (s.id === id ? { ...s, ...updates } : s)),
+  addSeat: (seat) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: { ...data, seats: [...data.seats, seat] },
         },
-      },
-    };
-  }),
+      };
+    }),
 
-  addWorkItem: (wi) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: { ...data, workItems: [...data.workItems, wi] },
-      },
-    };
-  }),
-
-  updateWorkItem: (id, updates) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: {
-          ...data,
-          workItems: data.workItems.map((wi) => (wi.id === id ? { ...wi, ...updates } : wi)),
+  addSession: (session) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: { ...data, sessions: [...data.sessions, session] },
         },
-      },
-    };
-  }),
+      };
+    }),
 
-  delegateWorkItem: (workItemId, delegation) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    const workItem = data.workItems.find(wi => wi.id === workItemId);
-    if (!workItem) return state;
-
-    const newEvent: CanonicalEvent = {
-      event_id: `ev-${Math.random().toString(36).substr(2, 6)}`,
-      event_type: 'WorkItemDelegated',
-      occurred_at: new Date().toISOString(),
-      actor_ref: delegation.issuer,
-      object_refs: [{ WorkItem: workItemId }, { Seat: delegation.delegate_seat_id }],
-      evidence_refs: [],
-      payload: {
-        title: `WorkItem ${workItemId.toUpperCase()} 已委派`,
-        summary: `责任由 ${delegation.source_seat_id} 临时委派至 ${delegation.delegate_seat_id}。`,
-        delegation
-      }
-    };
-
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: {
-          ...data,
-          workItems: data.workItems.map(wi => 
-            wi.id === workItemId ? { ...wi, active_delegation: delegation } : wi
-          ),
-          events: [newEvent, ...data.events]
+  updateSession: (id, updates) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: {
+            ...data,
+            sessions: data.sessions.map((s) => (s.id === id ? { ...s, ...updates } : s)),
+          },
         },
-      },
-    };
-  }),
+      };
+    }),
 
-  addHandoff: (handoff) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: { ...data, handoffs: [...data.handoffs, handoff] },
-      },
-    };
-  }),
-
-  updateHandoff: (id, updates) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: {
-          ...data,
-          handoffs: data.handoffs.map((ho) => (ho.id === id ? { ...ho, ...updates } : ho)),
+  addWorkItem: (wi) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: { ...data, workItems: [...data.workItems, wi] },
         },
-      },
-    };
-  }),
+      };
+    }),
 
-  removeInboxItem: (id) => set((state) => {
-    if (!state.activeProjectId) return state;
-    const data = state.projectData[state.activeProjectId];
-    return {
-      projectData: {
-        ...state.projectData,
-        [state.activeProjectId]: {
-          ...data,
-          inboxItems: data.inboxItems.filter((item) => item.id !== id),
+  updateWorkItem: (id, updates) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: {
+            ...data,
+            workItems: data.workItems.map((wi) => (wi.id === id ? { ...wi, ...updates } : wi)),
+          },
         },
-      },
-    };
-  }),
+      };
+    }),
 
-  removeInboxItemFromProject: (projectId, id) => set((state) => {
-    const data = state.projectData[projectId];
-    if (!data) return state;
-    return {
-      projectData: {
-        ...state.projectData,
-        [projectId]: {
-          ...data,
-          inboxItems: data.inboxItems.filter((item) => item.id !== id),
+  delegateWorkItem: (workItemId, delegation) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      const workItem = data.workItems.find((wi) => wi.id === workItemId);
+      if (!workItem) return state;
+
+      const newEvent: CanonicalEvent = {
+        event_id: `ev-${Math.random().toString(36).substr(2, 6)}`,
+        event_type: 'WorkItemDelegated',
+        occurred_at: new Date().toISOString(),
+        actor_ref: delegation.issuer,
+        object_refs: [{ WorkItem: workItemId }, { Seat: delegation.delegate_seat_id }],
+        evidence_refs: [],
+        payload: {
+          title: `WorkItem ${workItemId.toUpperCase()} 已委派`,
+          summary: `责任由 ${delegation.source_seat_id} 临时委派至 ${delegation.delegate_seat_id}。`,
+          delegation,
         },
-      },
-    };
-  }),
+      };
+
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: {
+            ...data,
+            workItems: data.workItems.map((wi) =>
+              wi.id === workItemId ? { ...wi, active_delegation: delegation } : wi,
+            ),
+            events: [newEvent, ...data.events],
+          },
+        },
+      };
+    }),
+
+  addHandoff: (handoff) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: { ...data, handoffs: [...data.handoffs, handoff] },
+        },
+      };
+    }),
+
+  updateHandoff: (id, updates) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: {
+            ...data,
+            handoffs: data.handoffs.map((ho) => (ho.id === id ? { ...ho, ...updates } : ho)),
+          },
+        },
+      };
+    }),
+
+  removeInboxItem: (id) =>
+    set((state) => {
+      if (!state.activeProjectId) return state;
+      const data = state.projectData[state.activeProjectId];
+      return {
+        projectData: {
+          ...state.projectData,
+          [state.activeProjectId]: {
+            ...data,
+            inboxItems: data.inboxItems.filter((item) => item.id !== id),
+          },
+        },
+      };
+    }),
+
+  removeInboxItemFromProject: (projectId, id) =>
+    set((state) => {
+      const data = state.projectData[projectId];
+      if (!data) return state;
+      return {
+        projectData: {
+          ...state.projectData,
+          [projectId]: {
+            ...data,
+            inboxItems: data.inboxItems.filter((item) => item.id !== id),
+          },
+        },
+      };
+    }),
 
   refreshEvents: async () => {
     if (!isTauri()) return;
@@ -1586,7 +1788,16 @@ export const useDataStore = create<DataState>((set, get) => ({
       return;
     }
     try {
-      const [projectsDto, seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto, documentsDto] = await Promise.all([
+      const [
+        projectsDto,
+        seatsDto,
+        workitemsDto,
+        handoffsDto,
+        artifactsDto,
+        sessionsDto,
+        eventsDto,
+        documentsDto,
+      ] = await Promise.all([
         api.listProjects(),
         api.listSeats(),
         api.listWorkitems(),
@@ -1615,13 +1826,31 @@ export const useDataStore = create<DataState>((set, get) => ({
       const projects: Project[] = projectsDto.map(projectFromDto);
       const projectData: Record<string, ProjectData> = {};
 
-      // v0.1: all seeded data belongs to the single 'seatloom' project. We
-      // attribute every seat/workitem/session/handoff/artifact/event under
-      // each project's ProjectData to make the V1 shell render regardless.
-      // Multi-project partitioning lands when schema adds project_id FKs.
+      // 2026-10-16: seats are attributed by ROLE BINDING, not to every project.
+      //
+      // This loop used to `seatsDto.map(...)` inside the per-project loop, so every
+      // project carried every seat — which is why QL showed up under SeatLoom. The
+      // v0.1 comment below said it was to make the V1 shell render regardless; what it
+      // actually did was assert a membership that the data contradicts.
+      //
+      // `project_role_bindings` is the authority and it already exists: measured on
+      // live, `seatloom` binds 6 seats and `ql_delivery` binds 1, and the other 37
+      // projects bind none. So a project with no bindings now shows no seats — and the
+      // ones that exist but are unbound are carried in `unboundSeats` so the UI can say
+      // why the list is empty instead of rendering a `席位 (0)` that reads as broken.
+      //
+      // Still NOT partitioned by project, because the schema does not carry it:
+      // workItems / handoffs / events have project_id and could be; sessions and
+      // artifacts do not. Those are reported in the delivery rather than half-fixed.
       for (const p of projectsDto) {
         const roles = roleBindingsByProject.get(p.id) ?? {};
-        const seats: Seat[] = seatsDto.map((s) => seatFromDto(s, roles[s.id]));
+        const boundIds = new Set(Object.keys(roles));
+        const seats: Seat[] = seatsDto
+          .filter((s) => boundIds.has(s.id))
+          .map((s) => seatFromDto(s, roles[s.id]));
+        const unboundSeats: Seat[] = seatsDto
+          .filter((s) => !boundIds.has(s.id))
+          .map((s) => seatFromDto(s, undefined));
         const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
         const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
         // Merge runtime artifacts (seed/001 — 15 rows) with reconcile-ingested
@@ -1680,7 +1909,10 @@ export const useDataStore = create<DataState>((set, get) => ({
               id: `inbox-ho-${h.id}`,
               priority: h.required_receipt ? 'Critical' : 'Normal',
               type: 'HandoffPending',
-              actor: typeof h.from_ref === 'string' ? h.from_ref : (h.from_ref as any).Seat ?? 'unknown',
+              actor:
+                typeof h.from_ref === 'string'
+                  ? h.from_ref
+                  : ((h.from_ref as any).Seat ?? 'unknown'),
               object_ref: h.id,
               summary: `Handoff ${h.status.toLowerCase()}: ${h.purpose}`,
               timestamp: h.sent_at ?? h.created_at,
@@ -1696,13 +1928,15 @@ export const useDataStore = create<DataState>((set, get) => ({
           handoffs,
           events,
           inboxItems,
+          // Only carried when there ARE unbound seats, so the common case is unchanged
+          // and no consumer has to learn a new field it does not read.
+          ...(unboundSeats.length > 0 ? { unboundSeats } : {}),
         };
       }
 
       const currentActive = get().activeProjectId;
-      const nextActive = projects.find((p) => p.id === currentActive)?.id
-        ?? projects[0]?.id
-        ?? null;
+      const nextActive =
+        projects.find((p) => p.id === currentActive)?.id ?? projects[0]?.id ?? null;
 
       set({
         projects,

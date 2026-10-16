@@ -283,6 +283,17 @@ export interface ProjectData {
   handoffs: Handoff[];
   events: CanonicalEvent[];
   inboxItems: InboxItem[];
+  /**
+   * Seats that exist in the system but hold NO role binding for this project.
+   *
+   * Additive, and populated only when the count is non-zero. It exists so an empty
+   * seat list can say WHY it is empty: "this project has no seat bindings" is a
+   * different fact from "this project's seats failed to load", and rendering a bare
+   * `席位 (0)` reads as the second. Measured on live 2026-10-16: 39 projects, only
+   * `seatloom` (6 seats) and `ql_delivery` (1 seat) carry bindings, and `seat-vela-001`
+   * has none anywhere.
+   */
+  unboundSeats?: Seat[];
 }
 
 export interface ProjectUIState {
