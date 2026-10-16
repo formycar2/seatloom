@@ -202,3 +202,30 @@ exists, its row count, and the drift number — the last one **reports an error 
 3**, because a number that silently changes means something moved and 张先生 should ask
 before anyone acts on it. That script is the auditable path for the live apply; it is not run
 here, because touching live is not this dispatch's act.
+
+---
+
+## 8. Addendum — the event id, and why there are two announcements
+
+**`emit_event` generates a nanoid `event_id` when you omit the parameter.** I omitted it, so
+the slice-1 announcement first landed as `ev-xv1u55DLCLznYELeQJ2S_`. The contract's §11.1
+mandates the id `ev-session-key-view-landed` verbatim, and §11 states that *"Dependency
+edges are event ids, never prose"* — so with only the generated id, `disp-session-key-readmodel`'s
+edge `ev-session-key-view-landed` could never be satisfied and slice 2 would have stayed
+`blocked` forever. Nothing in the product would have said so; Nimbus would simply never have
+been woken.
+
+The fix was to emit the announcement again **under the mandated id**, which is what the
+dependency resolver matches on (`dd.dep_value = NEW.id`, 013). Verified afterwards:
+`disp-session-key-readmodel` flipped `blocked` → `ready` for `seat-nimbus-001`, and the other
+slices are unchanged.
+
+The ledger is append-only, so the first row was left standing rather than hidden or rewritten.
+Both rows are `ArtifactCreated` from `seat-onyx-001`, both describe **one** artifact at **one**
+commit (`0e32054`), and the second carries a `why_this_event_id_is_a_restatement` field saying
+exactly this. Neither carries a `verified` field — both are announcements, and
+`ev-session-key-view-landed` is not gate-shaped under 020's criterion (`%-live-%` / `%-live`),
+so when 020 lands live the resolver will still treat it as plain existence.
+
+The general lesson, recorded as a memory: **when a contract names an event id, that id is
+infrastructure, not a label.** Pass it explicitly.
