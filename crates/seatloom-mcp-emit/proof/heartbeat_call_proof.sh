@@ -38,12 +38,31 @@ TRACK_REF="${TRACK_REF:-track/infra-foundation}"
 command -v tmux >/dev/null || { echo "tmux is not installed — nothing to measure"; exit 1; }
 [ -f "$MAP" ] || { echo "no seat map at $MAP — the waker has nothing mapped"; exit 1; }
 
-echo "seat map:    $MAP"
+# The "before" state this dispatch changed. PINNED, not `HEAD`: this proof was
+# written while the change was the tip, and the first time it ran after the commit
+# it compared the new source against itself and passed vacuously — a proof whose
+# baseline moves with the tip is a proof that can silently stop measuring anything.
+# Override with SEATLOOM_WAKER_BEFORE_REF if the pin is ever rebased away.
+BEFORE_REF="${SEATLOOM_WAKER_BEFORE_REF:-47079e1^}"
+git -C "$ROOT" cat-file -e "${BEFORE_REF}^{commit}" 2>/dev/null \
+  || { echo "FAIL: the before-ref $BEFORE_REF is not a commit in this repository"; exit 1; }
+git -C "$ROOT" merge-base --is-ancestor "$BEFORE_REF" HEAD \
+  || { echo "FAIL: $BEFORE_REF is not an ancestor of HEAD — the baseline is not in this history"; exit 1; }
+if [ "$(git -C "$ROOT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse "$BEFORE_REF")" ]; then
+  echo "FAIL: HEAD IS the before-state — the change under test is not in this tree"
+  exit 1
+fi
+# And the change must actually be present: the third arm exists in HEAD's source.
+grep -q "NudgeKind::Heartbeat" "$ROOT/crates/seatloom-mcp-emit/src/bin/waker.rs" \
+  || { echo "FAIL: the heartbeat nudge is not in the working tree"; exit 1; }
+
+echo "seat map:     $MAP"
 echo "waker source: $ROOT/crates/seatloom-mcp-emit/src/bin/waker.rs"
+echo "before ref:   $BEFORE_REF ($(git -C "$ROOT" log -1 --format=%h "$BEFORE_REF"))"
 echo
 
 echo "########## POINT 1 — the OLD match never called an idle seat with nothing ##########"
-git -C "$ROOT" show HEAD:crates/seatloom-mcp-emit/src/bin/waker.rs > /tmp/waker_head.rs
+git -C "$ROOT" show "${BEFORE_REF}:crates/seatloom-mcp-emit/src/bin/waker.rs" > /tmp/waker_head.rs
 # The old final arm, verbatim.
 grep -A 1 "Idle with nothing ready: nothing to do." /tmp/waker_head.rs | head -2 | sed 's/^/  /'
 grep -q "(None, _) => {}" /tmp/waker_head.rs \
