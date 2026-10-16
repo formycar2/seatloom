@@ -88,7 +88,7 @@ fn repo_root() -> PathBuf {
     // 症状:应用从 /Applications 启动时 cwd 是 /,repo_root 解析成根,
     // spawn /target/debug/seatloom-mcp-emit: No such file or directory。
     // 教训:路径限定取文件会覆盖同文件里已有的修复,集成时必须核对 diff 的删除部分。
-if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         for cand in [
             home.join("Documents/GitHub/seatloom"),
