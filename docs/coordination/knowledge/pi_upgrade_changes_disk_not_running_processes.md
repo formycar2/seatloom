@@ -49,6 +49,17 @@ l0_summary: pi update 只改磁盘:每个已经在跑的 pi 进程(含全部席�
 - `~/.pi/agent/install/current-version` → `1.3.0`;`releases/` 下 `1.1.0`(10-08)和 `1.3.0`(10-16 11:24)并存
 - 各席位 pi 进程起于 10-10(见 `scripts/fleet-process-census.sh` 同类方法),Aegis 自己的 pid 3870 起于 `Fri Oct 16 11:24:00 2026`
 - 重启后实跑验证(用 1.3.0):`pi mcp list` → `seatloom: connected, 19 tools`
+
+**已执行(2026-10-16 11:31,`bash scripts/seat-launch.sh --all`)**:6 个席位全部换上新版。
+重启前的守卫全部通过:6 个 worktree 已跟踪文件干净、6/6 在线且全空闲。
+重启后的核验:6 个新 pi 进程起于 11:31:51–11:32:22(全部晚于 11:24 的升级),
+6 个 MCP 工具子进程全部存活,面板都起来了、没有一个停在信任弹窗上,
+而且洗数据席位拿到的仍是 `stepplan-wash-anthropic`(没有被静默降级成普通额度)。
+
+**还没证明的一件事**:单个席位真正调通一次工具。按仓库的规矩,
+唯一的硬证据是派单从 ready 翻成 in_flight —— 那要等席位自己拉到活才有。
+我能证明的是 1.3.0 配这套工具服务能连通(上面那条 `pi mcp list`),
+以及每个席位的新进程都挂着自己的工具子进程;这两条加起来是必要不充分。
 - 1.2.0 的破坏性改动逐条对过:主题 schema 校验(没有任何席位配主题,不适用)、
   `before_agent_start` 改成 `messageType` 联合、`sendUserMessage` 要求 `deliverAs`
   —— 唯一装着的扩展 `agentd-probe.js` 只挂 `tool_call`/`tool_result` 两个事件,
