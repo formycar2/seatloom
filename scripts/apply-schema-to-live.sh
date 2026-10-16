@@ -34,6 +34,8 @@ fi
 echo "数据库连上了。现在的表结构状态:"
 printf "  memories 表          %s\n"         "$([ "$(query "select count(*) from pg_tables where tablename='memories'")"         = "1" ] && echo 已有 || echo 缺)"
 printf "  acceptance_plan 列   %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='acceptances' and column_name='acceptance_plan'")" = "1" ] && echo 已有 || echo 缺)"
+printf "  历史会话语料列       %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='archived_sessions' and column_name='message_count'")" = "1" ] && echo 已有 || echo 缺)"
+printf "  项目 home_path 列    %s\n"         "$([ "$(query "select count(*) from information_schema.columns where table_name='projects' and column_name='home_path'")" = "1" ] && echo 已有 || echo 缺)"
 echo
 
 # 按编号顺序逐个 apply。都是幂等的,已经有的会原地跳过。
@@ -67,6 +69,18 @@ printf "  作废卡片状态               %s\n" "$(query "select pg_get_constra
 printf "  建主题的事件类型           %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'" | grep -q TopicOpened && echo ✅认得 || echo '❌不认得(写入链会断在这里)')"
 # 这一项是整条链能不能通的终局判据:工具能不能真的建出一个主题
 printf "  主题/记忆现有行数           主题 %s 条,记忆 %s 条\n" "$(query "select count(*) from topics")" "$(query "select count(*) from memories")"
+# 021:历史会话语料。**这一项必须能报错。**
+# 2026-10-16 实测踩过:021 不在 track 上时,上面那段自动发现只会 apply 015-019,
+# 退出 0、上面每一项都打勾,而语料一个字都没进去 —— 一个全绿的假成功。
+# 所以这里按语料的**实际行数**判,不按"迁移跑过了"判。判据取契约里张先生会核的数。
+corpus_n="$(query "select count(*) from archived_sessions where message_count is not null")"
+printf "  历史会话语料(应为 183)     %s\n" "$([ "$corpus_n" = "183" ] && echo "✅183 条" || echo "❌只有 ${corpus_n:-0} 条 —— 021 没落上,别把这段当成语料已加载")"
+[ "$corpus_n" = "183" ] || failed=1
+printf "  消息总数(应为 36680)       %s\n" "$(query "select coalesce(sum(message_count),0) from archived_sessions where message_count is not null")"
+printf "  项目数(应为 38)            %s\n" "$(query "select count(*) from projects")"
+root_n="$(query "select count(*) from archived_sessions where message_count is not null and project='(root)'")"
+printf "  仓库根会话(应为 8 条未归类) %s\n" "$([ "$root_n" = "8" ] && echo "✅8 条" || echo "❌${root_n:-0} 条")"
+[ "$root_n" = "8" ] || failed=1
 echo
 printf "  现有数据没被动:派单 %s 条,验收卡 %s 张\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")"
 echo
