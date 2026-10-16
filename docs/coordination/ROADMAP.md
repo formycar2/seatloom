@@ -420,3 +420,18 @@ model, UI and verification slices wait on their gates.
    twice said he cannot read the abbreviated English). My section here is English and the
    operator-facing version is a separate `.zhs.md`, but the underlying conflict is unresolved and
    it is his to rule on.
+
+### 6. Two product decisions that are the operator's, and were recorded nowhere he would look
+
+Aegis's heartbeat file records two Review findings on the supervisor panel as *product judgments
+waiting on the operator*, and says to decompose them only after he decides. They existed only in
+that file — not in this roadmap, not in a contract — so there was no surface where he would ever
+meet them. Recording them here, as his, is the whole of my action on them. I am not deciding
+either, and I am not pushing them back to Aegis: what the product shows by default is his call.
+
+| # | The question, in his terms | Status |
+|---|---|---|
+| U1 | The supervisor column is currently one global stream of everything that ever happened. Should memory-type internal actions (a memory recalled, a memory created, a topic opened) be collapsed by default, so the column leads with work rather than bookkeeping? | **Open, and genuinely his.** It is a decision about what he sees by default. Note the measured context: of the 400 newest rows the column loads, 321 fall into exactly these internal types, so this is not a cosmetic question — it is most of the column. |
+| U2 | The column showed raw ids rather than names. Should it show a live title instead? | **Largely answered by delivered work.** `62e535a` on `packet/mira/knowledge-panel` resolves dispatch rows to their title, target seat and status, and memory rows to their title and topic, reading the real data rather than inventing labels. Its acceptance card is one of the two that cannot currently be verified (§1), so the answer exists but is not yet something he has seen. |
+
+U1 is the one that still needs him. U2 needs him only to confirm the fix is what he meant.
