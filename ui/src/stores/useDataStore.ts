@@ -64,7 +64,17 @@ const LOG_DAY = '2026-04-28';
 const at = (time: string) => `${LOG_DAY}T${time}:00+08:00`;
 const seededAt = (time: string) => `${LOG_DAY} ${time}`;
 
-const INITIAL_PROJECTS: Project[] = [
+/**
+ * 写死的三条种子项目 —— **只给测试用,不进产品路径**。
+ *
+ * 2026-10-16:这三个值曾是 store 的初值,于是水合失败时它们会作为真项目渲染出来
+ * (张先生看到的正是它们:路径是 ~/Documents/GitHub/…,而 projectFromDto 合成的是
+ * ~/<名字>)。那是一次静默退回假数据 —— 比白屏更坏,因为它看起来是对的。
+ *
+ * 现在 store 的初值是空的:水合成功就有真项目,水合失败就明说连不上,不存在
+ * 「偷偷显示三条假卡」这条路。测试要用它们,显式 import 这个常量。
+ */
+export const SEED_PROJECTS_FOR_TESTS: Project[] = [
   {
     id: 'p-1',
     name: 'SeatLoom 协调核心',
@@ -687,7 +697,8 @@ const P1_SEEDED_ARTIFACTS: Artifact[] = [
   },
 ];
 
-const INITIAL_DATA: Record<string, ProjectData> = {
+/** 与 SEED_PROJECTS_FOR_TESTS 配套的假 ProjectData,同样只给测试用。 */
+export const SEED_PROJECT_DATA_FOR_TESTS: Record<string, ProjectData> = {
   'p-1': {
     seats: [
       {
@@ -1576,8 +1587,9 @@ const INITIAL_DATA: Record<string, ProjectData> = {
 };
 
 export const useDataStore = create<DataState>((set, get) => ({
-  projects: INITIAL_PROJECTS,
-  projectData: INITIAL_DATA,
+  // 空,不是那三条种子。见 SEED_PROJECTS_FOR_TESTS 的说明:静默退回假数据比白屏更坏。
+  projects: [],
+  projectData: {},
   activeProjectId: 'p-1',
   backendHydrated: false,
   backendHydrateError: null,
@@ -1783,8 +1795,15 @@ export const useDataStore = create<DataState>((set, get) => ({
 
   hydrateFromBackend: async () => {
     if (!isTauri()) {
-      // Browser-dev fallback: leave mock data in place. Not an error.
-      set({ backendHydrated: false, backendHydrateError: null });
+      // Browser-dev: no Tauri backend, so there is nothing to hydrate FROM. Recorded as
+      // an error with the reason, not as a silent "leave the seeds" — the store now
+      // starts empty, so this branch has to explain itself rather than pretend.
+      set({
+        backendHydrated: false,
+        backendHydrateError:
+          '不在 SeatLoom 桌面端里(浏览器模式没有 Tauri 后端),因此读不到数据库里的项目。' +
+          '用 pnpm tauri dev 或装好的 SeatLoom 应用打开。',
+      });
       return;
     }
     try {

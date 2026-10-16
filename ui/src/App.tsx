@@ -13,6 +13,7 @@ import LiveSeatsView from './views/LiveSeatsView';
 import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import EventDetail from './components/EventDetail';
+import HydrationFailure from './components/HydrationFailure';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
 import HandoffDetail from './components/HandoffDetail';
@@ -70,6 +71,7 @@ const App: React.FC = () => {
     hydrateFromBackend,
     refreshEvents,
     backendHydrated,
+    backendHydrateError,
   } = useDataStore();
   // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
   // claim LIVE while tmux discovery is empty or has failed.
@@ -503,8 +505,20 @@ const App: React.FC = () => {
     );
   };
 
+  // 2026-10-16: a hydration failure used to be stored in the store and never rendered,
+  // so a failed read looked like "the product has three projects". Shown once, above the
+  // shell, on every tab — and the shell below renders no projects at all rather than the
+  // three hardcoded seeds it used to fall back to.
+  const hydrationFailed = !backendHydrated && backendHydrateError !== null;
+
   return (
     <>
+      {hydrationFailed && (
+        <HydrationFailure
+          error={backendHydrateError ?? '(没有错误文本 —— 这本身就该当缺陷看)'}
+          onRetry={() => void hydrateFromBackend()}
+        />
+      )}
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {
