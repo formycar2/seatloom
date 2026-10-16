@@ -39,7 +39,7 @@ QL_MODEL="${SEATLOOM_QL_MODEL:-stepplan-anthropic/step-5-preview}"
 # 脚本会静默什么都不做。2026-10-10 第一版就是这个 bug。
 podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO projects (id, name, created_at, home_path)
-VALUES ('QL', 'project_delivery/QL', now(), '$QL_PATH')
+VALUES ('ql_delivery', 'ql_delivery', now(), '$QL_PATH')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO seats (id, name, default_runtime, capability_tags, status,
@@ -49,10 +49,10 @@ VALUES ('$QL_SEAT', '$QL_SEAT_NAME', 'Pi', '{ql,delivery,huawei-storage}', 'acti
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO project_role_bindings (seat_id, project_id, role)
-VALUES ('$QL_SEAT', 'QL', 'worker')
+VALUES ('$QL_SEAT', 'ql_delivery', 'worker')
 ON CONFLICT (seat_id, project_id) DO NOTHING;
 
-SELECT 'projects' AS what, id, name FROM projects WHERE id = 'QL'
+SELECT 'projects' AS what, id, name FROM projects WHERE id = 'ql_delivery'
 UNION ALL
 SELECT 'seats', id, name FROM seats WHERE id = '$QL_SEAT'
 UNION ALL
@@ -60,5 +60,5 @@ SELECT 'binding', seat_id, role FROM project_role_bindings WHERE seat_id = '$QL_
 SQL
 
 echo
-echo "若上面看到 QL 三行(项目/席位/绑定),登记成功。把这段输出贴给 Aegis ——"
+echo "若上面看到 ql_delivery 三行(项目/席位/绑定),登记成功。把这段输出贴给 Aegis ——"
 echo "他据此在 QL 目录写 MCP 配置、建 tmux 会话,席位才真的能跑起来并被你看见。"
