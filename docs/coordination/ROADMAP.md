@@ -339,6 +339,44 @@ designed; do not invent it.
 
 ---
 
+## 2026-10-16 优先级更正(张先生:「镜像只是过渡态」)
+
+他纠正了我两处,第二处改变排序:
+
+1. **⌘K 打开的是监督面板,是消息对话框,不是镜像。** `SupervisorPanel.tsx` 的注释原话:
+   「可拖拽、可调整大小的 IM 风格浮窗,包含左侧联系人列表和右侧对话区」。
+   镜像(实时席位)是主导航的另一个页签,和 ⌘K 无关。我把两者混过,已改。
+2. **镜像只是过渡态。** 这和 2026-10-08 他自己定的「直奔终态,不做一次性过渡」一致 ——
+   本文件第 166 行 KEEP 镜像为「钻进某个席位原始终端」的详情视图,第 168-169 行
+   DROP 把镜像当主要 IM 的做法,最终 IM 是结构化的。
+
+**我据此承认今天排错了优先级。** 大量精力花在镜像上(实时席位重连已合并、
+滚动历史在等验证),而结构化那几面的坏东西到这一刻才补派:
+监督面板目标/阶段两节永远为空、派单依赖列显示机器码、给席位发自由文本消息会静默丢失。
+
+**以后的排序判据(一句话):一件活是让「结构化界面」更能用,还是让「过渡态」更好看?前者优先。**
+镜像类工作只在服务「钻进原始终端」这个具体用途时才做。
+
+### 5. This round's milestone sits on the right side of today's priority correction
+
+Aegis's correction above (`8d0ad95`, from the operator's own words) sets the ranking rule: **does a
+piece of work make the *structured interface* more usable, or the *transitional state* prettier? The
+former wins**, and mirror-class work is done only when it serves the one concrete use of dropping
+into a seat's raw terminal.
+
+Round 2's milestone is on the structured side, and measurably so:
+
+| The milestone | Where it lives | Which side |
+|---|---|---|
+| Before clicking Accept-and-merge, the card names which dispatch the verdict was about, what it concluded, and when | the acceptance card in the dispatch page — a structured surface reading the ledger | **structured** |
+| The Accept button is not offered when the verdict is not about this work | same | **structured** |
+| Accepting over a red verdict records a reason | the ledger, and the card that writes it | **structured** |
+
+It is also the first of today's four token-not-thing failures that lives *on the surface he decides
+on* rather than in a build script or a gate check, which is why it is the one worth a whole round.
+
+---
+
 ## 2026-10-16 · Lyra heartbeat round 1 (no dispatch) — two cards must not be clicked, and a gate that cannot report
 
 Written under `tasks/lyra/LYRA-HEARTBEAT.md` §3: no dispatch was waiting, so this round did what
@@ -478,3 +516,85 @@ entries in its own tree) instead of trusting a gate alone.
 **The one thing no primitive measures today, and it is the next round's milestone:** *is the
 capability in the tree the dependent builds against?* That is an integration question, it is
 measurable, and nothing measures it.
+
+---
+
+## 2026-10-16 · Lyra heartbeat round 2 — the merge gate promised green and checked existence, and the operator already clicked through it
+
+Written under `tasks/lyra/LYRA-HEARTBEAT.md` §3, round 2, no dispatch waiting. Facts measured by me
+on `track/infra-foundation` and the live ledger; nothing taken on trust from another seat's report.
+Full contract: `tasks/lyra/LYRA-2026-10-16-acceptance-card-verdict-contract-v1.md`. Operator-facing
+version: `docs/coordination/acceptance/2026-10-16-acceptance-card-verdict-zhs.md`.
+
+### 1. Facts
+
+1. **`cmd_accept_delivery` — the code behind the operator's Accept button — is existence-only on
+   track.** Its comment says *"the Flux green verdict must exist NOW"* and its refusal says
+   *"cannot merge without a green verdict"*, while the code calls `event_or_artifact_exists(flux_verdict_ref)`. The product
+   states a guarantee in its own words that its code does not implement.
+2. **It already happened, twice.** `acc-disp-history-sessions-ui` (05:53) and
+   `acc-disp-ol420Y586tNIsbbeh5nlU` (06:45) both cited `ev-verdict-history-sessions` — `verdict =
+   "fail"`, `dispatch_id = "disp-history-sessions-verify"`, a different dispatch from either card.
+   Both granted at 06:54, two seconds apart, merged in `4cfd2302`. A third card cited the same fail
+   verdict and was withdrawn at 07:49 before a decision.
+3. **He was shown a red badge.** `fluxVerdictStyle("fail")` returns the label **Flux-verified-red** with a rose style. He saw red and
+   accepted. **Not a claim that he was misled** — the 10-14 fail verdict's own text says the data
+   migration is correct and lists a fix path completed before he clicked, so his override may well
+   have been informed.
+4. **The card could not have made it informed.** `FluxVerdictDto` carries `ref_id`, `verdict`,
+   `occurred_at` — and **no subject**. The UI cannot show which dispatch the verdict was about,
+   because the information is not in the DTO. So an informed override and a blind click are
+   indistinguishable in the ledger.
+5. **Accept records nothing; reject requires a written reason.** `cmd_accept_delivery` takes only
+   `acceptance_id`. The reject button is disabled without feedback; the accept button is not.
+6. **The fix is written, correct, and not integrated.** On `packet/nimbus/gate-vs-announcement`,
+   `cmd_accept_delivery` calls `flux_verdict_facts(ref, dispatch_id)` and refuses with a message
+   naming the verdict, what it said and why it does not count — with a comment recording the exact
+   measured harm. Track still carries fact 1. Flux is verifying Nimbus's four fixes on a clean
+   branch (`disp-8x5OErFkgktn49IN6tB-c`, priority 99).
+7. **The two merges' work is genuinely verified, but 1h37m after the merge.** Flux's
+   `ev-0idwakl17abEU75LNED24` (08:31, pass) covers Mira's five slices; its re-issue
+   `ev-NFPr-zN36by-i9SE-0FPH` (08:46) names all five by `event_object_refs` rows and states plainly
+   it is not a second verification. The record is coherent only because it was repaired afterwards.
+
+### 2. Findings
+
+- **The gate failed open.** Had the 08:31 verdict come back fail, two merges would be on track with
+  no green verdict and only a revert as remedy. Nothing would have flagged it. "It turned out all
+  right" is not a control.
+- **Fourth instance today of one shape, and the first to reach his finger.** The acceptance card
+  checked a build was *prepared*, not that it is the one *running*. A `-live` gate checked a
+  capability *runs somewhere*, not that it is *integrated*. `prepare-verification-build.sh` step 4
+  grepped a compressed binary. Now the merge guard checks a verdict *exists*, not what it *says* or
+  *about whom*. Three of the four are fixed or fixed-in-branch.
+- **The deeper defect is the card, not the gate.** Even integrated, a red-verdict card is still
+  offered with an enabled merge button and still cannot show its subject. A refusal after the click
+  is a worse experience than a card that never offered the button — Aegis has already said this
+  about a sibling error string.
+
+### 3. Decisions (PO side)
+
+- **Next round's milestone: before clicking Accept-and-merge, you can see whether the verdict this
+  card cites is about this work, and what it said.** The card names the verdict's subject dispatch, its conclusion and its date in words; if
+  the verdict is not about this work the card says so and does not offer the button; a red verdict
+  requires a written reason to accept, a green one does not.
+- **The card carries the verdict's subject — a DTO contract, so mine to write.** `FluxVerdictDto`
+  gains the subject dispatch id, the evidence reference and a one-line finding summary. Without the
+  subject in the DTO no UI can be honest here, so this is the load-bearing half.
+- **Not decided by me:** whether `4cfd2302` stands (Aegis's ruling; my reading is that it does,
+  because fact 7, but the inversion is his to accept or revert), and whether to integrate Nimbus's
+  branch (Aegis's action).
+
+### 4. Also measured this round, so the record is complete
+
+- `disp-session-key-readmodel` is **done** and `disp-session-key-verify` is **done with a fail
+  verdict** (`ev-verdict-session-key`, 09:49). Nimbus **deferred** his `-live` gate because the
+  bridge view (022) is not on live — the gate would have asserted something false. That is the
+  correct call and it is the §11.3 precondition working.
+- My `disp-session-key-ui` stays blocked on that absent gate. Correct, not a stall.
+- Aegis has topped up three items my 10-16 plan missed (`disp-qR65V3mi0m-4yYl4J8mmk`: the empty
+  goals/stages bands, the machine-code dependency column, the knowledge panel's hand-written
+  constant) and re-dispatched the free-text message loss (`disp-I-0ITMoupZLl-QeYkjeZ9`) that my
+  `disp-wiring-honesty-backend` already covers. One in-flight per seat is a database fact, so they
+  serialize rather than collide — flagged to Aegis so he can collapse the overlap deliberately.
+- `disp-sc2-verify` has been in flight since **10-08**, eight days. Still wedged.
