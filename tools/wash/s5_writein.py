@@ -24,10 +24,15 @@ Red lines enforced here, before any write:
   * every L2 range resolves inside raw/ and its sha256 recomputes exactly;
   * every record's idempotency key equals the digest of what is written;
   * no secret shape survives in the text about to enter the table;
+  * every record's SESSION KEY resolves, in BOTH spellings, against
+    archived_sessions (vela_wash/session_key.py) — a dangling source_ref makes
+    the session look like it produced nothing, and the L2 anchors would still
+    pass, so this is a separate gate and not a case of the one above;
   * a record that cannot be anchored is dropped and counted, never stored.
 
 Usage:  python3 tools/wash/s5_writein.py            # validate + emit manifest
         python3 tools/wash/s5_writein.py --check     # validate only, no files
+        python3 tools/wash/s5_writein.py --index PATH --max-index-age-days 14
 """
 
 from __future__ import annotations
@@ -43,12 +48,18 @@ sys.path.insert(0, HERE)
 
 from vela_wash.s3_extract import content_digest  # noqa: E402
 from vela_wash.s5_store import validate_layering  # noqa: E402
-
+from vela_wash.session_key import (  # noqa: E402
+    DEFAULT_INDEX,
+    DEFAULT_MAX_AGE_DAYS,
+    IndexError_,
+    SessionIndex,
+    validate_session_keys,
+)
 AH = os.path.expanduser("~/Documents/GitHub/AgentHistory")
 RECORDS = os.path.join(HERE, ".local", "wash", "s3", "records.jsonl")
 TOPICS = os.path.join(HERE, ".local", "wash", "topics.json")
 OUT_DIR = os.path.join(HERE, ".local", "wash", "s5")
-MANIFEST = os.path.join(OUT_DIR, "writein_manifest.json")
+SESSION_INDEX = DEFAULT_INDEX
 
 # ---------------------------------------------------------------------------
 # Repairs — each one is an evidence-backed re-anchor, verified by re-reading
@@ -117,14 +128,14 @@ def sha256_file_range(path: str, start: int, end: int) -> str:
     return h.hexdigest()
 
 
-def load_records() -> list[dict]:
-    with open(RECORDS, encoding="utf-8") as f:
+def load_records(path: str = RECORDS) -> list[dict]:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(l) for l in f if l.strip()]
 
 
-def load_segments() -> dict:
+def load_segments(path: str = TOPICS) -> dict:
     """(harness, session_id, topic_id) -> segment metadata from S2."""
-    with open(TOPICS, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     out = {}
     for s in data["sessions"]:
@@ -176,10 +187,45 @@ def segment_title(harness: str, sid: str, seg_id: str, seg: dict,
     return f"{ab} {sid[:8]} · {seg_id} — {label}"
 
 
+def _flag(argv: list[str], name: str, default: str) -> str:
+    """`--name VALUE` from argv. Kept deliberately tiny: the driver is a gate,
+    not a CLI framework, and the flags exist so the gate can be pointed at a
+    synthetic write set in tests."""
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 >= len(argv):
+            raise SystemExit(f"{name} needs a value")
+        return argv[i + 1]
+    return default
+
+
 def main() -> int:
-    check_only = "--check" in sys.argv
-    records = load_records()
-    segments = load_segments()
+    argv = list(sys.argv[1:])
+    check_only = "--check" in argv
+
+    records_path = _flag(argv, "--records", RECORDS)
+    topics_path = _flag(argv, "--topics", TOPICS)
+    out_dir = _flag(argv, "--out", OUT_DIR)
+    manifest_path = os.path.join(out_dir, "writein_manifest.json")
+    staged_path = os.path.join(out_dir, "records.writein.jsonl")
+    refusal_path = os.path.join(out_dir, "writein_refusal.json")
+
+    # The session-key gate needs the live archived_sessions key space. Load it
+    # BEFORE any work: a missing or stale index must stop the run, not be
+    # discovered after the write set has been assembled.
+    index_path = _flag(argv, "--index", SESSION_INDEX)
+    max_age = float(_flag(argv, "--max-index-age-days", str(DEFAULT_MAX_AGE_DAYS)))
+    try:
+        index = SessionIndex.load(index_path, max_age_days=max_age)
+        index.assert_fresh()
+    except IndexError_ as e:
+        # Fail closed. There is no "skip the session-key check" flag on purpose:
+        # an escape hatch is how a guard becomes decoration.
+        print(f"REFUSING to run: {e}")
+        return 2
+
+    records = load_records(records_path)
+    segments = load_segments(topics_path)
 
     repairs: list[dict] = []
     dropped: list[dict] = []
@@ -279,6 +325,17 @@ def main() -> int:
     for name, hits in secret_hits.items():
         problems.append(f"redaction: {len(hits)} {name} hit(s) in stored text")
 
+    # ------------------------------------------- session-key gate (A1 + A2)
+    # Exhaustive, never sampled: every record in the write set must carry a
+    # source_ref AND an l2_file_path that both resolve against
+    # archived_sessions and name the SAME row. A dangling session key makes the
+    # session look like it produced nothing, and nothing else in this driver
+    # would notice — the L2 anchors resolve perfectly against a file that has
+    # no row behind it.
+    session_keys = validate_session_keys(kept, index, AH)
+    if not session_keys["ok"]:
+        problems += ["session-key: " + p for p in session_keys["problems"]]
+
     # ------------------------------------------------------- topic tree
     pairs = sorted({(r["harness"], r["session_id"], r["topic_id"]) for r in kept})
     topic_plan: list[dict] = []
@@ -364,6 +421,19 @@ def main() -> int:
         "repairs": repairs,
         "dropped": dropped,
         "secret_hits": secret_hits,
+        "session_key": {
+            "index": {"path": os.path.relpath(index_path, HERE),
+                      "fetched_at": index.fetched_at,
+                      "age_days": round(index.age_days(), 2),
+                      "rows": len(index.rows),
+                      "source": index.source,
+                      "scope": index.scope},
+            "records_checked": session_keys["records"],
+            "resolved_sessions": session_keys["resolved_sessions"],
+            "problems": session_keys["problems"],
+            "verdicts": session_keys["verdicts"],
+            "ok": session_keys["ok"],
+        },
         "validation": {"problems": problems, "ok": not problems,
                        "layering": layering},
     }
@@ -375,6 +445,15 @@ def main() -> int:
     print(f"repairs applied           : {len(repairs)}")
     print(f"topics to open            : {manifest['counts']['topics']}"
           f" (1 root + {len(session_plan)} session + {len(topic_plan)} segment)")
+    ok_records = sum(1 for v in session_keys["verdicts"]
+                     if v.get("a1") == "resolved" and v.get("a2") == "resolved"
+                     and v.get("agree", False))
+    print(f"session keys resolved     : {ok_records}/{session_keys['records']} "
+          f"record(s) across {len(session_keys['resolved_sessions'])} "
+          f"session(s), A1+A2 exhaustive")
+    print(f"session index             : {index_path} "
+          f"(fetched {index.fetched_at}, {index.age_days():.1f}d old, "
+          f"{len(index.rows)} rows)")
     print(f"validation problems       : {len(problems)}")
     for p in problems:
         print("   !", p)
@@ -385,17 +464,36 @@ def main() -> int:
 
     if problems:
         print("\nREFUSING to emit a manifest: the write set is not clean.")
+        # Leave a refusal record behind, and remove any manifest from an earlier
+        # run: a stale manifest sitting next to a refusal is the most dangerous
+        # artifact in this directory, because it still looks like a plan someone
+        # could execute.
+        os.makedirs(out_dir, exist_ok=True)
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=1)
+        removed = []
+        for stale in (manifest_path, staged_path):
+            if os.path.exists(stale):
+                os.remove(stale)
+                removed.append(os.path.basename(stale))
+        if removed:
+            print(f"removed the stale {', '.join(removed)} from an earlier run "
+                  f"so it cannot be mistaken for a current plan")
+        print(f"refusal record -> {refusal_path}")
         return 1
 
     if not check_only:
-        os.makedirs(OUT_DIR, exist_ok=True)
-        with open(MANIFEST, "w", encoding="utf-8") as f:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=1)
-        staged_out = os.path.join(OUT_DIR, "records.writein.jsonl")
+        staged_out = staged_path
         with open(staged_out, "w", encoding="utf-8") as f:
             for r in sorted(kept, key=lambda r: (r["session_id"], r["record_id"])):
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"\nmanifest -> {MANIFEST}")
+        if os.path.exists(refusal_path):
+            os.remove(refusal_path)
+            print("cleared the earlier refusal record")
+        print(f"\nmanifest -> {manifest_path}")
         print(f"staged   -> {staged_out}")
     return 0
 

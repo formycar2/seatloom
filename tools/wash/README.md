@@ -17,6 +17,7 @@ automatic.
 | S3 | LLM extraction of typed records (kind / confidence / L2 range) | `author_*.py` + `vela_wash/s3_extract.py` |
 | S4 | layering validation (L0 one sentence / L1 decision-grade / L2 complete) | `vela_wash/s5_store.py` |
 | S5 | write-in driver: validate the whole write set, emit the insert manifest | `s5_writein.py` |
+| S5-gate | the SESSION KEY: both spellings resolve against `archived_sessions`, exhaustively | `vela_wash/session_key.py` |
 
 ## Run
 
@@ -26,11 +27,87 @@ python3 -m vela_wash.run --out .local/wash        # all 16 sessions, ~20 s
 python3 s5_writein.py                             # validate the write set, emit the manifest
 python3 -m unittest tests.test_l2_pointers tests.test_s0_adapters \
                   tests.test_s1_gate2 tests.test_s2_segment \
-                  tests.test_s5_writein -v          # 37 tests
+                  tests.test_s5_writein tests.test_session_key_guard -v   # 64 tests
 ```
 
 `python3 -m unittest discover -s tests` does NOT work (no `tests/__init__.py`);
 name the modules explicitly as above.
+
+## The session key — two spellings, and why A1 is primary
+
+Every washed memory names its session twice, and `archived_sessions` is keyed
+`PRIMARY KEY (harness, id)` (011), so the two names resolve differently:
+
+| | Field | Shape | Resolves by |
+|---|---|---|---|
+| **A1** (primary) | `source_ref` | `<harness>:<native session id>` | the table's primary key |
+| **A2** | `l2_file_path` | `<AgentHistory>/raw/<harness>/<file>` | the row's `raw_path` |
+
+**A1 is primary** because it names the session's own identity — the native id the
+transcript carries — and migration 021 re-keyed `archived_sessions.id` TO that
+native id for 182 rows, so A1 tracks the table's key by construction. A2 does
+not: it is derived from a filename, and the codex filename is
+`rollout-<timestamp>-<uuid>`, so a path-derived id is only correct if you know to
+strip the timestamp prefix. A2 already broke once, silently: codex references
+resolved against no row at all and nothing complained.
+
+Measured on 2026-10-16 (`data/archived_sessions_index.json`): **5 of the 6
+in-scope codex rows are keyed by the native id, 1 is still keyed by the pre-021
+filename stem** — so even A1 is not universally correct today, which is why the
+gate checks both and requires them to name the SAME row rather than trusting
+either one.
+
+### What the gate does
+
+`s5_writein.py` refuses to emit a manifest unless **every** record in the write
+set passes all of this — no sampling:
+
+1. `source_ref` parses as `<harness>:<native session id>` (harness in 011's
+   closed set);
+2. that `(harness, id)` resolves against `archived_sessions`;
+3. `l2_file_path` resolves against `archived_sessions` by `raw_path` — a raw file
+   on disk is **not** a row in the table (271 files on disk vs 261 rows reachable
+   through the read tools);
+4. the two spellings name the **same** row — two rows for one `raw_path` (a
+   re-key done as INSERT instead of UPDATE) is an ambiguity, not a choice;
+5. `source_kind` is `archived_session`. An unknown kind fails closed: this gate
+   has no resolution rule for it, and a silent skip is how the last one got in.
+
+A dangling session key is invisible to the L2 gates: the anchors recompute
+perfectly against a file that has no row behind it, so the session looks like it
+produced nothing while every other check is green.
+
+### The finding this gate made on its first run
+
+`python3 s5_writein.py` refuses the current write set: **3 records**
+(`86d5694b`, `4f16b53e`, `b7f3f5b3`) cite
+`codex:019dda18-07f6-79e0-8008-e4eb16a5448d`, and no `archived_sessions` row
+carries that key. The row for that raw path exists but is keyed by the pre-021
+stem `rollout-2026-04-30T00-35-01-019dda18-…` and reports *"the historical corpus
+is not loaded in this database — archived_sessions.message_count does not
+exist"*, i.e. migration 021 re-keyed 182 rows and missed this one. Those 3
+records are already live as memories, so the dangling key is already in the
+table — reported to Aegis, not edited in place (015: a correction is
+forget + remember, and rows are never hard-deleted or UPDATEed).
+
+### Refreshing the archived-session index
+
+The gate needs the live key space and this driver is offline and must not touch
+the database (AGENTS.md: no psql). So it reads
+`data/archived_sessions_index.json`, fetched through the seat's sanctioned read
+tools — **PURE READ** `get_history_session_turns(harness, id,
+contexts_dir=…/resume-contexts)`, cross-checked against
+`list_history_sessions('seatloom')`. It records a row under **every** id spelling
+that resolves, because the table does not use one consistently.
+
+To refresh: probe each in-scope session under both spellings (the native id and
+the raw-path stem — `index_probe_plan()` prints the list from the archive
+manifest), keep the spellings that answer with a row rather than *"no archived
+session (harness, id)"*, and write them with `write_index()`. The gate
+**refuses to run** when the index is missing, malformed, or older than
+`--max-index-age-days` (default 14): a guard that silently trusts a stale
+snapshot is the same defect with extra steps. There is deliberately no
+"skip the session-key check" flag.
 
 ## S5 write-in — read this before trusting a staged record
 
@@ -58,13 +135,24 @@ Outputs, in the gitignored scratch dir:
 ```
 .local/wash/s5/writein_manifest.json     the insert plan: topics + memories + repair log
 .local/wash/s5/records.writein.jsonl     the corrected records the manifest was built from
+.local/wash/s5/writein_refusal.json      written instead, when the write set is refused
 ```
+
+On refusal the driver also **deletes any manifest left by an earlier run** — a
+stale plan sitting next to a refusal is the most dangerous artifact in that
+directory, because it still looks executable. `tests/test_s5_writein.py` skips
+while a refusal record is present, and says so instead of claiming nobody ran
+the driver.
 
 `tests/test_s5_writein.py` asserts these gates against the real manifest — **every** L2
 pointer, not a sample — plus the accounting (`inserted + dropped == staged`, every drop
 states why), the topic forest (one root, parents before children, no empty scope), and
 the cycle detector's actual behaviour. Note `deep_cycle_detect` walks the *simple-name*
 space (what 015's 1-cycle CHECK does not cover), not the full-path space.
+
+`tests/test_session_key_guard.py` covers the session key: both spellings, every refusal
+reason, and the driver itself refusing a non-resolving reference end-to-end on a
+synthetic write set (so it needs neither the staged records nor the live table).
 
 Read-only on `~/Documents/GitHub/AgentHistory/raw`. Artifacts land in the
 scratch dir (`.local/wash`, gitignored) — Part 2 (S3/S5) consumes them:
