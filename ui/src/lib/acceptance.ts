@@ -114,6 +114,10 @@ export const ACCEPTANCE_STATUS: Record<string, { label: string; cls: string }> =
   },
   accepted: { label: '已接受', cls: 'bg-emerald-500/15 text-emerald-600 border-emerald-500/30' },
   rejected: { label: '已打回', cls: 'bg-rose-500/15 text-rose-600 border-rose-500/30' },
+  // Voiding is a terminal state, not "not decided yet". Missing this entry is what
+  // made a voided card render under its raw status string — and, via isDecided,
+  // get counted as waiting on the operator.
+  cancelled: { label: '已作废', cls: 'bg-secondary text-text-secondary border-border/40' },
 };
 
 export function acceptanceStatusStyle(status: string): { label: string; cls: string } {
@@ -125,9 +129,25 @@ export function acceptanceStatusStyle(status: string): { label: string; cls: str
   );
 }
 
-/** True once the user has decided — the card shows a result, not actions. */
+/**
+ * True once the card is settled — it shows a result, not actions.
+ *
+ * Four states, not two. `AcceptanceCardDto.status` is
+ * 'pending' | 'accepted' | 'rejected' | 'cancelled' (see types-dto.ts), and
+ * `cancel_acceptance` is terminal: a cancelled card never comes back for a
+ * decision. Counting it as undecided is what made the operator's 待验收 read 7
+ * when 5 were actually waiting on him.
+ *
+ * Cancelled cards are still rendered — in their own 已作废 area, with the reason —
+ * so a voided card stays findable without inflating the number he must act on.
+ */
 export function isDecided(status: string): boolean {
-  return status === 'accepted' || status === 'rejected';
+  return status === 'accepted' || status === 'rejected' || status === 'cancelled';
+}
+
+/** A card that was voided rather than decided. Kept visible, never counted. */
+export function isCancelled(status: string): boolean {
+  return status === 'cancelled';
 }
 
 /** Flux's verdict as a badge. Unknown verdicts stay neutral, never green. */

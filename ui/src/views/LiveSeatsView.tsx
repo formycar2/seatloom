@@ -13,13 +13,26 @@
 //
 // R1/R3: SeatLoom observes, never owns. Detaching a tab stops our mirror and
 // leaves the tmux session running untouched.
+//
+// 2026-10-16, defect fixed: this view is conditionally rendered by App.tsx, so
+// leaving the tab unmounts it. The mirror state used to live in this component's
+// own useState, which meant coming back started from an empty attachment list and
+// re-attached only the first seat — five manual Connects every time, while the
+// backend sessions had been alive the whole time. The durable state now lives in
+// `useLiveSeatsMirrorStore`, so a remount restores what the backend still holds.
+// On mount we ask the backend which session ids are still alive and drop the rest,
+// so a session that exited while the view was away is not shown as connected.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
 import { api, isTauri, onSessionExit, onSessionOutput } from '../lib/api';
-import type { LiveSessionDto } from '../lib/types-dto';
 import { parseSeatSession, seatKey, sortSeats, type ParsedSeat } from '../lib/tmux-seats';
 import { useLiveSessionsStore } from '../stores/useLiveSessionsStore';
+import {
+  EMPTY_ACTIVITY,
+  useLiveSeatsMirrorStore,
+  type Attachment,
+} from '../stores/useLiveSeatsMirrorStore';
 import { SessionTerminal } from '../app-v2/panel/SessionTerminal';
 
 /** How often we re-discover tmux sessions. */
@@ -28,19 +41,6 @@ const POLL_MS = 3000;
 const TICK_MS = 500;
 /** A seat counts as "moving" if bytes arrived within this window. */
 const ACTIVE_WINDOW_MS = 2500;
-
-interface Attachment {
-  seat: ParsedSeat;
-  dto: LiveSessionDto;
-}
-
-interface Activity {
-  bytes: number;
-  chunks: number;
-  lastAt: number | null;
-}
-
-const EMPTY_ACTIVITY: Activity = { bytes: 0, chunks: 0, lastAt: null };
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -60,13 +60,22 @@ function formatAgo(at: number | null, now: number): string {
 
 const LiveSeatsView: React.FC = () => {
   const [seats, setSeats] = useState<ParsedSeat[]>([]);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [activeName, setActiveName] = useState<string | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState(false);
-  const [activity, setActivity] = useState<Record<string, Activity>>({});
   const [now, setNow] = useState(() => Date.now());
+
+  // Durable across unmount: the mirror is a projection of what the backend still
+  // holds, not something this component owns. See the store's header comment.
+  const attachments = useLiveSeatsMirrorStore((s) => s.attachments);
+  const activity = useLiveSeatsMirrorStore((s) => s.activity);
+  const activeName = useLiveSeatsMirrorStore((s) => s.activeName);
+  const setActiveName = useLiveSeatsMirrorStore((s) => s.setActiveName);
+  const addAttachment = useLiveSeatsMirrorStore((s) => s.addAttachment);
+  const removeAttachment = useLiveSeatsMirrorStore((s) => s.removeAttachment);
+  const addBytes = useLiveSeatsMirrorStore((s) => s.addBytes);
+  const pruneDead = useLiveSeatsMirrorStore((s) => s.pruneDead);
+  const markAutoAttached = useLiveSeatsMirrorStore((s) => s.markAutoAttached);
 
   const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
   const clearSession = useLiveSessionsStore((s) => s.clearSession);
@@ -75,7 +84,6 @@ const LiveSeatsView: React.FC = () => {
   // Raw event counters land here first and are flushed on the tick, so a chatty
   // pane cannot trigger a React render per chunk.
   const pendingRef = useRef<Record<string, { bytes: number; chunks: number; lastAt: number }>>({});
-  const autoAttachedRef = useRef(false);
 
   // ── Discovery ──────────────────────────────────────────────────────────────
   // Each poll publishes the discovery outcome to the shared store so the
@@ -133,7 +141,7 @@ const LiveSeatsView: React.FC = () => {
     });
 
     onSessionExit((event) => {
-      setAttachments((prev) => prev.filter((a) => a.dto.id !== event.sessionId));
+      removeAttachment(event.sessionId);
       clearSession(event.sessionId);
     }).then((fn) => {
       offExit = fn;
@@ -143,7 +151,7 @@ const LiveSeatsView: React.FC = () => {
       if (offOut) offOut();
       if (offExit) offExit();
     };
-  }, [clearSession]);
+  }, [clearSession, removeAttachment]);
 
   // Single tick drives both the counter flush and the relative clocks.
   useEffect(() => {
@@ -152,24 +160,15 @@ const LiveSeatsView: React.FC = () => {
       const ids = Object.keys(pending);
       if (ids.length > 0) {
         pendingRef.current = {};
-        setActivity((prev) => {
-          const next = { ...prev };
-          for (const id2 of ids) {
-            const p = pending[id2];
-            const cur = next[id2] ?? EMPTY_ACTIVITY;
-            next[id2] = {
-              bytes: cur.bytes + p.bytes,
-              chunks: cur.chunks + p.chunks,
-              lastAt: p.lastAt,
-            };
-          }
-          return next;
-        });
+        for (const id2 of ids) {
+          const p = pending[id2];
+          addBytes(id2, p.bytes, p.chunks, p.lastAt);
+        }
       }
       setNow(Date.now());
     }, TICK_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [addBytes]);
 
   // ── Attach / detach ────────────────────────────────────────────────────────
   const attach = useCallback(
@@ -185,10 +184,7 @@ const LiveSeatsView: React.FC = () => {
           tmuxSessionName: seat.sessionName,
           seatId: seat.seatName.toLowerCase(),
         });
-        setAttachments((prev) => [
-          ...prev.filter((a) => a.seat.sessionName !== seat.sessionName),
-          { seat, dto },
-        ]);
+        addAttachment({ seat, dto });
         setActiveName(seat.sessionName);
         // Let the Supervisor IM route messages to this seat's real pane.
         setSessionForSeat(seatKey(seat.seatName), dto.id);
@@ -198,32 +194,74 @@ const LiveSeatsView: React.FC = () => {
         setBusy((b) => ({ ...b, [seat.sessionName]: false }));
       }
     },
-    [setSessionForSeat],
+    [addAttachment, setActiveName, setSessionForSeat],
   );
 
   const detach = useCallback(
     (sessionName: string) => {
-      setAttachments((prev) => {
-        const target = prev.find((a) => a.seat.sessionName === sessionName);
-        if (target) clearSession(target.dto.id);
-        const next = prev.filter((a) => a.seat.sessionName !== sessionName);
-        setActiveName((cur) =>
-          cur === sessionName ? (next.length ? next[next.length - 1].seat.sessionName : null) : cur,
-        );
-        return next;
-      });
+      const target = useLiveSeatsMirrorStore
+        .getState()
+        .attachments.find((a) => a.seat.sessionName === sessionName);
+      if (target) {
+        clearSession(target.dto.id);
+        removeAttachment(target.dto.id);
+      }
     },
-    [clearSession],
+    [clearSession, removeAttachment],
   );
 
   // Attach the first discovered seat once, so the view is already moving when
   // it opens instead of asking for a click to prove itself.
+  //
+  // Unchanged design, one correction: the "once" flag used to be a useRef, so it
+  // reset on every remount and seat 0 was attached AGAIN on top of a mirror that
+  // was still live. The backend inserts unconditionally, so that second attach
+  // started a second `pipe-pane` on the same pane. The flag is durable now, and a
+  // remount that finds surviving attachments skips the auto-attach entirely —
+  // there is nothing left to prove.
   useEffect(() => {
-    if (autoAttachedRef.current) return;
     if (!isTauri() || seats.length === 0) return;
-    autoAttachedRef.current = true;
-    void attach(seats[0]);
-  }, [seats, attach]);
+    const state = useLiveSeatsMirrorStore.getState();
+    if (state.autoAttached) return;
+    markAutoAttached();
+    if (state.attachments.length === 0) void attach(seats[0]);
+  }, [seats, attachments.length, attach, markAutoAttached]);
+
+  // Reconcile with the backend on mount: drop attachments whose session is no
+  // longer alive, so a seat that exited while this view was away is not shown as
+  // connected. The `session:exit` listener only runs while the view is mounted,
+  // so this is the one moment we can catch up.
+  //
+  // A failure to list is deliberately NOT a reason to drop what we hold: losing
+  // live mirrors on a transient error would be a worse defect than the one being
+  // fixed here.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    api
+      .listLiveSessions()
+      .then((ids) => {
+        if (cancelled) return;
+        pruneDead(new Set(ids));
+      })
+      .catch(() => {
+        /* keep what we have; the next mount retries */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pruneDead]);
+
+  // Re-assert seat -> session routing for whatever survived, so the Supervisor IM
+  // keeps piping chat into the right pane after the view comes back. The mapping
+  // already lives in `useLiveSessionsStore` and survives unmount; re-asserting is
+  // idempotent and repairs a partial write.
+  useEffect(() => {
+    if (!isTauri()) return;
+    for (const a of useLiveSeatsMirrorStore.getState().attachments) {
+      setSessionForSeat(seatKey(a.seat.seatName), a.dto.id);
+    }
+  }, [setSessionForSeat]);
 
   const attachedByName = useMemo(() => {
     const m = new Map<string, Attachment>();
