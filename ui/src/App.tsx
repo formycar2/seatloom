@@ -88,8 +88,12 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // UM0: open on the live mirror, the one surface that proves itself.
-  const [activeTab, setActiveTab] = useState<Tab>('live-seats');
+  // 张先生 2026-10-16 定下第一屏是什么:「全队在干什么、什么卡着,什么需要我决策」。
+  // 派单页是产品里唯一一张按真实表读出来的界面(177 条派单、实时状态、真实依赖边,每 5 秒轮询),
+  // 而且它已经直接回答那个问题:按席位分组、每组一条状态带、每个席位一个固定颜色。
+  // 实时席位那一页保留在 NavRail 里,作为「钻进某个席位原始终端」的细节视图 —— 他说过镜像是
+  // 过渡态,不是说要删掉。契约:LYRA-2026-10-16-first-screen-contract-v1 §6.2 slice 1。
+  const [activeTab, setActiveTab] = useState<Tab>('dispatches');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
