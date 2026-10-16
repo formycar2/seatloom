@@ -115,6 +115,10 @@ pub fn tools_list_result() -> Value {
             get_knowledge_tree_tool(),
             get_topic_memories_tool(),
             crate::intent::plan_intent_tool(),
+            // --- Historical session corpus (LYRA contract slice 2) ---
+            crate::history::list_history_projects_tool(),
+            crate::history::list_history_sessions_tool(),
+            crate::history::get_history_session_turns_tool(),
         ]
     })
 }
@@ -761,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_nineteen_tools() {
+    fn tools_list_advertises_the_twenty_two_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -787,6 +791,9 @@ mod tests {
                 "get_knowledge_tree",
                 "get_topic_memories",
                 "plan_intent",
+                "list_history_projects",
+                "list_history_sessions",
+                "get_history_session_turns",
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).

@@ -10,6 +10,7 @@
 mod dispatch;
 mod emit;
 mod gate;
+mod history;
 mod intent;
 mod knowledge;
 mod memory;
@@ -48,7 +49,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -172,10 +173,31 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
             Ok(a) => render_intent(id, intent::plan_intent(db, pool, a).await),
             Err(resp) => resp,
         },
+        // --- Historical session corpus (LYRA contract slice 2): reads, never bodies ---
+        "list_history_projects" => {
+            match read_args::<history::ListHistoryProjectsArgs>(&id, arguments) {
+                Ok(a) => render_history(id, history::list_history_projects(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "list_history_sessions" => {
+            match read_args::<history::ListHistorySessionsArgs>(&id, arguments) {
+                Ok(a) => render_history(id, history::list_history_sessions(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "get_history_session_turns" => {
+            match read_args::<history::GetHistorySessionTurnsArgs>(&id, arguments) {
+                Ok(a) => {
+                    render_history(id, history::get_history_session_turns(db, pool, a).await)
+                }
+                Err(resp) => resp,
+            }
+        }
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns)"),
                 true,
             ),
         ),
@@ -343,6 +365,14 @@ fn intent_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> 
             id.clone(),
             tool_call_result(&format!("plan_intent rejected: bad arguments: {e}"), true),
         )),
+    }
+}
+
+/// Render a history read's outcome: the typed rejection verbatim on failure.
+fn render_history(id: Value, outcome: Result<String, history::HistoryRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
     }
 }
 

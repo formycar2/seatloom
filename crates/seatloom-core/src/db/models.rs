@@ -446,6 +446,43 @@ pub struct DispatchRow {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// One archived session, as the history read path returns it.
+///
+/// Mirrors `archived_sessions` (011) plus the three corpus columns `021` adds.
+/// The three corpus columns are `Option` because a database without `021` has
+/// them absent, and absent must read as "not loaded" rather than as zero.
+#[derive(Debug, Clone)]
+pub struct ArchivedSessionRow {
+    pub id: String,
+    pub harness: String,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub session_date: Option<String>,
+    pub bytes: Option<i64>,
+    /// INTEGER (INT4), so `i32` — tokio-postgres does not coerce INT4 into i64.
+    pub lines: Option<i32>,
+    pub sha256: Option<String>,
+    pub raw_path: String,
+    pub src_path: Option<String>,
+    /// `021`. INTEGER (INT4) → `i32`. `None` when the column does not exist.
+    pub message_count: Option<i32>,
+    /// `021`.
+    pub first_ts: Option<String>,
+    /// `021`.
+    pub last_ts: Option<String>,
+}
+
+/// One project row joined to its session and message totals.
+#[derive(Debug, Clone)]
+pub struct HistoryProjectRow {
+    pub id: String,
+    pub name: String,
+    pub home_path: Option<String>,
+    pub session_count: i64,
+    /// `None` when `archived_sessions.message_count` does not exist.
+    pub message_count: Option<i64>,
+}
+
 /// One dependency edge of a dispatch (readiness is an existence query over the
 /// referent; no FK, per 012).
 #[derive(Debug, Clone)]

@@ -9,14 +9,14 @@ use tokio_postgres::Row;
 
 use crate::db::event_domain::{EventType, RefRole, RefType};
 use crate::db::models::{
-    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArchivedSessionRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, KnowledgeL2Pointer, KnowledgeMemoryCard,
-    KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow, ObjectRefRow,
-    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
-    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
-    SeatRow, SessionRow, TopicRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, HistoryProjectRow, KnowledgeL2Pointer,
+    KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
+    ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
+    PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
+    SeatDelegationRow, SeatRow, SessionRow, TopicRow, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -781,6 +781,146 @@ impl SeatloomDb {
             dispatch_titles,
             named_referent_exists: BTreeMap::new(),
         })
+    }
+
+    // =========================================================================
+    // Historical session corpus (011 + 021) — the read path.
+    //
+    // ONE implementation, exposed twice over the same code: the `list_history_*`
+    // / `get_history_session_turns` MCP tools and their Tauri thin wrappers both
+    // come through here (the turns half adds `crate::history::read`, which is
+    // the file half). There is no second reader.
+    //
+    // Every query is written so that a database WITHOUT 021 answers honestly
+    // instead of lying: the corpus columns are probed with
+    // `to_regclass`/`information_schema` and a missing one is reported as
+    // `CorpusNotLoaded`, never read as zero.
+    // =========================================================================
+
+    /// Does `archived_sessions.message_count` exist? `021` adds it.
+    pub async fn corpus_columns_present(&self) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                  WHERE table_name = 'archived_sessions' AND column_name = 'message_count')",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// (a) Every project that has at least one corpus session, with its
+    /// session count and its total message count.
+    ///
+    /// A project with sessions but no corpus migration reads `message_count =
+    /// None` — the count is unknown, which is not the same as zero.
+    ///
+    /// THE INVENTORY FILTER (021's own header states the rule; Flux's verdict
+    /// `FLUX-2026-10-14-history-sessions-verdict-v1` §5 measured the cost of
+    /// omitting it): the live table also holds the 2026-10-08 manifest load —
+    /// 271 rows, 89 of them with no extracted conversation and therefore no
+    /// `message_count` — and 78 of those 89 carry a project slug that matches
+    /// one of the 38 project ids. Joining them in made `sum(sessionCount)` 261
+    /// against a corpus of 183 and reported 58 sessions under `sf-code/storage`
+    /// for a truth of 2. So the join filters on `message_count IS NOT NULL`
+    /// and a project with only inventory rows reports no sessions at all.
+    pub async fn list_history_projects(&self) -> Result<Vec<HistoryProjectRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let message_expr = if corpus {
+            "sum(a.message_count)::bigint"
+        } else {
+            "NULL::bigint"
+        };
+        let join = if corpus {
+            // The corpus rows, never the 89 inventory-only ones.
+            "LEFT JOIN archived_sessions a ON a.project = p.id AND a.message_count IS NOT NULL"
+        } else {
+            "LEFT JOIN archived_sessions a ON a.project = p.id"
+        };
+        let sql = format!(
+            "SELECT p.id, p.name, p.home_path, count(a.id)::bigint AS sessions, {message_expr} \
+               FROM projects p \
+               {join} \
+              GROUP BY p.id, p.name, p.home_path \
+             HAVING count(a.id) > 0 \
+              ORDER BY count(a.id) DESC, p.id ASC"
+        );
+        let rows = client.query(&sql, &[]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| HistoryProjectRow {
+                id: r.get(0),
+                name: r.get(1),
+                home_path: r.get(2),
+                session_count: r.get(3),
+                message_count: r.get(4),
+            })
+            .collect())
+    }
+
+    /// (b) One project's CORPUS sessions, dated first (newest first) and the
+    /// undated ones last and flagged — never silently interleaved, because
+    /// sorting 14 undated cursor sessions as if they were the oldest would be
+    /// a lie.
+    ///
+    /// The inventory-only rows are excluded for the same reason the projects
+    /// read filters them (see `list_history_projects`): they are manifest
+    /// entries, not sessions, and 78 of the 89 carry a slug matching one of the
+    /// 38 project ids. Flux measured the consequence on `seatloom`: 16 rows
+    /// where the corpus defines 14, one of them a gemini marker row with
+    /// `firstTs: null` that the tool nevertheless flagged `dated: true`.
+    pub async fn list_history_sessions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let corpus_filter = if corpus {
+            "AND a.message_count IS NOT NULL"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.project = $1 {corpus_filter} \
+              ORDER BY (a.first_ts IS NULL) ASC, \
+                       a.first_ts DESC NULLS LAST, \
+                       a.id ASC"
+        );
+        let rows = client.query(&sql, &[&project_id]).await?;
+        Ok(rows.iter().map(row_to_archived_session).collect())
+    }
+
+    /// The single row one session's turns are read for.
+    pub async fn get_archived_session(
+        &self,
+        harness: &str,
+        id: &str,
+    ) -> Result<Option<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.harness = $1 AND a.id = $2"
+        );
+        let row = client.query_opt(&sql, &[&harness, &id]).await?;
+        Ok(row.as_ref().map(row_to_archived_session))
     }
 
     // =========================================================================
@@ -2724,6 +2864,24 @@ fn row_to_seat_routing(r: &Row) -> SeatRoutingRow {
         name: r.get(1),
         capability_tags: r.get(2),
         status: r.get(3),
+    }
+}
+
+fn row_to_archived_session(r: &Row) -> ArchivedSessionRow {
+    ArchivedSessionRow {
+        id: r.get(0),
+        harness: r.get(1),
+        project: r.get(2),
+        cwd: r.get(3),
+        session_date: r.get(4),
+        bytes: r.get(5),
+        lines: r.get(6),
+        sha256: r.get(7),
+        raw_path: r.get(8),
+        src_path: r.get(9),
+        message_count: r.get(10),
+        first_ts: r.get(11),
+        last_ts: r.get(12),
     }
 }
 
