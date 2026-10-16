@@ -80,9 +80,7 @@ pub async fn cmd_accept_delivery(
         )
         .await
         .map_err(|e| e.to_string())?;
-    if let Err(msg) = verdict_gate_message(&facts, &row.acceptance.flux_verdict_ref) {
-        return Err(msg);
-    }
+    verdict_gate_message(&facts, &row.acceptance.flux_verdict_ref)?;
 
     let merge_commit = merge_branch_into_base(
         &state.repo_root,
