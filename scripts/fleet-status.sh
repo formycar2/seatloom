@@ -156,19 +156,36 @@ fi
 #   2. 改成匹配三条绝对路径 —— 应用是用 ./target/release/... 相对路径起的,
 #      命令行里没有 seatloom/ 前缀,三条全不中,还是报「没开」;
 #      而且 pgrep -f 的模式是正则,'SeatLoom.app' 里的 . 会匹配任意字符,还误报过一次。
-# 所以:先用名字抓到 pid,再从这条进程真实的命令行判断它是哪个构建。
-sl_pid="$(pgrep -f 'seatloom-tauri' 2>/dev/null | head -1)"
-if [ -z "$sl_pid" ]; then
+# 所以:先用名字抓到候选,再按**可执行名**过滤掉包装进程,最后从真实命令行判断是哪个构建。
+# 🔴 2026-10-16 修:原来这里是 `pgrep -f 'seatloom-tauri' | head -1`,那是错的。
+#    `pgrep -f` 匹配**完整命令行**,所以任何命令行里含 "seatloom-tauri" 的进程都会中 ——
+#    Aegis 自己的 bash 命令、cargo 构建、tmux 的 sh -c 全都中过。`head -1` 再随便挑一个,
+#    于是把一个已经退出的构建进程报成「SeatLoom 窗口 开着」,而应用其实没开。
+#    症状:一个永远不会报错的检查 —— 比没有检查更有害。
+#    判据改成 `ps -o comm=`:真正的应用进程可执行名就是 seatloom-tauri,
+#    包装进程(bash/sh/cargo/node)的可执行名不是,天然分开。
+app_pid=""; app_which=""
+for _p in $(pgrep -f 'seatloom-tauri' 2>/dev/null); do
+  _comm="$(ps -o comm= -p "$_p" 2>/dev/null | tr -d ' ')"
+  # macOS 的 comm 给的是**完整路径**(/Applications/SeatLoom.app/Contents/MacOS/seatloom-tauri),
+  # 不是 basename —— 第一次写成等于 seatloom-tauri,结果真应用进程反而不中,
+  # 而包装进程(/bin/bash)照样被排除,症状是应用明明在跑却报「没开」。
+  case "$_comm" in
+    seatloom-tauri|*/seatloom-tauri) ;;
+    *) continue;;
+  esac
+  _cmd="$(ps -o command= -p "$_p" 2>/dev/null)"
+  case "$_cmd" in
+    */Applications/SeatLoom.app/*) app_pid="$_p"; app_which="装好的那份(/Applications)"; break;;
+    *target/release/*)           [ -z "$app_pid" ] && { app_pid="$_p"; app_which="release = 集成构建"; };;
+    *target/debug/*)             [ -z "$app_pid" ] && { app_pid="$_p"; app_which="debug = 可能没有面板"; };;
+    *)                           [ -z "$app_pid" ] && { app_pid="$_p"; app_which="来路不明(相对路径起的)"; };;
+  esac
+done
+if [ -z "$app_pid" ]; then
   printf "  SeatLoom 窗口        %s\n" "没开"
 else
-  sl_cmd="$(ps -o command= -p "$sl_pid" 2>/dev/null)"
-  case "$sl_cmd" in
-    */Applications/SeatLoom.app/*) sl_which="装好的那份(/Applications)";;
-    *release*)                    sl_which="release = 集成构建";;
-    *debug*)                      sl_which="debug = 可能没有面板";;
-    *)                            sl_which="来路不明";;
-  esac
-  printf "  SeatLoom 窗口        开着(%s, pid %s)\n" "$sl_which" "$sl_pid"
+  printf "  SeatLoom 窗口        开着(%s, pid %s)\n" "$app_which" "$app_pid"
   # 装好的那份会比刚构建的二进制旧 —— 那意味着张先生从启动台点开的可能是没有面板的版本。
   # 这是「部分换动」在应用层的同一形状:进程在跑,不等于跑的是最新的。
   APP_BIN="/Applications/SeatLoom.app/Contents/MacOS/seatloom-tauri"
