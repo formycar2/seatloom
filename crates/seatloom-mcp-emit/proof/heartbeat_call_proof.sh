@@ -42,8 +42,28 @@ command -v tmux >/dev/null || { echo "tmux is not installed — nothing to measu
 # written while the change was the tip, and the first time it ran after the commit
 # it compared the new source against itself and passed vacuously — a proof whose
 # baseline moves with the tip is a proof that can silently stop measuring anything.
-# Override with SEATLOOM_WAKER_BEFORE_REF if the pin is ever rebased away.
-BEFORE_REF="${SEATLOOM_WAKER_BEFORE_REF:-47079e1^}"
+#
+# The pin is RESOLVED FROM CONTENT, not a SHA. A SHA is a fact about ONE branch:
+# the first version of this pin was `47079e1^`, and on
+# `packet/nimbus/verified-fixes-20261016` — the branch the four fixes are
+# integrated on — that commit is not in the history, so the proof refused to run
+# at all. A baseline that only resolves on the branch it was written on is a
+# baseline that stops measuring the moment the work is integrated elsewhere.
+#
+# So: find the commit that INTRODUCED the heartbeat arm, and use its parent. That
+# resolves on any branch carrying the change. Override with
+# SEATLOOM_WAKER_BEFORE_REF to pin a specific commit.
+if [ -n "${SEATLOOM_WAKER_BEFORE_REF:-}" ]; then
+  BEFORE_REF="$SEATLOOM_WAKER_BEFORE_REF"
+else
+  INTRO="$(git -C "$ROOT" log --format=%H -S 'NudgeKind::Heartbeat' \
+    -- crates/seatloom-mcp-emit/src/bin/waker.rs 2>/dev/null | tail -1)"
+  [ -n "$INTRO" ] || {
+    echo "FAIL: no commit introduced NudgeKind::Heartbeat — the baseline cannot be resolved"
+    exit 1
+  }
+  BEFORE_REF="${INTRO}^"
+fi
 git -C "$ROOT" cat-file -e "${BEFORE_REF}^{commit}" 2>/dev/null \
   || { echo "FAIL: the before-ref $BEFORE_REF is not a commit in this repository"; exit 1; }
 git -C "$ROOT" merge-base --is-ancestor "$BEFORE_REF" HEAD \
