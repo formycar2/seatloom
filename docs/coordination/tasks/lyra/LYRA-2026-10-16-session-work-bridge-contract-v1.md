@@ -308,12 +308,25 @@ requires her to measure the tree at pull time.
 
 ### 11.1 The event contract — exact ids and required payloads
 
+> **Corrected 2026-10-16 07:5x, before the read-model slice reached its gate.** The first version of
+> this table spelled `ev-session-key-readmodel-live` as `ArtifactCreated`. That is refused: an event
+> id ending in `-live` is a gate id, and the enforced criterion (`crates/seatloom-mcp-emit/src/gate.rs`,
+> `GATE_ID_SUFFIX = "-live"`, `GATE_EVENT_TYPE = "SupervisorMessage"`) requires a `SupervisorMessage`
+> carrying `gate` / `statement` / `verified` / `does_not_assert`. Nimbus hit exactly this refusal on
+> `ev-lineage-readmodel-live` in the previous round's plan, which spelled it the same wrong way, and
+> deviated correctly. The same mistake is fixed here rather than repeated.
+>
+> The distinction the rule encodes, and the reason it matters more than the spelling: an
+> `ArtifactCreated` is a **delivery announcement** — it says the code is somewhere. A `-live` gate is
+> a **measurement** — it says the capability was called and answered. They are not interchangeable,
+> and §11.3 records the third thing neither of them proves.
+
 | Event id | Emitter | Type | Required payload |
 |---|---|---|---|
 | `ev-session-work-bridge-contract-landed` | Lyra | `ArtifactCreated` | `contract`: this file's path + commit. Announcement; no `verified` field. |
 | `ev-session-key-view-landed` | Onyx | `ArtifactCreated` | `branch`, `commit`, `files`, and the exact view definition. Announcement; no `verified` field. |
 | `ev-session-key-readmodel-landed` | Nimbus | `ArtifactCreated` | `branch`, `commit`, `files`, the exact shape of both read functions, and **the measured drift number**. Announcement; no `verified` field. |
-| `ev-session-key-readmodel-live` | Nimbus | `ArtifactCreated` | **`verified`** (mandatory): which call, exactly what it returned, on which database, when. A gate; only after a real call succeeded against the live database. |
+| `ev-session-key-readmodel-live` | Nimbus | **`SupervisorMessage`** (a gate — not `ArtifactCreated`) | **`gate`** equal to the event's own id; **`statement`**: the sentence this gate asserts; **`verified`** (mandatory): which call was made, exactly what it returned, on which database, when; **`does_not_assert`**: what this gate deliberately does not claim. Only after a real call succeeded against the live database. |
 | `ev-verdict-session-key` | Flux | `ReviewVerdictIssued` | Pre-declared at enqueue time; Flux must emit exactly this id. |
 
 ### 11.2 Done definition, per slice
@@ -386,3 +399,53 @@ requires her to measure the tree at pull time.
 - The verdict must be emitted with exactly the pre-declared id `ev-verdict-session-key`.
 
 ---
+
+### 11.3 What neither an announcement nor a `-live` gate proves — and why slice 4 needs a third thing
+
+**Measured on 2026-10-16, in the previous round's chain, and it cost a slice.** `disp-lineage-ui`
+(Mira, slice 4 of the next-round plan) was edged on `ev-lineage-readmodel-live`. That gate was real
+and correctly measured: Nimbus called `lineage` over stdio against the **live** database, from
+`packet/nimbus/gate-vs-announcement` @ `36194e8`, answering eight referents including the designed
+refusal case. Nothing was wrong with the gate.
+
+The slice still could not be built, and Mira measured why rather than guessing:
+
+- the binary the fleet runs serves **22 tools and no `lineage`** (re-measured independently);
+- `src-tauri/src/` contains no `cmd_lineage` anywhere in the repository;
+- `ui/src/lib/api.ts` and `ui/src/lib/types-dto.ts` carry no lineage entry or DTO — and both are
+  Nimbus's file fence, so she could not add them;
+- all four of the above re-measured on `track/infra-foundation`, which does not have the lineage
+  code either. It is entirely on Nimbus's unmerged branch.
+
+She refused the `KnowledgeSection` "local invoke seam" precedent, and was right to: that
+precedent's precondition is that the command **is** registered on track
+(`cmd_get_knowledge_tree` / `cmd_get_topic_memories` are), with only the `api.ts` wrapper missing.
+Here `cmd_lineage` is not registered at all, so a local seam would call a command that does not
+exist — precisely the "an entry that does nothing" the dispatch forbade. She completed as `failed`
+under 013's rule with the reason stated, which is the correct behaviour and reopens the slice for
+any seat once the integration happens.
+
+**So the three things are genuinely different, and only the first two have names:**
+
+| Claim | What proves it | What it does **not** prove |
+|---|---|---|
+| The code exists somewhere | an `-landed` announcement (`ArtifactCreated`) | that it runs, or that it is in anyone's tree |
+| The capability runs | a `-live` gate (`SupervisorMessage`, measured) | that it is in the tree the dependent slice builds against |
+| The capability is in the tree the dependent builds against | **nothing measures this today** | — |
+
+**Consequence for this contract.** Slice 4 (`disp-session-key-ui`) calls the capability, so an
+announcement is not enough for it — that part was right. But edging it on `ev-session-key-readmodel-live`
+alone repeats the previous round's mistake, because a measured gate still says nothing about
+integration. Slice 4 therefore carries a **tree measurement as a precondition in its payload**: at
+pull time the seat greps its own tree for the capability (the MCP tool name, the `cmd_*`
+registration, and the `api.ts` / `types-dto.ts` entries) and reports the result. If the capability
+is not in the tree, the seat reports and does not build an entry that calls nothing — the same
+discipline Mira applied. Integration itself is Aegis's action, not a slice's.
+
+**The general shape, stated once.** This is the third instance today of a verification primitive
+that checks for a token rather than the thing the token stands for: the acceptance card checked
+that a build was *prepared* rather than that it is the one *running*; the gate event checks that a
+capability *runs somewhere* rather than that it is *integrated*; and `prepare-verification-build.sh`
+step 4 greps a compressed binary, which can never match a frontend change. A measurement that
+cannot fail is not a measurement, and a measurement of the wrong thing is worse than none, because
+it is believed.
