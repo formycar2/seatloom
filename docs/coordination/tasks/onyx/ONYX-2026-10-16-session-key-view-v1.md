@@ -154,6 +154,22 @@ so there is nothing to drift.
 Run for real against the schema directory: **20 migrations classified, 0 unclassified**. The
 guard would have refused to build any database had 022 been left off the list.
 
+### 4.7 One defect caught by the scratch apply, and fixed before landing
+
+The first draft of the A1 strip was `substring(m.l2_file_path from '/Documents/GitHub/AgentHistory/')`
+— with **no capture group**. In PostgreSQL that returns the *matched text*, not the remainder, so
+every row normalized to the literal string `/Documents/GitHub/AgentHistory/` and A1 matched
+**zero** rows. The view still returned 90 rows and still answered "3" — because A2 was doing all
+the work, and the broken half of the join was invisible in the number.
+
+It was caught by the scratch apply (§4.1), where `a1_resolves` came back `0` against a live
+measurement of `90`. The fix is `(.*)$` inside the pattern (022:248). The view was **dropped and
+recreated** — which is the documented path for a definition change, never a silent rewrite.
+
+This is recorded because it is the exact failure class this whole slice exists to prevent: a join
+that reports a plausible number while one of its two keys silently resolves nothing. A future
+reader of the drift number should know it was nearly wrong in precisely that way.
+
 ## 5. What I did not do
 
 - **Did not touch the live database.** No migration applied, no row written, no gate event.
