@@ -18,6 +18,12 @@ import { ChatContact, ChatMessage } from '../types';
 import { useDataStore } from '../../stores/useDataStore';
 import { api, isTauri, onCanonicalAppended } from '../../lib/api';
 import type { CanonicalEventDto } from '../../lib/types-dto';
+import {
+  eventToText,
+  type DispatchFact,
+  type EventTextContext,
+  type MemoryFact,
+} from '../lib/eventText';
 import { Seat } from '../../types';
 
 const ROLE_TONES: Record<string, string> = {
@@ -46,7 +52,8 @@ const ROLE_LABEL: Record<string, string> = {
 
 function roleKey(seat: Seat): string {
   if (typeof seat.role === 'string') return seat.role;
-  if ((seat.role as any).Custom) return (seat.role as any).Custom;
+  const custom = (seat.role as { Custom?: unknown }).Custom;
+  if (typeof custom === 'string' && custom) return custom;
   return 'Developer';
 }
 
@@ -68,7 +75,12 @@ function seatToContact(seat: Seat, projectId: string): ChatContact {
   };
 }
 
-const PROJECT_CHANNEL_TONES = ['var(--sl-teal)', 'var(--sl-blue)', 'var(--sl-purple)', 'var(--sl-amber)'];
+const PROJECT_CHANNEL_TONES = [
+  'var(--sl-teal)',
+  'var(--sl-blue)',
+  'var(--sl-purple)',
+  'var(--sl-amber)',
+];
 
 export function useContacts(): ChatContact[] {
   const projects = useDataStore((s) => s.projects);
@@ -121,118 +133,140 @@ function formatTime(iso: string): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function eventToMessage(evt: CanonicalEventDto, contactId: string): ChatMessage {
-  const payload = (evt.payload ?? {}) as Record<string, any>;
-  const fromUser = (evt.actorRef ?? '').toLowerCase().startsWith('human');
+/**
+ * Resolve the ids a ledger line carries into things a person recognises.
+ *
+ * The events themselves carry ids and titles only where the writer put them: a
+ * `SeatDispatchIssued` row says `dispatch_id` and nothing else, so "which work,
+ * to whom" is only answerable by reading the dispatch table. That read happens
+ * here, once per mount, and is handed to the translator as an
+ * [`EventTextContext`].
+ *
+ * Two passes, because the memory titles are only worth fetching for the topics
+ * the loaded events actually mention — fetching every topic's memories on every
+ * panel open would be tens of calls for a handful of rows.
+ *
+ * Every failure degrades to "没取到" inside the line. Nothing here may invent a
+ * title, a seat name or a status.
+ */
+function useEventTextContext(events: CanonicalEventDto[]): EventTextContext {
+  const projectData = useDataStore((s) => s.projectData);
+  const [ctx, setCtx] = useState<EventTextContext>({});
 
-  // All ledger-derived bubbles render as plain text — the V2 MessageBubble
-  // expects a populated `card` object for any non-text type, and we don't
-  // have one for synthesized activity-feed lines. The emoji prefix carries
-  // the category visually (📤 / ✅ / 📋 / etc.) without needing card chrome.
-  let content: string;
-  if (typeof payload.content === 'string') {
-    content = payload.content;
-  } else {
-    const etype = evt.eventType;
-    switch (etype) {
-      case 'SessionStarted':
-        content = `🟢 Session started — ${payload.session_id ?? ''}`;
-        break;
-      case 'SessionCompleted':
-        content = `⚪ Session completed — ${payload.session_id ?? ''}`;
-        break;
-      case 'SessionFailed':
-      case 'SessionInterrupted':
-        content = `🔴 ${etype} — ${payload.session_id ?? ''}`;
-        break;
-      case 'ArtifactCreated':
-        content = `📄 Artifact created — ${payload.artifact_id ?? payload.title ?? ''}`;
-        break;
-      case 'HandoffDrafted':
-      case 'HandoffSent':
-      case 'HandoffReceived':
-      case 'HandoffAccepted':
-      case 'HandoffWorking':
-      case 'HandoffReturned':
-      case 'HandoffCompleted':
-        content = `📤 ${etype} — ${payload.handoff_id ?? ''}`;
-        break;
-      case 'WorkItemCreated':
-        content = `📋 WorkItem created — ${payload.title ?? payload.workitem_id ?? ''}`;
-        break;
-      case 'WorkItemStatusChanged':
-        content = `📋 WorkItem status → ${payload.new_status ?? ''} (${payload.workitem_id ?? ''})`;
-        break;
-      case 'ReviewVerdictIssued':
-        content = `✅ Review verdict: ${payload.verdict ?? ''} — ${payload.workitem_id ?? ''}`;
-        break;
-      case 'SeatDelegationIssued':
-        content = `🔁 Delegation issued: ${payload.from_seat ?? ''} → ${payload.to_seat ?? ''}`;
-        break;
-      case 'SeatDelegationClosed':
-        content = `🔁 Delegation closed — ${payload.delegation_id ?? ''}`;
-        break;
-      case 'CheckpointCreated':
-        content = `📌 Checkpoint created`;
-        break;
-      case 'PromptDetected':
-        content = `⚠️ Prompt detected (${payload.prompt_kind ?? ''})`;
-        break;
-      case 'SupervisorMessage':
-      case 'SeatResponse':
-        content = payload.content ?? '[empty message]';
-        break;
-      default:
-        content = `• ${etype}`;
+  // Seat ids -> display names, from the store that already holds both.
+  const seatNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const data of Object.values(projectData)) {
+      for (const seat of data.seats) m.set(seat.id, seat.name);
     }
-  }
+    return m;
+  }, [projectData]);
 
-  return {
-    id: evt.id,
-    contactId,
-    from: fromUser ? 'user' : 'contact',
-    content,
-    time: formatTime(evt.occurredAt),
-    type: 'text',
-  };
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    api
+      .listDispatches(undefined, 500)
+      .then((rows) => {
+        if (cancelled) return;
+        const dispatches = new Map<string, DispatchFact>();
+        for (const r of rows) {
+          dispatches.set(r.id, {
+            title: r.title,
+            targetSeatId: r.targetSeatId,
+            status: r.status,
+          });
+        }
+        setCtx((prev) => ({ ...prev, dispatches, seatNames }));
+      })
+      .catch((e) => {
+        // A dispatch list that will not load must not blank the panel: the lines
+        // still render, each saying its title was not resolved.
+        console.error('[useEventTextContext] listDispatches failed:', e);
+        setCtx((prev) => ({ ...prev, seatNames }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [seatNames]);
+
+  // Second pass: memory titles for the topics these events actually mention.
+  const topicIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const evt of events) {
+      const p = (evt.payload ?? {}) as Record<string, unknown>;
+      const t = typeof p.topic_id === 'string' ? p.topic_id : null;
+      if (t) ids.add(t);
+    }
+    return [...ids].sort();
+  }, [events]);
+
+  useEffect(() => {
+    if (!isTauri() || topicIds.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      topicIds.map((topicId) =>
+        api.getTopicMemories(topicId, 'l0', false, 200).then(
+          (res) => [topicId, res.memories] as const,
+          () => [topicId, []] as const,
+        ),
+      ),
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const memories = new Map<string, MemoryFact>();
+        for (const [topicId, cards] of rows) {
+          for (const c of cards) memories.set(c.memoryId, { title: c.title, topicId });
+        }
+        setCtx((prev) => ({ ...prev, memories }));
+      })
+      .catch(() => {
+        /* leave the memory titles unresolved; the lines say so */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [topicIds]);
+
+  return ctx;
 }
 
 /**
- * Live-loaded messages for a contact. Returns:
- *   - the chat history (sorted ascending by time) loaded from
- *     cmd_list_supervisor_messages on contact change
- *   - newly appended messages received via canonical:appended
+ * The raw ledger rows for a contact, loaded once per contact identity and
+ * live-appended from the backend's `canonical:appended` event.
  *
- * Routing rules per contact type:
- *   - seat              → events authored by the seat OR addressed to it
- *   - supervisor        → all events (global activity feed)
- *   - project-channel   → all events for the project (v0.1 single project: all)
- *
- * Effects depend only on the contact identity (id + type) so changes to other
- * fields on the ChatContact object never re-subscribe.
+ * Split out from `useMessages` so the rows can feed the id resolver as well as
+ * the message list — a `MemoryRecalled` row has to be visible before its topic's
+ * memories are worth fetching.
  */
-export function useMessages(contact: ChatContact | null): ChatMessage[] {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+function useSupervisorEvents(contact: ChatContact | null): CanonicalEventDto[] {
+  const [events, setEvents] = useState<CanonicalEventDto[]>([]);
   const contactId = contact?.id ?? null;
   const contactType = contact?.type ?? null;
 
   useEffect(() => {
-    if (!contact || !contactId) { setMessages([]); return; }
-    if (!isTauri()) { setMessages([]); return; }
-    const targetSeatId = contact.type === 'seat'
-      ? backendSeatIdFromContact(contact)
-      : undefined;
+    if (!contact || !contactId) {
+      setEvents([]);
+      return;
+    }
+    if (!isTauri()) {
+      setEvents([]);
+      return;
+    }
+    const targetSeatId = contact.type === 'seat' ? backendSeatIdFromContact(contact) : undefined;
     let cancelled = false;
-    api.listSupervisorMessages({ targetSeatId, limit: 400 })
+    api
+      .listSupervisorMessages({ targetSeatId, limit: 400 })
       .then((rows) => {
-        if (cancelled) return;
-        setMessages(rows.map((r) => eventToMessage(r, contact.id)));
+        if (!cancelled) setEvents(rows);
       })
       .catch((e) => {
-        console.error('[useMessages] listSupervisorMessages failed:', e);
-        if (!cancelled) setMessages([]);
+        console.error('[useSupervisorEvents] listSupervisorMessages failed:', e);
+        if (!cancelled) setEvents([]);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contactId, contactType]);
 
@@ -243,7 +277,8 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
     let cancelled = false;
     onCanonicalAppended((evt) => {
       if (cancelled) return;
-      const targetFromPayload = (evt.payload as any)?.target_seat_id ?? null;
+      const targetFromPayload =
+        (evt.payload as { target_seat_id?: unknown } | null)?.target_seat_id ?? null;
       const actorRef = evt.actorRef ?? '';
       let accept = false;
       if (contact.type === 'seat') {
@@ -254,16 +289,18 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
         accept = true;
       }
       if (!accept) return;
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === evt.id)) return prev;
-        return [...prev, eventToMessage(evt, contact.id)];
+      setEvents((prev) => (prev.some((e) => e.id === evt.id) ? prev : [...prev, evt]));
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((e) => {
+        console.error('[useSupervisorEvents] onCanonicalAppended failed:', e);
       });
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
-      unlisten = fn;
-    }).catch((e) => {
-      console.error('[useMessages] onCanonicalAppended failed:', e);
-    });
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
@@ -271,7 +308,28 @@ export function useMessages(contact: ChatContact | null): ChatMessage[] {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contactId, contactType]);
 
-  return messages;
+  return events;
+}
+
+export function useMessages(contact: ChatContact | null): ChatMessage[] {
+  const events = useSupervisorEvents(contact);
+  const ctx = useEventTextContext(events);
+
+  return useMemo(
+    () =>
+      events.map((evt) => {
+        const fromUser = (evt.actorRef ?? '').toLowerCase().startsWith('human');
+        return {
+          id: evt.id,
+          contactId: contact?.id ?? '',
+          from: fromUser ? ('user' as const) : ('contact' as const),
+          content: eventToText(evt, ctx),
+          time: formatTime(evt.occurredAt),
+          type: 'text' as const,
+        };
+      }),
+    [events, ctx, contact?.id],
+  );
 }
 
 /**
