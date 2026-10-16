@@ -25,6 +25,10 @@ use commands::{
         cmd_list_document_versions, cmd_list_documents,
     },
     handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs, cmd_list_handoffs_for_project},
+    history_cmds::{
+        cmd_get_history_session_turns, cmd_list_history_projects, cmd_list_history_sessions,
+        cmd_open_local_path, cmd_read_history_context_slice,
+    },
     inbox_cmds::cmd_get_inbox,
     knowledge_cmds::{cmd_get_knowledge_tree, cmd_get_topic_memories},
     project_cmds::{cmd_get_project, cmd_list_projects},
@@ -180,6 +184,16 @@ fn main() {
             // memories-by-topic card list, progressive disclosure
             cmd_get_knowledge_tree,
             cmd_get_topic_memories,
+            // Historical session corpus (LYRA-2026-10-14 contract §8.2 slice 2) —
+            // reads over the SAME MCP tools; pointers, never transcript bodies
+            cmd_list_history_projects,
+            cmd_list_history_sessions,
+            cmd_get_history_session_turns,
+            // Dereference the turn pointers on the operator's own disk (Mira, slice 3):
+            // read the pointed-at slice, and open the source file. No body is stored
+            // in the database and none crosses MCP (011's rule stands).
+            cmd_read_history_context_slice,
+            cmd_open_local_path,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

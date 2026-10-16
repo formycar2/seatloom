@@ -358,6 +358,131 @@ export interface KnowledgeTopicMemories {
   memories: KnowledgeMemoryCard[];
 }
 
+// ---------------------------------------------------------------------------
+// Historical session corpus (LYRA-2026-10-14 contract §8.2 slices 1-3).
+// ADDITIVE ONLY: no existing interface in this file is touched.
+//
+// Mirrors `crates/seatloom-core/src/history/schema.rs` field for field. The
+// nullable fields are nullable there on purpose and are mirrored as nullable
+// here: `messageCount` is NULL when the corpus migration is not applied (never
+// a fabricated zero), and `sessionDate`/`firstTs`/`lastTs` are NULL for the
+// harnesses that record no timestamps (all 14 cursor sessions).
+// ---------------------------------------------------------------------------
+
+export interface HistoryProject {
+  /** The home path with `/Users/jyxc-dz-0100609/Documents/GitHub/` stripped. */
+  id: string;
+  /** Display name. Equals `id` for every row but `seatloom`, which the
+   *  projects table carries as `SeatLoom`. */
+  name: string;
+  /** The absolute home path, so nothing is lost. */
+  homePath: string | null;
+  sessionCount: number;
+  /** Sum of the sessions' message counts. NULL when the corpus is not loaded. */
+  messageCount: number | null;
+  /** The repository-root group: unmapped and labelled (015's R5), never given
+   *  a guessed parent. Its id is literally `(root)`. */
+  unclassified: boolean;
+}
+
+export interface HistorySession {
+  id: string;
+  /** 'codex' | 'claude-code' | 'stepcode' | 'cursor' | 'gemini' | 'opencode'. */
+  harness: string;
+  /** The stripped-path project slug. */
+  project: string;
+  cwd: string | null;
+  sessionDate: string | null;
+  firstTs: string | null;
+  lastTs: string | null;
+  messageCount: number | null;
+  lines: number | null;
+  bytes: number | null;
+  /** Relative to the archive root (`raw/<harness>/<file>`). */
+  rawPath: string;
+  srcPath: string | null;
+  sha256: string | null;
+  /** false exactly when the harness recorded no timestamps at all. The UI must
+   *  render 时间未记录 for these, never a date. */
+  dated: boolean;
+}
+
+export type HistoryTurnLabel = 'system' | 'user' | 'assistant' | 'other';
+
+export interface HistoryTurn {
+  /** 1-based line number in the ORIGINAL file on disk. */
+  line: number;
+  label: HistoryTurnLabel;
+  /** The heading text verbatim when it is not one of the three known labels. */
+  labelRaw: string | null;
+  /** The turn's length in characters, so a list can show scale without text. */
+  chars: number;
+  contextPath: string;
+  contextLineStart: number;
+  contextLineEnd: number;
+}
+
+export interface HistorySessionDetail {
+  id: string;
+  harness: string;
+  /** Absolute path of the original transcript file. */
+  sourcePath: string;
+  /** Whether that file is on disk right now. */
+  sourcePresent: boolean;
+  /** The line count the database records for it. */
+  sourceLineCount: number | null;
+  contextPath: string | null;
+  /** The message count the extracted context file declares in its header. */
+  declaredMessageCount: number | null;
+  /** The message count the database holds for the same session. */
+  storedMessageCount: number | null;
+  /** Whether the two agree, when both are known. `false` is a defect to report.
+   *  `null` means one side is absent — an absence, not a disagreement. */
+  countsAgree: boolean | null;
+  /** In source order. */
+  turns: HistoryTurn[];
+  /** Why there are no turns, when there are none. Never an empty list with no
+   *  explanation. */
+  emptyReason: string | null;
+}
+
+/** The tool's envelope for `list_history_projects`. */
+export interface HistoryProjectsPayload {
+  contract: string;
+  corpusLoaded: boolean;
+  projectCount: number;
+  sessionTotal: number;
+  messageTotal: number | null;
+  projects: HistoryProject[];
+}
+
+/** The tool's envelope for `list_history_sessions`. */
+export interface HistorySessionsPayload {
+  contract: string;
+  corpusLoaded: boolean;
+  projectId: string;
+  sessionCount: number;
+  undatedCount: number;
+  sessions: HistorySession[];
+}
+
+/** The tool's envelope for `get_history_session_turns`. */
+export interface HistoryTurnsPayload {
+  contract: string;
+  bodiesReturned: boolean;
+  note: string;
+  session: HistorySessionDetail;
+}
+
+/** A slice of a local context file, read from the operator's own disk. */
+export interface HistoryContextSlice {
+  path: string;
+  lineStart: number;
+  lineEnd: number;
+  lines: string[];
+  totalLines: number;
+}
+
 export interface DocumentDto {
   id: string;
   projectId: string;

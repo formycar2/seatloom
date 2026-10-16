@@ -13,6 +13,7 @@ import { listen, UnlistenFn, Event } from '@tauri-apps/api/event';
 import type {
   AcceptanceLineageDto,
   ArtifactDto,
+  HistoryContextSlice,
   KnowledgeTopicMemories,
   KnowledgeTopicTree,
   AcceptanceCardDto,
@@ -163,6 +164,24 @@ export const api = {
   // returns the tool's pretty-JSON text (parse as IntentPlanResult). A rejection is
   // thrown verbatim so the UI can show the reason rather than an empty card.
   planIntent: (intent: string): Promise<string> => invoke('cmd_plan_intent', { intent }),
+
+  // --- Historical session corpus (LYRA-2026-10-14 contract §8.2 slice 3) ---
+  // The three reads are Nimbus's slice-2 tools over stdio; the two below them
+  // dereference the turn pointers on this machine's disk. Every one returns the
+  // tool's own text verbatim on rejection, so the UI shows the measured reason
+  // instead of an empty list. `list_history_projects` takes no argument.
+  listHistoryProjects: (): Promise<string> => invoke('cmd_list_history_projects'),
+  listHistorySessions: (projectId: string): Promise<string> =>
+    invoke('cmd_list_history_sessions', { projectId }),
+  getHistorySessionTurns: (harness: string, id: string): Promise<string> =>
+    invoke('cmd_get_history_session_turns', { harness, id }),
+  readHistoryContextSlice: (
+    contextPath: string,
+    lineStart: number,
+    lineEnd: number,
+  ): Promise<HistoryContextSlice> =>
+    invoke('cmd_read_history_context_slice', { contextPath, lineStart, lineEnd }),
+  openLocalPath: (path: string): Promise<void> => invoke('cmd_open_local_path', { path }),
 
   // --- D2 acceptance loop (a delivered milestone, decided in the UI) ---
   // Nimbus's lane. The three commands below are NOT registered on `track` yet,

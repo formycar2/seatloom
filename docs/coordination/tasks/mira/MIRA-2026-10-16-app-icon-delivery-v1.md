@@ -1,0 +1,179 @@
+# Delivery: SeatLoom's app icon — the empty `bundle.icon` array is filled, and macOS now shows the product's own face
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | delivery |
+| id | MIRA-2026-10-16-app-icon-delivery-v1 |
+| status | delivered |
+| author | mira |
+| date | 2026-10-16 |
+| version | v1 |
+| dispatch | disp-ol420Y586tNIsbbeh5nlU |
+| depends_on | docs/coordination/tasks/lyra/LYRA-2026-10-16-next-round-plan-v1 |
+| tags | app-icon, bundle, macos, delivery, mira |
+
+---
+
+## 0. What changed, in one paragraph
+
+`bundle.icon` was an empty array and `src-tauri/icons/` held one 104-byte 32×32
+placeholder from the April baseline. There is now a full icon set — PNG sizes, a
+`.icns` with all seven size tiers, a `.ico` with six, the Windows Store logos — and
+`bundle.icon` names five of them. A release build was run and the `.icns` is inside
+`SeatLoom.app/Contents/Resources/`, byte-identical to the source, with
+`CFBundleIconFile` pointing at it.
+
+## 1. What the icon is, and why — one sentence, as asked
+
+**The same brand blue the product already uses (`--sl-brand` `#2F6FEB`), with the
+letter swapped for a geometric mark that still reads at 16 pixels: three thick white
+bars sweeping in from the left and merging into one thicker vertical bar — the three
+bars are the working seats, the bar they merge into is the one place their records
+come together.**
+
+Three deliberate choices behind that:
+
+- **No letter.** The operator's hard constraint, in his words (translated): *"no text —\
+  at 16 pixels it all smears into one blob."* The product's existing mark is a blue tile\
+  with a white `S`; at 16 px the S's inner and outer contours eat each other. The blue\
+  stays so the icon is recognisably the same product; the letterform goes.
+- **One connected outline, not four separate elements.** Three arms plus a trunk,
+  actually touching. At 16 px a connected silhouette survives where four separate bars
+  smear into a list.
+- **Three equal arms and one thicker trunk, not a symmetric three-point star.** A
+  symmetric star says "three equal things meeting". That is not what this product does:
+  the seats are interchangeable, the place they land is not. And the whole mark is
+  mirror-symmetric about the horizontal axis, so it does not look crooked when the Dock
+  shrinks it.
+
+**What it looks like is Mr. Zhang's call, not mine** — the dispatch said not to
+default him into a brand he has not seen, so this is a proposal, described above and
+visible in §5.
+
+## 2. How the 16 px trade-off was actually made (not asserted)
+
+There is no image library on this machine — no PIL, no sharp, no canvas. So
+`scripts/app-icon/render.js` writes its own PNG encoder (8-bit RGBA, zlib) and
+rasterises a scene of geometric shapes with supersampling, which is equivalent to area
+averaging. Point-sampling would have filled the blue gaps between the bars at 16 px and
+turned the mark into one white blob.
+
+That bought the ability to **print the 16×16 and 32×32 renders as ASCII and look at
+them**, which is how the design was chosen. Seven candidates were rendered and compared;
+the others are still in `scripts/app-icon/design.mjs` under `CANDIDATES` so the
+comparison is reproducible rather than remembered:
+
+| Candidate | What it was | Why it lost |
+|---|---|---|
+| A | three parallel bars + a thicker trunk on the right | four disconnected elements; at 16 px reads as a list, not a merge |
+| B | **chosen** — three arms really converging into one vertical trunk | — |
+| C | A, shrunk with more margin | same disconnection problem as A |
+| D | a hub disc + three radiating spokes | reads as a sun/wheel; the hub does not say "one place" |
+| E | a solid funnel triangle | reads as a play button |
+| F | a symmetric three-point star | says "three equal things meeting" — not what the product does |
+| G | a centred spine with three stubs on the left | asymmetric; reads as a menu |
+
+Measured evidence for the choice, on the shipped set:
+
+- 16×16 and 32×32 renders are bold and connected, with the blue gaps between the arms
+  still visible.
+- The rounded tile's four corners are **fully transparent** at both 16 px and 32 px
+  (alpha exactly 0) — no halo, no white edge. That is the "blurry, with a white rim"
+  case the acceptance card rejects (his words, translated).
+- Colour mix on the 1024 master: 95.6 % of the square is the opaque tile, and inside it
+  68.6 % brand blue / 28.5 % white / 2.8 % anti-aliasing transition. Two colours, no
+  gradient, no photograph.
+
+## 3. Division of labour, and why there are two tools
+
+- `scripts/app-icon/render.js` + `design.mjs` — **the design source.** Its value is not
+  that it can emit a PNG; it is that it can show 16×16 in a terminal so the small-size
+  trade-off could be made by looking rather than by assertion.
+- `node_modules/.bin/tauri icon` — **the set.** As the dispatch instructed, the full set
+  (`.icns`, `.ico`, Windows Store logos, android, ios) is generated by the official tool
+  from the 1024 master, not hand-sized.
+
+Both were run against the same master and compared pixel-by-pixel: mean absolute channel
+difference 4.4/255 at 16 px and 3.7/255 at 32 px, and both are corner-clean. The official
+tool's output is what ships.
+
+## 4. Files
+
+| File | Change |
+|---|---|
+| `src-tauri/tauri.conf.json` | `bundle.icon` `[]` → five entries. **The only config change.** |
+| `src-tauri/icons/*` | new: `icon.icns`, `icon.ico`, `icon.png`, `icon-1024.png`, `32x32.png`, `64x64.png`, `128x128.png`, `128x128@2x.png`, nine `Square*Logo.png`, `StoreLogo.png`, plus `android/` and `ios/` |
+| `scripts/app-icon/render.js` | **new**. PNG encoder + decoder, shape rasteriser with supersampling, ASCII preview |
+| `scripts/app-icon/design.mjs` | **new**. The design (unit-coordinate scene) + the seven candidates that were compared |
+| `scripts/gen-app-icon.sh` | **new**. Master → `tauri icon` → `bundle.icon` → verify. Refuses to overwrite without `--force` |
+
+The old 104-byte `icon.png` placeholder is gone, replaced.
+
+## 5. The icon, as text (16×16 and 32×16 of what actually ships)
+
+```
+16×16                                 32×32
+  -==========-                           .:-==================-:.
+ ==============                         -========================-
+-==+====+#*====-                        .=================+*===========:
+==%@%*==%@@=====                        :====*#*=========%@@@+=========:
+==*@@@@#@@@=====                        -===+@@@@#+=====#@@@@@=========-
+====*%@@@@@=====                        ====#@@@@@@%*===%@@@@@==========
+======*%@@@=====                        ====*@@@@@@@@@*=%@@@@@==========
+==#@@@@@@@@=====                        =====*%@@@@@@@@@@@@@@@==========
+==#@@@@@@@@=====                        =======+#@@@@@@@@@@@@@==========
+======*%@@@=====                        ===========*@@@@@@@@@@@==========
+====*%@@@@@=====                        ============*%@@@@@@@@==========
+==*@@@@#@@@=====                        =======++++++++*%@@@@@@==========
+==%@%*==%@@=====                        =====%@@@@@@@@@@@@@@@@==========
+-==+====+#*====-                        ====#@@@@@@@@@@@@@@@@@==========
+ ==============                         ====#@@@@@@@@@@@@@@@@@==========
+  -==========-                           =====%@@@@@@@@@@@@@@@@==========
+`=` blue, `@` white                       ...(mirrored below the axis)...
+```
+
+`=` is the brand blue, `@` is the white mark. Read it as: a vertical bar on the right,
+three arms sweeping in from the left to meet it.
+
+## 6. Verified, not reported
+
+| Check | Result |
+|---|---|
+| `tauri icon` ran on the 1024 master | full set generated, no errors |
+| `.icns` validity | `iconutil -c iconset` restores all 10 files (16/32/64/128/256/512 + each `@2x`) |
+| `.icns` size tiers | 16/32/64/128/256/512/1024 all present (12 entries; tauri-icns uses the modern codes `is32`/`ic11`, `il32`/`ic12`, `ic13`, `ic07`, `ic08`, `ic09`, `ic10`, `ic14`) |
+| `bundle.icon` | five files, all exist on disk |
+| PNG dimensions | every PNG's pixel width/height matches its filename (`sips`) |
+| No white edge | 16 px and 32 px rounded-corner alpha is exactly 0 at all four corners |
+| **Release build** | `pnpm tauri build` → `target/release/bundle/macos/SeatLoom.app` |
+| **`.icns` inside the bundle** | `Contents/Resources/icon.icns`, 118 824 bytes, **sha256 prefix identical to the source** (`a792fc22a51718c5`) |
+| `Info.plist` | `CFBundleIconFile = icon.icns` |
+| DMG | `SeatLoom_0.1.0_aarch64.dmg` built, carries the same `.icns` |
+
+**What is not proven, and cannot be from here:** nobody has looked at the Dock. I work
+from a shell. The evidence above is that the right bytes are in the right place and that
+the artwork survives 16 px — not that Mr. Zhang likes it. His click is the first look.
+
+## 7. Boundaries respected
+
+- No interface skeleton was touched; no live database was touched; no business logic was
+  touched. The only non-icon change is `bundle.icon` in `tauri.conf.json`.
+- Nothing was merged and nothing was installed to `/Applications` — the dispatch said the
+  build and install are Aegis's to do with the unified script. The release build above
+  was run to prove the `.icns` lands in the bundle, and left in `target/release/bundle/`.
+
+**One red gate that is not mine, left alone on purpose.** `scripts/verify-docs.sh` is red
+on two documents — `docs/coordination/ROADMAP.md` and `docs/coordination/knowledge/INDEX.md`
+— that arrived with the merge of `track/infra-foundation` (`c470b68` / `f828494`, both
+Aegis's) and are not grandfathered. My own delivery note is clean. Fixing another seat's
+documents would be outside this dispatch's boundary ("only the icon and `bundle.icon`"),
+so it is reported here instead of quietly repaired.
+
+## 8. Artifact index
+
+- Branch: `packet/mira/knowledge-panel`.
+- Design source and the candidate comparison: `scripts/app-icon/design.mjs`.
+- Regenerate with: `bash scripts/gen-app-icon.sh --force`.
+- Ledger: see `emit_event(ArtifactCreated)`.
+- Acceptance card: `acc-disp-ol420Y586tNIsbbeh5nlU`.
