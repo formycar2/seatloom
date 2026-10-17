@@ -34,7 +34,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 SESS="Aegis-Supervisor"
-PI="$HOME/.local/bin/pi"
+PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
+# 2026-10-17: pin an EXISTING session id so a transferred session is continued
+# instead of orphaned. Same gap seat-launch.sh had: a fresh session starts empty
+# while the transferred transcript sits under the OLD id, so "migrate the memory"
+# silently does nothing. Set SEATLOOM_RESUME_UUID to the uuid from the transferred
+# file name <timestamp>_<uuid>.jsonl — the part after the underscore.
+RESUME_UUID="${SEATLOOM_RESUME_UUID:-}"
 MODEL="stepplan-anthropic/step-5-preview"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
 VERFILE="$HOME/.pi/agent/install/current-version"
@@ -152,7 +158,25 @@ line
 #   跑 **pi**(不是 Claude Code —— 前者读 .pi/mcp.json,后者读 .mcp.json)
 #   cwd 是**它自己的工作区**。Aegis 的工作区就是主检出(AGENTS.md 明说不在 packet worktree 里)
 #   带 **--approve**(否则停在 "Trust project folder?" 弹窗,永远不加载 MCP)
-tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL" Enter
+if [ -n "$RESUME_UUID" ]; then
+  tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL --session-id $RESUME_UUID" Enter
+  say "  已钉会话 id:$RESUME_UUID(转过去的记忆会接上)"
+else
+  tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL" Enter
+  say "  ⚠️ 没给 SEATLOOM_RESUME_UUID —— 起的是全新会话,转过去的记忆不会接上"
+fi
+
+# 2026-10-17: record Aegis in the seat→session map, the way seat-launch.sh does.
+# Without this row seat-status.sh and the ingestion layer cannot attribute Aegis's
+# transcript to seat-aegis-001 — the transcript exists and is orphaned, which is the
+# same shape as an orphaned transferred session. Confirmed missing right after the
+# 17:16 saih switch: the map held 44 rows for six seats and none for Aegis.
+MAP="$REPO/.seatloom/seat-sessions.tsv"
+mkdir -p "$(dirname "$MAP")"
+[ -f "$MAP" ] || printf 'seat\tsession_id\tlaunched_at\tmodel\n' > "$MAP"
+printf '%s\t%s\t%s\t%s\n' "$SESS" "${RESUME_UUID:-<未钉,全新会话>}" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODEL" >> "$MAP"
+say "  已记入映射表:$SESS -> ${RESUME_UUID:-<全新会话>}"
 say "  启动命令已发出。"
 say ""
 

@@ -30,7 +30,7 @@ Aegis 的记忆落在这里,而不是 Aegis 自己那个 agent memory 目录。
 
 ## 现状
 
-**已迁入:8 条**(Aegis 新写的)。
+**已迁入:14 条**(Aegis 新写的)。
 
 | 记忆 | 类型 | 置信度 | 一句话 |
 |---|---|---|---|
@@ -43,6 +43,11 @@ Aegis 的记忆落在这里,而不是 Aegis 自己那个 agent memory 目录。
 | [gate_events_conflate_code_landed_with_live_usable](gate_events_conflate_code_landed_with_live_usable.md) | failure | inferred | 席位的交付公告被当成能力可用的门;事件没说谎,说谎的是那条依赖边 |
 | [aegis_waker_must_live_outside_the_session](aegis_waker_must_live_outside_the_session.md) | failure | inferred | 自醒必须建在会话之外;会话内定时任务死过三次,pi 连这个工具都没有 |
 | [macos_ps_etimes_silently_yields_now](macos_ps_etimes_silently_yields_now.md) | failure | inferred | macOS ps 无 etimes 且关键字清单走 stdout,awk 静默按 0 算,时间全变成"现在" |
+| [waker_idle_agent_looks_identical_to_a_working_one](waker_idle_agent_looks_identical_to_a_working_one.md) | failure | inferred | 「pane 里有 pi 活着」不是进度信号,全队因此停摆 17 小时 |
+| [git_merge_ab_form_merged_unverified_work_into_track](git_merge_ab_form_merged_unverified_work_into_track.md) | failure | inferred | `git merge A B` 是八爪鱼合并,把未验的活合进当前分支;造集成分支要先 switch 过去,合并后第一件事核主分支头 |
+| [saih_continue_probe_contaminates_newest_session](saih_continue_probe_contaminates_newest_session.md) | failure | inferred | `--continue` 会恢复最新会话并往里写;用驱动会话探测它,会把陌生问答追加进别人正在用的会话文件 |
+| [agent_handoff_docs_can_become_recursion_seeds](agent_handoff_docs_can_become_recursion_seeds.md) | failure | inferred | 交接文档里一行"启动下一个 agent 继续这工作"的命令就是递归种子;只写纯文字指令,附永久警告块 |
+| [git_hooks_live_at_core_hookspath_not_dot_git](git_hooks_live_at_core_hookspath_not_dot_git.md) | fact | inferred | husky 的钩子在 core.hooksPath 指的地方,不在 .git/hooks;只 ls .git/hooks 是假阴性
 
 **待迁入:35 条** —— 仍在 Aegis 那个 agent memory 目录里。
 批量迁移需要张先生跑一条命令(读他 Mac 上的目录 + 批量写仓库,Aegis 被权限拦住):

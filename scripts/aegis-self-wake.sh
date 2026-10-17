@@ -67,7 +67,7 @@ if [ -z "$pane_cmd" ]; then
   exit 0
 fi
 case "$pane_cmd" in
-  node|bun|pi) ;;  # pi 是 node 进程;bun 是备用运行时
+  node|bun|pi|saih) ;;  # pi 是 node 进程;bun 是备用运行时
   *)
     log "SKIP — pane 里跑的是 '$pane_cmd',不是 agent(不往 shell 里塞文本)"
     exit 0;;
