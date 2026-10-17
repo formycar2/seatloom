@@ -253,3 +253,79 @@ The report to Aegis is `ev-T5eYLIm9TO-Jt7fkIhYT8` (ArtifactCreated, subject
 
 Final state at delivery: branch `packet/nimbus/project-scoped-reads`, one commit
 ahead of `track/infra-foundation` @ `5c2b96f`, tree clean, all gates green.
+
+---
+
+# ADDENDUM 2026-10-17 17:27 — synced to track, re-measured against live, and a proof defect found by the sync
+
+Aegis dispatched the follow-up: this slice was done but not merged, not verified, and
+had no card. The branch was **25 commits behind** track. All five tasks are now done
+except the card, which needs a verdict.
+
+## A. The sync
+
+`git merge --no-edit track/infra-foundation` → **clean, no conflicts**. Now 5 ahead,
+0 behind. Aegis's own note about his 2026-10-16 attempt is why the dispatch said the
+sync is my action and not his; it went cleanly this time.
+
+**Every gate re-run after the merge, none assumed:** fmt clean; clippy `-D warnings`
+clean on core / mcp-emit / tauri; core 168 passed; mcp-emit 81; waker 16; tauri 10;
+`cargo check --workspace --all-targets` clean; tsc clean; vitest 194 passed; **22
+ignored DB tests pass** on a scratch DB (001–019); all three proofs ALL POINTS PASS.
+
+## B. Measured against live, all six scoped reads
+
+```
+                    SeatLoom    ql_delivery
+seats                   7            1
+workitems               7            0
+handoffs                3            0
+sessions                5            0
+events                400            0
+dispatches            199            0
+```
+
+`dispatches` is added to the list because the bug report named it by name: it used to
+take an `Option<String>` and fall back to the app's **default** project, so the UI
+never passed one and every project showed seatloom's dispatches. It now demands one.
+
+**Negative control, which is what makes the above mean anything:** the unscoped reads
+are bigger (`unscoped_seats=8` vs `seats=7`), and a project that does not exist at all
+returns **zero** dispatches. Without that control a scoped read returning the same
+thing as the unscoped one would pass vacuously — and a silent default looks exactly
+like correct scoping.
+
+SeatLoom's 7 seats are aegis, flux, lyra, mira, nimbus, onyx, vela — **no
+`seat-ql-001`**. `ql_delivery` is exactly `seat-ql-001`. The corpus projects
+(ColossalAI, sf-code, project_delivery/QL, (root)) are empty **because they have zero
+rows in `project_role_bindings`**, counted directly rather than assumed.
+
+## C. 🔴 The sync found a defect in my own proofs
+
+`harness_pi_variant_proof` POINT 8 asserted `git diff --quiet track -- infra/`,
+reasoning that a changed `infra/` meant a migration. **That is a false equivalence.**
+This branch legitimately adds `infra/postgres/migrations/015_artifacts_project_id.sql`
+— a script for the **operator** to run, which changes nothing about live — and the
+proof failed on a branch shape rather than on anything actually wrong.
+
+Both Pi proofs are fixed to assert the **invariant**: the columns this change needs
+(`seats.default_harness`, `seats.default_agent`) already exist on live, so no
+migration of its own is needed. That holds whether or not somebody has added a
+migration script for someone else to run.
+
+**Third time this round a check pinned a state instead of the rule.** The first two
+were live-data snapshots the operator's own scripts invalidated; this one was a
+branch-shape assumption invalidated by a legitimate act on the same branch.
+
+## D. Still not claimed
+
+🔴 **No verdict and no card.** `request_acceptance` needs a Flux
+`ReviewVerdictIssued` naming one of my dispatches; there is none for this slice, and
+I cannot emit one as Flux (`actor_ref` is resolved server-side from
+`SEATLOOM_ACTOR_REF`). So the branch is ready and unverified — reported, not papered
+over.
+
+🔴 **Not merged.** The merge is Aegis's act.
+
+🔴 **The running app is still the previously installed binary.** The backend is
+measured against live; the product has not been looked at.
