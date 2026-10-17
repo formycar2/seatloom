@@ -359,73 +359,86 @@ designed; do not invent it.
 
 ---
 
-## 2026-10-16 · Lyra — the first screen contract (UM2, finally scoped)
+## 2026-10-17 · Lyra — the next round is integration, because the app is a mockup right now
 
-Raised by Aegis's dispatch `disp-598TQuyRewCXs8aG8GKmK`. Contract:
-`tasks/lyra/LYRA-2026-10-16-first-screen-contract-v1.md`. Operator-facing version:
-`docs/coordination/acceptance/2026-10-16-first-screen.zhs.md`. The hard constraint is honoured:
-existing partitions, existing components, existing information architecture, no new interaction.
+Raised by Aegis's dispatch `disp-C2a6xeJUDA08dEAycc3WK`. Plan:
+`tasks/lyra/LYRA-2026-10-17-next-round-plan-v1.md`. Operator-facing version:
+`docs/coordination/acceptance/2026-10-17-app-is-a-mockup.zhs.md`.
+
+### The one fact that gates everything
+
+**The application cannot read the database, so every screen that reads through the data store is a
+mockup. It started this morning and it is a regression, not a long-standing defect.**
+
+| # | Link | Evidence |
+|---|---|---|
+| 1 | The operator ran `scripts/fix-seat-harness-to-pi.sh` this morning per his own ruling. All 8 live seat rows now carry `default_harness = 'Pi'`. | `select id, default_harness from seats` → `Pi` × 8 |
+| 2 | `Harness` on track is `Direct, Stepcode, Custom(String)`. No `Pi`. | `session.rs:55` |
+| 3 | `from_str("Pi")` falls to `parse_custom_tagged("Pi","Custom")`, which needs the literal `Custom(...)` shape. A bare `Pi` does not start with `Custom` → `Err`. | `session.rs:126-134`, `:151-160`, `HARNESS_EXPECTED` at `:145` |
+| 4 | Every seat read validates that column: `row_to_seat` → `check_seat_domains` → `check_domain::<Harness>`. | `repositories.rs:2899-2916`, `:2855-2875` |
+| 5 | So `list_seats` fails on **every row**. | 3 + 4 |
+| 6 | `hydrateFromBackend` puts `api.listSeats()` in one `Promise.all` with seven other reads. One rejection rejects all. | `useDataStore.ts:1589-1598` |
+| 7 | The `catch` sets `backendHydrated: false` and leaves `INITIAL_DATA` in the store. | `useDataStore.ts:1713-1718`, `:1392-1395` |
+| 8 | **Therefore 8 of 10 NavRail tabs render fixtures.** | measured, plan §1 |
+
+Corroborated independently and *called rather than read off code*: Nimbus's
+`packet/nimbus/harness-pi` records `list_seats` succeeding with his `Pi` variant against the same
+live rows. So the failure is exactly the missing variant and nothing else.
+
+### Q1 — surfaces that look wired but aren't (all measured)
+
+| # | Surface | Actually | State |
+|---|---|---|---|
+| 1 | 8 of 10 NavRail tabs | `useDataStore` → `INITIAL_DATA` | mock now |
+| 2 | The LIVE badge on `live-seats`, `sessions`, `dispatches` | `provenanceForTab` returns `'live'` **before** consulting `backendHydrated` (`provenance.ts:65`) | the lie is on track |
+| 3 | Any project's seat list | all 8 seats under every project, v0.1 compromise (`useDataStore.ts:1623`) | fixed on branch `f316201` |
+| 4 | A seat's role | out-of-domain role silently swallowed, coerced to a default (`useDataStore.ts:1610`); live has `worker` | the swallow is on track |
+| 5 | `ql_delivery` in the app | not present at all — the store shows `p-1/p-2/p-3` while live holds 39 projects | fixed on branch `cc0e409` |
+| 6 | The QL project | **two rows, one directory** — `project_delivery/QL` and `ql_delivery` | unresolved |
+| 7 | The ⌘K work graph | mock keyed `ch-p1/p2/p3` vs live id `seatloom` (`ProjectDashboard.tsx:454`) | on track |
+| 8 | The four write forms | zero `api.*` calls; no create command exists | fixed on branch `d4a82dd` |
+| 9 | The acceptance merge gate | existence-only, message promises green | fixed on branch `c63d7af` |
+| 10 | My own two slices' downstream | **both stalled on ids that will never exist.** Nimbus emitted `ev-blocked-on-whom-dto-delivered`; Mira emitted a server-minted id. Both dispatches are `done`; neither `-landed` id exists | a known failure mode, recurred twice |
+
+### Q2 — what the first screen still lacks
+
+The default landing is still `live-seats` on track; the change to `dispatches` is on Mira's branch.
+`LiveSeatsView` shows tmux terminals — a different question from *what is the fleet working on*.
+
+| Missing | Substitute today | Worth doing |
+|---|---|---|
+| What each seat is working on | switch to the dispatch tab | **yes — this is his question** |
+| Whether the app is reading the DB at all | a badge that lies on 3 tabs | **yes — cheapest high-value item, one line** |
+| What needs his decision, in one place | he must know to open the dispatch tab; rulings live in the ROADMAP | yes — the K3 gap |
+| The fleet at a glance incl. idle seats | the seats tab, currently mock | yes, downstream of §0 |
+| What is blocked and on whom | the dependency column, raw ids on track | partly done |
+
+### Q3 — QL's shortest path
+
+Not a git repo (`git rev-parse` → fatal). MCP wiring already correct (`.mcp.json`). DB rows exist.
+**The binding's role `worker` is out of the `SeatRole` domain**, so every read of that project's
+bindings fails. The acceptance/merge path cannot work there — `request_acceptance` needs `base` and
+`branch` to name existing local branches.
+
+1. Run `scripts/fix-ql-role-domain.sh` — **operator only**.
+2. Decide whether QL becomes a git repo — **operator only**, and it is the fork. If not: capture,
+   memories, topics and dispatches all work; only the merge has no object, and the product should
+   say so rather than offer a button that cannot succeed.
+3. Resolve the duplicate project row — **operator only**.
+4. Then dispatch to `seat-ql-001`, which today has **zero** dispatches.
+
+**A correction to Aegis's brief, with evidence.** He wrote the out-of-domain role's consequence is
+"ql_delivery shows 0 seats". The code does not do that: `useDataStore.ts:1610` catches and
+substitutes an empty map, and `seatFromDto` coerces a missing role rather than dropping the seat —
+so QL would show **all 8** seats with ql's role silently replaced. The real consequence is quieter
+and worse. And right now neither happens, because §0 means the app is showing `p-1/p2/p3`.
 
 ### The decision
 
-**The first screen is the existing dispatch page, and it becomes the default landing** — one line,
-`App.tsx:92` from `'live-seats'` to `'dispatches'`. It is the only surface in the product that reads
-a real, non-seed, non-mock table at scale (177 dispatches with live statuses and real dependency
-edges), and its existing composition already answers the operator's first question outright: the
-table is grouped by seat with a per-seat status strip as the group header.
+**The next round is integration, not new build.** One milestone he can perceive: *open SeatLoom and
+see the real fleet.* Everything beneath it exists: Nimbus's `Pi` variant (Flux verifying now),
+Mira's 11 UI commits (two cards open, waiting on his click), the role fix on track but unapplied,
+the provenance one-liner, and the two re-emissions nobody has done.
 
-The ⌘K panel and the first screen **coexist with different jobs** — ⌘K is where he talks to the
-fleet, the first screen is where he sees how it is going. Merging them would be a new interaction.
-The mirror keeps its NavRail tab, undeleted, as the drop-into-the-raw-terminal detail view.
-
-### The measurement that decided it
-
-The partition whose *layout* most resembles his three questions is `ProjectDashboard`, and its work
-graph **can never fill**: `ProjectDashboard.tsx:454` feeds `DagWorkflow` from
-`MOCK_CHANNEL_DATA[channelId]`, whose keys are `ch-p1/p2/p3` while the only live project id is
-`seatloom`. So it renders `{nodes: [], edges: []}` forever regardless of what the ledger holds, and
-he reads empty as broken — which he has already been unhappy about once today. So the first screen
-is not the dashboard; it stays inside the ⌘K panel, unchanged, and re-feeding its DAG from real
-dispatches is deferred with its own contract rather than folded in as a detail.
-
-### The criterion for "what needs my decision" — and why two kinds are not enough
-
-Aegis measured two kinds: cards awaiting his click, and things blocked on Aegis. **The third kind is
-the one he has been asking about all day.** The criterion, stated once: *a thing needs his decision
-if and only if the next action is one only he can take.*
-
-- **K1 only he can click** — acceptance cards with `status='pending'`; the merge happens only on his
-  Accept click. Has a partition already.
-- **K2 only he or Aegis can produce** — a gate ruling only Aegis emits, a branch only Aegis
-  integrates, a live-database command only the operator can run. `disp-session-key-ui` is the live
-  example: its referent was deliberately deferred at 09:29 because the bridge view is not on live,
-  so no seat is producing it.
-- **K3 only he can decide** — product judgments, not technical ones. U1 (default-collapse
-  memory-type internal actions in the supervisor column) and U2 (is the id→title fix what he meant).
-  **K3 has no home on any screen.** It lives in this roadmap and in SupervisorMessages to Aegis.
-
-Explicitly not his: anything a seat can measure and decide.
-
-### Two gaps flagged rather than built, because building them would violate his second sentence
-
-1. **"Is anyone working on the thing I am blocked on" is not answerable from the data.** A blocked
-   dispatch's edge names the event it waits for; if that event exists, its `actor_ref` says who
-   produced it. If it does not exist, **no row says who will produce it** — the mapping lives in
-   prose (the contracts' event tables), not in a table. So the first screen can say *what* a row
-   waits for and *whether it exists yet*, and cannot say *whether anyone is on it*. Adding a
-   producer column would be a schema change and new information architecture.
-2. **K3 has no home.** The nearest existing surface is the timeline's event-type filter, and whether
-   filtering the timeline to "awaiting a decision" is using an existing partition or inventing an
-   interaction is precisely the judgment his second sentence reserves to him.
-
-### The decomposition
-
-Four slices, small on purpose: make the dispatch page the default landing (Mira, no edges); add
-referent-existence to `DispatchDependencyDto` (Nimbus, no edges — `dto.rs` is his fence); render it
-in the existing dependency column (Mira, edged on the DTO announcement, because Mira cannot render
-a fact the DTO does not carry — the lesson of `disp-lineage-ui` failing this morning); verify
-adversarially (Flux, pre-declared verdict `ev-verdict-first-screen`).
-
-Already dispatched by Aegis and therefore not repeated here: the machine-code dependency column, the
-empty goals/stages bands, and the knowledge panel's hand-written constant
-(`disp-qR65V3mi0m-4yYl4J8mmk`).
+No new surface, partition or interaction is proposed — he forbade it on 10-16 and nothing has
+lifted that.

@@ -1,15 +1,16 @@
----
-template: T5
-subtype: product_contract
-doc_id: LYRA-2026-10-16-next-round-plan-v1
-title: Next-round iteration plan — "read the whole story of one piece of work inside the product", plus a measured list of which surfaces are actually live
-status: active
-author: lyra
-doc_date: 2026-10-16
-version: v1
-depends_on: docs/coordination/ROADMAP.md (Aegis dispatch payload, packet), LYRA-2026-10-14-history-sessions-in-ui-contract-v1.md, LYRA-2026-10-13-supervisor-intent-entry-contract-v1.md
-tags: iteration-plan, decomposition, provenance, lineage, milestone, gap-register
----
+# Next-round iteration plan
+
+| Field | Value |
+|-------|-------|
+| template | T3 |
+| subtype | task |
+| id | LYRA-2026-10-16-next-round-plan-v1 |
+| status | issued |
+| author | lyra |
+| date | 2026-10-16 |
+| version | v1 |
+| depends_on | docs/coordination/ROADMAP.md (Aegis dispatch payload, packet), LYRA-2026-10-14-history-sessions-in-ui-contract-v1.md, LYRA-2026-10-13-supervisor-intent-entry-contract-v1.md |
+| tags | iteration-plan, decomposition, provenance, lineage, milestone, gap-register |
 
 # Next-round iteration plan
 
