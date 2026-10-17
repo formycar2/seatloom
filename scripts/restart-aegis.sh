@@ -35,6 +35,12 @@ cd "$REPO" || exit 1
 
 SESS="Aegis-Supervisor"
 PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
+# 2026-10-17: pin an EXISTING session id so a transferred session is continued
+# instead of orphaned. Same gap seat-launch.sh had: a fresh session starts empty
+# while the transferred transcript sits under the OLD id, so "migrate the memory"
+# silently does nothing. Set SEATLOOM_RESUME_UUID to the uuid from the transferred
+# file name <timestamp>_<uuid>.jsonl — the part after the underscore.
+RESUME_UUID="${SEATLOOM_RESUME_UUID:-}"
 MODEL="stepplan-anthropic/step-5-preview"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
 VERFILE="$HOME/.pi/agent/install/current-version"
@@ -152,7 +158,13 @@ line
 #   跑 **pi**(不是 Claude Code —— 前者读 .pi/mcp.json,后者读 .mcp.json)
 #   cwd 是**它自己的工作区**。Aegis 的工作区就是主检出(AGENTS.md 明说不在 packet worktree 里)
 #   带 **--approve**(否则停在 "Trust project folder?" 弹窗,永远不加载 MCP)
-tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL" Enter
+if [ -n "$RESUME_UUID" ]; then
+  tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL --session-id $RESUME_UUID" Enter
+  say "  已钉会话 id:$RESUME_UUID(转过去的记忆会接上)"
+else
+  tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL" Enter
+  say "  ⚠️ 没给 SEATLOOM_RESUME_UUID —— 起的是全新会话,转过去的记忆不会接上"
+fi
 say "  启动命令已发出。"
 say ""
 
