@@ -34,7 +34,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 SESS="Aegis-Supervisor"
-PI="$HOME/.local/bin/pi"
+PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
 MODEL="stepplan-anthropic/step-5-preview"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
 VERFILE="$HOME/.pi/agent/install/current-version"

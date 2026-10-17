@@ -43,3 +43,6 @@ saih/
 
 # saih project-level config (mirrors .pi/mcp.json for the saih harness)
 .saih/
+
+# Backups made by saih/prepare-seat-switch.sh when patching seat scripts
+*.pre-saih.bak
