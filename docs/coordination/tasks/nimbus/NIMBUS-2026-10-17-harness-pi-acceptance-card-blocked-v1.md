@@ -216,3 +216,13 @@ conclusion covering what was never verified:
 The live database, gate events (and specifically no announce-type landing gate,
 which is the shape that caused today's earlier incident), the merge, and the app
 rebuild.
+
+## 7. Addendum — the report event
+
+The report to Aegis is `ev-iDHz0nTjLg3SAEZ_fBTF5` (ArtifactCreated, subject
+`disp-xAZ5l-CsJa31p7Mc3P7MS`).
+
+Final state at delivery: branch `packet/nimbus/harness-pi` @ `3615395`, 9 ahead of
+`track/infra-foundation`, 0 behind, tree clean, all gates green, both Pi proofs
+ALL POINTS PASS, the full hydration path measured against live. **No acceptance card
+opened.**
