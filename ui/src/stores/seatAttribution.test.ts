@@ -221,3 +221,189 @@ describe('seats are attributed by role binding', () => {
     expect(vela?.role).toEqual({ Custom: 'Unknown' });
   });
 });
+
+// ── Switching projects must filter, not just re-label ─────────────────────────
+//
+// Mr. Zhang's 2026-10-17 bug: the project list showed many projects, but every
+// module (live seats, dashboard, dispatches, work items, sessions, handoffs)
+// showed the same data whichever project was selected. The rendering was already
+// per-project (`projectData[activeProjectId]`); what was global was the CONTENT —
+// the hydration loop put every row under every project.
+
+describe('every list that carries project_id is filtered by it', () => {
+  beforeEach(() => {
+    state.projects = [
+      {
+        id: 'seatloom',
+        name: 'SeatLoom',
+        createdAt: '',
+        workerBudgetTokens: 0,
+        supervisorBudgetTokens: 0,
+      },
+      {
+        id: 'ql_delivery',
+        name: 'ql_delivery',
+        createdAt: '',
+        workerBudgetTokens: 0,
+        supervisorBudgetTokens: 0,
+      },
+    ];
+    state.seats = [];
+    state.bindings = {
+      seatloom: [
+        { seatId: 'seat-mira-001', role: 'designer' },
+        { seatId: 'seat-ql-001', role: 'worker' },
+      ],
+      ql_delivery: [{ seatId: 'seat-ql-001', role: 'worker' }],
+    };
+  });
+
+  const hydrate = async () => {
+    // Patch the api mock's per-kind lists for this test only.
+    state.projects.length; // keep the array identity stable
+    await act(async () => {
+      await useDataStore.getState().hydrateFromBackend();
+    });
+  };
+
+  it('work items, handoffs, sessions and events land under their OWN project only', async () => {
+    // The mock returns [] for these; install project-tagged rows instead.
+    const wi = (id: string, projectId: string) => ({
+      id,
+      projectId,
+      title: id,
+      status: 'Active',
+      priority: 'Normal',
+      ownerSeatId: null,
+      acceptanceCriteria: [],
+      createdAt: '',
+      updatedAt: '',
+    });
+    const ho = (id: string, projectId: string) => ({
+      id,
+      projectId,
+      purpose: id,
+      status: 'Sent',
+      requiredReceipt: false,
+      fromRef: 'seat-aegis-001',
+      toRef: 'seat-mira-001',
+      createdAt: '',
+      sentAt: null,
+    });
+    const se = (id: string, projectId: string) => ({
+      id,
+      projectId,
+      seatId: 'seat-mira-001',
+      runtime: 'Stepcode',
+      status: 'Running',
+      nativeSessionId: null,
+      workspacePath: null,
+      branch: null,
+      createdAt: '',
+    });
+    const ev = (id: string, projectId: string) => ({
+      id,
+      eventType: 'SessionStarted',
+      occurredAt: '2026-10-17T00:00:00Z',
+      actorRef: 'seat-mira-001',
+      payload: {},
+      createdAt: '',
+      projectId,
+    });
+
+    // Two rows per kind, one per project.
+    const mod = await import('../lib/api');
+    const spy = vi
+      .spyOn(mod.api, 'listWorkitems')
+      .mockResolvedValue([wi('wi-s', 'seatloom'), wi('wi-q', 'ql_delivery')] as never);
+    const spyHo = vi
+      .spyOn(mod.api, 'listHandoffs')
+      .mockResolvedValue([ho('ho-s', 'seatloom'), ho('ho-q', 'ql_delivery')] as never);
+    const spySe = vi
+      .spyOn(mod.api, 'listSessions')
+      .mockResolvedValue([se('se-s', 'seatloom'), se('se-q', 'ql_delivery')] as never);
+    const spyEv = vi
+      .spyOn(mod.api, 'listEvents')
+      .mockResolvedValue([ev('ev-s', 'seatloom'), ev('ev-q', 'ql_delivery')] as never);
+
+    try {
+      await hydrate();
+    } finally {
+      spy.mockRestore();
+      spyHo.mockRestore();
+      spySe.mockRestore();
+      spyEv.mockRestore();
+    }
+
+    const s = useDataStore.getState().projectData['seatloom'];
+    const q = useDataStore.getState().projectData['ql_delivery'];
+    expect(s.workItems.map((w) => w.id)).toEqual(['wi-s']);
+    expect(q.workItems.map((w) => w.id)).toEqual(['wi-q']);
+    expect(s.handoffs.map((h) => h.id)).toEqual(['ho-s']);
+    expect(q.handoffs.map((h) => h.id)).toEqual(['ho-q']);
+    expect(s.sessions.map((x) => x.id)).toEqual(['se-s']);
+    expect(q.sessions.map((x) => x.id)).toEqual(['se-q']);
+    // The V1 event model spells it `event_id`, not `id`.
+    expect(s.events.map((x) => x.event_id)).toEqual(['ev-s']);
+    expect(q.events.map((x) => x.event_id)).toEqual(['ev-q']);
+  });
+
+  it('documents are filtered too, and the runtime artifacts are NOT — and that is stated', async () => {
+    // ArtifactDto carries no projectId, so the runtime rows cannot be filtered.
+    // The test pins the asymmetry so nobody later reads it as an oversight.
+    const mod = await import('../lib/api');
+    const spyDoc = vi.spyOn(mod.api, 'listDocuments').mockResolvedValue([
+      {
+        id: 'doc-s',
+        projectId: 'seatloom',
+        title: 's',
+        template: 'T5',
+        subtype: 'delivery',
+        status: 'active',
+        createdAt: '',
+        bodyDigest: null,
+        updatedAt: null,
+      },
+      {
+        id: 'doc-q',
+        projectId: 'ql_delivery',
+        title: 'q',
+        template: 'T5',
+        subtype: 'delivery',
+        status: 'active',
+        createdAt: '',
+        bodyDigest: null,
+        updatedAt: null,
+      },
+    ] as never);
+    const spyArt = vi
+      .spyOn(mod.api, 'listArtifacts')
+      .mockResolvedValue([
+        {
+          id: 'art-global',
+          title: 'global',
+          template: 'T5',
+          subtype: 'x',
+          status: 'active',
+          createdAt: '',
+          bodyDigest: null,
+        },
+      ] as never);
+    try {
+      await hydrate();
+    } finally {
+      spyDoc.mockRestore();
+      spyArt.mockRestore();
+    }
+    const s = useDataStore.getState().projectData['seatloom'];
+    const q = useDataStore.getState().projectData['ql_delivery'];
+    // Documents follow the project…
+    expect(s.artifacts.map((a) => a.id)).toContain('doc-s');
+    expect(s.artifacts.map((a) => a.id)).not.toContain('doc-q');
+    expect(q.artifacts.map((a) => a.id)).toContain('doc-q');
+    // …and the runtime artifact, having no project_id, appears under both. That is
+    // the documented gap, not a bug this test pretends is fixed.
+    expect(s.artifacts.map((a) => a.id)).toContain('art-global');
+    expect(q.artifacts.map((a) => a.id)).toContain('art-global');
+  });
+});

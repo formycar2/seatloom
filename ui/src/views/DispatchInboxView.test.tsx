@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   // Newest-first ledger rows the dependency column resolves against. Empty by
   // default: a dep whose referent is outside the window must render honestly.
   events: [] as unknown[],
+  listCalls: [] as string[],
   seats: [
     {
       id: 'seat-mira-001',
@@ -61,7 +62,6 @@ vi.mock('../lib/api', () => ({
   },
   api: {
     listSeats: async () => state.seats,
-    listDispatches: async () => state.rows,
     enqueueDispatch: (...args: unknown[]) => state.enqueue(...(args as [])),
     listAcceptances: async () => [],
     acceptDelivery: vi.fn(async () => ({})),
@@ -70,10 +70,15 @@ vi.mock('../lib/api', () => ({
     // missing entry here used to make the whole view throw; now it is part of the
     // seam so a test can decide what the window contains.
     listEvents: async (limit?: number) => state.events.slice(0, limit ?? 200),
+    listDispatches: async (projectId?: string) => {
+      state.listCalls.push(projectId ?? '<none>');
+      return state.rows;
+    },
   },
 }));
 
 import DispatchInboxView from './DispatchInboxView';
+import { useDataStore } from '../stores/useDataStore';
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -101,6 +106,15 @@ const INSTR_INPUT = '把席位需要的全部上下文写在这里(自足:别依
 describe('DispatchInboxView', () => {
   beforeEach(() => {
     cleanup();
+    // 2026-10-17: the inbox now passes the active project to the backend and refuses
+    // to render rows when no project is resolved. These tests exercise the inbox
+    // itself, so they satisfy that precondition — which is the point of the guard,
+    // not an obstacle to it. The guard's own behaviour is pinned separately below.
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      backendHydrateError: null,
+    });
     state.enqueue.mockClear();
     state.rows = [
       dispatch({ id: 'd1', title: 'Alpha', status: 'in_flight', startedAt: iso(120_000) }),
@@ -342,5 +356,35 @@ describe('DispatchInboxView', () => {
     const badge = await screen.findByTitle(/等另一张派单/);
     expect(badge.getAttribute('title')).toContain('disp-other');
     expect(badge.getAttribute('title')).not.toMatch(/dispatch:\s*disp-other/);
+  });
+});
+
+describe("the inbox does not show another project's rows", () => {
+  beforeEach(() => {
+    cleanup();
+    state.rows = [dispatch({ id: 'd1', title: 'Alpha' })];
+  });
+
+  it('with no project resolved it says so instead of rendering the backend default', async () => {
+    useDataStore.setState({ activeProjectId: null, backendHydrated: true });
+    render(<DispatchInboxView />);
+    expect(await screen.findByText(/还没有选定项目/)).toBeTruthy();
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('with the hydration read failed it says so too', async () => {
+    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: false });
+    render(<DispatchInboxView />);
+    expect(await screen.findByText(/还没有选定项目/)).toBeTruthy();
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('it passes the active project to the backend read', async () => {
+    useDataStore.setState({ activeProjectId: 'ql_delivery', backendHydrated: true });
+    render(<DispatchInboxView />);
+    await screen.findByText('Alpha');
+    // The wrapper forwards projectId; the view must supply it, not let the backend
+    // fall back to its own default project.
+    expect(state.listCalls).toContain('ql_delivery');
   });
 });

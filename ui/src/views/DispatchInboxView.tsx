@@ -16,6 +16,7 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useDataStore } from '../stores/useDataStore';
 import { CanonicalEventDto, DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
 import { eventToText } from '../app-v2/lib/eventText';
 import AcceptanceSection from '../components/AcceptanceSection';
@@ -637,6 +638,14 @@ const DispatchInboxView: React.FC = () => {
   // Seats come from the DB (cmd_list_seats) so their ids (seat-mira-001, …) match
   // dispatches.target_seat_id — NOT from the UI store, whose active project may be
   // mock data with different ids.
+  //
+  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): the project is
+  // now passed to every read that accepts one. `api.listDispatches(projectId, limit)`
+  // has always accepted it — this view simply never passed it, so every project saw
+  // the backend's default project's dispatches.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const backendHydrated = useDataStore((s) => s.backendHydrated);
+
   useEffect(() => {
     api
       .listSeats()
@@ -644,41 +653,49 @@ const DispatchInboxView: React.FC = () => {
       .catch(() => setSeatsDb([]));
   }, []);
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      // No project arg → backend uses its default project (seatloom), where the
-      // governed dispatches live. (The UI store's active project may be mock.)
-      const rows = await api.listDispatches();
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        // The active project, always. Omitted before, which meant the backend fell back
+        // to its own default project and every project showed the same dispatches.
+        // With no project resolved yet we pass nothing and SAY so below — silently
+        // showing another project's rows is the defect, not the fallback.
+        const rows = await api.listDispatches(activeProjectId ?? undefined);
 
-      const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
-      const changed: Record<string, number> = {};
-      for (const r of rows) {
-        const prev = before.get(r.id);
-        if (prev !== undefined && prev !== r.status) changed[r.id] = Date.now();
+        const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
+        const changed: Record<string, number> = {};
+        for (const r of rows) {
+          const prev = before.get(r.id);
+          if (prev !== undefined && prev !== r.status) changed[r.id] = Date.now();
+        }
+        lastRowsRef.current = rows;
+
+        setDispatches(rows);
+        setLastRefreshAt(Date.now());
+
+        if (Object.keys(changed).length > 0) {
+          setFlashes((f) => ({ ...f, ...changed }));
+          window.setTimeout(() => {
+            setFlashes((f) => {
+              const next = { ...f };
+              for (const id of Object.keys(changed)) delete next[id];
+              return next;
+            });
+          }, 2600);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        if (!silent) setLoading(false);
       }
-      lastRowsRef.current = rows;
-
-      setDispatches(rows);
-      setLastRefreshAt(Date.now());
-
-      if (Object.keys(changed).length > 0) {
-        setFlashes((f) => ({ ...f, ...changed }));
-        window.setTimeout(() => {
-          setFlashes((f) => {
-            const next = { ...f };
-            for (const id of Object.keys(changed)) delete next[id];
-            return next;
-          });
-        }, 2600);
-      }
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, []);
+      // The project is a dependency: switching projects must reload, or the inbox shows
+      // the previous project's rows until the next 5s poll — which is exactly the
+      // "switching filters nothing" bug, one poll-interval wide.
+    },
+    [activeProjectId],
+  );
 
   useEffect(() => {
     void load();
@@ -866,6 +883,31 @@ const DispatchInboxView: React.FC = () => {
 
   const sortLabel = sortKey ? LABEL_BY_SORT.get(sortKey) : undefined;
   const clearQuery = useCallback(() => setQuery(''), []);
+
+  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): with no
+  // project resolved yet, or with the hydration read having failed, this says so
+  // rather than showing another project's rows. Silently falling back to the
+  // backend's default project was the defect.
+  if (!activeProjectId || !backendHydrated) {
+    return (
+      <div className="flex-1 overflow-y-auto p-10 bg-background">
+        <div className="max-w-5xl">
+          <div
+            role="status"
+            className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 space-y-2"
+          >
+            <p className="text-sm font-bold text-text-primary">
+              还没有选定项目 —— 下面这些不是你的派单。
+            </p>
+            <p className="text-[12.5px] leading-relaxed text-text-secondary">
+              派单是按项目分的。项目还没读出来(或者数据库那次读取失败了), 所以这里一个都不显示;按
+              house 规则,不拿别处的数据顶着。 页面顶部的红框写着后端原样返回的错误和下一步该做什么。
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">

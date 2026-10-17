@@ -1858,9 +1858,16 @@ export const useDataStore = create<DataState>((set, get) => ({
       // ones that exist but are unbound are carried in `unboundSeats` so the UI can say
       // why the list is empty instead of rendering a `席位 (0)` that reads as broken.
       //
-      // Still NOT partitioned by project, because the schema does not carry it:
-      // workItems / handoffs / events have project_id and could be; sessions and
-      // artifacts do not. Those are reported in the delivery rather than half-fixed.
+      // Still NOT partitioned by project: `artifacts` (the runtime rows) carry no
+      // project_id, so they cannot be filtered without a schema change. Everything
+      // else below IS filtered, because its DTO carries project_id — measured, not
+      // assumed: WorkItemDto / HandoffDto / SessionDto / DocumentDto /
+      // CanonicalEventDto all have it; ArtifactDto does not.
+      //
+      // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): every list
+      // that carries project_id is now filtered by it, so `projectData[p]` holds p's
+      // rows rather than everyone's. The runtime artifacts stay global and are
+      // labelled as such in the delivery rather than quietly mixed in.
       for (const p of projectsDto) {
         const roles = roleBindingsByProject.get(p.id) ?? {};
         const boundIds = new Set(Object.keys(roles));
@@ -1870,19 +1877,33 @@ export const useDataStore = create<DataState>((set, get) => ({
         const unboundSeats: Seat[] = seatsDto
           .filter((s) => !boundIds.has(s.id))
           .map((s) => seatFromDto(s, undefined));
-        const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
-        const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
+        // Each of these is `.filter(d => d.projectId === p.id)` BEFORE the mapper, so
+        // the row's own project field decides — not a derived guess.
+        const workItems: WorkItem[] = workitemsDto
+          .filter((w) => w.projectId === p.id)
+          .map(workitemFromDto);
+        const handoffs: Handoff[] = handoffsDto
+          .filter((h) => h.projectId === p.id)
+          .map(handoffFromDto);
         // Merge runtime artifacts (seed/001 — 15 rows) with reconcile-ingested
         // coordination documents (291 rows) so V1 ArtifactsView surfaces the
         // full collaboration corpus, not just session-bound output. Documents
         // come first because they are the bulk of evidence the supervisor
         // typically searches for.
+        //
+        // Documents ARE filtered by project; the runtime artifacts are not, because
+        // ArtifactDto has no project_id. That is a schema gap, reported rather than
+        // papered over with a guess.
         const artifacts: Artifact[] = [
-          ...documentsDto.map(artifactFromDocument),
+          ...documentsDto.filter((d) => d.projectId === p.id).map(artifactFromDocument),
           ...artifactsDto.map(artifactFromDto),
         ];
-        const sessions: Session[] = sessionsDto.map(sessionFromDto);
-        const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
+        const sessions: Session[] = sessionsDto
+          .filter((s) => s.projectId === p.id)
+          .map(sessionFromDto);
+        const events: CanonicalEvent[] = eventsDto
+          .filter((e) => e.projectId === p.id)
+          .map(eventFromDto);
 
         // Derive inbox items from workitem/handoff state so V1 InboxView and
         // SupervisionDashboard show real "needs attention" rows. Real
