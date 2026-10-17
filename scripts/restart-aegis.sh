@@ -165,6 +165,18 @@ else
   tmux send-keys -t "$SESS" "cd $REPO && $PI --approve --model $MODEL" Enter
   say "  ⚠️ 没给 SEATLOOM_RESUME_UUID —— 起的是全新会话,转过去的记忆不会接上"
 fi
+
+# 2026-10-17: record Aegis in the seat→session map, the way seat-launch.sh does.
+# Without this row seat-status.sh and the ingestion layer cannot attribute Aegis's
+# transcript to seat-aegis-001 — the transcript exists and is orphaned, which is the
+# same shape as an orphaned transferred session. Confirmed missing right after the
+# 17:16 saih switch: the map held 44 rows for six seats and none for Aegis.
+MAP="$REPO/.seatloom/seat-sessions.tsv"
+mkdir -p "$(dirname "$MAP")"
+[ -f "$MAP" ] || printf 'seat\tsession_id\tlaunched_at\tmodel\n' > "$MAP"
+printf '%s\t%s\t%s\t%s\n' "$SESS" "${RESUME_UUID:-<未钉,全新会话>}" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODEL" >> "$MAP"
+say "  已记入映射表:$SESS -> ${RESUME_UUID:-<全新会话>}"
 say "  启动命令已发出。"
 say ""
 
