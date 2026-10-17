@@ -60,8 +60,26 @@ export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions',
  */
 export const LEDGER_TABS: ReadonlySet<string> = new Set(['timeline']);
 
-/** The live-mirror tab: the one surface whose LIVE claim depends on discovery. */
+/** The live-mirror tab: the one surface whose LIVE claim depends on tmux discovery. */
 export const LIVE_MIRROR_TAB = 'live-seats';
+
+/**
+ * What backs each `LIVE_TABS` entry, measured rather than assumed.
+ *
+ * `live-seats` is the odd one out: `cmd_list_tmux_sessions` takes no Tauri `State`
+ * and shells out to tmux, so it is NOT database-backed and its liveness is
+ * `discovery` (handled by the `LIVE_MIRROR_TAB` branch above).
+ *
+ * `sessions` and `dispatches` both reach Postgres — `cmd_list_history_projects`
+ * takes `State` and drives the history read tools, and `DispatchInboxView` polls
+ * `cmd_list_dispatches` directly. So for those two a failed hydration means their
+ * rows are not live either, and `backendHydrated` is the fact that says so.
+ */
+export const LIVE_TAB_BACKING: Readonly<Record<string, 'tmux' | 'database'>> = {
+  'live-seats': 'tmux',
+  sessions: 'database',
+  dispatches: 'database',
+};
 
 /**
  * Provenance of a tab. `backendHydrated` comes from useDataStore and tells us
@@ -72,6 +90,16 @@ export const LIVE_MIRROR_TAB = 'live-seats';
  * actually returned seats. An empty or failed discovery renders an explicit
  * no-live / discovery-failed state instead — a green LIVE bar sitting above an
  * error message is exactly the false-live read UM0 exists to kill.
+ *
+ * 2026-10-17: every branch that can return `'live'` now requires the read backing
+ * it to have succeeded. It used to be `if (LIVE_TABS.has(tab)) return 'live'`,
+ * which returned BEFORE `backendHydrated` was ever consulted — so a surface whose
+ * data came from a failed read still wore a green LIVE badge. The badge's
+ * correctness depended on nothing, which is the defect. `live-seats` is exempt for
+ * a measured reason, not by accident: its read is tmux (`cmd_list_tmux_sessions`
+ * takes no `State`), and its liveness is already gated on `discovery` by the
+ * `LIVE_MIRROR_TAB` branch below. The other two are database-backed, so a failed
+ * hydration means they are not live either.
  */
 export function provenanceForTab(
   tab: string,
@@ -82,6 +110,13 @@ export function provenanceForTab(
     if (discovery === 'empty') return 'no-live';
     if (discovery === 'failed') return 'discovery-failed';
     return 'live';
+  }
+  if (LIVE_TAB_BACKING[tab] === 'database') {
+    // The read backing this tab is Postgres, so a failed hydration means its rows
+    // are not live either. This line used to be
+    // `if (LIVE_TABS.has(tab)) return 'live'` — a tab-name list, consulted before
+    // `backendHydrated`, so a failed read still wore a green LIVE badge.
+    return backendHydrated ? 'live' : 'fixture';
   }
   if (LIVE_TABS.has(tab)) return 'live';
   if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
