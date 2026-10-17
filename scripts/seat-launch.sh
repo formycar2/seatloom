@@ -97,7 +97,7 @@ launch_seat() {
     echo "  $seat: mid-turn, refusing (use --force to override)"; return 1
   fi
 
-  uuid=$(python3 -c 'import uuid;print(uuid.uuid4())')
+  # (the uuid was decided above: pinned by --resume-uuid, or minted fresh)
 
   # Each seat runs from ITS OWN worktree, because that is where its .pi/mcp.json
   # lives — pi picks up the project-level MCP config from the cwd. Launching from
