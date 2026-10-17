@@ -206,7 +206,7 @@ and the UI.
 ## 12. Forward recording (D5 Phase 2 Lane B)
 
 One memory, `source_kind=canonical_event`, `source_ref` =
-`ev-harness-pi-variant-delivered`, `confidence=quoted`, topic
+`ev-FsfQ9pU8byfOMMsdhNcei`, `confidence=quoted`, topic
 `topic-runtime-triple-domains` (opened for this):
 
 | Memory | Kind | Why it passes the three-way test |
