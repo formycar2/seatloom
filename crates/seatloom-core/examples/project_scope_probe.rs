@@ -65,6 +65,32 @@ async fn main() {
     println!("handoffs={}", handoffs.len());
     println!("sessions={}", sessions.len());
     println!("events={}", events.len());
+    // The read the bug report named: cmd_list_dispatches used to take an
+    // Option<String> and fall back to the app's DEFAULT project, so the UI never
+    // passed one and every project showed seatloom's dispatches. It now demands one.
+    let dispatches = db
+        .list_dispatches_for_project(&project_id, 500)
+        .await
+        .expect("list_dispatches_for_project");
+    println!("dispatches={}", dispatches.len());
+
+    // The negative controls. The whole claim is "an unscoped read returns another
+    // project's rows", so prove the UNSCOPED reads really are bigger — otherwise
+    // the scoping is not doing anything and the test would pass vacuously.
+    let unscoped_seats = db.list_seats().await.expect("all seats").len();
+    let unscoped_wi = db.list_workitems().await.expect("all wi").len();
+    let unscoped_ho = db.list_handoffs().await.expect("all ho").len();
+    let unscoped_se = db.list_sessions().await.expect("all se").len();
+    let unscoped_ev = db.list_events(400).await.expect("all ev").len();
+    // And a project that does not exist at all must return ZERO, not everything —
+    // that is the shape a silent default would produce.
+    let nonexistent = db
+        .list_dispatches_for_project("__no_such_project__", 500)
+        .await
+        .expect("a nonexistent project is a valid read")
+        .len();
+    println!("unscoped_seats={unscoped_seats} unscoped_workitems={unscoped_wi} unscoped_handoffs={unscoped_ho} unscoped_sessions={unscoped_se} unscoped_events={unscoped_ev}");
+    println!("nonexistent_project_dispatches={nonexistent}");
 
     // The supervision overview's three arithmetic cards, computed from THIS
     // project's rows exactly as SupervisionDashboard computes them — so the proof

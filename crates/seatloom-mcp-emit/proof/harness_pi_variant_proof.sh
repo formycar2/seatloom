@@ -173,9 +173,23 @@ echo "THE COST IS RECORDED"
 
 echo
 echo "########## POINT 8 — additive: no migration, no live write, no gate ##########"
-git -C "$ROOT" diff --quiet "${SEATLOOM_PROOF_BASE:-track/infra-foundation}" -- infra/ \
-  || { echo "FAIL: infra/ changed — that would be a migration"; exit 1; }
-echo "  infra/ unchanged, so no migration is needed (the columns are text)"
+# The INVARIANT, not a branch shape. This used to assert that `infra/` was
+# UNCHANGED, on the reasoning that a changed infra/ meant a migration. That is a
+# false equivalence: adding a migration SCRIPT for the operator to run is a
+# legitimate, expected act (this branch does exactly that for `artifacts`), and it
+# changes nothing about live. The thing that matters is whether a migration was
+# APPLIED to live — measured directly below, by asking live's schema.
+#
+# So: assert the columns this change needs already exist, which is what makes the
+# change additive with no migration at all.
+for col in "seats|default_harness" "seats|default_agent"; do
+  T="${col%%|*}"; C="${col##*|}"
+  N="$(podman exec -i seatloom-postgres psql -U seatloom -d "$LIVE" -tAc \
+    "SELECT count(*) FROM information_schema.columns WHERE table_name='${T}' AND column_name='${C}';")"
+  [ "$N" -eq 1 ] || { echo "FAIL: ${T}.${C} does not exist on live — the premise changed"; exit 1; }
+done
+echo "  seats.default_harness / default_agent already exist on live (the columns are text)"
+echo "  so this change needs NO migration of its own — the invariant, not 'infra/ untouched'"
 B="$(podman exec -i seatloom-postgres psql -U seatloom -d "$LIVE" -tAc "SELECT (SELECT count(*) FROM canonical_events)||'/'||(SELECT count(*) FROM seats);")"
 DATABASE_URL="postgresql://seatloom:seatloom@localhost:5432/${LIVE}" "$PROBE" >/dev/null
 A="$(podman exec -i seatloom-postgres psql -U seatloom -d "$LIVE" -tAc "SELECT (SELECT count(*) FROM canonical_events)||'/'||(SELECT count(*) FROM seats);")"

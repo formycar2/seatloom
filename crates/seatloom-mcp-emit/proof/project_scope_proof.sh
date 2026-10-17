@@ -44,8 +44,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 LIVE="${SEATLOOM_PROOF_LIVE_DB:-seatloom}"
 PROBE="$ROOT/target/debug/examples/project_scope_probe"
 
-# Read one field out of the probe's output.
-field() { printf '%s\n' "$1" | grep -o "^$2=.*" | head -1 | cut -d= -f2-; }
+# Read one field out of the probe's output. `cut -f2-` on `=` because a VALUE may
+# itself contain `=`; and the keys are space-separated on some lines, so a key that
+# is not first needs its own extraction rather than the whole line.
+field() {
+  printf '%s\n' "$1" | tr ' ' '\n' | grep "^$2=" | head -1 | cut -d= -f2-
+}
 
 echo "########## POINT 1 — the schema asymmetry, measured ##########"
 WITH_PID="$(podman exec seatloom-postgres psql -U seatloom -d "$LIVE" -tAc \
@@ -129,15 +133,35 @@ echo
 echo "--- POINT 6: THE NUMBERS MOVE ---"
 # The acceptance is that switching projects changes the numbers. Prove every
 # scoped read differs, rather than proving one of them and asserting the rest.
+# SIX reads, not five: dispatches is added, because it is the one the bug report
+# named by name — it used to take an Option<String> and fall back to the app's
+# DEFAULT project, so every project showed seatloom's dispatches.
 MOVED=0
-for k in seats workitems handoffs sessions events; do
+for k in seats workitems handoffs sessions events dispatches; do
   A="$(field "$SL" "$k")"; B="$(field "$QL" "$k")"
   if [ "$A" != "$B" ]; then MOVED=$((MOVED+1)); fi
   printf "  %-11s seatloom=%-5s ql_delivery=%-5s %s\n" "$k" "$A" "$B" \
     "$([ "$A" != "$B" ] && echo MOVED || echo SAME)"
 done
-[ "$MOVED" -eq 5 ] || { echo "FAIL: only ${MOVED} of 5 scoped reads differ between the two projects"; exit 1; }
-echo "  all five scoped reads differ"
+[ "$MOVED" -eq 6 ] || { echo "FAIL: only ${MOVED} of 6 scoped reads differ between the two projects"; exit 1; }
+echo "  all six scoped reads differ"
+
+echo
+echo "--- POINT 6b: the scoping is really doing something (negative control) ---"
+# A scoped read that returns the same thing as the unscoped one is not scoping. Prove
+# the unscoped reads are BIGGER, or the whole point would pass vacuously.
+US_SEATS="$(field "$SL" unscoped_seats)"
+S_SEATS="$(field "$SL" seats)"
+echo "  unscoped seats=${US_SEATS}  scoped(seatloom) seats=${S_SEATS}"
+[ "$US_SEATS" -gt "$S_SEATS" ] \
+  || { echo "FAIL: the unscoped read is not bigger — the scoping is not doing anything"; exit 1; }
+# And a project that does not exist at all returns ZERO, not everything. That is the
+# shape a silent default would produce, so it is the shape to refuse.
+NE="$(field "$SL" nonexistent_project_dispatches)"
+echo "  dispatches for a project that does not exist: ${NE}"
+[ "$NE" -eq 0 ] \
+  || { echo "FAIL: a nonexistent project returned ${NE} rows — that is the silent-default shape"; exit 1; }
+echo "THE SCOPING IS REAL"
 
 echo
 echo "--- POINT 7: the supervision overview's numbers MOVE (controlled scratch) ---"
