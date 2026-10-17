@@ -173,7 +173,7 @@ Edges hang only on event ids verified to exist in the ledger.
 | 0 | This plan | Lyra | `disp-C2a6xeJUDA08dEAycc3WK` | — → emits `ev-next-round-plan-1017-landed` |
 | 1 | Re-emit the two stalled announcements under their declared ids | Nimbus + Mira | **`disp-reemit-stalled-announcements`** (new) | none → ready |
 | 2 | Make the provenance badge depend on the read | Mira | **`disp-provenance-badge-honest`** (new) | none → ready |
-| 3 | Verify the integration round adversarially | Flux | **`disp-integration-round-verify`** (new) | `ev-next-round-plan-1017-landed` → blocked; pre-declared verdict `ev-verdict-integration-round` |
+| 3 | Verify the integration round adversarially | Flux | **`disp-integration-round-verify-v2`** (re-issue) | `ev-reemit-stalled-announcements-landed` **and** `ev-provenance-badge-honest-landed` → blocked; pre-declared verdict `ev-verdict-integration-round-v2` |
 
 **Why slice 1 is two seats in one dispatch.** It is one mechanical fix with one cause, and the two
 halves are independent: Nimbus re-emits `ev-blocked-on-whom-dto-landed`, Mira re-emits
@@ -188,7 +188,20 @@ the right edge. The click-level check is the operator's acceptance card.
 | Event id | Emitter | Type | Required payload |
 |---|---|---|---|
 | `ev-next-round-plan-1017-landed` | Lyra | `ArtifactCreated` | `contract`: this file's path + commit. Announcement; no `verified` field. |
+| `ev-reemit-stalled-announcements-landed` | Nimbus | `ArtifactCreated` | `branch`, `commit`, which ids were re-emitted, and the observation that both blocked slices left `blocked`. Announcement; no `verified` field. |
+| `ev-provenance-badge-honest-landed` | Mira | `ArtifactCreated` | `branch`, `commit`, `files`, the exact one-line change, and the failing-read test that proves the badge is not LIVE. Announcement; no `verified` field. |
 | `ev-verdict-integration-round` | Flux | `ReviewVerdictIssued` | Pre-declared at enqueue time; Flux must emit exactly this id. |
+
+> **Corrected 2026-10-17 04:0x, and the correction is itself the lesson.** The first version of
+> this plan edged Flux's verification slice on `ev-next-round-plan-1017-landed` — the plan's own
+> announcement. Because the plan event is emitted *before* the slices are enqueued, that edge was
+> satisfied the instant it was written, and Flux's slice came out `ready` while neither fix existed.
+> A verifier needs the code to exist, so a verifier's edge belongs on the *fix's* announcement, not
+> on the plan that asked for it. The two announcement ids above are declared for exactly that
+> reason, and `disp-integration-round-verify` is re-issued edged on both.
+>
+> This is the fifth instance today of an edge or a check that is satisfied while the thing it
+> stands for is absent, and the second one that is mine. See §1 #10 and §0.
 
 ### 5.2 Done definition, per slice
 
