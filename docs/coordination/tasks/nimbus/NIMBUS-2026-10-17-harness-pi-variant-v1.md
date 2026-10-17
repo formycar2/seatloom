@@ -97,10 +97,10 @@ rather than left to mislead.
 **Current live state (no regression):** all 8 rows read; every
 `harness=Some("Stepcode")` is in-domain; `list_seats` returns `OK: 8 seats`.
 
-**Post-script state (the ruling implemented):** reproduced on a live-shaped
-scratch (the operator has not run `scripts/fix-seat-harness-to-pi.sh` against live
-yet, and that script itself says the order is script → this change verified and
-merged → the app reads). With every `default_harness='Pi'`:
+**Post-script state (the ruling implemented):** measured on live-shaped scratch **and
+then confirmed against live itself** — the operator ran
+`scripts/fix-seat-harness-to-pi.sh` while I was working, so all eight live rows now
+carry `default_harness='Pi'`. With every row:
 
 ```
 OK: 6 seats
@@ -176,13 +176,19 @@ reading unchanged; and the post-script state really reading.
 4. Open the project page. **Expected: 39 real projects including `ql_delivery`,
    and the three fake cards gone.**
 
-**Step 4 is not met until steps 1–3 happen**, and step 1 is deliberately ordered
-after step 2 by the operator's own script. I am not claiming otherwise.
+**Step 1 has now happened** — the operator ran the script while I was working, and I
+re-measured against live after: `list_seats` returns `OK: 8 seats`, all eight
+`harness=Some("Pi")(in-domain=true)`.
+
+**Steps 2–4 have not.** This branch is not merged and the app is not rebuilt. So the
+project page still shows the three fake cards until Aegis merges and the app is
+rebuilt. **I am not claiming step 4.**
 
 ## 10. Known limits, stated rather than hidden
 
-- **The live acceptance is not met yet.** The operator has not run the script, and
-  this branch is not merged. Both are his acts.
+- **The live acceptance is not met yet.** The operator HAS run the script (all eight
+  rows are `default_harness='Pi'`), but this branch is not merged and the app is not
+  rebuilt. Both are Aegis's / the operator's acts.
 - **I have not audited who reads `default_agent`.** The change-it-or-not
   recommendation in §7 is conditional on that audit and says so.
 - **The harness column no longer records the wrapper layer.** Stated as a cost in
@@ -210,3 +216,28 @@ One memory, `source_kind=canonical_event`, `source_ref` =
 The ruling itself is recorded in the enum's doc comment and in the operator's own
 script, so a memory would be a third copy. No preference was touched — Mr Zhang's
 ruling is his own, and his corrections are Aegis's to record.
+
+## 13. Addendum — the operator's script ran while I was working
+
+Between measuring and committing, the operator ran
+`scripts/fix-seat-harness-to-pi.sh` against live. All eight seats now carry
+`default_harness='Pi'`, so I re-measured against live after committing:
+
+```
+OK: 8 seats
+  seat-ql-001:  agent=Some("Pi")(in-domain=true)   harness=Some("Pi")(in-domain=true)
+  seat-vela-001: agent=Some("Pi")(in-domain=true)  harness=Some("Pi")(in-domain=true)
+  … (all eight, all in-domain)
+```
+
+That change exposed a real defect **in my own proofs**: `harness_pi_variant` POINT 1
+pinned "all eight rows carry `harness=Stepcode`", and `agent_pi_variant` POINTs 5
+and 6 asserted that the Harness domain was untouched and that the acceptance
+criterion was **not** met. All three had been true when written and all three were
+false an hour later. Fixed in `39f0fdc` to assert the invariant instead of the
+snapshot.
+
+This is the **third** time this round a check asserted a snapshot that the ledger's
+normal life invalidated (`acceptance_verdict_gate_proof` was the second). The
+general shape: **pin the invariant, not the value.** "Every row is in domain" holds
+forever; "every row is `Stepcode`" holds until the operator does his job.
