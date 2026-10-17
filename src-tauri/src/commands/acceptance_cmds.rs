@@ -10,17 +10,20 @@
 
 use std::path::Path;
 
-use seatloom_core::db::models::AcceptanceWithDispatchRow;
+use seatloom_core::db::models::{AcceptanceWithDispatchRow, VerdictFacts};
 use tauri::State;
 
 use crate::dto::{AcceptanceCard, AcceptanceLineageDto, AcceptanceResult};
 use crate::state::AppState;
 
-/// The env var naming the operator acting on an acceptance. EXPLICIT config:
-/// the decision is a user act, so the identity is never invented on the spot —
-/// a missing value refuses the command with a configuration hint.
-pub const OPERATOR_REF_ENV: &str = "SEATLOOM_OPERATOR_REF";
-
+/// The operator identity's two channels and their precedence live in
+/// [`seatloom_core::config`] — one home, unit-tested without Tauri. The env var
+/// named there is the SECOND channel, not the only one: the first is a
+/// single-line file at `~/.seatloom/operator`, because an app launched from the
+/// Launchpad has no environment at all and a correct guard must not become a wall
+/// the operator can never get past. Both channels are explicit configuration by a
+/// person; neither is a default, and there is no third channel.
+///
 /// The pending-acceptance read model (the UI's 待验收区). Pending first, then
 /// the most recently decided (result states: merge commit / rework link).
 #[tauri::command]
@@ -43,8 +46,9 @@ pub async fn cmd_list_acceptances(
 ///
 /// Refuses — writing nothing — when: the operator ref is unconfigured, the
 /// acceptance is not pending (accepted/rejected are terminal), the Flux verdict
-/// referent no longer exists (未验绿不可合), or the merge conflicts (git's own
-/// conflict text is returned; the merge is aborted, never forced).
+/// is absent, red, or about some other dispatch (未验绿不可合), or the merge
+/// conflicts (git's own conflict text is returned; the merge is aborted, never
+/// forced).
 #[tauri::command]
 pub async fn cmd_accept_delivery(
     state: State<'_, AppState>,
@@ -53,21 +57,30 @@ pub async fn cmd_accept_delivery(
     let operator = operator_ref()?;
     let row = load_pending(&state, &acceptance_id).await?;
 
-    // Merge criterion, first half: the Flux green verdict must exist NOW. A
-    // vanished referent refuses the merge — the verdict is the proof the work
-    // passed technical review, and it is checked again at decision time, not
-    // only at request time.
-    let verified = state
+    // Merge criterion, first half: the Flux GREEN verdict, about THIS dispatch,
+    // must exist NOW.
+    //
+    // THE DEFECT THIS CLOSES. This used to call `event_or_artifact_exists`, which
+    // answers one question — "is the referent there" — while the comment above it
+    // promised green. Measured on live, three pending cards named
+    // `ev-verdict-history-sessions`: a **fail** verdict about
+    // `disp-history-sessions-verify`, for three dispatches Flux had never
+    // verified. Existence was being read as a verdict, and a red verdict about
+    // someone else's work would have merged on the operator's click.
+    //
+    // So the value is read and the subject is checked, and every refusal names
+    // which verdict it was, what the verdict said, and why that does not count.
+    // Checked again at decision time, not only at request time, because a verdict
+    // can be re-issued or a card can be re-opened between the two.
+    let facts = state
         .db
-        .event_or_artifact_exists(&row.acceptance.flux_verdict_ref)
+        .flux_verdict_facts(
+            &row.acceptance.flux_verdict_ref,
+            &row.acceptance.dispatch_id,
+        )
         .await
         .map_err(|e| e.to_string())?;
-    if !verified {
-        return Err(format!(
-            "未验绿不可合: flux_verdict_ref {:?} names no existing event or artifact",
-            row.acceptance.flux_verdict_ref
-        ));
-    }
+    verdict_gate_message(&facts, &row.acceptance.flux_verdict_ref)?;
 
     let merge_commit = merge_branch_into_base(
         &state.repo_root,
@@ -173,16 +186,71 @@ pub async fn cmd_reject_delivery(
 // Helpers
 // =============================================================================
 
+/// The operator acting on this decision, resolved from the configuration file
+/// first and the environment second.
+///
+/// The resolution itself — and every rule about what counts as an identity —
+/// lives in [`seatloom_core::config`], so it is unit-testable without Tauri and
+/// there is exactly one place that decides. This function only renders the typed
+/// refusal into the message the operator sees; it never substitutes a value.
 fn operator_ref() -> Result<String, String> {
-    std::env::var(OPERATOR_REF_ENV)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{OPERATOR_REF_ENV} is not set — the acceptance decision is a user act; \
-                 configure the operator ref and retry (identity is never invented on the spot)"
-            )
-        })
+    seatloom_core::config::read_operator_ref()
+        .map(|r| r.value)
+        .map_err(|e| seatloom_core::config::operator_ref_refusal_message(&e))
+}
+
+/// The merge criterion's verdict half, rendered for the operator.
+///
+/// Three separate refusals, because they call for three different actions: a
+/// missing referent means the verdict vanished; a red one means Flux said no; one
+/// about another dispatch means it was never about this work at all. Collapsing
+/// them into "未验绿不可合" is what left Mr Zhang with a single opaque
+/// "操作失败" — his words — so each names the verdict, its value, and what is
+/// wrong with it.
+fn verdict_gate_message(facts: &VerdictFacts, ref_id: &str) -> Result<(), String> {
+    if !facts.exists {
+        return Err(format!(
+            "未验绿不可合:验绿依据 {ref_id:?} 不在账本里 —— 它可能被删了,或者从来没被记录过。\
+             没有验绿结论,就不能合。"
+        ));
+    }
+    if facts.event_type.as_deref() != Some("ReviewVerdictIssued") {
+        return Err(format!(
+            "未验绿不可合:验绿依据 {ref_id:?} 不是一条裁决事件(它是 {:?})——\
+             只有 Flux 的 ReviewVerdictIssued 能当验绿依据。",
+            facts
+                .event_type
+                .as_deref()
+                .unwrap_or("一个产出物,没有事件类型")
+        ));
+    }
+    match facts.verdict.as_deref() {
+        Some("pass") => {}
+        Some(value) => {
+            return Err(format!(
+                "未验绿不可合:验绿结论 {ref_id:?} 的结论是 {value:?},不是通过。\
+                 Flux 判了不通过就不能合 —— 让他重新验,或者把打回的理由处理掉。"
+            ))
+        }
+        None => {
+            return Err(format!(
+                "未验绿不可合:验绿结论 {ref_id:?} 没有写结论值。\
+                 一条没写通过与否的结论,不能算通过。"
+            ))
+        }
+    }
+    if !facts.names_dispatch {
+        let about = facts
+            .payload_dispatch_id
+            .as_deref()
+            .map(|d| format!("它说的是 {d:?}"))
+            .unwrap_or_else(|| "它没有说是哪条派单的".to_string());
+        return Err(format!(
+            "未验绿不可合:验绿结论 {ref_id:?} 不是关于这条派单的 —— {about}。\
+             别的活的结论,不能当这一条的验绿依据。"
+        ));
+    }
+    Ok(())
 }
 
 /// Load an acceptance that is still pending. Terminal rows are immutable (014):

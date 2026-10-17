@@ -634,6 +634,57 @@ pub struct DispatchReadModel {
     pub dependencies: Vec<DispatchDependencyStatus>,
 }
 
+/// What a Flux verdict reference actually says, and whether it is about a given
+/// dispatch — the two questions `event_or_artifact_exists` was being asked
+/// instead of the one it answers.
+///
+/// Field order is the reading order of the gate that consumes it: is it there,
+/// is it green, is it about this dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictFacts {
+    /// The referent names a row in `canonical_events` or `artifacts`.
+    pub exists: bool,
+    /// Its `event_type` when it is an event. `None` for an artifact, which has
+    /// none — never defaulted to `ReviewVerdictIssued`.
+    pub event_type: Option<String>,
+    /// `payload->>'verdict'`, verbatim. `None` when absent, null, or the referent
+    /// is an artifact. An absent value is an absence, not a fail and not a pass.
+    pub verdict: Option<String>,
+    /// `payload->>'dispatch_id'`, verbatim, when the verdict states one.
+    pub payload_dispatch_id: Option<String>,
+    /// Whether it names the dispatch under test — via `payload->>'dispatch_id'`
+    /// or via an `event_object_refs` row with `ref_type='dispatch'`. Either
+    /// channel counts; both are things Flux actually writes.
+    pub names_dispatch: bool,
+}
+
+impl VerdictFacts {
+    /// The gate's WHOLE question: does this verdict let the work be merged?
+    ///
+    /// Green means exactly `pass`. Measured on live, the values in use are
+    /// `pass` (27), `fail` (2) and `reject` (1) — so a `reject` is not green
+    /// either, and an absent value is not a pass.
+    ///
+    /// And it must be about the dispatch under test. `names_dispatch` was
+    /// computed by the reader for the dispatch the caller asked about, so this
+    /// ANDs it in rather than deriving it again — a second derivation would be a
+    /// second criterion that could drift from the first.
+    ///
+    /// # Why there is no `is_green()`
+    ///
+    /// There was one, and the proof caught what it invited: a method answering
+    /// only the value half is a method a future caller will use as the whole
+    /// criterion, which is precisely the defect this read exists to close. The
+    /// callers that need the two halves separately — to render two different
+    /// refusals — read the fields directly, which is honest about being partial.
+    pub fn is_merge_criterion(&self) -> bool {
+        self.exists
+            && self.event_type.as_deref() == Some("ReviewVerdictIssued")
+            && self.verdict.as_deref() == Some("pass")
+            && self.names_dispatch
+    }
+}
+
 /// One dependency edge with its referent's live existence.
 #[derive(Debug, Clone)]
 pub struct DispatchDependencyStatus {

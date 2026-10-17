@@ -16,7 +16,7 @@ use crate::db::models::{
     KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
     ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
     PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, TopicRow, WorkItemRow,
+    SeatDelegationRow, SeatRow, SessionRow, TopicRow, VerdictFacts, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -647,6 +647,74 @@ impl SeatloomDb {
         };
         let row = client.query_opt(sql, &[&ref_id]).await?;
         Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// What a Flux verdict reference actually SAYS, and whether it is about a
+    /// given dispatch.
+    ///
+    /// # Why this exists
+    ///
+    /// `event_or_artifact_exists` answers one question — "is the referent there" —
+    /// and the acceptance gate had been using it as if it answered two more:
+    /// "is it green" and "is it about this dispatch". Measured on live, it does
+    /// not: three pending cards named `ev-verdict-history-sessions`, a **fail**
+    /// verdict about `disp-history-sessions-verify`, for three unrelated
+    /// dispatches Flux had never verified at all. Existence is not a verdict.
+    ///
+    /// So the gate reads the verdict's value and its subject, and refuses when
+    /// either is wrong. Both are things Flux actually writes — `payload->>'verdict'`
+    /// and `payload->>'dispatch_id'`, or an `event_object_refs` row with
+    /// `ref_type='dispatch'` — so neither criterion is invented. Measured across
+    /// all 30 `ReviewVerdictIssued` events on live: 27 carry `dispatch_id` in the
+    /// payload (the 3 that do not are pre-012 seed rows and a scenario fixture),
+    /// and 5 name a dispatch through `event_object_refs`. Either channel counts.
+    pub async fn flux_verdict_facts(
+        &self,
+        ref_id: &str,
+        dispatch_id: &str,
+    ) -> Result<VerdictFacts, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        // Existence, event type and the verdict value, in one round trip. The ref
+        // is polymorphic TEXT with no FK, so an artifact referent is possible —
+        // and an artifact carries no event_type and no payload, which is exactly
+        // why those fields are Option rather than defaulted.
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) AS is_event, \
+                        EXISTS (SELECT 1 FROM artifacts WHERE id = $1) AS is_artifact, \
+                        (SELECT event_type FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'verdict' FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'dispatch_id' FROM canonical_events WHERE id = $1)",
+                &[&ref_id],
+            )
+            .await?;
+        let is_event: bool = row.get(0);
+        let is_artifact: bool = row.get(1);
+        let event_type: Option<String> = row.get(2);
+        let verdict: Option<String> = row.get(3);
+        let payload_dispatch_id: Option<String> = row.get(4);
+
+        // The second way a verdict can name a dispatch. Asked separately because
+        // it is a different table and the two spellings are alternatives, not a
+        // conjunction.
+        let names_via_ref: bool = client
+            .query_one(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM event_object_refs \
+                      WHERE event_id = $1 AND ref_type = 'dispatch' AND ref_id = $2)",
+                &[&ref_id, &dispatch_id],
+            )
+            .await?
+            .get(0);
+
+        let names_dispatch = payload_dispatch_id.as_deref() == Some(dispatch_id) || names_via_ref;
+        Ok(VerdictFacts {
+            exists: is_event || is_artifact,
+            event_type,
+            verdict,
+            payload_dispatch_id,
+            names_dispatch,
+        })
     }
 
     /// One dispatch's dependency edges (012).
