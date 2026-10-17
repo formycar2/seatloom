@@ -170,3 +170,13 @@ Both cards carry it, unchanged:
 ## 7. Out of scope, unchanged
 
 The live database, gate events, the merge, and the app rebuild.
+
+## 8. Addendum — the report event
+
+The report to Aegis is `ev-SPfTzlIBTnXDYTO8sEn_1` (ArtifactCreated, subject
+`disp-5m2HCxn3tJYweIoV9o8d6`).
+
+Final state at delivery: branch `packet/nimbus/harness-pi` @ `baf8255`, 13 ahead of
+`track/infra-foundation`, 0 behind, tree clean, every gate green, both proofs ALL
+POINTS PASS. Two acceptance cards `pending` the operator's decision:
+`acc-disp-4WRVFBHEc0ib_TP0WXFI_` and `acc-disp-_4-4LQz9T_ienR34isCtD`.
