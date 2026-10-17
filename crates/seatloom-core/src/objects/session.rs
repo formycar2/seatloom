@@ -51,10 +51,25 @@ pub struct Session {
 /// `Option<Harness>` is used at every call site: `None` means *the harness was
 /// not recorded at the time*, never *there was no harness*. Do not default it
 /// to `Direct` — a fabricated value is indistinguishable from a real one.
+///
+/// # `Pi` is here on the operator's ruling, and the ruling has a cost
+///
+/// Mr Zhang ruled on 2026-10-17 that every seat's `default_harness` becomes `Pi`.
+/// He knew the cost and chose anyway: read strictly, `pi` is an *agent* (the CLI
+/// being driven) rather than a harness (the wrapper it runs under), and the eight
+/// seats actually run under the `stepcode` proxy — which is what six of the rows
+/// said. After this change the `seats` table no longer records *which wrapper
+/// layer a seat runs under*; the only proxy clue left is in `default_model`
+/// (`modelproxy-anthropic/…`, `stepplan-anthropic/…`). His reading also holds —
+/// `pi` is itself a wrapper, and the proxy detail is carried elsewhere — and the
+/// vocabulary boundary is his to draw. The variant is here because he ruled it,
+/// and the cost is recorded rather than written up as a pure improvement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Harness {
     Direct,
     Stepcode,
+    /// `pi` — the operator's 2026-10-17 ruling. See the note above for the cost.
+    Pi,
     Custom(String),
 }
 
@@ -153,7 +168,7 @@ pub(crate) fn render_custom_tagged(tag: &str, payload: &str) -> String {
     }
 }
 
-const HARNESS_EXPECTED: &str = "Direct, Stepcode, Custom, Custom(<payload>)";
+const HARNESS_EXPECTED: &str = "Direct, Stepcode, Pi, Custom, Custom(<payload>)";
 
 impl FromStr for Harness {
     type Err = ParseValueError;
@@ -162,6 +177,7 @@ impl FromStr for Harness {
         match s {
             "Direct" => Ok(Self::Direct),
             "Stepcode" => Ok(Self::Stepcode),
+            "Pi" => Ok(Self::Pi),
             _ => parse_custom_tagged(s, "Custom")
                 .map(Self::Custom)
                 .ok_or_else(|| ParseValueError {
@@ -186,6 +202,7 @@ impl fmt::Display for Harness {
         match self {
             Self::Direct => f.write_str("Direct"),
             Self::Stepcode => f.write_str("Stepcode"),
+            Self::Pi => f.write_str("Pi"),
             Self::Custom(payload) => f.write_str(&render_custom_tagged("Custom", payload)),
         }
     }
@@ -309,6 +326,9 @@ mod tests {
         for (s, v) in [
             ("Direct", Harness::Direct),
             ("Stepcode", Harness::Stepcode),
+            // The operator's 2026-10-17 ruling: every seat's default_harness is
+            // `Pi`. The live rows spell it that way, so the domain must admit it.
+            ("Pi", Harness::Pi),
             ("Custom", Harness::Custom(String::new())),
             ("Custom(podman-exec)", Harness::Custom("podman-exec".into())),
         ] {
@@ -367,6 +387,20 @@ mod tests {
         assert_eq!(err.value, "stepcode");
     }
 
+    /// The Harness error names the whole domain including `Pi`, so a reader who
+    /// hits an unknown value sees the complete set rather than a partial one.
+    #[test]
+    fn the_harness_error_names_the_whole_domain_including_pi() {
+        let err = Harness::try_from("Bogus").expect_err("must reject");
+        assert!(err.expected.contains("Pi"), "{}", err.expected);
+        assert_eq!(
+            err.expected,
+            "Direct, Stepcode, Pi, Custom, Custom(<payload>)"
+        );
+        // And an unknown value is still refused, never absorbed into Custom.
+        assert!(Harness::try_from("pi").is_err(), "casing is significant");
+    }
+
     /// `Stepcode` is a harness and `Opencode` is an agent. If this test is ever
     /// changed to move either dimension, re-read Aegis review 2026-09-28 §4.
     #[test]
@@ -383,6 +417,25 @@ mod tests {
             serde_json::to_string(&m).expect("newtype serializes transparently"),
             "\"claude-opus-5[1m]\""
         );
+    }
+
+    /// `Pi` serializes verbatim as `"Pi"` on BOTH dimensions — the spelling
+    /// already in the live `seats` rows. No `rename_all`, no invented spelling:
+    /// PostgreSQL is canonical (AD-011), so the Rust side matches what is already
+    /// stored rather than the other way round. This is the operator's 2026-10-17
+    /// ruling applied to `Harness` as well as `Agent`.
+    #[test]
+    fn pi_serializes_verbatim_on_both_dimensions() {
+        assert_eq!(Harness::Pi.to_string(), "Pi");
+        assert_eq!(
+            serde_json::to_string(&Harness::Pi).expect("serialize"),
+            "\"Pi\""
+        );
+        assert_eq!(Agent::Pi.to_string(), "Pi");
+        // A distinct value on each dimension, not an alias of anything else.
+        assert_ne!(Harness::Pi, Harness::Custom(String::new()));
+        assert_ne!(Harness::Pi, Harness::Stepcode);
+        assert_ne!(Harness::Pi, Harness::Direct);
     }
 
     /// `Pi` serializes verbatim as `"Pi"` — the spelling already in the live

@@ -761,13 +761,21 @@ impl SeatloomDb {
     /// The seat registry, reduced to the four columns routing needs.
     ///
     /// **Why not [`SeatloomDb::list_seats`]?** Because `list_seats` hydrates the
-    /// full runtime triple and validates `default_harness` against the closed
-    /// `Harness` domain — and the live registry currently contains a row
-    /// (`seat-vela-001`, `default_harness = 'Pi'`) that is out of that domain, so
-    /// the whole read fails. Routing has no opinion about which harness a seat
-    /// runs; making the intent surface fail because of an unrelated column's
-    /// domain violation would be a defect, not strictness. The domain violation
-    /// itself is reported to Aegis as data debt, not patched here.
+    /// full runtime triple and validates it against the closed `Harness` / `Agent`
+    /// domains, so a single out-of-domain row fails the WHOLE read. Routing has no
+    /// opinion about which harness or agent a seat runs; making the intent surface
+    /// fail because of an unrelated column's domain violation would be a defect,
+    /// not strictness.
+    ///
+    /// That failure was real and measured: on 2026-10-16 two live rows carried
+    /// `default_harness='Pi'` while the `Harness` domain had no `Pi` variant, and
+    /// `list_seats` failed for the whole table — which is what made the UI fall
+    /// back to three hard-coded fake project cards. It is now fixed at BOTH ends:
+    /// the data was corrected to `Stepcode`, and on the operator's 2026-10-17
+    /// ruling `Pi` is in the `Harness` domain as well as `Agent`. This read stays
+    /// domain-free regardless, because the structural reason — one bad row should
+    /// not fail an unrelated surface — is independent of which values are in the
+    /// domain today.
     pub async fn list_seat_routing_facts(&self) -> Result<Vec<SeatRoutingRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
@@ -2917,7 +2925,8 @@ fn row_to_seat(r: &Row) -> Result<SeatRow, DbError> {
 
 /// The seat registry reduced to what routing needs — id, name, capability
 /// tags, status. No runtime triple, therefore no `Harness`/`Agent` domain
-/// validation, therefore no failure on a row whose harness is out of domain.
+/// validation, therefore no failure on a row whose runtime triple is out of
+/// domain.
 #[derive(Debug, Clone)]
 pub struct SeatRoutingRow {
     pub id: String,
