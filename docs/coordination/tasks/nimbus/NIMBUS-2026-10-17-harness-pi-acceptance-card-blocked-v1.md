@@ -144,7 +144,7 @@ branch            = packet/nimbus/harness-pi
 base              = track/infra-foundation            (exists locally; branch is 0 behind)
 flux_verdict_ref  = <Flux's re-issued verdict, once it names the dispatch above>
 how_to_verify     = the operator-facing wording lives in the companion card
-                    NIMBUS-2026-10-17-harness-pi-acceptance-card-blocked-v1.zhs.md
+                    acceptance/2026-10-17-harness-pi-acceptance-card.zhs.md
                     (Mr Zhang reads Chinese; §10 of the docs rules keeps Chinese out
                     of the English delivery note and in the .zhs card). In English:
                     switch to the live-seats module — SeatLoom shows 7 seats and no

@@ -1,22 +1,19 @@
-# 验收卡(中文,操作者用)—— harness-Pi 那一件的开卡参数
+# 验收卡(中文,给张先生)—— harness-Pi 那一件的开卡参数
 
-> 这是英文交付说明
-> `NIMBUS-2026-10-17-harness-pi-acceptance-card-blocked-v1.md` 的中文伴随卡。
-> 张先生看中文,所以 `how_to_verify` 的人话放这里;英文说明按文档规则不放中文。
+> 英文交付说明:`docs/coordination/tasks/nimbus/NIMBUS-2026-10-17-harness-pi-acceptance-card-blocked-v1.md`
+> 张先生看中文,所以 `how_to_verify` 的人话放这里;英文说明按文档规则 §10 不放中文。
+> 表头用英文键(规则 §2 要求),值是中文。
 
 | 字段 | 值 |
 |---|---|
-| template | T3 |
+| template | T5 |
 | subtype | acceptance |
-| id | NIMBUS-2026-10-17-harness-pi-acceptance-card-blocked-v1 |
+| id | acceptance-2026-10-17-harness-pi-acceptance-card |
 | status | blocked,等 Flux 重发一条点名我派单的验绿 |
 | author | nimbus |
 | date | 2026-10-17 |
 | version | v1 |
-| to | aegis |
-| dispatch | `disp-xAZ5l-CsJa31p7Mc3P7MS` |
-| branch | `packet/nimbus/harness-pi` @ `3615395`(已和 track 同步,落后 0) |
-| tags | acceptance-card, verdict-naming, merge-gate, harness-pi |
+| tags | harness-pi, acceptance-card, verdict-naming, how-to-verify |
 
 ---
 
@@ -27,7 +24,7 @@ Aegis 让我开的参数里,`dispatch_id` 写的是 `disp-bsL-wE5cuc8rHfj1zz1t6`
 `disp-4WRVFBHEc0ib_TP0WXFI_`(Agent 加 Pi)和
 `disp-_4-4LQz9T_ienR34isCtD`(Harness 也加 Pi),两条都 done,都还没有卡。
 
-更关键的一条:Flux 的验绿 `ev-Nfy-64T_UWlAa_INtzgSF` 是 pass,但它点的是她自己那条派单。
+更关键的一条:Flux 的验绿 `ev-Nfy-64T_UWlAa_INtzgSF` 结论是 pass,但它点的是她自己那条派单。
 量过的:
 
 | 派单 | 验绿是否点名它 | 能否当合并依据 |
