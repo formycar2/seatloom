@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "seatloom": {
+      "command": "/Users/jyxc-dz-0100609/Documents/GitHub/seatloom/target/debug/seatloom-mcp-emit",
+      "env": {
+        "SEATLOOM_ACTOR_REF": "seat:seat-vela-001",
+        "DATABASE_URL": "postgresql://seatloom:seatloom@localhost:5432/seatloom",
+        "SEATLOOM_PROJECT_ID": "seatloom"
+      }
+    }
+  }
+}
