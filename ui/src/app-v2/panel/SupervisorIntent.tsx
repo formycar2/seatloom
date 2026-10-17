@@ -16,6 +16,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, isTauri } from '../../lib/api';
+import { useDataStore } from '../../stores/useDataStore';
 import type {
   AcceptanceCardDto,
   CanonicalEventDto,
@@ -101,6 +102,8 @@ function MeaningfulEmpty({ why, next }: { why: string; next: string }) {
 function useMeasuredProbe() {
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' });
 
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   const run = useCallback(async () => {
     if (!isTauri()) {
       setProbe({
@@ -109,18 +112,26 @@ function useMeasuredProbe() {
       });
       return;
     }
+    // A reachability probe still needs a project to ask about, because every read
+    // is now project-scoped. Saying "no project selected" is the honest answer
+    // here — it is not the same as "the backend is unreachable", and conflating
+    // them is the wiring-honesty defect this probe exists to avoid.
+    if (!activeProjectId) {
+      setProbe({ kind: 'unavailable', detail: 'no project selected — nothing to read against' });
+      return;
+    }
     setProbe({ kind: 'probing' });
     // Probe the cheapest real read the surfaces depend on. Observe the result.
     try {
-      const seats = await api.listSeats();
+      const seats = await api.listSeats(activeProjectId);
       setProbe({
         kind: 'ok',
-        detail: `seat registry reachable (${seats.length} seat(s) measured)`,
+        detail: `seat registry reachable (${seats.length} seat(s) measured under ${activeProjectId})`,
       });
     } catch (err) {
       setProbe({ kind: 'unavailable', detail: `seat registry call failed: ${String(err)}` });
     }
-  }, []);
+  }, [activeProjectId]);
 
   return { probe, run };
 }
@@ -143,20 +154,28 @@ function useContinuityDelta() {
   const [delta, setDelta] = useState<ContinuityDelta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Every read below is project-scoped. Without a selected project there is
+  // nothing honest to show, so the card says that instead of quietly reading the
+  // default project — which is how it used to show seatloom's data under any tab.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
 
   const load = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
       return;
     }
+    if (!activeProjectId) {
+      setError('no project selected');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const [acceptances, dispatches, handoffs, events, checkpoints] = await Promise.all([
-        api.listAcceptances(),
-        api.listDispatches(undefined, 200),
-        api.listHandoffs(),
-        api.listEvents(200),
+        api.listAcceptances(activeProjectId),
+        api.listDispatches(activeProjectId, 200),
+        api.listHandoffs(activeProjectId),
+        api.listEvents(activeProjectId, 200),
         api.listCheckpoints(1),
       ]);
       const gateTypes = [

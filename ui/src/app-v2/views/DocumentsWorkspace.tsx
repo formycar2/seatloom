@@ -50,8 +50,15 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
       const result = await api.reconcile();
       setReconcileResult(result);
       await useDataStore.getState().hydrateFromBackend();
-      // Refresh local list to pick up any changes
-      const rows = await api.listDocuments({ template: template ?? undefined });
+      // Refresh local list to pick up any changes. Scoped to the selected project:
+      // the unscoped call used to hit the backend's default-project fallback, so
+      // this workspace showed seatloom's documents under every project.
+      const pid = useDataStore.getState().activeProjectId;
+      if (!pid) {
+        setError('no project selected');
+        return;
+      }
+      const rows = await api.listDocuments({ projectId: pid, template: template ?? undefined });
       setDocs(rows);
     } catch (e) {
       setError(`reconcile: ${String(e)}`);
@@ -67,9 +74,16 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
       setLoading(false);
       return;
     }
+    // Scoped to the selected project — see the note in handleReconcile.
+    const pid = useDataStore.getState().activeProjectId;
+    if (!pid) {
+      setError('no project selected');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
-    api.listDocuments({ template: template ?? undefined })
+    api.listDocuments({ projectId: pid, template: template ?? undefined })
       .then((rows) => setDocs(rows))
       .catch((e) => setError(`list documents: ${String(e)}`))
       .finally(() => setLoading(false));

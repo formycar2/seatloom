@@ -16,6 +16,7 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useDataStore } from '../stores/useDataStore';
 import { CanonicalEventDto, DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
 import { eventToText } from '../app-v2/lib/eventText';
 import AcceptanceSection from '../components/AcceptanceSection';
@@ -277,10 +278,19 @@ function useResolvedDeps(deps: DispatchDependencyDto[]): ResolvedDep[] {
     [deps],
   );
 
+  // Scoped to the selected project. This window exists to render the human text of
+  // the events this inbox's dependency edges name, so reading every project's
+  // events would resolve edges against rows the operator is not looking at.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   useEffect(() => {
     let alive = true;
+    if (!activeProjectId) {
+      setEvents([]);
+      return;
+    }
     api
-      .listEvents(EVENT_WINDOW)
+      .listEvents(activeProjectId, EVENT_WINDOW)
       .then((rows) => {
         if (alive) setEvents(rows);
       })
@@ -290,7 +300,7 @@ function useResolvedDeps(deps: DispatchDependencyDto[]): ResolvedDep[] {
     return () => {
       alive = false;
     };
-  }, [eventValues]);
+  }, [eventValues, activeProjectId]);
 
   return useMemo(() => {
     const byId = new Map(events.map((e) => [e.id, e]));
@@ -637,20 +647,37 @@ const DispatchInboxView: React.FC = () => {
   // Seats come from the DB (cmd_list_seats) so their ids (seat-mira-001, …) match
   // dispatches.target_seat_id — NOT from the UI store, whose active project may be
   // mock data with different ids.
+  //
+  // Scoped to the selected project. `seats` has no project_id, so the backend
+  // resolves this through project_role_bindings — meaning a seat bound in another
+  // project is correctly absent here rather than silently present.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   useEffect(() => {
+    if (!activeProjectId) {
+      setSeatsDb([]);
+      return;
+    }
     api
-      .listSeats()
+      .listSeats(activeProjectId)
       .then(setSeatsDb)
       .catch(() => setSeatsDb([]));
-  }, []);
+  }, [activeProjectId]);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError(null);
+    // No project → nothing to show. The old code deliberately omitted the project
+    // arg so the backend would fall back to seatloom, which is exactly how this
+    // inbox showed another project's dispatches and looked populated.
+    if (!activeProjectId) {
+      setDispatches([]);
+      setError('no project selected');
+      if (!silent) setLoading(false);
+      return;
+    }
     try {
-      // No project arg → backend uses its default project (seatloom), where the
-      // governed dispatches live. (The UI store's active project may be mock.)
-      const rows = await api.listDispatches();
+      const rows = await api.listDispatches(activeProjectId);
 
       const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
       const changed: Record<string, number> = {};
@@ -678,7 +705,7 @@ const DispatchInboxView: React.FC = () => {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     void load();
