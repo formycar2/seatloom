@@ -59,6 +59,15 @@ pub enum Harness {
 }
 
 /// The CLI or protocol being driven.
+///
+/// `Pi` is here because the whole SeatLoom fleet runs it — every one of the eight
+/// seats is a `pi` process. An enum describing "the CLI or protocol being driven"
+/// that omitted the one the fleet actually runs was not describing the fleet; it
+/// was describing a fleet that did not exist. `Custom(String)` is an escape hatch
+/// for a one-off, not a reason to keep the primary agent out of the domain.
+///
+/// Serialized verbatim in PascalCase, like every other variant here — PostgreSQL
+/// is canonical (AD-011), and the live `seats` rows already spell it `Pi`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Agent {
     ClaudeCode,
@@ -66,6 +75,8 @@ pub enum Agent {
     CursorCli,
     GeminiCli,
     Opencode,
+    /// `pi` — the agent CLI the SeatLoom seats run.
+    Pi,
     Custom(String),
 }
 
@@ -181,7 +192,7 @@ impl fmt::Display for Harness {
 }
 
 const AGENT_EXPECTED: &str =
-    "ClaudeCode, Codex, CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>)";
+    "ClaudeCode, Codex, CursorCli, GeminiCli, Opencode, Pi, Custom, Custom(<payload>)";
 
 impl FromStr for Agent {
     type Err = ParseValueError;
@@ -193,6 +204,7 @@ impl FromStr for Agent {
             "CursorCli" => Ok(Self::CursorCli),
             "GeminiCli" => Ok(Self::GeminiCli),
             "Opencode" => Ok(Self::Opencode),
+            "Pi" => Ok(Self::Pi),
             _ => parse_custom_tagged(s, "Custom")
                 .map(Self::Custom)
                 .ok_or_else(|| ParseValueError {
@@ -220,6 +232,7 @@ impl fmt::Display for Agent {
             Self::CursorCli => f.write_str("CursorCli"),
             Self::GeminiCli => f.write_str("GeminiCli"),
             Self::Opencode => f.write_str("Opencode"),
+            Self::Pi => f.write_str("Pi"),
             Self::Custom(payload) => f.write_str(&render_custom_tagged("Custom", payload)),
         }
     }
@@ -312,6 +325,9 @@ mod tests {
             ("CursorCli", Agent::CursorCli),
             ("GeminiCli", Agent::GeminiCli),
             ("Opencode", Agent::Opencode),
+            // The fleet's own agent: every seat is a pi process, and the live
+            // seats rows for seat-ql-001 / seat-vela-001 already spell it `Pi`.
+            ("Pi", Agent::Pi),
             // The bare tag is the shape already in sessions.runtime for
             // ses-flux-verify-001 (seed/001:67 at base commit 9599136).
             ("Custom", Agent::Custom(String::new())),
@@ -366,6 +382,35 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&m).expect("newtype serializes transparently"),
             "\"claude-opus-5[1m]\""
+        );
+    }
+
+    /// `Pi` serializes verbatim as `"Pi"` — the spelling already in the live
+    /// `seats` rows for `seat-ql-001` and `seat-vela-001`. No `rename_all`, no
+    /// invented spelling: PostgreSQL is canonical (AD-011), so the Rust side
+    /// matches what is already stored rather than the other way round.
+    #[test]
+    fn pi_serializes_verbatim_as_the_database_spells_it() {
+        assert_eq!(Agent::Pi.to_string(), "Pi");
+        assert_eq!(
+            serde_json::to_string(&Agent::Pi).expect("serialize"),
+            "\"Pi\""
+        );
+        assert_eq!(Agent::try_from("Pi").expect("in-domain"), Agent::Pi);
+        // And it is a distinct value, not an alias of anything else.
+        assert_ne!(Agent::Pi, Agent::Custom(String::new()));
+        assert_ne!(Agent::Pi, Agent::Opencode);
+    }
+
+    /// The error message names the whole domain, so a reader who hits an unknown
+    /// value sees the complete set rather than a partial one.
+    #[test]
+    fn the_agent_error_names_the_whole_domain_including_pi() {
+        let err = Agent::try_from("Bogus").expect_err("must reject");
+        assert!(err.expected.contains("Pi"), "{}", err.expected);
+        assert_eq!(
+            err.expected,
+            "ClaudeCode, Codex, CursorCli, GeminiCli, Opencode, Pi, Custom, Custom(<payload>)"
         );
     }
 

@@ -3620,7 +3620,7 @@ mod tests {
             err.to_string(),
             "sessions row \"ses-flux-verify-001\": column agent is out of domain: \
              \"Bogus\" is not a valid Agent value (expected one of: ClaudeCode, Codex, \
-             CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>))"
+             CursorCli, GeminiCli, Opencode, Pi, Custom, Custom(<payload>))"
         );
     }
 
