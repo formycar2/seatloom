@@ -310,9 +310,21 @@ function depSentence(r: ResolvedDep): string {
     return `等另一张派单(${dep.depValue})`;
   }
   if (!event) {
-    return `这条不在最近 ${EVENT_WINDOW} 条账本记录里 —— 从这里判断不了它是什么、在不在`;
+    // NOT a claim of non-existence. `api.listEvents` is bounded
+    // (`ORDER BY occurred_at DESC LIMIT $1`), so absence from the window is absence
+    // of evidence, and rendering it as evidence is the same lie shape this project
+    // keeps paying for. The unbounded answer lives in the DTO's `referent` field,
+    // which is not in this tree (measured: it is on
+    // packet/nimbus/gate-vs-announcement @ 942da99, not on track and not here), so
+    // this says what it can and names what it cannot.
+    return (
+      `还没读出来它在等什么:这条不在最近 ${EVENT_WINDOW} 条账本记录里。` +
+      `注意 —— 这不是说它不存在,只是这个界面读不到那么远;别把「没查到」当成「没有」。`
+    );
   }
-  return eventToText(event);
+  // Found: what it was, who did it, when — one plain sentence, from the same
+  // translator the supervisor feed uses so the two surfaces cannot drift.
+  return `已经在账本里了:${eventToText(event)}`;
 }
 
 // ── Presentational pieces ───────────────────────────────────────────────────

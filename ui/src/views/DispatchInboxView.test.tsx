@@ -277,8 +277,9 @@ describe('DispatchInboxView', () => {
     expect(badge.getAttribute('title')).toContain('数据库');
   });
 
-  it('says a referent is outside the window rather than claiming it does not exist', async () => {
-    // Empty window: the read is bounded, so absence is NOT proof of absence.
+  it('a referent outside the window is NOT reported as non-existent', async () => {
+    // Empty window: the read is bounded, so absence is NOT proof of absence. The
+    // two cases must be distinguishable AND neither may claim what it cannot measure.
     state.events = [];
     state.rows = [
       dispatch({
@@ -292,10 +293,39 @@ describe('DispatchInboxView', () => {
     const badge = await screen.findByTitle(/最近/);
     const title = badge.getAttribute('title') ?? '';
     expect(title).toContain('最近 500 条');
-    expect(title).toContain('判断不了');
-    // Never "does not exist", and never "satisfied".
-    expect(title).not.toContain('不存在');
+    // It says it cannot tell, and it says so in BOTH directions — a reader must not
+    // be able to take "not found" as "does not exist".
+    expect(title).toContain('这不是说它不存在');
+    expect(title).toContain('别把「没查到」当成「没有」');
     expect(title).not.toContain('已满足');
+    expect(title).not.toContain('已存在');
+  });
+
+  it('a referent that IS in the ledger reads differently from one that is not', async () => {
+    // The whole point of the dispatch: waiting-on-something-that-has-not-happened
+    // must look different from waiting-on-something-that-landed.
+    state.events = [gate('ev-landed')];
+    state.rows = [
+      dispatch({
+        id: 'b-landed',
+        title: '已落地的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-landed' }],
+      }),
+      dispatch({
+        id: 'b-ancient',
+        title: '读不到的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-ancient' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const landed = (await screen.findByTitle(/已经在账本里了/)).getAttribute('title') ?? '';
+    const ancient = (await screen.findByTitle(/最近 500 条/)).getAttribute('title') ?? '';
+    // Different text, and only the landed one asserts existence.
+    expect(landed).not.toBe(ancient);
+    expect(landed).toContain('已经在账本里了');
+    expect(ancient).toContain('这不是说它不存在');
   });
 
   it('names a dispatch-kind dependency as another dispatch, not as a raw pair', async () => {
