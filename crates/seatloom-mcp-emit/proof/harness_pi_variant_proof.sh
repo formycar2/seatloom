@@ -44,9 +44,19 @@ OUT="$(DATABASE_URL="postgresql://seatloom:seatloom@localhost:5432/${LIVE}" "$PR
 printf '%s\\n' "$OUT" | sed 's/^/  /'
 printf '%s\\n' "$OUT" | grep -q '^OK: 8 seats' \
   || { echo "FAIL: list_seats does not succeed on live as it stands"; exit 1; }
-printf '%s\\n' "$OUT" | grep -c 'harness=Some("Stepcode")(in-domain=true)' | grep -q '^8$' \
-  || { echo "FAIL: the eight live rows are not all reading with Stepcode in-domain"; exit 1; }
-echo "  all 8 live rows read; every harness=Stepcode is in-domain"
+# The INVARIANT, not a snapshot. An earlier version of this point asserted that all
+# eight live rows carried harness=Stepcode — true when written, and false the
+# moment the operator ran his script. A proof asserting a snapshot of live data
+# fails on the ledger's normal life, which is the same defect class this round
+# already fixed in acceptance_verdict_gate_proof.sh.
+if printf '%s\n' "$OUT" | grep -q 'in-domain=false'; then
+  echo "FAIL: some live row is out of domain"
+  printf '%s\n' "$OUT" | grep 'in-domain=false' | sed 's/^/    /'
+  exit 1
+fi
+HARNESSES="$(printf '%s\n' "$OUT" | grep -o 'harness=Some("[^"]*")' | sort -u | tr '\n' ' ')"
+echo "  all 8 live rows read, every column in-domain; harnesses present: ${HARNESSES}"
+echo "NO REGRESSION ON THE CURRENT DATA"
 echo "NO REGRESSION ON THE CURRENT DATA"
 
 echo

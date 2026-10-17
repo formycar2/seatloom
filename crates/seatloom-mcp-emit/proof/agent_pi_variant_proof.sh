@@ -42,24 +42,28 @@ printf '%s\\n' "$OUT" | sed 's/^/  /'
 
 echo
 echo "########## POINT 1 — the live rows spelling Pi are the ones that broke it ##########"
-# The two rows Aegis's scripts wrote, and the read they broke.
-printf '%s\\n' "$OUT" | grep -q 'ERR: seats row "seat-ql-001": column default_harness' \
-  || { echo "FAIL: the measured failure is not the one the dispatch described"; exit 1; }
+# Written when the two rows Aegis's scripts wrote broke the read: default_agent='Pi'
+# was out of domain, and behind it default_harness='Pi' was too. Both halves have
+# since landed, so this point now measures the read SUCCEEDING rather than failing —
+# the rows are unchanged, which is the point: it is the enum that was wrong about
+# the fleet, not the seats that were wrong about themselves.
+printf '%s\n' "$OUT" | grep -q '^OK: 8 seats' \
+  || { echo "FAIL: list_seats does not succeed on live"; exit 1; }
 for seat in seat-ql-001 seat-vela-001; do
   # The pattern must match the WHOLE line the probe prints: `agent=` sits between
   # the seat id and `harness=`, so a pattern that skips it matches nothing and a
   # proof that matches nothing reports a false failure.
-  printf '%s\n' "$OUT" | grep -q "${seat}: agent=Some(\"Pi\")(in-domain=true) harness=Some(\"Pi\")(in-domain=false)" \
-    || { echo "FAIL: ${seat} does not read agent=Pi in-domain / harness=Pi out-of-domain"; exit 1; }
+  printf '%s\n' "$OUT" | grep -q "${seat}: agent=Some(\"Pi\")(in-domain=true) harness=Some(\"Pi\")(in-domain=true)" \
+    || { echo "FAIL: ${seat} does not read agent=Pi in-domain / harness=Pi in-domain"; exit 1; }
 done
-echo "  seat-ql-001 and seat-vela-001: default_agent 'Pi' is now IN domain"
-echo "  …and default_harness 'Pi' is still OUT of domain — see POINT 6"
+echo "  seat-ql-001 and seat-vela-001: default_agent 'Pi' is IN domain"
+echo "  …and default_harness 'Pi' is IN domain too — see POINT 6"
 echo "THE LIVE ROWS ARE THE ONES THAT BROKE IT"
 
 echo
 echo "########## POINT 2 — Pi round-trips verbatim, the spelling PostgreSQL has ##########"
 cargo test -q -p seatloom-core --lib objects::session::tests::pi_serializes 2>&1 | tail -3
-cargo test -q -p seatloom-core --lib objects::session::tests::pi_serializes 2>&1 | grep -q "1 passed" \
+cargo test -q -p seatloom-core --lib objects::session::tests::pi_serializes 2>&1 | grep -qE "test result: ok\. 2 passed" \
   || { echo "FAIL: the verbatim-serialization test did not pass"; exit 1; }
 # And no rename_all was smuggled in. Scoped to a line that is an ATTRIBUTE: the
 # file's own comment says "Do NOT add #[serde(rename_all = ...)] here", so a
@@ -77,7 +81,7 @@ echo "VERBATIM, AS POSTGRESQL SPELLS IT"
 
 echo
 echo "########## POINT 3 — Pi is a distinct value, not an alias ##########"
-cargo test -q -p seatloom-core --lib objects::session::tests 2>&1 | grep -qE "test result: ok. 9 passed" \
+cargo test -q -p seatloom-core --lib objects::session::tests 2>&1 | grep -qE "test result: ok. 11 passed" \
   || { echo "FAIL: the session tests did not all pass"; exit 1; }
 # A Custom fallback would absorb it — that is the defect the domain exists to stop.
 cat > /tmp/pi_probe.rs <<'EOF'
@@ -100,41 +104,57 @@ echo "DISTINCT, NOT AN ALIAS"
 
 echo
 echo "########## POINT 4 — the error names the whole domain including Pi ##########"
-cargo test -q -p seatloom-core --lib objects::session::tests::the_agent_error_names_the_whole_domain_including_pi 2>&1 | grep -q "1 passed" \
-  || { echo "FAIL: the domain-listing test did not pass"; exit 1; }
-cargo test -q -p seatloom-core --lib db::repositories::tests::rendered_error_names_table_row_column_and_value 2>&1 | grep -q "1 passed" \
-  || { echo "FAIL: the pinned operator-facing message was not updated"; exit 1; }
+# Asserted as "at least one passed", not a pinned count: a pinned count is a
+# snapshot that breaks the next time a test is added near it, and the check's whole
+# claim is that the test ran and passed.
+cargo test -q -p seatloom-core --lib objects::session::tests::the_agent_error_names_the_whole_domain_including_pi 2>&1 | grep -qE "test result: ok\. [1-9][0-9]* passed" \
+  || { echo "FAIL: the Agent domain-listing test did not pass"; exit 1; }
+cargo test -q -p seatloom-core --lib objects::session::tests::the_harness_error_names_the_whole_domain_including_pi 2>&1 | grep -qE "test result: ok\. [1-9][0-9]* passed" \
+  || { echo "FAIL: the Harness domain-listing test did not pass"; exit 1; }
 echo "THE ERROR NAMES THE WHOLE DOMAIN"
 
 echo
-echo "########## POINT 5 — Harness is untouched ##########"
-git -C "$ROOT" diff HEAD -- crates/seatloom-core/src/objects/session.rs | grep -E "^[-+].*(Harness|Stepcode|Direct)" \
-  && { echo "FAIL: the Harness domain was touched"; exit 1; } || true
-echo "  no line of the Harness domain changed"
-# And the dispatch's reasoning for that boundary is recorded as still true: the
-# eight seats DO run under stepcode, and the six correct rows say so.
-printf '%s\\n' "$OUT" | grep -c 'harness=Some("Stepcode")(in-domain=true)' \
-  | grep -q '^6$' || { echo "FAIL: the six correct harness rows are not as measured"; exit 1; }
-echo "  six seats carry default_harness=Stepcode and are in-domain — the boundary holds"
-echo "HARNESS IS UNTOUCHED"
+echo "########## POINT 5 — Harness is now touched, by the operator's ruling ##########"
+# This point originally asserted that the Harness domain was UNTOUCHED, because the
+# dispatch described a defect where pi had been written into default_harness and the
+# fix was to correct the data. That is no longer the outcome: the operator ruled on
+# 2026-10-17 that EVERY seat's default_harness becomes Pi, so the Harness domain was
+# extended instead (commit 1549299 on this branch). A proof asserting the earlier
+# boundary as still standing would be reporting a decision that was reversed.
+SUBJECTS="$(git -C "$ROOT" log --format=%s)"
+printf '%s\n' "$SUBJECTS" | grep -qF '`Pi` joins `enum Harness`' \
+  || { echo "FAIL: the Harness half is not on this branch, so the two halves did not land together"; exit 1; }
+grep -q 'the ruling has a cost' "$ROOT/crates/seatloom-core/src/objects/session.rs" \
+  || { echo "FAIL: the cost of the ruling is not recorded in the enum's doc"; exit 1; }
+echo "  Harness::Pi is in the domain, and the enum's doc records what that cost"
+# And the reasoning that led to the data fix is still recorded as history, not
+# deleted: commit af0275a on the base branch says the true value was Stepcode.
+printf '%s\n' "$SUBJECTS" | grep -qF 'default_harness 的真值是 Stepcode' \
+  || { echo "FAIL: the earlier measured finding was deleted rather than superseded"; exit 1; }
+echo "HARNESS IS NOW IN THE DOMAIN — THE EARLIER FINDING IS RECORDED, NOT DELETED"
 
 echo
-echo "########## POINT 6 — 🔴 THE ACCEPTANCE CRITERION IS NOT MET BY THIS ALONE ##########"
-# The dispatch's acceptance: "应用重新能读到数据库 —— 项目页出现 39 个真项目".
-# Measured: list_seats STILL fails, because default_harness is also 'Pi' and
-# check_seat_domains checks it BEFORE default_agent.
-printf '%s\\n' "$OUT" | grep -q '^ERR: seats row' \
-  && { echo "  CONFIRMED: list_seats still fails after the Agent fix"; } \
-  || { echo "FAIL: expected list_seats to still fail — the harness defect would be gone"; exit 1; }
-podman exec -i seatloom-postgres psql -U seatloom -d "$LIVE" -tAc \
-  "SELECT count(*) FROM seats WHERE default_harness NOT IN ('Direct','Stepcode') AND default_harness !~ '^Custom';" \
-  | grep -q '^2$' || { echo "FAIL: expected 2 rows with an out-of-domain harness"; exit 1; }
-echo "  2 live rows carry default_harness='Pi', which is out of the Harness domain"
-echo "  This is a DATA defect, not a code one: pi is an AGENT, not a harness, and"
-echo "  the six correct rows say Stepcode — which is the harness the seats run under."
-echo "  The one-line-per-row fix is:  UPDATE seats SET default_harness='Stepcode'"
-echo "    WHERE default_harness='Pi';   -- touches live, so it is NOT done here."
-echo "🔴 ACCEPTANCE NOT MET — REPORTED, NOT PAPERED OVER"
+echo "########## POINT 6 — the finding this proof carried has been SUPERSEDED ##########"
+# When first written, this point said the dispatch's acceptance was NOT met: the
+# Agent fix alone did not let the app read the database, because two live rows
+# carried default_harness='Pi' and check_seat_domains checks it BEFORE default_agent.
+# That was true, and it was reported rather than papered over.
+#
+# It has since been closed at BOTH ends, so it is measured here instead of
+# restated:
+#   - the operator ran scripts/fix-seat-harness-to-pi.sh (all 8 rows now 'Pi')
+#   - Pi joined enum Harness (commit 1549299 on this branch)
+# So this point now proves the finding is gone, not that it is present. A proof
+# that keeps asserting a superseded defect is the same class of lie as a comment
+# describing a state the code no longer has.
+printf '%s\n' "$OUT" | grep -q '^ERR: seats row' \
+  && { echo "FAIL: list_seats still fails — the harness half is not in this branch"; exit 1; } \
+  || { echo "  CONFIRMED: list_seats succeeds; the two halves landed together"; }
+OUT_OF_DOMAIN="$(printf '%s\n' "$OUT" | grep -c 'in-domain=false' || true)"
+[ "$OUT_OF_DOMAIN" = "0" ] || { echo "FAIL: a live row is out of domain"; exit 1; }
+HARNESSES="$(printf '%s\n' "$OUT" | grep -o 'harness=Some("[^"]*")' | sort -u | tr '\n' ' ')"
+echo "  live harnesses: ${HARNESSES} — all in-domain, no row failing the read"
+echo "🔴 THE EARLIER FINDING IS CLOSED — MEASURED, NOT RESTATED"
 
 echo
 echo "########## POINT 7 — additive: no migration, no live write, no gate ##########"
