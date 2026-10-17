@@ -94,15 +94,41 @@ export interface KnowledgeTopicMemories {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 与 lib/api.ts 的 registered-flag 同一模式(ACCEPTANCE_CMDS_REGISTERED /
- * ACCEPTANCE_LINEAGE_CMD_REGISTERED)。命名随命令。
+ * 接线状态是**实测**的,不是手写的。
  *
- * 已翻 true 并实证:Nimbus 的 read-model lane 已落地 —— `track/infra-foundation`
- * (判定 ev-verdict-knowledge-readmodel,提交 5bd500d)的 `src-tauri/src/main.rs` 已注册
- * cmd_get_knowledge_tree / cmd_get_topic_memories,`src-tauri/src/commands/knowledge_cmds.rs`
- * 存在;本分支已与 track 同步(merge 658c26a),两条命令在此构建内。故生产真值为「已接线」。
+ * 2026-10-16:这里原本是 `const KNOWLEDGE_CMDS_REGISTERED = true`,注释说它「已实证」,
+ * 但实证的内容是「Nimbus 的分支合进了 track、main.rs 里注册了这两条命令」—— 那是代码层
+ * 的事实,不是这个构建能不能真的调通。派单里点名的就是这一条:没有任何东西测过这个 true。
+ *
+ * 换成和 SupervisorIntent 的 capability 探针同一形状的实测:挂载时真调一次
+ * `cmd_get_knowledge_tree`,按结果显示「后端可达(实测)」/「后端不可达(实测)」。
+ * 要么真测,要么不显示 —— 没有未测的接线断言。
+ *
+ * Nimbus 正在做的「接线诚实度(后端)」探针还没进树(量过:src-tauri 与 api.ts 里都没有)。
+ * 所以这里用树内已有的先例,没有等他,也没有自己加第四个手写常量。他的探针落地后,
+ * 这个 hook 换成消费他那一个即可。
  */
-const KNOWLEDGE_CMDS_REGISTERED = true;
+type WiringProbe = { kind: 'probing' } | { kind: 'ok' } | { kind: 'unavailable'; error: string };
+
+function useKnowledgeWiring(projectId: string): WiringProbe {
+  const [probe, setProbe] = useState<WiringProbe>({ kind: 'probing' });
+  useEffect(() => {
+    let alive = true;
+    setProbe({ kind: 'probing' });
+    knowledgeApi
+      .getTree(projectId)
+      .then(() => {
+        if (alive) setProbe({ kind: 'ok' });
+      })
+      .catch((e) => {
+        if (alive) setProbe({ kind: 'unavailable', error: String(e) });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+  return probe;
+}
 
 /**
  * 本地缝：直接 invoke 两条知识命令。
@@ -212,18 +238,13 @@ interface KnowledgeSectionProps {
   projectId: string;
   /** 测试注入；默认本地 invoke 缝。 */
   loader?: KnowledgeLoader;
-  /**
-   * 覆盖已注册判定。生产默认取 KNOWLEDGE_CMDS_REGISTERED（那个常量就是构建里的真值）；
-   * 这个入口只让测试能跨过门禁两侧，与 api mock 的 getter 是同一用途。
-   */
-  registered?: boolean;
+  /** 测试注入用;生产走实测探针(useKnowledgeWiring)。 */
+  probe?: WiringProbe;
 }
 
-export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
-  projectId,
-  loader,
-  registered = KNOWLEDGE_CMDS_REGISTERED,
-}) => {
+export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ projectId, loader, probe }) => {
+  const measured = useKnowledgeWiring(projectId);
+  const wiring = probe ?? measured;
   const load = useMemo<KnowledgeLoader>(() => loader ?? knowledgeApi, [loader]);
   const [topics, setTopics] = useState<KnowledgeTopicNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -236,7 +257,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
 
   // 一次性加载主题树；按 depth 逐层按需取记忆。事件驱动，零轮询。
   useEffect(() => {
-    if (!registered) return;
+    if (wiring.kind !== 'ok') return;
     let alive = true;
     setTopics(null);
     setError(null);
@@ -253,11 +274,11 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
     return () => {
       alive = false;
     };
-  }, [projectId, load, registered]);
+  }, [projectId, load, wiring.kind]);
 
   const openTopic = useCallback(
     (topicId: string) => {
-      if (!registered) return;
+      if (wiring.kind !== 'ok') return;
       setSelected(topicId);
       setMemories(null);
       setMemoriesError(null);
@@ -269,7 +290,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
         .catch((e) => setMemoriesError(String(e)))
         .finally(() => setLoadingMemories(false));
     },
-    [load, registered],
+    [load, wiring.kind],
   );
 
   const expandCard = useCallback(
@@ -324,35 +345,43 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
     gap: 6,
   };
 
-  // ── 门禁态：命令未注册，显式渲染该事实（house rule，无 mock 顶替） ──
-  if (!registered) {
+  // ── 接线态：实测出来的,分三种,没有第四种「假定它通」 ──────────────────────
+  if (wiring.kind === 'probing') {
+    return (
+      <div style={shell}>
+        <div style={heading}>
+          <Brain size={14} /> 知识 (KNOWLEDGE)
+        </div>
+        <p
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 12,
+            color: 'var(--sl-text-secondary)',
+          }}
+        >
+          <Loader2 size={13} className="animate-spin" /> 正在实测读取命令是否可用……
+        </p>
+      </div>
+    );
+  }
+  if (wiring.kind === 'unavailable') {
     return (
       <div style={shell}>
         <div style={heading}>
           <Brain size={14} /> 知识 (KNOWLEDGE)
         </div>
         <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--sl-text-primary)' }}>
-          知识面板按 D5 契约实现完毕，但读取命令尚未上线：
-          <span
-            style={{
-              fontFamily: 'var(--sl-font-mono, monospace)',
-              color: 'var(--sl-text-primary)',
-            }}
-          >
-            {' '}
-            cmd_get_knowledge_tree / cmd_get_topic_memories{' '}
-          </span>
-          还在 Nimbus 的 read-model lane，未合入 track。
+          读取命令调不通(实测,不是猜的):
+          <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}> {wiring.error} </span>
         </p>
         <p
           style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--sl-text-secondary)', marginTop: 6 }}
         >
-          因此这里给不出主题树与记忆卡 —— 数据都在库里，但读它们的命令不在这个构建里。 按 house
-          规则，未接线部分不使用 mock 伪装后端真值；命令上线后此区自动生效 （切换{' '}
-          <span style={{ fontFamily: 'var(--sl-font-mono, monospace)' }}>
-            KNOWLEDGE_CMDS_REGISTERED
-          </span>
-          ）， 不需要再改 UI。
+          cmd_get_knowledge_tree / cmd_get_topic_memories 有两条路会到这里:不在这个构建里,
+          或者数据库没连上。哪一种,上面那句原样返回的错误文本会说明。按 house 规则,未接线的 部分不用
+          mock 伪装后端真值;命令能调通时此区自动生效,不需要再改 UI。
         </p>
       </div>
     );

@@ -12,6 +12,8 @@ import AllProjectsView from './views/AllProjectsView';
 import LiveSeatsView from './views/LiveSeatsView';
 import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
+import EventDetail from './components/EventDetail';
+import HydrationFailure from './components/HydrationFailure';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
 import HandoffDetail from './components/HandoffDetail';
@@ -36,7 +38,7 @@ import { useLiveSessionsStore } from './stores/useLiveSessionsStore';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { ProvenanceFrame } from './components/ProvenanceBanner';
 import { provenanceForTab } from './lib/provenance';
-import { ArtifactSubtype, ArtifactTemplate, SelectedObjectType } from './types';
+import { ArtifactSubtype, ArtifactTemplate, CanonicalEvent, SelectedObjectType } from './types';
 
 type Tab =
   | 'live-seats'
@@ -51,7 +53,14 @@ type Tab =
   | 'sessions'
   | 'all-projects';
 type FormView = 'none' | 'createWorkItem' | 'createHandoff' | 'pipelineProgress' | 'addSeat';
-type SelectedObject = { type: SelectedObjectType; id: string } | null;
+// `event` carries the whole canonical event through for the 'Event' type: a timeline
+// row is its own object and there is nothing to look up in the store, so dropping the
+// payload here would leave the detail pane with an id and nothing to show.
+type SelectedObject = {
+  type: SelectedObjectType;
+  id: string;
+  event?: CanonicalEvent;
+} | null;
 
 const App: React.FC = () => {
   const {
@@ -62,6 +71,7 @@ const App: React.FC = () => {
     hydrateFromBackend,
     refreshEvents,
     backendHydrated,
+    backendHydrateError,
   } = useDataStore();
   // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
   // claim LIVE while tmux discovery is empty or has failed.
@@ -88,8 +98,12 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // UM0: open on the live mirror, the one surface that proves itself.
-  const [activeTab, setActiveTab] = useState<Tab>('live-seats');
+  // 张先生 2026-10-16 定下第一屏是什么:「全队在干什么、什么卡着,什么需要我决策」。
+  // 派单页是产品里唯一一张按真实表读出来的界面(177 条派单、实时状态、真实依赖边,每 5 秒轮询),
+  // 而且它已经直接回答那个问题:按席位分组、每组一条状态带、每个席位一个固定颜色。
+  // 实时席位那一页保留在 NavRail 里,作为「钻进某个席位原始终端」的细节视图 —— 他说过镜像是
+  // 过渡态,不是说要删掉。契约:LYRA-2026-10-16-first-screen-contract-v1 §6.2 slice 1。
+  const [activeTab, setActiveTab] = useState<Tab>('dispatches');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
@@ -262,7 +276,11 @@ const App: React.FC = () => {
       return;
     }
     const id = typeof data === 'string' ? data : data.id;
-    setSelectedObject({ type: type as any, id });
+    setSelectedObject({
+      type: type as any,
+      id,
+      ...(type === 'Event' && typeof data !== 'string' ? { event: data } : {}),
+    });
     setActiveForm('none');
     if (type === 'Session') {
       const session =
@@ -351,6 +369,12 @@ const App: React.FC = () => {
         return currentProjectData.artifacts.find((a) => a.id === selectedObject.id) ?? null;
       case 'Handoff':
         return currentProjectData.handoffs.find((h) => h.id === selectedObject.id) ?? null;
+      // A timeline row is its own object: the event arrives whole from the click, so
+      // there is nothing to look up in the store. Before 'Event' existed in
+      // SelectedObjectType this fell to `default` -> null -> no detail pane -> a click
+      // that did nothing.
+      case 'Event':
+        return selectedObject.event ?? null;
       default:
         return null;
     }
@@ -370,6 +394,10 @@ const App: React.FC = () => {
       );
     if (!selectedObject || !resolvedData) return <ProjectOverview />;
     switch (selectedObject.type) {
+      case 'Event':
+        // `resolvedData` for this type IS `selectedObject.event` (see resolvedData);
+        // read it off the selection so no cast over the union is needed.
+        return <EventDetail event={selectedObject.event as CanonicalEvent} />;
       case 'Seat':
         return <SeatDetail seat={resolvedData as any} />;
       case 'Session':
@@ -477,8 +505,20 @@ const App: React.FC = () => {
     );
   };
 
+  // 2026-10-16: a hydration failure used to be stored in the store and never rendered,
+  // so a failed read looked like "the product has three projects". Shown once, above the
+  // shell, on every tab — and the shell below renders no projects at all rather than the
+  // three hardcoded seeds it used to fall back to.
+  const hydrationFailed = !backendHydrated && backendHydrateError !== null;
+
   return (
     <>
+      {hydrationFailed && (
+        <HydrationFailure
+          error={backendHydrateError ?? '(没有错误文本 —— 这本身就该当缺陷看)'}
+          onRetry={() => void hydrateFromBackend()}
+        />
+      )}
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {

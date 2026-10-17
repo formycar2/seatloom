@@ -20,6 +20,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 
 const state = vi.hoisted(() => ({
+  // Newest-first ledger rows the dependency column resolves against. Empty by
+  // default: a dep whose referent is outside the window must render honestly.
+  events: [] as unknown[],
   seats: [
     {
       id: 'seat-mira-001',
@@ -63,6 +66,10 @@ vi.mock('../lib/api', () => ({
     listAcceptances: async () => [],
     acceptDelivery: vi.fn(async () => ({})),
     rejectDelivery: vi.fn(async () => ({})),
+    // The dependency column resolves `event:<id>` referents through this read. A
+    // missing entry here used to make the whole view throw; now it is part of the
+    // seam so a test can decide what the window contains.
+    listEvents: async (limit?: number) => state.events.slice(0, limit ?? 200),
   },
 }));
 
@@ -236,5 +243,104 @@ describe('DispatchInboxView', () => {
     render(<DispatchInboxView />);
     expect(await screen.findByText('无待处理的派单')).toBeTruthy();
     expect(screen.getByRole('button', { name: /显示已完成/ })).toBeTruthy();
+  });
+  // ── The dependency column: machine code -> a sentence ───────────────────────
+  //
+  // It used to render `dep_kind: dep_value` verbatim, so the operator could see
+  // THAT a row was blocked but not what on. Three things are pinned: a resolved
+  // referent reads as a sentence; a referent outside the window says so instead of
+  // claiming it does not exist; and nothing claims "satisfied" without measuring it.
+
+  const gate = (id: string) => ({
+    id,
+    eventType: 'SupervisorMessage',
+    occurredAt: '2026-10-16T06:55:11Z',
+    actorRef: 'seat:seat-nimbus-001',
+    payload: { gate: id, statement: '历史会话语料的读取真的能在 live 数据库上跑通' },
+    createdAt: '2026-10-16T06:55:11Z',
+    projectId: 'seatloom',
+  });
+
+  it('reads a resolved dependency as a sentence, not as `dep_kind: dep_value`', async () => {
+    state.events = [gate('ev-lineage-readmodel-live')];
+    state.rows = [
+      dispatch({
+        id: 'blocked-1',
+        title: '来龙去脉面板',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-lineage-readmodel-live' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/读模型|lineage|live|数据库/);
+    expect(badge.getAttribute('title')).not.toMatch(/event:\s*ev-lineage-readmodel-live/);
+    expect(badge.getAttribute('title')).toContain('数据库');
+  });
+
+  it('a referent outside the window is NOT reported as non-existent', async () => {
+    // Empty window: the read is bounded, so absence is NOT proof of absence. The
+    // two cases must be distinguishable AND neither may claim what it cannot measure.
+    state.events = [];
+    state.rows = [
+      dispatch({
+        id: 'blocked-2',
+        title: '老单',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-ancient' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/最近/);
+    const title = badge.getAttribute('title') ?? '';
+    expect(title).toContain('最近 500 条');
+    // It says it cannot tell, and it says so in BOTH directions — a reader must not
+    // be able to take "not found" as "does not exist".
+    expect(title).toContain('这不是说它不存在');
+    expect(title).toContain('别把「没查到」当成「没有」');
+    expect(title).not.toContain('已满足');
+    expect(title).not.toContain('已存在');
+  });
+
+  it('a referent that IS in the ledger reads differently from one that is not', async () => {
+    // The whole point of the dispatch: waiting-on-something-that-has-not-happened
+    // must look different from waiting-on-something-that-landed.
+    state.events = [gate('ev-landed')];
+    state.rows = [
+      dispatch({
+        id: 'b-landed',
+        title: '已落地的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-landed' }],
+      }),
+      dispatch({
+        id: 'b-ancient',
+        title: '读不到的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-ancient' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const landed = (await screen.findByTitle(/已经在账本里了/)).getAttribute('title') ?? '';
+    const ancient = (await screen.findByTitle(/最近 500 条/)).getAttribute('title') ?? '';
+    // Different text, and only the landed one asserts existence.
+    expect(landed).not.toBe(ancient);
+    expect(landed).toContain('已经在账本里了');
+    expect(ancient).toContain('这不是说它不存在');
+  });
+
+  it('names a dispatch-kind dependency as another dispatch, not as a raw pair', async () => {
+    state.events = [];
+    state.rows = [
+      dispatch({
+        id: 'blocked-3',
+        title: '等别人的单',
+        status: 'blocked',
+        deps: [{ depKind: 'dispatch', depValue: 'disp-other' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/等另一张派单/);
+    expect(badge.getAttribute('title')).toContain('disp-other');
+    expect(badge.getAttribute('title')).not.toMatch(/dispatch:\s*disp-other/);
   });
 });
