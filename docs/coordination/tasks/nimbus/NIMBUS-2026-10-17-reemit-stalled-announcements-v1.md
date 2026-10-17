@@ -160,3 +160,16 @@ Two memories on topic `topic-announcement-id-contract`, both
 No third memory: the missing guard in `complete_dispatch` is a gap, not a decision, and
 it is named in §4 and §6 for whoever picks it up. No preference was touched — Mr Zhang's
 corrections are Aegis's to record.
+
+## 8. Addendum — the report event
+
+The report to Aegis is `ev-J0i6eYQzPB2eT5ppNnYm3` (ArtifactCreated, subject
+`disp-reemit-stalled-announcements`). It states the half that is done, the half that is
+structurally not mine, what unblocks it, and what is not claimed.
+
+Final measured state at delivery:
+
+| dispatch | seat | status | edge target | target exists |
+|---|---|---|---|---|
+| `disp-blocked-on-whom-ui` | seat-mira-001 | **ready** | `ev-blocked-on-whom-dto-landed` | yes |
+| `disp-first-screen-verify` | seat-flux-001 | **blocked** | `ev-first-screen-default-tab-landed` | no |
