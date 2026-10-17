@@ -301,9 +301,20 @@ export function eventToText(evt: CanonicalEventDto, ctx?: EventTextContext): str
       return `🔁 委托结束了 — ${str(payload.delegation_id) ?? '(没记是哪个)'}`;
 
     // 真人说过的话:原样透出,一个字都不改。这是验收卡里明确不许退化的那一项。
+    //
+    // 一条没有 content 的 SupervisorMessage 不是人说的话,是闸门声明 —— 它的
+    // 有意义字段是 statement(闸门到底是什么条件、满足了没有)。2026-10-16 派单
+    // 的依赖列第一次把这个形状摆到台面上:一条 -live 闸门事件被翻译成「这条是
+    // 空的」,而它明明带着一整段 statement。有 content 就还是原样透出,一个字节
+    // 都不动;没有 content 才退到 statement。
     case 'SupervisorMessage':
-    case 'SeatResponse':
-      return str(payload.content) ?? '[这条是空的]';
+    case 'SeatResponse': {
+      const content = str(payload.content);
+      if (content) return content;
+      const statement = str(payload.statement);
+      if (statement) return `闸门声明:${statement}`;
+      return '[这条是空的]';
+    }
 
     default:
       // Not a bare type name: say what it was AND what it carried, so the next

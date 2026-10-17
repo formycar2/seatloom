@@ -7,7 +7,7 @@
 //
 // What is under test is this component's own behaviour against the DTO contract
 // Lyra pinned (the same text Nimbus's read-model lane codes against):
-//   1. the registered-flag gate — commands not on the build ⇒ the panel SAYS SO,
+//   1. the measured wiring probe — the read fails ⇒ the panel SAYS SO, verbatim,
 //      issues no call, and shows no fake data (house rule, no mocks);
 //   2. the topic tree — roots, declared child order, memory counts;
 //   3. data mapping — kind/confidence/tier/status badges and the l0 one-liner;
@@ -24,7 +24,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import React from 'react';
 
 const state = vi.hoisted(() => ({
-  registered: false,
   topics: [] as unknown[],
   memories: null as unknown,
   /** Every invoke, recorded as [command, arguments] — the wire is the contract. */
@@ -88,12 +87,15 @@ const memory = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const renderPanel = (registered = state.registered) =>
-  render(<KnowledgeSection projectId="seatloom" registered={registered} />);
+// The gate is now a MEASURED probe, not a hand-written boolean — so a test that
+// wants the not-wired side injects the probe result rather than flipping a flag.
+const probeUnavailable = (error = 'cmd_get_knowledge_tree not found') =>
+  ({ kind: 'unavailable', error }) as const;
+
+const renderPanel = () => render(<KnowledgeSection projectId="seatloom" />);
 
 /** Registered commands + a tree + one topic's memories. */
 const wired = (over: Record<string, unknown> = {}) => {
-  state.registered = true;
   state.topics = [topic(over)];
   state.memories = {
     topicId: 'topic-a',
@@ -109,7 +111,6 @@ const wired = (over: Record<string, unknown> = {}) => {
 describe('KnowledgeSection', () => {
   beforeEach(() => {
     cleanup();
-    state.registered = false;
     state.topics = [];
     state.memories = null;
     state.getTree.mockClear();
@@ -117,17 +118,17 @@ describe('KnowledgeSection', () => {
     state.calls.length = 0;
   });
 
-  // ── 1. The gate: commands not on the build ─────────────────────────────────
-  it('says the commands are not wired, issues no call, and shows no fake data', () => {
-    // Gate pinned OFF via the prop — NOT the shipped default (which is now true:
-    // the read-model commands are on track). The not-wired state must still render
-    // honestly for any build that lacks them.
-    render(<KnowledgeSection projectId="seatloom" registered={false} />);
-    expect(screen.getByText(/知识面板按 D5 契约实现完毕/)).toBeTruthy();
-    expect(screen.getByText(/cmd_get_knowledge_tree \/ cmd_get_topic_memories/)).toBeTruthy();
-    expect(screen.getByText(/不使用 mock 伪装后端真值/)).toBeTruthy();
-    // Not one read was attempted, and not one memory value is on screen.
-    expect(commands()).toEqual([]);
+  // ── 1. The gate: a measured probe, not a hand-written boolean ──────────────
+  it('reports the measured failure verbatim and shows no fake data', () => {
+    // The shipped default no longer asserts anything: the panel probes for real.
+    // This is the probe's unavailable branch — the measured error text is shown,
+    // not paraphrased, and not one read of topic data is attempted.
+    render(<KnowledgeSection projectId="seatloom" probe={probeUnavailable()} />);
+    expect(screen.getByText(/读取命令调不通/)).toBeTruthy();
+    expect(screen.getByText(/cmd_get_knowledge_tree not found/)).toBeTruthy();
+    expect(screen.getByText(/不用 mock 伪装后端真值/)).toBeTruthy();
+    // The probe itself made one call; nothing beyond it.
+    expect(commands()).toEqual(['cmd_get_knowledge_tree']);
     expect(screen.queryByText('坏卡作废需要先回填 plan')).toBeNull();
     expect(screen.queryByText(/cancel_acceptance 会被 016/)).toBeNull();
   });
@@ -155,7 +156,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('orders children by the declared childTopicIds, not by array order', async () => {
-    state.registered = true;
     state.topics = [
       topic({ topicId: 't-root', title: '根主题', childTopicIds: ['t-b', 't-a'] }),
       topic({ topicId: 't-a', title: '后到的子题', parentTopicId: 't-root', memoryCount: 0 }),
@@ -190,7 +190,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('labels an unknown kind verbatim rather than inventing one', async () => {
-    state.registered = true;
     state.topics = [topic()];
     state.memories = {
       topicId: 'topic-a',
@@ -255,7 +254,6 @@ describe('KnowledgeSection', () => {
   it('names what is missing when the l2 evidence is partial', async () => {
     const openAt = async (l2: unknown) => {
       cleanup();
-      state.registered = true;
       state.topics = [topic()];
       state.memories = {
         topicId: 'topic-a',
@@ -285,7 +283,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('says so when a card carries no l1 and no l2, instead of rendering blanks', async () => {
-    state.registered = true;
     state.topics = [topic()];
     state.memories = {
       topicId: 'topic-a',
@@ -303,7 +300,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('flags an l2 that names no documentId or filePath', async () => {
-    state.registered = true;
     state.topics = [topic()];
     state.memories = {
       topicId: 'topic-a',
@@ -321,7 +317,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('marks a superseded memory with what replaced it', async () => {
-    state.registered = true;
     state.topics = [topic()];
     state.memories = {
       topicId: 'topic-a',
@@ -342,7 +337,6 @@ describe('KnowledgeSection', () => {
 
   // ── 6. Meaningful empty states ─────────────────────────────────────────────
   it('explains why a project with no topics is empty, and what happens next', async () => {
-    state.registered = true;
     state.topics = [];
     renderPanel();
     expect(await screen.findByText(/还没有任何主题/)).toBeTruthy();
@@ -351,7 +345,6 @@ describe('KnowledgeSection', () => {
   });
 
   it('explains an open topic with no memories differently from no topics', async () => {
-    state.registered = true;
     state.topics = [topic()];
     state.memories = { topicId: 'topic-a', topicChain: [], depth: 'l0', memories: [] };
     renderPanel();
@@ -362,12 +355,20 @@ describe('KnowledgeSection', () => {
 
   // ── Errors, verbatim ───────────────────────────────────────────────────────
   it('shows a read refusal verbatim rather than an empty panel', async () => {
-    state.registered = true;
-    state.getTree.mockImplementationOnce(async () => {
+    // The probe succeeded (injected), so the panel is past the wiring gate; the
+    // failure here is the tree read itself, and its text is shown verbatim.
+    state.getTree.mockImplementation(async () => {
       throw new Error('project not found: seatloom');
     });
-    renderPanel();
+    render(<KnowledgeSection projectId="seatloom" probe={{ kind: 'ok' }} />);
     await screen.findByText(/读取主题树失败/);
     expect(screen.getByText(/project not found: seatloom/)).toBeTruthy();
+  });
+
+  it('reports a probing state instead of asserting the wiring while it measures', () => {
+    render(<KnowledgeSection projectId="seatloom" probe={{ kind: 'probing' }} />);
+    expect(screen.getByText(/正在实测读取命令是否可用/)).toBeTruthy();
+    // Nothing is rendered as if it were wired.
+    expect(screen.queryByText(/个主题/)).toBeNull();
   });
 });
