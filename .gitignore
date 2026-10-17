@@ -36,3 +36,7 @@ __pycache__/
 *.pyc
 
 resume-contexts/
+
+# saih/ — build workspace for the saih harness (vendored pi clone + node_modules
+# + dist). 560 MB; never commit it into this repo.
+saih/
