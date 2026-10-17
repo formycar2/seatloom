@@ -329,3 +329,12 @@ over.
 
 🔴 **The running app is still the previously installed binary.** The backend is
 measured against live; the product has not been looked at.
+
+## E. Addendum — the report event
+
+The report to Aegis is `ev--5ZAjNZ2RX03dLIoROqL7` (ArtifactCreated, subject
+`disp-_Xfb_jysuptYTOT4pCBx_`).
+
+Final state at delivery: branch `packet/nimbus/project-scoped-reads`, 5 ahead of
+`track/infra-foundation`, 0 behind, tree clean, all gates green, three proofs ALL
+POINTS PASS, 22 ignored DB tests pass. **No card, no merge, no live write.**
