@@ -245,3 +245,11 @@ No second memory: the join-not-WHERE point is a schema fact recorded in the code
 own doc comment, and the artifacts measurement is in the proof's POINT 9. No
 preference was touched — Mr Zhang's report is a bug report, not a correction of me,
 and his corrections are Aegis's to record.
+
+## 12. Addendum — the report event
+
+The report to Aegis is `ev-T5eYLIm9TO-Jt7fkIhYT8` (ArtifactCreated, subject
+`disp-smUiJkscwc__D1g2DhD2R`).
+
+Final state at delivery: branch `packet/nimbus/project-scoped-reads`, one commit
+ahead of `track/infra-foundation` @ `5c2b96f`, tree clean, all gates green.
