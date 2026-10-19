@@ -41,7 +41,7 @@ PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
 # silently does nothing. Set SEATLOOM_RESUME_UUID to the uuid from the transferred
 # file name <timestamp>_<uuid>.jsonl — the part after the underscore.
 RESUME_UUID="${SEATLOOM_RESUME_UUID:-}"
-MODEL="${SEATLOOM_MODEL:-modelproxy-anthropic/step-5-preview-sys}"
+MODEL="${SEATLOOM_MODEL:-modelproxy/gpt-6.1-sol-sys-ptu}"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
 VERFILE="$HOME/.pi/agent/install/current-version"
 
