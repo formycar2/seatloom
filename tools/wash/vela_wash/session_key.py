@@ -220,7 +220,20 @@ class SessionIndex:
 
     # --------------------------------------------------------- resolution
     def resolve_a1(self, harness: str, native_id: str) -> dict | None:
-        return self.by_key.get((harness, native_id))
+        """Look a session up by primary key.
+
+        Two spellings are tried, because the table does not use one: measured
+        2026-10-19, the re-keyed codex rows carry the harness prefix INSIDE the
+        id column (`id = 'codex:019dce05-…'`), while the claude-code and
+        cursor/gemini rows carry the bare native id. A1's `source_ref` is always
+        `<harness>:<native id>`, so the prefixed row is what a codex reference
+        actually resolves to — the colon in source_ref is the harness separator,
+        and the same colon is also part of the row's key.
+        """
+        row = self.by_key.get((harness, native_id))
+        if row is not None:
+            return row
+        return self.by_key.get((harness, f"{harness}:{native_id}"))
 
     def resolve_a2(self, rel_raw_path: str) -> dict | None:
         return self.by_raw.get(rel_raw_path)

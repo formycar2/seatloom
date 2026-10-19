@@ -27,7 +27,7 @@ python3 -m vela_wash.run --out .local/wash        # all 16 sessions, ~20 s
 python3 s5_writein.py                             # validate the write set, emit the manifest
 python3 -m unittest tests.test_l2_pointers tests.test_s0_adapters \
                   tests.test_s1_gate2 tests.test_s2_segment \
-                  tests.test_s5_writein tests.test_session_key_guard -v   # 64 tests
+                  tests.test_s5_writein tests.test_session_key_guard -v   # 66 tests
 ```
 
 `python3 -m unittest discover -s tests` does NOT work (no `tests/__init__.py`);
@@ -51,11 +51,16 @@ not: it is derived from a filename, and the codex filename is
 strip the timestamp prefix. A2 already broke once, silently: codex references
 resolved against no row at all and nothing complained.
 
-Measured on 2026-10-16 (`data/archived_sessions_index.json`): **5 of the 6
-in-scope codex rows are keyed by the native id, 1 is still keyed by the pre-021
-filename stem** — so even A1 is not universally correct today, which is why the
-gate checks both and requires them to name the SAME row rather than trusting
-either one.
+Measured 2026-10-19 (`data/archived_sessions_index.json`), after Aegis re-keyed
+the row this gate originally refused: **the codex rows are keyed
+`codex:<uuid>` — the harness prefix is inside the id column, not only in
+`source_ref`** — while the claude-code rows carry the bare native uuid and
+cursor/gemini carry the full `<project>__<hash>` / directory name. So `a1_parse`
+strips exactly one separator colon and `resolve_a1` tries both the bare native id
+and the prefixed form. The trap: a JOIN that does `replace(source_ref, 'codex:')`
+strips the colon and can never match a key that itself contains one — that
+misfire produced a false negative in review, which is why the guard probes
+instead of assuming.
 
 ### What the gate does
 

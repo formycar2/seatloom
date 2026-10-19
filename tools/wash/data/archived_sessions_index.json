@@ -1,8 +1,8 @@
 {
  "schema": "vela-wash/archived-sessions-index/v1",
- "fetched_at": "2026-10-16T07:03:46+00:00",
- "source": "seatloom MCP read tools, PURE READ (no psql): get_history_session_turns(harness, id, contexts_dir=<seatloom>/resume-contexts) per session, cross-checked against list_history_sessions('seatloom'). A row is recorded under EVERY id spelling that resolves, because the table does not use one spelling consistently.",
- "scope": "seatloom project — the 16 sessions the operator fixed the washing scope to on 2026-10-16 (8 claude-code, 6 codex, 1 cursor, 1 gemini). Not the whole table: 271 rows exist on disk and 261 are reachable through the read tools, but only these 16 are in scope, and a guard only has to resolve the keys the write set carries.",
+ "fetched_at": "2026-10-19T05:00:53+00:00",
+ "source": "seatloom MCP read tools, PURE READ (no psql): get_history_session_turns(harness, id, contexts_dir=/Users/jyxc-dz-0100609/Documents/GitHub/seatloom/resume-contexts) per in-scope session, probed under EVERY id spelling. 2026-10-19 re-probe after Aegis re-keyed the 019dda18 row.",
+ "scope": "seatloom project — the 16 sessions the operator fixed the washing scope to on 2026-10-16 (8 claude-code, 6 codex, 1 cursor, 1 gemini).",
  "rows": [
   {
    "harness": "claude-code",
@@ -62,43 +62,42 @@
   },
   {
    "harness": "codex",
-   "id": "019dbf27-7abf-7391-9661-d90524e4a554",
+   "id": "codex:019dbf27-7abf-7391-9661-d90524e4a554",
    "raw_path": "raw/codex/rollout-2026-04-24T19-02-08-019dbf27-7abf-7391-9661-d90524e4a554.jsonl",
    "project": "seatloom",
    "corpus_loaded": true
   },
   {
    "harness": "codex",
-   "id": "019dce05-fb23-7081-aaa6-40d60b4b33d2",
+   "id": "codex:019dce05-fb23-7081-aaa6-40d60b4b33d2",
    "raw_path": "raw/codex/rollout-2026-04-27T16-19-51-019dce05-fb23-7081-aaa6-40d60b4b33d2.jsonl",
    "project": "seatloom",
    "corpus_loaded": true
   },
   {
    "harness": "codex",
-   "id": "rollout-2026-04-30T00-35-01-019dda18-07f6-79e0-8008-e4eb16a5448d",
+   "id": "codex:019dda18-07f6-79e0-8008-e4eb16a5448d",
    "raw_path": "raw/codex/rollout-2026-04-30T00-35-01-019dda18-07f6-79e0-8008-e4eb16a5448d.jsonl",
    "project": "seatloom",
-   "corpus_loaded": false,
-   "note": "Probed 2026-10-16: this session's ONLY row is keyed by the pre-021 filename stem, and get_history_session_turns answers 'the historical corpus is not loaded in this database — archived_sessions.message_count does not exist'. The native-id spelling codex:019dda18-07f6-79e0-8008-e4eb16a5448d resolves against NOTHING (probed: 'no archived session (codex, 019dda18-07f6-79e0-8008-e4eb16a5448d) — the archive is keyed by (harness, id)'), so it is deliberately NOT recorded as a row of its own: an index that listed a key which does not exist would make the guard pass an orphan. Migration 021 re-keyed 182 rows and missed this one. Consequence: 3 washed records (and 3 live memories) cite a session key that dangles — see README and the delivery note."
+   "corpus_loaded": true
   },
   {
    "harness": "codex",
-   "id": "019ddc3e-06d0-73c3-a80e-0d49f38ffe80",
+   "id": "codex:019ddc3e-06d0-73c3-a80e-0d49f38ffe80",
    "raw_path": "raw/codex/rollout-2026-04-30T10-35-45-019ddc3e-06d0-73c3-a80e-0d49f38ffe80.jsonl",
    "project": "seatloom",
    "corpus_loaded": true
   },
   {
    "harness": "codex",
-   "id": "019dfc2c-e64b-7952-b1dd-c416d499939f",
+   "id": "codex:019dfc2c-e64b-7952-b1dd-c416d499939f",
    "raw_path": "raw/codex/rollout-2026-05-06T15-24-54-019dfc2c-e64b-7952-b1dd-c416d499939f.jsonl",
    "project": "seatloom",
    "corpus_loaded": true
   },
   {
    "harness": "codex",
-   "id": "019dfc2f-3035-7d83-88b7-ae941c74e95c",
+   "id": "codex:019dfc2f-3035-7d83-88b7-ae941c74e95c",
    "raw_path": "raw/codex/rollout-2026-05-06T15-27-24-019dfc2f-3035-7d83-88b7-ae941c74e95c.jsonl",
    "project": "seatloom",
    "corpus_loaded": true
@@ -108,16 +107,14 @@
    "id": "seatloom__d73725d80aa3442b0d73b0e4a7911be0",
    "raw_path": "raw/cursor/seatloom__d73725d80aa3442b0d73b0e4a7911be0/chat_dump.json",
    "project": "seatloom",
-   "corpus_loaded": true,
-   "note": "raw_path points at the chat_dump.json inside the archived directory, not at the directory itself (011 records sha256 NULL for dir-copies). No washed record cites this session yet."
+   "corpus_loaded": true
   },
   {
    "harness": "gemini",
    "id": "seatloom",
    "raw_path": "raw/gemini/seatloom",
    "project": "seatloom",
-   "corpus_loaded": false,
-   "note": "Register-only session (AGENTS.md: gemini is登记不抽取 this round). The row exists but the corpus is not loaded for it, so it contributes no records and must not block the pipeline."
+   "corpus_loaded": false
   }
  ]
 }

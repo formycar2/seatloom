@@ -314,6 +314,37 @@ class TestValidateSessionKeys(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIn("different sessions", res["problems"][0])
 
+    def test_a_codex_row_keyed_with_the_harness_prefix_resolves(self):
+        """Measured 2026-10-19: the re-keyed codex rows carry the harness prefix
+        INSIDE the id column (`id = 'codex:019dce05-…'`), so A1's
+        `<harness>:<native id>` resolves through a second lookup, not only the
+        bare native id. Aegis verified this the hard way — his first JOIN used
+        replace(source_ref,'codex:',) which stripped the colon and therefore
+        never matched a key that itself contains one."""
+        rows = [{"harness": "codex",
+                 "id": "codex:019dda18-07f6-79e0-8008-e4eb16a5448d",
+                 "raw_path": "raw/codex/rollout-2026-04-30T00-35-01-"
+                             "019dda18-07f6-79e0-8008-e4eb16a5448d.jsonl",
+                 "project": "seatloom", "corpus_loaded": True}]
+        p = write_index(os.path.join(self.tmp, "i6.json"), rows, "test", "test")
+        idx = SessionIndex.load(p)
+        rec = _record(harness="codex",
+                      session_id="019dda18-07f6-79e0-8008-e4eb16a5448d",
+                      source_ref="codex:019dda18-07f6-79e0-8008-e4eb16a5448d",
+                      l2_file_path="~/Documents/GitHub/AgentHistory/raw/codex/"
+                                   "rollout-2026-04-30T00-35-01-"
+                                   "019dda18-07f6-79e0-8008-e4eb16a5448d.jsonl")
+        res = validate_session_keys([rec], idx, AH)
+        self.assertTrue(res["ok"], res["problems"])
+        self.assertEqual(res["resolved_sessions"],
+                         [("codex", "codex:019dda18-07f6-79e0-8008-e4eb16a5448d")])
+
+    def test_a_bare_uuid_row_still_resolves(self):
+        """The claude-code rows are keyed by the bare native id, so both shapes
+        must work — the lookup cannot prefer one spelling."""
+        res = validate_session_keys([_record()], self._index(), AH)
+        self.assertTrue(res["ok"], res["problems"])
+
     def test_an_unknown_source_kind_fails_closed(self):
         """No silent skip: a source kind this gate has no rule for stops the
         write until someone writes the rule."""
