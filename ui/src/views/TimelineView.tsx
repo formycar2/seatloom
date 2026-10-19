@@ -12,7 +12,12 @@ interface TimelineViewProps {
   onFiltersChange: (filters: any) => void;
 }
 
-const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtifact, filters, onFiltersChange }) => {
+const TimelineView: React.FC<TimelineViewProps> = ({
+  onSelectObject,
+  onOpenArtifact,
+  filters,
+  onFiltersChange,
+}) => {
   const { t } = useLocaleStore();
   const { activeProjectId, projectData } = useDataStore();
   const [searchTerm, setSearchTerm] = useState('');
@@ -21,6 +26,7 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
   const [templateFilter, setTemplateFilter] = useState<string>('all');
 
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
+  // Derived BEFORE the early return below, so the hook order is unconditional.
   const events = currentData?.events || [];
 
   const filteredEvents = useMemo(() => {
@@ -39,6 +45,18 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
 
   const eventTypes = Array.from(new Set(events.map((e) => e.event_type)));
 
+  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): with no
+  // project resolved yet this says so, rather than rendering an empty list that
+  // reads as "this project has nothing". SeatsView already had this guard; these
+  // two rendered a silent empty.
+  if (!currentData) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)]">
+        <p className="text-sm">请选择一个项目</p>
+      </div>
+    );
+  }
+
   const clearFilters = () => {
     setSearchTerm('');
     setTypeFilter('all');
@@ -49,7 +67,9 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
       <div className="p-8 border-b border-border/40 space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">TIMELINE</h2>
+          <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">
+            TIMELINE
+          </h2>
           <div className="flex items-center gap-3">
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary group-focus-within:text-primary transition-colors" />
@@ -73,7 +93,9 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
         {showFilters && (
           <div className="flex flex-wrap gap-4 items-end animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">事件类型</label>
+              <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+                事件类型
+              </label>
               <div className="relative">
                 <select
                   value={typeFilter}
@@ -91,7 +113,10 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
               </div>
             </div>
 
-            <button onClick={clearFilters} className="px-4 py-1.5 text-[10px] font-black text-text-secondary uppercase tracking-widest hover:text-primary transition-colors mb-0.5">
+            <button
+              onClick={clearFilters}
+              className="px-4 py-1.5 text-[10px] font-black text-text-secondary uppercase tracking-widest hover:text-primary transition-colors mb-0.5"
+            >
               重置筛选
             </button>
           </div>
@@ -117,8 +142,13 @@ const TimelineView: React.FC<TimelineViewProps> = ({ onSelectObject, onOpenArtif
               <Search className="w-8 h-8" />
             </div>
             <p className="text-sm font-bold text-text-secondary">没有找到匹配的事件</p>
-            <p className="text-xs text-text-secondary uppercase tracking-widest mt-1 opacity-60">请尝试调整搜索词或筛选条件</p>
-            <button onClick={clearFilters} className="text-xs font-black text-primary uppercase tracking-widest mt-4 hover:underline">
+            <p className="text-xs text-text-secondary uppercase tracking-widest mt-1 opacity-60">
+              请尝试调整搜索词或筛选条件
+            </p>
+            <button
+              onClick={clearFilters}
+              className="text-xs font-black text-primary uppercase tracking-widest mt-4 hover:underline"
+            >
               重置筛选条件
             </button>
           </div>

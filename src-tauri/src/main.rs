@@ -37,8 +37,8 @@ use commands::{
         cmd_get_reconcile_run, cmd_list_reconcile_items, cmd_list_reconcile_runs, cmd_reconcile,
     },
     seat_cmds::{
-        cmd_get_delegation, cmd_get_seat, cmd_list_delegations, cmd_list_role_bindings,
-        cmd_list_seats,
+        cmd_get_delegation, cmd_get_seat, cmd_list_all_seats, cmd_list_delegations,
+        cmd_list_role_bindings, cmd_list_seats,
     },
     session_cmds::{
         cmd_attach_tmux_session, cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
@@ -123,6 +123,7 @@ fn main() {
             cmd_list_projects,
             cmd_get_project,
             // seats
+            cmd_list_all_seats,
             cmd_list_seats,
             cmd_get_seat,
             cmd_list_role_bindings,

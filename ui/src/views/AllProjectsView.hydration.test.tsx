@@ -30,6 +30,7 @@ vi.mock('../lib/api', () => ({
       return state.projects;
     },
     listSeats: async () => state.seats,
+    listAllSeats: async () => state.seats,
     listRoleBindings: async (p?: string) => state.bindings[p ?? ''] ?? [],
     listWorkitems: async () => [],
     listHandoffs: async () => [],

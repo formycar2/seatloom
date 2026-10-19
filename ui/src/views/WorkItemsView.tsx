@@ -13,17 +13,33 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
   const [searchTerm, setSearchTerm] = useState('');
 
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
+  // Derived BEFORE any early return: a hook after a conditional return is the
+  // rules-of-hooks error, and "just move the guard down" is not an option because
+  // the guard IS the point.
   const workItems = currentData?.workItems || [];
 
   const filteredItems = useMemo(() => {
     if (!searchTerm.trim()) return workItems;
     const term = searchTerm.toLowerCase();
-    return workItems.filter(item => 
-      item.id.toLowerCase().includes(term) ||
-      item.title.toLowerCase().includes(term) ||
-      (item.goal && item.goal.toLowerCase().includes(term))
+    return workItems.filter(
+      (item) =>
+        item.id.toLowerCase().includes(term) ||
+        item.title.toLowerCase().includes(term) ||
+        (item.goal && item.goal.toLowerCase().includes(term)),
     );
   }, [workItems, searchTerm]);
+
+  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): with no
+  // project resolved yet this says so, rather than rendering an empty list that
+  // reads as "this project has nothing". SeatsView already had this guard; these
+  // two rendered a silent empty.
+  if (!currentData) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)]">
+        <p className="text-sm">请选择一个项目</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 overflow-y-auto p-10 bg-background">
@@ -31,10 +47,14 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
         <header className="space-y-4 border-b border-border/40 pb-8">
           <div className="flex items-center justify-between">
             <div className="space-y-1">
-              <h1 className="text-3xl font-black tracking-tight text-text-primary uppercase">WORK ITEMS</h1>
-              <p className="text-text-secondary font-bold opacity-60 uppercase tracking-widest text-xs">Active Task Ledger · 活跃工作项账本</p>
+              <h1 className="text-3xl font-black tracking-tight text-text-primary uppercase">
+                WORK ITEMS
+              </h1>
+              <p className="text-text-secondary font-bold opacity-60 uppercase tracking-widest text-xs">
+                Active Task Ledger · 活跃工作项账本
+              </p>
             </div>
-            
+
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary group-focus-within:text-primary transition-colors" />
               <input
@@ -45,7 +65,7 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
                 className="pl-10 pr-10 py-2.5 bg-secondary/60 border border-border/40 rounded-2xl text-xs font-bold focus:outline-none focus:ring-1 focus:ring-primary focus:bg-white transition-all w-64 shadow-sm"
               />
               {searchTerm && (
-                <button 
+                <button
                   onClick={() => setSearchTerm('')}
                   className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-accent rounded-full text-text-secondary"
                 >
@@ -54,10 +74,11 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
               )}
             </div>
           </div>
-          
+
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-black text-text-muted uppercase tracking-widest bg-secondary px-2 py-0.5 rounded border border-border/40">
-              {searchTerm ? `${filteredItems.length} / ${workItems.length}` : workItems.length} ACTIVE ITEMS
+              {searchTerm ? `${filteredItems.length} / ${workItems.length}` : workItems.length}{' '}
+              ACTIVE ITEMS
             </span>
           </div>
         </header>
@@ -72,13 +93,19 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
               >
                 <div className="flex-1 space-y-4">
                   <div className="flex items-center gap-3">
-                    <span className="monospace text-xs font-black text-primary bg-accent px-2 py-0.5 rounded border border-primary/10 shadow-sm">{item.id.toUpperCase()}</span>
+                    <span className="monospace text-xs font-black text-primary bg-accent px-2 py-0.5 rounded border border-primary/10 shadow-sm">
+                      {item.id.toUpperCase()}
+                    </span>
                     <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${
-                        item.priority === 'Critical' ? 'bg-status-error/10 text-status-error border-status-error/20' :
-                        item.priority === 'High' ? 'bg-status-warning/10 text-status-warning border-status-warning/20' :
-                        'bg-secondary text-text-secondary border-border/40'
-                      }`}>
+                      <span
+                        className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${
+                          item.priority === 'Critical'
+                            ? 'bg-status-error/10 text-status-error border-status-error/20'
+                            : item.priority === 'High'
+                              ? 'bg-status-warning/10 text-status-warning border-status-warning/20'
+                              : 'bg-secondary text-text-secondary border-border/40'
+                        }`}
+                      >
                         {item.priority}
                       </span>
                       <span className="text-[10px] font-bold text-text-secondary uppercase tracking-tighter bg-secondary/60 px-2 py-0.5 rounded border border-border/40">
@@ -86,8 +113,12 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
                       </span>
                     </div>
                   </div>
-                  <h3 className="text-xl font-bold text-text-primary leading-tight group-hover:text-primary transition-colors">{item.title}</h3>
-                  <p className="text-sm text-text-secondary leading-relaxed line-clamp-2 opacity-80">{item.goal}</p>
+                  <h3 className="text-xl font-bold text-text-primary leading-tight group-hover:text-primary transition-colors">
+                    {item.title}
+                  </h3>
+                  <p className="text-sm text-text-secondary leading-relaxed line-clamp-2 opacity-80">
+                    {item.goal}
+                  </p>
                 </div>
 
                 <div className="flex flex-row md:flex-col items-center md:items-end gap-4 md:gap-2 text-[10px] font-bold text-text-secondary opacity-60 whitespace-nowrap">
@@ -100,7 +131,10 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
                     验收标准: {item.acceptance_criteria.length} 项
                   </div>
                   <div className="mt-auto hidden md:block">
-                    <ChevronRight size={16} className="text-primary opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
+                    <ChevronRight
+                      size={16}
+                      className="text-primary opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all"
+                    />
                   </div>
                 </div>
               </div>
@@ -112,8 +146,10 @@ const WorkItemsView: React.FC<WorkItemsViewProps> = ({ onSelectWI }) => {
               <Search className="w-10 h-10" />
             </div>
             <p className="text-lg font-bold text-text-secondary">未找到匹配的工作项</p>
-            <p className="text-sm text-text-secondary opacity-60 mt-1">请尝试更换搜索词，或清除过滤条件以查看全部。</p>
-            <button 
+            <p className="text-sm text-text-secondary opacity-60 mt-1">
+              请尝试更换搜索词，或清除过滤条件以查看全部。
+            </p>
+            <button
               onClick={() => setSearchTerm('')}
               className="mt-6 px-6 py-2 bg-primary text-white rounded-xl text-xs font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-primary/20"
             >

@@ -162,11 +162,17 @@ function useEventTextContext(events: CanonicalEventDto[]): EventTextContext {
     return m;
   }, [projectData]);
 
+  // Scoped to the selected project. The unscoped call hit the backend's
+  // default-project fallback, so dispatch titles were resolved against seatloom's
+  // dispatches no matter which project's events were on screen.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   useEffect(() => {
     if (!isTauri()) return;
+    if (!activeProjectId) return;
     let cancelled = false;
     api
-      .listDispatches(undefined, 500)
+      .listDispatches(activeProjectId, 500)
       .then((rows) => {
         if (cancelled) return;
         const dispatches = new Map<string, DispatchFact>();
@@ -188,7 +194,7 @@ function useEventTextContext(events: CanonicalEventDto[]): EventTextContext {
     return () => {
       cancelled = true;
     };
-  }, [seatNames]);
+  }, [seatNames, activeProjectId]);
 
   // Second pass: memory titles for the topics these events actually mention.
   const topicIds = useMemo(() => {

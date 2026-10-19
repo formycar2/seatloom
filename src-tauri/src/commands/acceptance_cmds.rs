@@ -31,7 +31,11 @@ pub async fn cmd_list_acceptances(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<AcceptanceCard>, String> {
-    let project = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    // Was: project_id.unwrap_or_else(|| state.default_project_id.clone()). Same
+    // silent-default fallback as cmd_list_dispatches, so the 待验收区 showed
+    // seatloom's 18 cards under every project. Measured on live: all 18 rows have
+    // project_id='seatloom'.
+    let project = crate::commands::require_project_id("cmd_list_acceptances", project_id)?;
     let rows = state
         .db
         .list_acceptances_for_project(&project, 500)

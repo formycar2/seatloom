@@ -19,6 +19,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 
+// The seats the backend's join returns for the project the store opens. `seats` is
+// the GLOBAL registry (what `listAllSeats` returns); this is the project-scoped
+// subset (what `listSeats(projectId)` returns). The component renders the latter.
+const boundSeatIds = new Set(['seat-mira-001', 'seat-nimbus-001']);
+
 const state = vi.hoisted(() => ({
   // Newest-first ledger rows the dependency column resolves against. Empty by
   // default: a dep whose referent is outside the window must render honestly.
@@ -60,20 +65,31 @@ vi.mock('../lib/api', () => ({
     return state.registered;
   },
   api: {
-    listSeats: async () => state.seats,
-    listDispatches: async () => state.rows,
+    // Scoped to a project, as the backend now is. The mock honours the argument so
+    // a test that forgets it cannot silently pass on an unscoped read.
+    listSeats: async (projectId?: string) =>
+      projectId ? state.seats.filter((s: { id: string }) => boundSeatIds.has(s.id)) : [],
+    listAllSeats: async () => state.seats,
+    listDispatches: async (projectId?: string) => (projectId ? state.rows : []),
     enqueueDispatch: (...args: unknown[]) => state.enqueue(...(args as [])),
-    listAcceptances: async () => [],
+    listAcceptances: async (projectId?: string) => (projectId ? [] : []),
     acceptDelivery: vi.fn(async () => ({})),
     rejectDelivery: vi.fn(async () => ({})),
     // The dependency column resolves `event:<id>` referents through this read. A
     // missing entry here used to make the whole view throw; now it is part of the
     // seam so a test can decide what the window contains.
-    listEvents: async (limit?: number) => state.events.slice(0, limit ?? 200),
+    //
+    // 2026-10-17: the signature is (projectId, limit) — it used to be (limit), and
+    // a mock left at the old shape silently received the project id as the limit,
+    // sliced to [] and made every dependency read as unresolved.
+    listEvents: async (projectId?: string, limit?: number) =>
+      projectId ? state.events.slice(0, limit ?? 200) : [],
   },
 }));
 
 import DispatchInboxView from './DispatchInboxView';
+import { useDataStore } from '../stores/useDataStore';
+beforeEach(() => useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true }));
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
