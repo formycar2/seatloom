@@ -76,7 +76,13 @@ export const api = {
     invoke('cmd_get_project', { projectId }),
 
   // --- Seats / roles / delegations ---
-  listSeats: (): Promise<SeatDto[]> => invoke('cmd_list_seats'),
+  listSeats: (projectId: string): Promise<SeatDto[]> =>
+    invoke('cmd_list_seats', { projectId }),
+  // The GLOBAL seat registry, unfiltered. Used for exactly one purpose: naming
+  // the seats that are bound in no project at all, so an empty seat list can say
+  // why it is empty instead of rendering as broken. Everything else reads the
+  // project-scoped `listSeats` above.
+  listAllSeats: (): Promise<SeatDto[]> => invoke('cmd_list_all_seats'),
   getSeat: (seatId: string): Promise<SeatDto | null> => invoke('cmd_get_seat', { seatId }),
   listRoleBindings: (projectId?: string): Promise<RoleBindingDto[]> =>
     invoke('cmd_list_role_bindings', { projectId }),
@@ -85,7 +91,8 @@ export const api = {
     invoke('cmd_get_delegation', { delegationId }),
 
   // --- Workitems ---
-  listWorkitems: (): Promise<WorkItemDto[]> => invoke('cmd_list_workitems'),
+  listWorkitems: (projectId: string): Promise<WorkItemDto[]> =>
+    invoke('cmd_list_workitems', { projectId }),
   getWorkitem: (workitemId: string): Promise<WorkItemDto | null> =>
     invoke('cmd_get_workitem', { workitemId }),
 
@@ -96,18 +103,22 @@ export const api = {
     invoke('cmd_get_artifact', { artifactId }),
 
   // --- Handoffs ---
-  listHandoffs: (): Promise<HandoffDto[]> => invoke('cmd_list_handoffs'),
+  listHandoffs: (projectId: string): Promise<HandoffDto[]> =>
+    invoke('cmd_list_handoffs', { projectId }),
 
   // --- Sessions (DB rows) ---
-  listSessions: (): Promise<SessionDto[]> => invoke('cmd_list_sessions'),
+  listSessions: (projectId: string): Promise<SessionDto[]> =>
+    invoke('cmd_list_sessions', { projectId }),
   listSessionsForSeat: (seatId: string): Promise<SessionDto[]> =>
     invoke('cmd_list_sessions_for_seat', { seatId }),
   listCheckpoints: (limit?: number): Promise<CheckpointDto[]> =>
     invoke('cmd_list_checkpoints', { limit }),
 
   // --- Documents ---
+  // projectId is required: the command used to fall back to the app's default
+  // project, so the Artifacts tab's document half was always seatloom's.
   listDocuments: (
-    opts: { projectId?: string; template?: string; subtype?: string } = {},
+    opts: { projectId: string; template?: string; subtype?: string },
   ): Promise<DocumentDto[]> => invoke('cmd_list_documents', opts),
   getDocument: (documentId: string): Promise<DocumentDto | null> =>
     invoke('cmd_get_document', { documentId }),
@@ -123,8 +134,10 @@ export const api = {
     invoke('cmd_list_reconcile_runs', { limit }),
 
   // --- Events / timeline ---
-  listEvents: (limit?: number): Promise<CanonicalEventDto[]> =>
-    invoke('cmd_list_events', { limit }),
+  // projectId is required: this read had no project parameter at all and returned
+  // every project's events, so the timeline was identical under every project.
+  listEvents: (projectId: string, limit?: number): Promise<CanonicalEventDto[]> =>
+    invoke('cmd_list_events', { projectId, limit }),
   listEventsByType: (eventType: string): Promise<CanonicalEventDto[]> =>
     invoke('cmd_list_events_by_type', { eventType }),
 
@@ -150,7 +163,10 @@ export const api = {
     invoke('cmd_get_topic_memories', { topicId, depth, includeSuperseded, limit }),
 
   // --- Governed dispatch (G19) — seat inboxes ---
-  listDispatches: (projectId?: string, limit?: number): Promise<DispatchDto[]> =>
+  // Required, not optional: the command used to fall back to the app's default
+  // project when this was omitted, so an unscoped call returned another project's
+  // dispatches and looked like data. The type now refuses to let a caller forget.
+  listDispatches: (projectId: string, limit?: number): Promise<DispatchDto[]> =>
     invoke('cmd_list_dispatches', { projectId, limit }),
   enqueueDispatch: (
     targetSeatId: string,
@@ -188,7 +204,8 @@ export const api = {
   // which is why `ACCEPTANCE_CMDS_REGISTERED` gates them: until it is true the
   // 待验收 section says so out loud instead of calling a command that would
   // reject every 5 seconds. Flip this one constant when his commands land.
-  listAcceptances: (): Promise<AcceptanceCardDto[]> => invoke('cmd_list_acceptances'),
+  listAcceptances: (projectId: string): Promise<AcceptanceCardDto[]> =>
+    invoke('cmd_list_acceptances', { projectId }),
   acceptDelivery: (acceptanceId: string): Promise<AcceptanceDecisionDto> =>
     invoke('cmd_accept_delivery', { acceptanceId }),
   rejectDelivery: (acceptanceId: string, feedback: string): Promise<AcceptanceDecisionDto> =>

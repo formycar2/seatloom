@@ -16,6 +16,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, isTauri } from '../../lib/api';
+import { useDataStore } from '../../stores/useDataStore';
 import type {
   AcceptanceCardDto,
   CanonicalEventDto,
@@ -101,6 +102,8 @@ function MeaningfulEmpty({ why, next }: { why: string; next: string }) {
 function useMeasuredProbe() {
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' });
 
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   const run = useCallback(async () => {
     if (!isTauri()) {
       setProbe({
@@ -109,18 +112,26 @@ function useMeasuredProbe() {
       });
       return;
     }
+    // A reachability probe still needs a project to ask about, because every read
+    // is now project-scoped. Saying "no project selected" is the honest answer
+    // here — it is not the same as "the backend is unreachable", and conflating
+    // them is the wiring-honesty defect this probe exists to avoid.
+    if (!activeProjectId) {
+      setProbe({ kind: 'unavailable', detail: 'no project selected — nothing to read against' });
+      return;
+    }
     setProbe({ kind: 'probing' });
     // Probe the cheapest real read the surfaces depend on. Observe the result.
     try {
-      const seats = await api.listSeats();
+      const seats = await api.listSeats(activeProjectId);
       setProbe({
         kind: 'ok',
-        detail: `seat registry reachable (${seats.length} seat(s) measured)`,
+        detail: `seat registry reachable (${seats.length} seat(s) measured under ${activeProjectId})`,
       });
     } catch (err) {
       setProbe({ kind: 'unavailable', detail: `seat registry call failed: ${String(err)}` });
     }
-  }, []);
+  }, [activeProjectId]);
 
   return { probe, run };
 }
@@ -143,22 +154,31 @@ function useContinuityDelta() {
   const [delta, setDelta] = useState<ContinuityDelta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Every read below is project-scoped. Without a selected project there is
+  // nothing honest to show, so the card says that instead of quietly reading the
+  // default project — which is how it used to show seatloom's data under any tab.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
 
+  useEffect(() => { setDelta(null); setError(null); }, [activeProjectId]);
   const load = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
       return;
     }
+    if (!activeProjectId) {
+      setError('no project selected');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const [acceptances, dispatches, handoffs, events, checkpoints] = await Promise.all([
-        api.listAcceptances(),
-        api.listDispatches(undefined, 200),
-        api.listHandoffs(),
-        api.listEvents(200),
-        api.listCheckpoints(1),
+      const [acceptances, dispatches, handoffs, events] = await Promise.all([
+        api.listAcceptances(activeProjectId),
+        api.listDispatches(activeProjectId, 200),
+        api.listHandoffs(activeProjectId),
+        api.listEvents(activeProjectId, 200),
       ]);
+      if (useDataStore.getState().activeProjectId !== activeProjectId) return;
       const gateTypes = [
         'ReviewVerdictIssued',
         'AcceptanceGranted',
@@ -177,14 +197,15 @@ function useContinuityDelta() {
           (h) => h.status !== 'completed' && h.status !== 'accepted',
         ),
         lastGate,
-        sinceCheckpoint: checkpoints[0] ?? null,
+        // Checkpoints have no direct project key; don't substitute a global checkpoint.
+        sinceCheckpoint: null,
       });
     } catch (err) {
-      setError(String(err));
+      if (useDataStore.getState().activeProjectId === activeProjectId) setError(String(err));
     } finally {
-      setLoading(false);
+      if (useDataStore.getState().activeProjectId === activeProjectId) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   return { delta, error, loading, load };
 }
@@ -312,6 +333,8 @@ function DecisionAnswerCard() {
   const [loadingTree, setLoadingTree] = useState(false);
   const [loadingMem, setLoadingMem] = useState(false);
 
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  useEffect(() => { setTopics(null); setSelected(null); setMemories(null); }, [activeProjectId]);
   const loadTree = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
@@ -320,7 +343,10 @@ function DecisionAnswerCard() {
     setLoadingTree(true);
     setError(null);
     try {
-      const tree = await api.getKnowledgeTree();
+      const pid = useDataStore.getState().activeProjectId;
+      if (!pid) throw new Error('no project selected');
+      const tree = await api.getKnowledgeTree(pid);
+      if (useDataStore.getState().activeProjectId !== pid) return;
       setTopics(tree.topics);
     } catch (err) {
       setError(String(err));
@@ -334,7 +360,9 @@ function DecisionAnswerCard() {
     setLoadingMem(true);
     setError(null);
     try {
+      const pid = useDataStore.getState().activeProjectId;
       const mem = await api.getTopicMemories(topicId, 'l0', false, 20);
+      if (useDataStore.getState().activeProjectId !== pid) return;
       setMemories(mem);
     } catch (err) {
       setError(String(err));

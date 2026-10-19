@@ -34,7 +34,7 @@ pub async fn cmd_get_knowledge_tree(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<KnowledgeTopicTreeDto, String> {
-    let project = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let project = crate::commands::require_project_id("cmd_get_knowledge_tree", project_id)?;
     let nodes = state
         .db
         .knowledge_topic_tree(&project)

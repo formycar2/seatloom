@@ -123,11 +123,26 @@ const state = vi.hoisted(() => ({
   bindings: {} as Record<string, Array<{ seatId: string; role: string }>>,
 }));
 
+// 2026-10-17: the mock now models the BACKEND's scoping, because that is where the
+// rule moved. `cmd_list_seats` takes a project_id and resolves it through
+// project_role_bindings (a JOIN — `seats` has no project_id column), so
+// `listSeats(projectId)` returns only that project's bound seats. The store no
+// longer filters; it asks. The old mock returned every seat and let the store
+// filter, which is exactly the arrangement that let QL appear under SeatLoom.
+//
+// `listAllSeats` is the one deliberately unscoped read: it exists so a seat bound
+// in NO project can be named rather than silently missing.
 vi.mock('../lib/api', () => ({
   isTauri: () => true,
   api: {
     listProjects: async () => state.projects,
-    listSeats: async () => state.seats,
+    listSeats: async (projectId: string) => {
+      const bound = new Set(
+        (state.bindings[projectId] ?? []).map((b: { seatId: string }) => b.seatId),
+      );
+      return state.seats.filter((s: { id: string }) => bound.has(s.id));
+    },
+    listAllSeats: async () => state.seats,
     listRoleBindings: async (projectId?: string) => state.bindings[projectId ?? ''] ?? [],
     listWorkitems: async () => [],
     listHandoffs: async () => [],
@@ -139,6 +154,21 @@ vi.mock('../lib/api', () => ({
 }));
 
 import { useDataStore } from './useDataStore';
+
+// The store reads ONE project at a time and re-reads on switch, so a test that
+// wants to look at a project must SELECT it. That is the operator's action being
+// tested, not a workaround: switching projects is what used to change nothing.
+const openProject = async (projectId: string) => {
+  await act(async () => {
+    useDataStore.getState().setActiveProject(projectId);
+  });
+  // setActiveProject fires the re-read without awaiting it (the caller is a click
+  // handler), so flush the microtasks it queued.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+};
 
 const seatNames = (projectId: string) =>
   (useDataStore.getState().projectData[projectId]?.seats ?? []).map((s) => s.name).sort();
@@ -166,6 +196,7 @@ describe('seats are attributed by role binding', () => {
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
+    await openProject('seatloom');
     expect(seatNames('seatloom')).toEqual(['aegis', 'flux', 'lyra', 'mira', 'nimbus', 'onyx']);
     expect(seatNames('seatloom')).not.toContain('ql');
     expect(seatNames('seatloom')).not.toContain('vela');
@@ -175,6 +206,7 @@ describe('seats are attributed by role binding', () => {
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
+    await openProject('ql_delivery');
     expect(seatNames('ql_delivery')).toEqual(['ql']);
   });
 
@@ -182,6 +214,7 @@ describe('seats are attributed by role binding', () => {
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
+    await openProject('ThoughtOnly');
     expect(seatNames('ThoughtOnly')).toEqual([]);
     // The truth is carried so the UI can explain the empty list rather than render a
     // `席位 (0)` that reads as broken.
@@ -201,6 +234,7 @@ describe('seats are attributed by role binding', () => {
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
+    await openProject('seatloom');
     const mira = useDataStore
       .getState()
       .projectData['seatloom'].seats.find((s) => s.name === 'mira');
@@ -212,6 +246,7 @@ describe('seats are attributed by role binding', () => {
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
+    await openProject('seatloom');
     const vela = useDataStore
       .getState()
       .projectData['seatloom'].unboundSeats?.find((s) => s.name === 'vela');

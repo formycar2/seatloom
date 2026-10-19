@@ -10,6 +10,7 @@ import {
   Session,
   WorkItem,
 } from '../types';
+import { projectStillSelected } from '../lib/project-scope';
 import { api, isTauri } from '../lib/api';
 import {
   artifactFromDocument,
@@ -21,6 +22,19 @@ import {
   sessionFromDto,
   workitemFromDto,
 } from '../lib/dto-to-v1';
+
+/// A project with nothing read yet. Used to CLEAR a project's entry when its
+/// scoped read fails: leaving the previous project's rows under this project's id
+/// would be the same lie in a new coat — stale data that looks current.
+const EMPTY_PROJECT_DATA: ProjectData = {
+  seats: [],
+  sessions: [],
+  workItems: [],
+  artifacts: [],
+  handoffs: [],
+  events: [],
+  inboxItems: [],
+};
 
 interface DataState {
   projects: Project[];
@@ -52,6 +66,13 @@ interface DataState {
    * available (browser-dev or pre-bootstrap).
    */
   hydrateFromBackend: () => Promise<void>;
+  /**
+   * Read every project-scoped list for ONE project and store it under that
+   * project's id. Called on mount for the active project and again on every
+   * project switch — the per-project read is what makes switching projects
+   * actually change what the modules show.
+   */
+  hydrateProjectData: (projectId: string) => Promise<void>;
   /**
    * Re-fetch only the canonical events for the active project and replace that
    * project's `events` slice. Cheap enough to poll for a live timeline; silent
@@ -1594,13 +1615,25 @@ export const useDataStore = create<DataState>((set, get) => ({
   backendHydrated: false,
   backendHydrateError: null,
 
-  setActiveProject: (id) =>
+  setActiveProject: (id) => {
     set((state) => ({
       activeProjectId: id,
+      backendHydrated: false,
+      backendHydrateError: null,
       projects: state.projects.map((p) =>
         p.id === id ? { ...p, last_accessed: new Date().toISOString() } : p,
       ),
-    })),
+    }));
+    // Re-read the newly-selected project's scoped data. Without this the switch
+    // only changed `activeProjectId` while `projectData` still held whatever was
+    // read for the previous project — so every module kept showing the old
+    // project's rows, which is the operator's reported bug at the store layer.
+    // Fire-and-forget: the caller is a click handler, and a failed read clears the
+    // entry so the surface renders its empty state rather than stale rows.
+    if (id) {
+      void get().hydrateProjectData(id);
+    }
+  },
 
   addProject: (project, data) =>
     set((state) => ({
@@ -1776,7 +1809,11 @@ export const useDataStore = create<DataState>((set, get) => ({
     const activeProjectId = get().activeProjectId;
     if (!activeProjectId) return;
     try {
-      const eventsDto = await api.listEvents(400);
+      // Scoped to the active project. It used to call api.listEvents(400) with no
+      // project at all, so every project's ProjectData got the same event list —
+      // the identical defect as the seat/workitem/session lists, one field over.
+      const eventsDto = await api.listEvents(activeProjectId, 400);
+      if (get().activeProjectId !== activeProjectId) return;
       const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
       set((state) => {
         const data = state.projectData[activeProjectId];
@@ -1807,168 +1844,185 @@ export const useDataStore = create<DataState>((set, get) => ({
       return;
     }
     try {
-      const [
-        projectsDto,
-        seatsDto,
-        workitemsDto,
-        handoffsDto,
-        artifactsDto,
-        sessionsDto,
-        eventsDto,
-        documentsDto,
-      ] = await Promise.all([
-        api.listProjects(),
-        api.listSeats(),
-        api.listWorkitems(),
-        api.listHandoffs(),
-        api.listArtifacts(),
-        api.listSessions(),
-        api.listEvents(400),
-        api.listDocuments({}),
-      ]);
+      const projectsDto = await api.listProjects();
 
-      // Build V1 role-binding lookup so seats show the right role per project.
-      const roleBindingsByProject = new Map<string, Record<string, string>>();
-      await Promise.all(
-        projectsDto.map(async (p) => {
-          try {
-            const bindings = await api.listRoleBindings(p.id);
-            const map: Record<string, string> = {};
-            for (const b of bindings) map[b.seatId] = b.role;
-            roleBindingsByProject.set(p.id, map);
-          } catch {
-            roleBindingsByProject.set(p.id, {});
-          }
-        }),
-      );
-
+      // Which project to open: the stored selection if it still exists, else the
+      // first one. Never invented — an id the backend does not return is dropped.
+      const storedActive = get().activeProjectId;
       const projects: Project[] = projectsDto.map(projectFromDto);
-      const projectData: Record<string, ProjectData> = {};
+      const nextActive =
+        projects.find((p) => p.id === storedActive)?.id ?? projects[0]?.id ?? null;
 
-      // 2026-10-16: seats are attributed by ROLE BINDING, not to every project.
-      //
-      // This loop used to `seatsDto.map(...)` inside the per-project loop, so every
-      // project carried every seat — which is why QL showed up under SeatLoom. The
-      // v0.1 comment below said it was to make the V1 shell render regardless; what it
-      // actually did was assert a membership that the data contradicts.
-      //
-      // `project_role_bindings` is the authority and it already exists: measured on
-      // live, `seatloom` binds 6 seats and `ql_delivery` binds 1, and the other 37
-      // projects bind none. So a project with no bindings now shows no seats — and the
-      // ones that exist but are unbound are carried in `unboundSeats` so the UI can say
-      // why the list is empty instead of rendering a `席位 (0)` that reads as broken.
-      //
-      // Still NOT partitioned by project, because the schema does not carry it:
-      // workItems / handoffs / events have project_id and could be; sessions and
-      // artifacts do not. Those are reported in the delivery rather than half-fixed.
-      for (const p of projectsDto) {
-        const roles = roleBindingsByProject.get(p.id) ?? {};
-        const boundIds = new Set(Object.keys(roles));
-        const seats: Seat[] = seatsDto
-          .filter((s) => boundIds.has(s.id))
-          .map((s) => seatFromDto(s, roles[s.id]));
-        const unboundSeats: Seat[] = seatsDto
-          .filter((s) => !boundIds.has(s.id))
-          .map((s) => seatFromDto(s, undefined));
-        const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
-        const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
-        // Merge runtime artifacts (seed/001 — 15 rows) with reconcile-ingested
-        // coordination documents (291 rows) so V1 ArtifactsView surfaces the
-        // full collaboration corpus, not just session-bound output. Documents
-        // come first because they are the bulk of evidence the supervisor
-        // typically searches for.
-        const artifacts: Artifact[] = [
-          ...documentsDto.map(artifactFromDocument),
-          ...artifactsDto.map(artifactFromDto),
-        ];
-        const sessions: Session[] = sessionsDto.map(sessionFromDto);
-        const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
+      set({ projects, activeProjectId: nextActive });
 
-        // Derive inbox items from workitem/handoff state so V1 InboxView and
-        // SupervisionDashboard show real "needs attention" rows. Real
-        // InboxItem persistence (a routing engine) is deferred; this view
-        // is computed-from-state for now.
-        const inboxItems: InboxItem[] = [];
-        for (const w of workItems) {
-          if (w.status === 'Blocked') {
-            inboxItems.push({
-              id: `inbox-wi-blocked-${w.id}`,
-              priority: w.priority === 'Critical' ? 'Critical' : 'Normal',
-              type: 'WorkItemBlocked',
-              actor: w.owner_seat_id ?? 'unknown',
-              object_ref: w.id,
-              summary: `Blocked: ${w.title}`,
-              timestamp: w.updated_at,
-            });
-          } else if (w.status === 'InReview') {
-            inboxItems.push({
-              id: `inbox-wi-review-${w.id}`,
-              priority: 'Normal',
-              type: 'ReviewPending',
-              actor: w.owner_seat_id ?? 'unknown',
-              object_ref: w.id,
-              summary: `Review pending: ${w.title}`,
-              timestamp: w.updated_at,
-            });
-          } else if (w.status === 'Drifted') {
-            inboxItems.push({
-              id: `inbox-wi-drift-${w.id}`,
-              priority: 'Critical',
-              type: 'DriftDetected',
-              actor: w.owner_seat_id ?? 'unknown',
-              object_ref: w.id,
-              summary: `Drift: ${w.title}`,
-              timestamp: w.updated_at,
-            });
-          }
-        }
-        for (const h of handoffs) {
-          if (h.status === 'Sent' || h.status === 'Received' || h.status === 'Working') {
-            inboxItems.push({
-              id: `inbox-ho-${h.id}`,
-              priority: h.required_receipt ? 'Critical' : 'Normal',
-              type: 'HandoffPending',
-              actor:
-                typeof h.from_ref === 'string'
-                  ? h.from_ref
-                  : ((h.from_ref as any).Seat ?? 'unknown'),
-              object_ref: h.id,
-              summary: `Handoff ${h.status.toLowerCase()}: ${h.purpose}`,
-              timestamp: h.sent_at ?? h.created_at,
-            });
-          }
-        }
-
-        projectData[p.id] = {
-          seats,
-          sessions,
-          workItems,
-          artifacts,
-          handoffs,
-          events,
-          inboxItems,
-          // Only carried when there ARE unbound seats, so the common case is unchanged
-          // and no consumer has to learn a new field it does not read.
-          ...(unboundSeats.length > 0 ? { unboundSeats } : {}),
-        };
+      // Read ONE project's data, scoped. See hydrateProjectData for why this is
+      // per-project rather than one unfiltered set.
+      //
+      // 🔴 This REPLACES the merged-on-track version, which read eight unfiltered
+      // lists once and filtered only the seats inside the per-project loop. That
+      // fixed QL appearing under SeatLoom but left workItems / handoffs / sessions
+      // / events as the SAME arrays under every project — the operator's report was
+      // that switching projects changed nothing, and those four still did not.
+      if (nextActive) {
+        await get().hydrateProjectData(nextActive);
       }
 
-      const currentActive = get().activeProjectId;
-      const nextActive =
-        projects.find((p) => p.id === currentActive)?.id ?? projects[0]?.id ?? null;
-
-      set({
-        projects,
-        projectData,
-        activeProjectId: nextActive,
-        backendHydrated: true,
-        backendHydrateError: null,
-      });
+      if (!nextActive) set({ backendHydrated: true, backendHydrateError: null });
+      // The project read owns hydration success; do not overwrite its failure.
     } catch (e) {
       set({
         backendHydrated: false,
         backendHydrateError: String(e),
       });
+    }
+  },
+
+  /// Read every project-scoped list for ONE project and store it under that
+  /// project's id.
+  ///
+  /// **The defect this replaces.** `hydrateFromBackend` used to read eight
+  /// UNFILTERED lists once — `api.listSeats()`, `api.listWorkitems()`,
+  /// `api.listHandoffs()`, `api.listSessions()` — and then copy the SAME arrays
+  /// into every project's `ProjectData` inside a `for (const p of projectsDto)`
+  /// loop, under a comment that said "v0.1: all seeded data belongs to the single
+  /// 'seatloom' project". So switching projects changed nothing: SeatLoom and
+  /// ql_delivery rendered byte-identical seats, workitems, sessions and handoffs.
+  /// That is the bug the operator reported, and it was two layers deep — the
+  /// commands were unscoped AND the store copied the result everywhere.
+  ///
+  /// Each read now names its project. `listArtifacts` stays unscoped because
+  /// `artifacts` has no `project_id` (measured: 11 of 15 live rows have neither
+  /// source id, so a derived join would silently drop them) — the artifacts list
+  /// is therefore the same under every project, and the Artifacts tab says so
+  /// rather than pretending otherwise.
+  hydrateProjectData: async (projectId: string) => {
+    if (!isTauri()) return;
+    try {
+      const [seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto, documentsDto] = await Promise.all([
+        api.listSeats(projectId),
+        api.listWorkitems(projectId),
+        api.listHandoffs(projectId),
+        api.listArtifacts(),
+        api.listSessions(projectId),
+        api.listEvents(projectId, 400),
+        api.listDocuments({ projectId }),
+      ]);
+
+      // V1 role-binding lookup so a seat shows the role it holds in THIS project.
+      // `seats` has no project_id, so the seat→project association is exactly this
+      // table; a seat bound as supervisor in one project can be a worker in
+      // another, which is why the role is looked up per project and not carried on
+      // the seat row.
+      const roles: Record<string, string> = {};
+      const bindings = await api.listRoleBindings(projectId);
+      for (const b of bindings) roles[b.seatId] = b.role;
+
+      // `listSeats(projectId)` is already project-scoped server-side — the join
+      // through project_role_bindings does it, so no client-side filter is needed
+      // and none is applied (a filter here would be a second, weaker copy of a
+      // rule the backend already enforces).
+      //
+      // Seats not bound to THIS project are contextual, not members of it.
+      // Keep them separate from the scoped seats list.
+      const allSeats = await api.listAllSeats();
+      const boundIds = new Set(seatsDto.map((s) => s.id));
+      const unboundSeats: Seat[] = allSeats
+        .filter((s) => !boundIds.has(s.id))
+        .map((s) => seatFromDto(s, undefined));
+
+      const seats: Seat[] = seatsDto.map((s) => seatFromDto(s, roles[s.id]));
+      const workItems: WorkItem[] = workitemsDto.map(workitemFromDto);
+      const handoffs: Handoff[] = handoffsDto.map(handoffFromDto);
+      const sessions: Session[] = sessionsDto.map(sessionFromDto);
+      const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
+      // Merge runtime artifacts with reconcile-ingested coordination documents so
+      // the Artifacts tab surfaces the full corpus. Documents come first because
+      // they are the bulk of evidence. 🔴 `artifacts` is NOT project-scoped — see
+      // the note above — so this half is the same under every project and the tab
+      // must not imply otherwise.
+      const artifacts: Artifact[] = [
+        ...documentsDto.map(artifactFromDocument),
+        ...artifactsDto.map(artifactFromDto),
+      ];
+
+      // Derive inbox items from THIS project's workitem/handoff state so the
+      // supervision overview's "needs attention" numbers follow the project.
+      const inboxItems: InboxItem[] = [];
+      for (const w of workItems) {
+        if (w.status === 'Blocked') {
+          inboxItems.push({
+            id: `inbox-wi-blocked-${w.id}`,
+            priority: w.priority === 'Critical' ? 'Critical' : 'Normal',
+            type: 'WorkItemBlocked',
+            actor: w.owner_seat_id ?? 'unknown',
+            object_ref: w.id,
+            summary: `Blocked: ${w.title}`,
+            timestamp: w.updated_at,
+          });
+        } else if (w.status === 'InReview') {
+          inboxItems.push({
+            id: `inbox-wi-review-${w.id}`,
+            priority: 'Normal',
+            type: 'ReviewPending',
+            actor: w.owner_seat_id ?? 'unknown',
+            object_ref: w.id,
+            summary: `Review pending: ${w.title}`,
+            timestamp: w.updated_at,
+          });
+        } else if (w.status === 'Drifted') {
+          inboxItems.push({
+            id: `inbox-wi-drift-${w.id}`,
+            priority: 'Critical',
+            type: 'DriftDetected',
+            actor: w.owner_seat_id ?? 'unknown',
+            object_ref: w.id,
+            summary: `Drift: ${w.title}`,
+            timestamp: w.updated_at,
+          });
+        }
+      }
+      for (const h of handoffs) {
+        if (h.status === 'Sent' || h.status === 'Received' || h.status === 'Working') {
+          inboxItems.push({
+            id: `inbox-ho-${h.id}`,
+            priority: h.required_receipt ? 'Critical' : 'Normal',
+            type: 'HandoffPending',
+            actor: typeof h.from_ref === 'string' ? h.from_ref : (h.from_ref as any).Seat ?? 'unknown',
+            object_ref: h.id,
+            summary: `Handoff ${h.status.toLowerCase()}: ${h.purpose}`,
+            timestamp: h.sent_at ?? h.created_at,
+          });
+        }
+      }
+
+      if (!projectStillSelected(projectId, get().activeProjectId)) return;
+      set((state) => ({
+        backendHydrated: true,
+        backendHydrateError: null,
+        projectData: {
+          ...state.projectData,
+          [projectId]: {
+            seats,
+            sessions,
+            workItems,
+            artifacts,
+            handoffs,
+            events,
+            inboxItems,
+            // Only carried when there ARE unbound seats, so the common case is
+            // unchanged and no consumer has to learn a field it does not read.
+            ...(unboundSeats.length > 0 ? { unboundSeats } : {}),
+          },
+        },
+      }));
+    } catch (e) {
+      if (!projectStillSelected(projectId, get().activeProjectId)) return;
+      // Failed reads must not publish stale rows or mark a different project failed.
+      set((state) => ({
+        projectData: { ...state.projectData, [projectId]: EMPTY_PROJECT_DATA },
+        backendHydrated: false,
+        backendHydrateError: String(e),
+      }));
     }
   },
 }));
