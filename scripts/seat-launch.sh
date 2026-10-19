@@ -34,7 +34,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 写死一个值给所有席位,会在重启时静默把席位降级。2026-10-11 实测踩过:
 # 洗数据席位登记的是 stepplan-wash-anthropic(无限额,存在的意义就是不必为省 token 降低质量),
 # 重启后被换成普通额度的 stepplan-anthropic,而且面板上不会有任何告警。
-MODEL="${SEATLOOM_MODEL:-stepplan-anthropic/step-5-preview}"
+MODEL="${SEATLOOM_MODEL:-modelproxy-anthropic/step-5-preview-sys}"
 PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
 WORKTREES="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
 MAP="$REPO/.seatloom/seat-sessions.tsv"
