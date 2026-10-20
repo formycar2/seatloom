@@ -15,6 +15,8 @@ target/
 .gemini/
 .seatloom/transcripts/
 .seatloom/seat-sessions.tsv
+# Local agent memory — not a coordination doc, must not enter the docs gate.
+.workbuddy/
 
 # Cargo cache (CI populates .cargo/registry when CARGO_HOME=$CI_PROJECT_DIR/.cargo);
 # only .cargo/config.toml is tracked.
