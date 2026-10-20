@@ -21,7 +21,10 @@
 > 有没有别的进程以 seat-aegis-001 身份在写账本。
 > 看进程的工作目录,不要看进程名。
 
-这是 `scripts/aegis-self-wake.sh`(系统 crontab,每 :11/:41)叫醒 Aegis 时发给它的指令内容。
+这是 `scripts/aegis-self-wake.sh`(系统 crontab,每小时 :00)叫醒 Aegis 时发给它的指令内容。
+(2026-10-20 由每 30 分钟一次改为每小时一次,张先生的要求。间隔写在两处:
+`scripts/install-aegis-self-wake.sh` 的 CRON_MINUTE 与 `scripts/fleet-status.sh` 的
+判死阈值 75 分钟。只改一处会让健康检查误报「自醒死了」。)
 改心跳行为改这个文件,不用改脚本、不用重装 crontab。
 
 ## 它为什么存在
@@ -35,7 +38,7 @@
 根本不存在。所以自醒改成了系统 crontab + `tmux send-keys`,和 `seatloom-waker`
 叫醒别的席位是同一条通道。
 
-**验证自醒活着的方式**:看 `/tmp/seatloom_aegis_waker.log` 有没有按 :11/:41 长出
+**验证自醒活着的方式**:看 `/tmp/seatloom_aegis_waker.log` 有没有按 :00 长出
 `POKED` 行。没有行就是自醒死了 —— 那是比任何单点故障都严重的事,先修它。
 
 ## 每一轮按顺序做
