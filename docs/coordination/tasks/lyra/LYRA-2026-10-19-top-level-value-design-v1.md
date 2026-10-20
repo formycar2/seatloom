@@ -48,7 +48,8 @@ Three consequences follow, and they discipline everything below:
 
 The one-sentence value proposition, in the form he can check:
 
-> **每一次派活、每一个结论、每一次他点头或打回,都在产品里留得下、点得开、对得上。**
+> *Every dispatch, every conclusion, every time he accepts or rejects — left behind,
+clickable, and matching, inside the product.*
 
 ## 3. The five values he can perceive — and only five
 
@@ -56,15 +57,19 @@ Five, because a value that is not perceivable is a hope, and a value that duplic
 marketing. Each is stated as *before → after*, with the evidence that distinguishes them today.
 
 | # | Value | Before SeatLoom (his pain) | After (what he perceives) | Status measured at `track@cfda740` |
-|---|---|---|---|---|
-| **V1** | **看一次就知道全队在干什么** | 6 个 tmux 会话挨个看,还得记得谁是准 | One screen answers who is on what, who is stuck, what is queued | **Partially real.** Dispatch page groups by seat with live status and polls a real table. Its acceptance section does real decisions. Two competing progress views still count different objects. |
-| **V2** | **点任何一样东西,看懂它为什么这么做** | 结论散在聊天、记忆和脑子里 | Click a row — a dispatch, an event, a card, a past session — and read the ordered facts: what it was, who did it, when, what it produced, what blocked it, where the evidence is | **Partially real.** Lineage read model built and verified against the live database; session↔work join exists as a view and read model. The UI that renders it is not integrated, so he cannot yet click into it. |
-| **V3** | **只需他点头的事,自己走到他面前** | 他不知道有东西在等他;等他知道时已经晚了 | Pending things that only he can decide arrive with what they are, what they affect, and what happens either way | **Partially real.** Acceptance cards do this for delivery merges, with a plain-language how-to-verify. Product rulings, scope questions and operator-only prerequisites have no structured pending state — they exist only as messages. |
-| **V4** | **他说过的话和做过的活,对得上** | 「我上次怎么说的」没有答案 | Any present claim resolves to the past record that produced it — the original sentence, the commit, the line range | **Partially real.** History replays archived sessions with source paths and line anchors; knowledge carries provenance. No screen yet walks from a current decision back to the sentence that caused it. |
-| **V5** | **产品说的和产品做的,是同一件事** | He cannot tell which pages are real | No page claims more than it measures; a failed read says so and names the next step | **Repaired in the working tree, unverified in the build he runs.** Provenance now depends on the read; failed hydration is explained rather than filled with fixtures; four local-only forms say they cannot store. Not confirmed installed. |
 
-V5 is deliberately a value, not hygiene. He has said "很多模块都是坏的" — and the reason he cannot
-tell which is the absence of V5. It is the value that makes the other four trustworthy, which is
+The value names and pain statements are the operator's own language; a parallel operator-facing
+version in Chinese is at `docs/coordination/acceptance/2026-10-19-top-level-value-design.zhs.md`,
+written to the plain-language rule. This English document remains authoritative.
+|---|---|---|---|---|
+| **V1 — know at a glance what the whole team is doing** | six tmux sessions read one by one, and remembering who is who | One screen answers who is on what, who is stuck, what is queued | **Partially real.** Dispatch page groups by seat with live status and polls a real table. Its acceptance section does real decisions. Two competing progress views still count different objects. |
+| **V2 — click anything and understand why it was done** | conclusions scattered across chat, memory and heads | Click a row — a dispatch, an event, a card, a past session — and read the ordered facts: what it was, who did it, when, what it produced, what blocked it, where the evidence is | **Partially real.** Lineage read model built and verified against the live database; session↔work join exists as a view and read model. The UI that renders it is not integrated, so he cannot yet click into it. |
+| **V3 — what only he can decide arrives on its own** | he does not know something is waiting; by the time he knows it is late | Pending things that only he can decide arrive with what they are, what they affect, and what happens either way | **Partially real.** Acceptance cards do this for delivery merges, with a plain-language how-to-verify. Product rulings, scope questions and operator-only prerequisites have no structured pending state — they exist only as messages. |
+| **V4 — what he said and what was done match up** | no answer to "what did I say last time" | Any present claim resolves to the past record that produced it — the original sentence, the commit, the line range | **Partially real.** History replays archived sessions with source paths and line anchors; knowledge carries provenance. No screen yet walks from a current decision back to the sentence that caused it. |
+| **V5 — what the product says and what it does are the same thing** | he cannot tell which pages are real | No page claims more than it measures; a failed read says so and names the next step | **Repaired in the working tree, unverified in the build he runs.** Provenance now depends on the read; failed hydration is explained rather than filled with fixtures; four local-only forms say they cannot store. Not confirmed installed. |
+
+V5 is deliberately a value, not hygiene. He has said, in his own words, that many modules look broken — and the reason he
+cannot tell which is the absence of V5. It is the value that makes the other four trustworthy, which is
 why it is listed last but ranked first in §6.
 
 ## 4. What each value is NOT — the boundaries that keep it honest
