@@ -259,8 +259,8 @@ describe('every list that carries project_id is filtered by it', () => {
   });
 
   const hydrate = async () => {
-    // Patch the api mock's per-kind lists for this test only.
-    state.projects.length; // keep the array identity stable
+    // The per-kind lists are installed by each test through vi.spyOn on the api
+    // mock before calling this, so nothing is patched here.
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
@@ -376,19 +376,17 @@ describe('every list that carries project_id is filtered by it', () => {
         updatedAt: null,
       },
     ] as never);
-    const spyArt = vi
-      .spyOn(mod.api, 'listArtifacts')
-      .mockResolvedValue([
-        {
-          id: 'art-global',
-          title: 'global',
-          template: 'T5',
-          subtype: 'x',
-          status: 'active',
-          createdAt: '',
-          bodyDigest: null,
-        },
-      ] as never);
+    const spyArt = vi.spyOn(mod.api, 'listArtifacts').mockResolvedValue([
+      {
+        id: 'art-global',
+        title: 'global',
+        template: 'T5',
+        subtype: 'x',
+        status: 'active',
+        createdAt: '',
+        bodyDigest: null,
+      },
+    ] as never);
     try {
       await hydrate();
     } finally {
