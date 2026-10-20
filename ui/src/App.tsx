@@ -76,11 +76,43 @@ const App: React.FC = () => {
   // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
   // claim LIVE while tmux discovery is empty or has failed.
   const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
-  const { projectUIStates, updateProjectUIState } = useAppStore();
+  const { projectUIStates, updateProjectUIState, setActiveProjectId } = useAppStore();
+  const persistedProjectId = useAppStore((s) => s.activeProjectId);
   const projectUIStatesRef = useRef(projectUIStates);
   useEffect(() => {
     projectUIStatesRef.current = projectUIStates;
   });
+
+  // ── Item 1: restart lands back in the last project ──────────────────────────
+  //
+  // `useAppStore` already persists each project's tab and selected object (the
+  // `persist` middleware writes `seatloom-app-store` to localStorage), so only the
+  // PROJECT ITSELF was missing: it lived in useDataStore's in-memory state and was
+  // re-derived from the default on every launch. So: once the backend read
+  // succeeds and we know which projects actually exist, restore the recorded one —
+  // and only if it still exists. Nothing is written here, so a stored id naming a
+  // deleted project simply does not restore, and a storage failure cannot throw:
+  // `persist` hands back the default state and the app carries on with the normal
+  // default tab.
+  // The project list read by the restore effect, held in a ref so that effect can
+  // run once when the read lands instead of re-running on every store change.
+  const projectDataOrderRef = useRef<string[]>([]);
+  useEffect(() => {
+    projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
+  });
+  const [restoredPosition, setRestoredPosition] = useState(false);
+  useEffect(() => {
+    if (restoredPosition) return;
+    if (!backendHydrated) return; // do not guess before the read lands
+    const ids = new Set(projectDataOrderRef.current);
+    if (!ids.has(persistedProjectId ?? '')) {
+      // No record, or the recorded project is gone — keep the normal default.
+      setRestoredPosition(true);
+      return;
+    }
+    setActiveProject(persistedProjectId as string);
+    setRestoredPosition(true);
+  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -231,8 +263,10 @@ const App: React.FC = () => {
         selectedObjectId: selectedObject?.id || null,
         selectedObjectType: selectedObject?.type || null,
       });
+      // Remember which project the operator is in, so the next launch returns here.
+      setActiveProjectId(activeProjectId);
     }
-  }, [activeTab, selectedObject, activeProjectId, updateProjectUIState]);
+  }, [activeTab, selectedObject, activeProjectId, updateProjectUIState, setActiveProjectId]);
 
   // ─── Project switching ───
   const handleProjectSwitchRequest = (id: string) => {
