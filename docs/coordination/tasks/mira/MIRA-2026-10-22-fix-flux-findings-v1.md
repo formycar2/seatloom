@@ -5,7 +5,7 @@
 | dispatch | `disp-gjdWWBy949yMqAxi-tswd` |
 | packet | `AEGIS-2026-10-22-mira-fix-flux-findings-v1` |
 | 分支 | `packet/mira/knowledge-panel` |
-| 头提交 | `git rev-parse --short HEAD` = `220b254` |
+| 实现提交 | `git rev-parse --short HEAD~1` = `4d4786d`(交付说明是紧随其后的一个提交,写不出自己的哈希 —— 所以这里只写实现提交)
 | 落后数 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = **0** |
 | 日期 | 2026-10-22 |
 
