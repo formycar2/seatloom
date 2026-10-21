@@ -220,11 +220,31 @@ else
   fail "沙箱不可启动:plist 的入口是 '$PLIST_EXE',实际可执行文件是 '$SAND_EXE'。修好再启动 —— 一个装好了起不来的沙箱比不装更糟。"
 fi
 say "  ✅ 已安装:$SAND_APP"
-say "  ✅ 已安装:$SAND_APP"
+
+# ── 图标也换掉:和主版长得一样 = 点错就是真事故 ──
+# 2026-10-21 之前这一步是独立的一条命令,装完沙箱的人得自己记得跑。
+# 一个需要人额外记得的步骤,迟早会被忘掉。改成装完就做。
+if [ -x "$REPO/scripts/make-sandbox-icon.sh" ]; then
+  line; say "五之二 — 换成一眼可辨的沙箱图标"; line
+  bash "$REPO/scripts/make-sandbox-icon.sh" "$SAND_APP" --apply 2>&1 | sed 's/^/    /' \
+    || fail "图标没换成 —— 两个应用会长得一样,点错就是事故。手动跑 make-sandbox-icon.sh 再装。"
+else
+  say "  ⚠️ 没有 make-sandbox-icon.sh,跳过图标 —— 两个应用会长得一样"
+fi
 
 # ---- 以操作者身份启动沙箱 ----
 line; say "六 — 启动沙箱"; line
 OPERATOR_REF="${SEATLOOM_OPERATOR_REF:-human:supervisor}"
+# 注入身份信息:让窗口里的标识条能写出「这个沙箱是哪个分支的哪一版」,
+# 而不是让前端去猜或依赖 localStorage(那三个无命名空间的键会和主版互抢)。
+# 这些是只读变量,不给沙箱任何额外能力。
+SAND_BRANCH="$BRANCH"
+SAND_COMMIT="$(git -C "$WT" rev-parse --short "$BRANCH" 2>/dev/null || echo unknown)"
+SAND_BUILT="$(date '+%Y-%m-%d %H:%M')"
+export SEATLOOM_SANDBOX=1
+export SEATLOOM_SANDBOX_BRANCH="$SAND_BRANCH"
+export SEATLOOM_SANDBOX_COMMIT="$SAND_COMMIT"
+export SEATLOOM_SANDBOX_BUILT="$SAND_BUILT"
 if [ -n "$SANDBOX_DB" ]; then
   SEATLOOM_OPERATOR_REF="$OPERATOR_REF" DATABASE_URL="$SANDBOX_DB" \
     open -a "$SAND_APP" || fail "open 沙箱失败"
@@ -233,6 +253,7 @@ else
   SEATLOOM_OPERATOR_REF="$OPERATOR_REF" open -a "$SAND_APP" || fail "open 沙箱失败"
   say "  以 $OPERATOR_REF 启动,数据库:**与主版同一个库**"
 fi
+say "  注入标识:分支=$SAND_BRANCH 提交=$SAND_COMMIT 构建于=$SAND_BUILT"
 
 up=0
 for _ in $(seq 1 30); do
