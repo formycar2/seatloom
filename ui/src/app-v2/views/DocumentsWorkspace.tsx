@@ -47,7 +47,9 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
     setReconciling(true);
     setReconcileResult(null);
     try {
-      const result = await api.reconcile();
+      const project = useDataStore.getState().activeProjectId;
+      if (!project) throw new Error('no project selected');
+      const result = await api.reconcile(project);
       setReconcileResult(result);
       await useDataStore.getState().hydrateFromBackend();
       // Refresh local list to pick up any changes. Scoped to the selected project:
@@ -67,7 +69,8 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
     }
   };
 
-  // Initial load (or when template changes).
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  // Initial load and project switches.
   useEffect(() => {
     if (!isTauri()) {
       setError('Tauri backend not available — run `pnpm tauri dev`.');
@@ -81,13 +84,16 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
       setLoading(false);
       return;
     }
+    let alive = true;
+    setDocs([]);
     setLoading(true);
     setError(null);
     api.listDocuments({ projectId: pid, template: template ?? undefined })
-      .then((rows) => setDocs(rows))
-      .catch((e) => setError(`list documents: ${String(e)}`))
-      .finally(() => setLoading(false));
-  }, [template]);
+      .then((rows) => { if (alive) setDocs(rows); })
+      .catch((e) => { if (alive) setError(`list documents: ${String(e)}`); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [template, activeProjectId]);
 
   // Filtered view by search. Search matches title, file_path, tags, body (if loaded).
   const filtered = useMemo(() => {

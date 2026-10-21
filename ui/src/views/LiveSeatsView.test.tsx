@@ -46,6 +46,7 @@ const state = vi.hoisted(() => ({
 vi.mock('../lib/api', () => {
   const api = {
     listTmuxSessions: async () => state.tmuxSessions,
+    listSeats: async (projectId: string) => projectId === 'ql_delivery' ? [{ name: 'ql' }] : [{ name: 'Lyra' }, { name: 'Nimbus' }, { name: 'Onyx' }],
     attachTmuxSession: async (req: { tmuxSessionName: string; seatId?: string }) => {
       state.attachCalls.push({ tmuxSessionName: req.tmuxSessionName, seatId: req.seatId });
       state.nextId += 1;
@@ -98,12 +99,14 @@ vi.mock('../app-v2/panel/SessionTerminal', () => ({
 
 import LiveSeatsView from './LiveSeatsView';
 import { useLiveSeatsMirrorStore } from '../stores/useLiveSeatsMirrorStore';
+import { useDataStore } from '../stores/useDataStore';
 
 beforeAll(() => {
   (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
 });
 
 beforeEach(() => {
+  useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
   useLiveSeatsMirrorStore.setState({
     attachments: [],
     activity: {},
@@ -257,3 +260,15 @@ function useLiveSessionsStoreSetFor(seat: string, id: string | null) {
   if (id === null) useLiveSessionsStore.getState().clearSessionForSeat(seat);
   else useLiveSessionsStore.getState().setSessionForSeat(seat, id);
 }
+
+
+describe('project-scoped mirror rendering', () => {
+  it("hides another project's surviving terminal without destroying the connection", async () => {
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+    await waitFor(() => expect(screen.getAllByTestId('terminal')).toHaveLength(1));
+    act(() => { useDataStore.setState({ activeProjectId: 'ql_delivery' }); });
+    await waitFor(() => expect(screen.queryAllByTestId('terminal')).toHaveLength(0));
+    expect(useLiveSeatsMirrorStore.getState().attachments).toHaveLength(1);
+  });
+});

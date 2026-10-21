@@ -26,6 +26,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
 import { api, isTauri, onSessionExit, onSessionOutput } from '../lib/api';
+import { useDataStore } from '../stores/useDataStore';
+import { boundMirrorNames } from '../lib/project-scope';
 import { parseSeatSession, seatKey, sortSeats, type ParsedSeat } from '../lib/tmux-seats';
 import { useLiveSessionsStore } from '../stores/useLiveSessionsStore';
 import {
@@ -59,7 +61,12 @@ function formatAgo(at: number | null, now: number): string {
 }
 
 const LiveSeatsView: React.FC = () => {
-  const [seats, setSeats] = useState<ParsedSeat[]>([]);
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const selectedProject = useRef(activeProjectId);
+  selectedProject.current = activeProjectId;
+  const [discoveredSeats, setSeats] = useState<ParsedSeat[]>([]);
+  const [discoveryProject, setDiscoveryProject] = useState<string | null>(null);
+  const seats = discoveryProject === activeProjectId ? discoveredSeats : [];
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState(false);
@@ -97,19 +104,28 @@ const LiveSeatsView: React.FC = () => {
       return;
     }
     try {
-      const list = await api.listTmuxSessions();
-      setSeats(sortSeats(list.map(parseSeatSession)));
+      if (!activeProjectId) { setSeats([]); setDiscovered(true); return; }
+      const [list, bindings] = await Promise.all([
+        api.listTmuxSessions(), api.listSeats(activeProjectId),
+      ]);
+      if (selectedProject.current !== activeProjectId) return;
+      const scoped = boundMirrorNames(list.map(parseSeatSession), bindings);
+      setDiscoveryProject(activeProjectId);
+      setSeats(sortSeats(scoped));
       setDiscovered(true);
-      setSeatDiscovery(list.length > 0 ? 'ok' : 'empty');
+      setSeatDiscovery(scoped.length > 0 ? 'ok' : 'empty');
       setError(null);
     } catch (e) {
+      if (selectedProject.current !== activeProjectId) return;
+      setSeats([]);
       setError(`会话发现失败 (cmd_list_tmux_sessions): ${String(e)}`);
       setDiscovered(true);
       setSeatDiscovery('failed');
     }
-  }, [setSeatDiscovery]);
+  }, [setSeatDiscovery, activeProjectId]);
 
   useEffect(() => {
+    setSeats([]);
     let cancelled = false;
     const run = async () => {
       if (cancelled) return;
@@ -265,9 +281,12 @@ const LiveSeatsView: React.FC = () => {
 
   const attachedByName = useMemo(() => {
     const m = new Map<string, Attachment>();
-    for (const a of attachments) m.set(a.seat.sessionName, a);
+    const names = new Set(seats.map((s) => s.sessionName));
+    for (const a of attachments) {
+      if (names.has(a.seat.sessionName)) m.set(a.seat.sessionName, a);
+    }
     return m;
-  }, [attachments]);
+  }, [attachments, seats]);
 
   const active = activeName ? attachedByName.get(activeName) : undefined;
 
@@ -307,7 +326,7 @@ const LiveSeatsView: React.FC = () => {
             实时席位 · Live Seats
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--sl-text-secondary)' }}>
-            发现 {seats.length} 个 tmux 席位会话 · 已接入 {attachments.length} 个 · 累计镜像{' '}
+            发现 {seats.length} 个 tmux 席位会话 · 已接入 {attachedByName.size} 个 · 累计镜像{' '}
             <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
               {formatBytes(totalBytes)}
             </span>
@@ -376,7 +395,7 @@ const LiveSeatsView: React.FC = () => {
 
           {isTauri() && discovered && seats.length === 0 && (
             <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--sl-text-secondary)' }}>
-              未发现以 <code>-seatloom</code> 结尾的 tmux 会话。
+              {!activeProjectId ? '请选择项目后查看实时镜像。' : '本项目没有已绑定且正在运行的席位会话；历史语料项目没有席位绑定。'}
               后端按该后缀过滤，因此此处为空即代表
               <strong>确实没有</strong>在线席位。
             </div>
@@ -579,7 +598,7 @@ const LiveSeatsView: React.FC = () => {
           )}
 
           <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-            {attachments.map((a) => (
+            {Array.from(attachedByName.values()).map((a) => (
               <div
                 key={a.dto.id}
                 style={{
@@ -597,7 +616,7 @@ const LiveSeatsView: React.FC = () => {
               </div>
             ))}
 
-            {attachments.length === 0 && (
+            {attachedByName.size === 0 && (
               <div
                 style={{
                   position: 'absolute',

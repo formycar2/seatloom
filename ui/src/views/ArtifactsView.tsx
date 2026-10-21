@@ -36,7 +36,8 @@ const ArtifactsView: React.FC<ArtifactsViewProps> = ({ onSelectArtifact, selecte
     setReconcileResult(null);
     setReconcileError(null);
     try {
-      const result = await api.reconcile();
+      if (!activeProjectId) throw new Error('请选择项目再扫描');
+      const result = await api.reconcile(activeProjectId);
       setReconcileResult(result);
     } catch (e) {
       setReconcileError(String(e));
@@ -76,6 +77,7 @@ const ArtifactsView: React.FC<ArtifactsViewProps> = ({ onSelectArtifact, selecte
 
   return (
     <div className="flex-1 overflow-y-auto">
+      <div role="status" className="p-3 bg-amber-500/10">运行时产出物未记录项目归属，以下运行时记录是全局数据，不代表属于当前项目；文档记录按项目过滤。</div>
       {/* Header with search and filters */}
       <div className="sticky top-0 z-10 bg-canvas border-b border-[var(--sl-border)] px-4 py-3 space-y-2">
         <div className="flex items-center gap-3">

@@ -11,7 +11,7 @@ pub async fn cmd_reconcile(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<ReconcileResultDto, String> {
-    let pid = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let pid = crate::commands::require_project_id("cmd_reconcile", project_id)?;
     let pool = create_pool().map_err(|e| e.to_string())?;
     run_reconcile(&pool, ReconcileTrigger::Manual, &state.repo_root, &pid)
         .await

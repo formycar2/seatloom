@@ -59,7 +59,7 @@ pub async fn cmd_list_role_bindings(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<RoleBindingDto>, String> {
-    let pid = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let pid = crate::commands::require_project_id("cmd_list_role_bindings", project_id)?;
     state
         .db
         .list_role_bindings_for_project(&pid)

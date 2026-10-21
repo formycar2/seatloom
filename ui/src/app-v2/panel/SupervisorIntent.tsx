@@ -159,6 +159,7 @@ function useContinuityDelta() {
   // default project — which is how it used to show seatloom's data under any tab.
   const activeProjectId = useDataStore((s) => s.activeProjectId);
 
+  useEffect(() => { setDelta(null); setError(null); }, [activeProjectId]);
   const load = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
@@ -171,13 +172,13 @@ function useContinuityDelta() {
     setLoading(true);
     setError(null);
     try {
-      const [acceptances, dispatches, handoffs, events, checkpoints] = await Promise.all([
+      const [acceptances, dispatches, handoffs, events] = await Promise.all([
         api.listAcceptances(activeProjectId),
         api.listDispatches(activeProjectId, 200),
         api.listHandoffs(activeProjectId),
         api.listEvents(activeProjectId, 200),
-        api.listCheckpoints(1),
       ]);
+      if (useDataStore.getState().activeProjectId !== activeProjectId) return;
       const gateTypes = [
         'ReviewVerdictIssued',
         'AcceptanceGranted',
@@ -196,14 +197,15 @@ function useContinuityDelta() {
           (h) => h.status !== 'completed' && h.status !== 'accepted',
         ),
         lastGate,
-        sinceCheckpoint: checkpoints[0] ?? null,
+        // Checkpoints have no direct project key; don't substitute a global checkpoint.
+        sinceCheckpoint: null,
       });
     } catch (err) {
-      setError(String(err));
+      if (useDataStore.getState().activeProjectId === activeProjectId) setError(String(err));
     } finally {
-      setLoading(false);
+      if (useDataStore.getState().activeProjectId === activeProjectId) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   return { delta, error, loading, load };
 }
@@ -331,6 +333,8 @@ function DecisionAnswerCard() {
   const [loadingTree, setLoadingTree] = useState(false);
   const [loadingMem, setLoadingMem] = useState(false);
 
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  useEffect(() => { setTopics(null); setSelected(null); setMemories(null); }, [activeProjectId]);
   const loadTree = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
@@ -339,7 +343,10 @@ function DecisionAnswerCard() {
     setLoadingTree(true);
     setError(null);
     try {
-      const tree = await api.getKnowledgeTree();
+      const pid = useDataStore.getState().activeProjectId;
+      if (!pid) throw new Error('no project selected');
+      const tree = await api.getKnowledgeTree(pid);
+      if (useDataStore.getState().activeProjectId !== pid) return;
       setTopics(tree.topics);
     } catch (err) {
       setError(String(err));
@@ -353,7 +360,9 @@ function DecisionAnswerCard() {
     setLoadingMem(true);
     setError(null);
     try {
+      const pid = useDataStore.getState().activeProjectId;
       const mem = await api.getTopicMemories(topicId, 'l0', false, 20);
+      if (useDataStore.getState().activeProjectId !== pid) return;
       setMemories(mem);
     } catch (err) {
       setError(String(err));

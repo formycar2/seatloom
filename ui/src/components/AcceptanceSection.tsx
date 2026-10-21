@@ -17,7 +17,7 @@
 // showing the operator a permanent error. House rule: no mock stands in for a
 // real backend value.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Ban,
@@ -87,6 +87,9 @@ const AcceptanceSection: React.FC<{
   // Scoped to the selected project. The unscoped call used to hit the backend's
   // default-project fallback, so this section showed seatloom's cards everywhere.
   const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const selected = useRef(activeProjectId);
+  selected.current = activeProjectId;
+  useEffect(() => { setCards([]); }, [activeProjectId]);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -98,12 +101,13 @@ const AcceptanceSection: React.FC<{
     }
     try {
       const rows = await api.listAcceptances(activeProjectId);
+      if (selected.current !== activeProjectId) return;
       // Normalise at the boundary: the wire spelling is a cross-lane detail.
       setCards(rows.map(normaliseAcceptanceCard).filter((c): c is AcceptanceCardDto => c !== null));
     } catch (e) {
-      setError(String(e));
+      if (selected.current === activeProjectId) setError(String(e));
     } finally {
-      if (!silent) setLoading(false);
+      if (selected.current === activeProjectId && !silent) setLoading(false);
     }
   }, [activeProjectId]);
 

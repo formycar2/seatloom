@@ -10,6 +10,7 @@ import {
   Session,
   WorkItem,
 } from '../types';
+import { projectStillSelected } from '../lib/project-scope';
 import { api, isTauri } from '../lib/api';
 import {
   artifactFromDocument,
@@ -1617,6 +1618,8 @@ export const useDataStore = create<DataState>((set, get) => ({
   setActiveProject: (id) => {
     set((state) => ({
       activeProjectId: id,
+      backendHydrated: false,
+      backendHydrateError: null,
       projects: state.projects.map((p) =>
         p.id === id ? { ...p, last_accessed: new Date().toISOString() } : p,
       ),
@@ -1810,6 +1813,7 @@ export const useDataStore = create<DataState>((set, get) => ({
       // project at all, so every project's ProjectData got the same event list —
       // the identical defect as the seat/workitem/session lists, one field over.
       const eventsDto = await api.listEvents(activeProjectId, 400);
+      if (get().activeProjectId !== activeProjectId) return;
       const events: CanonicalEvent[] = eventsDto.map(eventFromDto);
       set((state) => {
         const data = state.projectData[activeProjectId];
@@ -1863,7 +1867,8 @@ export const useDataStore = create<DataState>((set, get) => ({
         await get().hydrateProjectData(nextActive);
       }
 
-      set({ backendHydrated: true, backendHydrateError: null });
+      if (!nextActive) set({ backendHydrated: true, backendHydrateError: null });
+      // The project read owns hydration success; do not overwrite its failure.
     } catch (e) {
       set({
         backendHydrated: false,
@@ -1908,27 +1913,17 @@ export const useDataStore = create<DataState>((set, get) => ({
       // table; a seat bound as supervisor in one project can be a worker in
       // another, which is why the role is looked up per project and not carried on
       // the seat row.
-      let roles: Record<string, string> = {};
-      try {
-        const bindings = await api.listRoleBindings(projectId);
-        for (const b of bindings) roles[b.seatId] = b.role;
-      } catch {
-        // A missing binding table read is not fatal: the seats still render, just
-        // without a role. Recorded rather than swallowed silently by the catch
-        // setting an empty map and moving on.
-        roles = {};
-      }
+      const roles: Record<string, string> = {};
+      const bindings = await api.listRoleBindings(projectId);
+      for (const b of bindings) roles[b.seatId] = b.role;
 
       // `listSeats(projectId)` is already project-scoped server-side — the join
       // through project_role_bindings does it, so no client-side filter is needed
       // and none is applied (a filter here would be a second, weaker copy of a
       // rule the backend already enforces).
       //
-      // `unboundSeats` is carried over from the merged-on-track version and still
-      // earns its place: a seat that is bound in NO project at all (measured on
-      // live: seat-vela-001) would otherwise vanish from every project's list with
-      // nothing saying why. It is read from the GLOBAL seat registry, which is why
-      // this one call is deliberately unscoped.
+      // Seats not bound to THIS project are contextual, not members of it.
+      // Keep them separate from the scoped seats list.
       const allSeats = await api.listAllSeats();
       const boundIds = new Set(seatsDto.map((s) => s.id));
       const unboundSeats: Seat[] = allSeats
@@ -2000,7 +1995,10 @@ export const useDataStore = create<DataState>((set, get) => ({
         }
       }
 
+      if (!projectStillSelected(projectId, get().activeProjectId)) return;
       set((state) => ({
+        backendHydrated: true,
+        backendHydrateError: null,
         projectData: {
           ...state.projectData,
           [projectId]: {
@@ -2018,11 +2016,11 @@ export const useDataStore = create<DataState>((set, get) => ({
         },
       }));
     } catch (e) {
-      // A failed scoped read must not leave the previous project's data sitting
-      // under this project's id — that is the same lie in a new coat. Clear the
-      // entry so the surface renders its empty state instead of stale rows.
+      if (!projectStillSelected(projectId, get().activeProjectId)) return;
+      // Failed reads must not publish stale rows or mark a different project failed.
       set((state) => ({
         projectData: { ...state.projectData, [projectId]: EMPTY_PROJECT_DATA },
+        backendHydrated: false,
         backendHydrateError: String(e),
       }));
     }

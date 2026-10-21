@@ -653,17 +653,19 @@ const DispatchInboxView: React.FC = () => {
   // resolves this through project_role_bindings — meaning a seat bound in another
   // project is correctly absent here rather than silently present.
   const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const backendHydrated = useDataStore((s) => s.backendHydrated);
+  const selection = useRef(activeProjectId);
+  selection.current = activeProjectId;
 
   useEffect(() => {
-    if (!activeProjectId) {
-      setSeatsDb([]);
-      return;
-    }
-    api
-      .listSeats(activeProjectId)
-      .then(setSeatsDb)
-      .catch(() => setSeatsDb([]));
-  }, [activeProjectId]);
+    let alive = true;
+    setSeatsDb([]);
+    if (!activeProjectId || !backendHydrated) return;
+    api.listSeats(activeProjectId)
+      .then((rows) => { if (alive) setSeatsDb(rows); })
+      .catch(() => { if (alive) setSeatsDb([]); });
+    return () => { alive = false; };
+  }, [activeProjectId, backendHydrated]);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -671,7 +673,7 @@ const DispatchInboxView: React.FC = () => {
     // No project → nothing to show. The old code deliberately omitted the project
     // arg so the backend would fall back to seatloom, which is exactly how this
     // inbox showed another project's dispatches and looked populated.
-    if (!activeProjectId) {
+    if (!activeProjectId || !backendHydrated) {
       setDispatches([]);
       setError('no project selected');
       if (!silent) setLoading(false);
@@ -679,6 +681,7 @@ const DispatchInboxView: React.FC = () => {
     }
     try {
       const rows = await api.listDispatches(activeProjectId);
+      if (selection.current !== activeProjectId) return;
 
       const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
       const changed: Record<string, number> = {};
@@ -702,11 +705,11 @@ const DispatchInboxView: React.FC = () => {
         }, 2600);
       }
     } catch (e) {
-      setError(String(e));
+      if (selection.current === activeProjectId) { setDispatches([]); setError(String(e)); }
     } finally {
-      if (!silent) setLoading(false);
+      if (selection.current === activeProjectId && !silent) setLoading(false);
     }
-  }, [activeProjectId]);
+  }, [activeProjectId, backendHydrated]);
 
   useEffect(() => {
     void load();
@@ -894,6 +897,10 @@ const DispatchInboxView: React.FC = () => {
 
   const sortLabel = sortKey ? LABEL_BY_SORT.get(sortKey) : undefined;
   const clearQuery = useCallback(() => setQuery(''), []);
+
+  if (!activeProjectId || !backendHydrated) {
+    return <div role="status" className="p-10">请选择一个项目；项目数据未读就绪时不显示其他项目的派单。</div>;
+  }
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
@@ -1246,7 +1253,8 @@ const DispatchInboxView: React.FC = () => {
                 take this delivered work?" and is about a dispatch), so it is a
                 separate section with a separate count. Merging the two would
                 make the operator's number wrong, which is the defect 020 exists
-                to fix. */}
+                to fix. Mounted here because this is the page the operator already
+                opens to decide things — the first-screen structure is untouched. */}
             <OperatorDecisionSection live={autoRefresh} />
           </div>
         </div>

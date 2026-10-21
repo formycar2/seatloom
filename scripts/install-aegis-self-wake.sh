@@ -24,7 +24,12 @@ SRC="$REPO/scripts/aegis-self-wake.sh"
 DEST="$HOME/.local/bin/aegis-self-wake.sh"
 LOG="/tmp/seatloom_aegis_waker.log"
 MARK="# seatloom — Aegis 自醒 waker"
-CRON_LINE="11,41 * * * * $DEST >> $LOG 2>&1"
+# 每小时一次,分钟固定在 :00。张先生 2026-10-20 的要求:从每 30 分钟一次改成
+# 每小时一次 —— 频率减半,单次唤醒间隔拉长,他不必每半小时被一件事打断一次。
+# 键仍然只有两处:crontab(这里)和 fleet-status.sh 的判死阈值。只改一处会让
+# 健康检查按旧间隔判死、误报「自醒死了」,所以两处必须同时改。
+CRON_MINUTE=0
+CRON_LINE="$CRON_MINUTE * * * * $DEST >> $LOG 2>&1"
 
 say(){ printf '%s\n' "$*"; }
 line(){ say "────────────────────────────────────────────────────────────"; }

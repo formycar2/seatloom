@@ -88,6 +88,8 @@ vi.mock('../lib/api', () => ({
 }));
 
 import DispatchInboxView from './DispatchInboxView';
+import { useDataStore } from '../stores/useDataStore';
+beforeEach(() => useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true }));
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();

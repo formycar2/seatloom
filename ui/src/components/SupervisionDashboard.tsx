@@ -34,7 +34,7 @@ const SupervisionDashboard: React.FC<{
   onNavigateToInbox,
   onSelectInboxItem,
 }) => {
-  const { activeProjectId, projectData, projects } = useDataStore();
+  const { activeProjectId, projectData, projects, backendHydrated, backendHydrateError } = useDataStore();
   const currentProject = projects.find((p) => p.id === activeProjectId);
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
 
@@ -73,6 +73,9 @@ const SupervisionDashboard: React.FC<{
     });
   };
 
+  if (!backendHydrated) {
+    return <div role="status" className="p-6">项目数据尚未就绪，不显示其他项目的监督数字。{backendHydrateError}</div>;
+  }
   if (!currentProject || !currentData || !metrics) {
     return (
       <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)] bg-canvas">
