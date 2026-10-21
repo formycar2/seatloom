@@ -11,17 +11,30 @@
 
 ## 1. count 命令与当时真实输出
 
-按任务包要求,不写会自己变的数字,写命令和输出。**下面是合并前**当时跑的:
+按任务包要求,不写会自己变的数字,写命令和输出。
+
+**合并前**(当时跑的真实输出):
 
 ```
 $ git rev-list --count packet/nimbus/project-scoped-reads..track/infra-foundation
 27
 ```
 
-合并后再跑同一条命令,输出仍是 `27`(见文末「合并后的状态」——那条命令在这个方向上
-数的是「track 有而我这个分支尖端没有的提交」,合并把这个数变成 0 才算数对,而我这里
-显示 27 的原因写在那节,是个测量方向的问题,不是没合。)
+**合并后**(同一条命令,合并提交 `bfe5299` 之后):
 
+```
+$ git rev-list --count packet/nimbus/project-scoped-reads..track/infra-foundation
+0
+```
+
+变成 0 了。原因很直白:合并提交就在 `packet/nimbus/project-scoped-reads` 这条线上,
+分支引用现在指向合并结果,所以「track 有而这条分支没有的提交」归零。这正是这个命令
+该有的行为 —— 它是合并没合上的探针,不是落后程度的度量。
+
+**别把 0 当成「以后永远是 0」。** 这个数只说明「此刻已合并当前 track」,不说明
+「永远同步」。任务包自己作废了「落后数 == 0」这个判据,判据是范围:区间里不得有
+落在 `ui/src` 或 `src-tauri` 的提交。下次 track 再前进,这个数会重新变大 —— 那不代表
+这次同步失败。
 ## 2. 那 27 个提交落在哪些目录
 
 以 `git merge-base HEAD track/infra-foundation` = `98876aa931aa144ab873d9deba5aae9ed972931f`
@@ -152,34 +165,34 @@ ERROR: unclassified migration(s) in infra/postgres/schema — refusing to apply 
 ```
 $ git status --short
 (空)
+
+$ git log --oneline -1
+bfe5299 Merge track/infra-foundation into packet/nimbus/project-scoped-reads
 ```
+
+`git merge-base --is-ancestor track/infra-foundation HEAD` 通过。
 
 ## 9. 提交
 
-合并提交:`NIMBUS-2026-10-22-sync-to-track`(绝对哈希见 `git log --oneline -1`)。
-`git merge-base HEAD track/infra-foundation` 合并后等于 track 的尖端,即已合并当前 track。
-未 rebase,合并历史保留(`git log --graph` 可溯)。
+合并提交:`bfe5299` — "Merge track/infra-foundation into packet/nimbus/project-scoped-reads"
+(绝对哈希,不写 `HEAD~n`)。
 
-### 关于第 1 节那个「合并后还是 27」
+未 rebase,合并历史保留(`git log --graph --oneline -8` 可看到分叉点 `98876aa9` 两侧)。
 
-合并后我重跑任务包给的那条命令:
+"已合并当前 track" 的三条实测证据:
 
 ```
 $ git rev-list --count packet/nimbus/project-scoped-reads..track/infra-foundation
-27
-```
-
-输出没变,但原因不是没合上。这条命令数的是「从 `packet/nimbus/project-scoped-reads` 这个
-**分支引用**到 track,有哪些提交只在 track 侧」—— 分支引用还停在 `a545a77`(我的合并提交
-不在那条线上,它是我的分支的新尖端),所以这个数不会因为合并而变 0。
-
-真正说明「已合并当前 track」的是另外两条,实测:
-
-```
+0
 $ git rev-list --count HEAD..track/infra-foundation
 0
 $ git merge-base --is-ancestor track/infra-foundation HEAD && echo "track is an ancestor of HEAD"
 track is an ancestor of HEAD
 ```
 
-两条都成立:我的分支尖端已经包含 track 的全部历史。
+`git status --short` 空。
+
+**关于「0」的诚实说明**:上面的 `0` 是**此刻**的状态,不是承诺。任务包自己作废了
+「落后数 == 0」这个判据(Aegis 的原话:那是个会自己变的数字,追它没终点)。
+判据是范围 —— 区间里不得有落在 `ui/src` 或 `src-tauri` 下的提交。这次同步满足它,
+下次 track 前进后需要重新用**范围**去判,不是用数字。
