@@ -124,8 +124,23 @@ say "  沙箱键前缀    : $SANDBOX_KEY_PREFIX(避免和主版抢 localStorage)
 if [ -n "$SANDBOX_DB" ]; then
   say "  沙箱数据库    : $SANDBOX_DB"
 else
-  say "  沙箱数据库    : ⚠️  **同一个库** —— 在沙箱里点「接受」会真的改账本"
-  say "                 要隔离就传 --sandbox-db <url>,不由脚本替你猜"
+if [ -z "$SANDBOX_DB" ]; then
+  # 2026-10-21 张先生裁定:「沙箱要尽可能对齐正式库」+ 不能写回真账本。
+  # 默认改成指向沙箱快照库(由 refresh-sandbox-db.sh 灌),不再默认连主库 ——
+  # 一个点一下就改真账本的沙箱,会让人不敢点,于是又回到盲点。
+  if podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -U seatloom -d postgres -tAc \
+       "select 1 from pg_database where datname='seatloom_sandbox'" 2>/dev/null | grep -q 1; then
+    SANDBOX_DB="postgresql://seatloom:seatloom@localhost:5432/seatloom_sandbox"
+    say "  沙箱数据库    : $SANDBOX_DB"
+    say "                 (快照库,数据和正式库一致,但写它不影响正式库)"
+  else
+    say "  沙箱数据库    : ⚠️  seatloom_sandbox 不存在"
+    if [ "$APPLY" = "1" ]; then
+      fail "沙箱快照库不存在。先跑 bash scripts/refresh-sandbox-db.sh --apply 再装沙箱。"
+           "默认连主库的那条路已去掉 —— 那意味着在沙箱里点『接受』会改真账本。"
+    fi
+  fi
+fi
 fi
 
 # ---- 主版在跑吗:报告,但不碰它 ----
