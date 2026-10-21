@@ -5,7 +5,7 @@
 | dispatch | `disp-gjdWWBy949yMqAxi-tswd` |
 | packet | `AEGIS-2026-10-22-mira-fix-flux-findings-v1` |
 | 分支 | `packet/mira/knowledge-panel` |
-| 实现提交 | `git rev-parse --short HEAD~2` = `0e71598`(7 个文件:实现 5 个 + 测试 2 个;后两个提交只改本说明的文字,未再 amend)
+| 实现提交 | `0e71598` — 标题「mira: 修 Flux 验绿指出的两处(重启位置被抢跑 / 落后数差 1)」,7 个文件。**绝对哈希,不用 `HEAD~n`**:写本说明的每个提交都会让相对引用后移一位,我为此连错三次,所以只写绝对值和标题。 |
 | 落后数 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = **0** |
 | 日期 | 2026-10-22 |
 
