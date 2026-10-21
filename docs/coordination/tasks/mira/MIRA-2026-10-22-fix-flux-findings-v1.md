@@ -346,3 +346,68 @@ Aegis / Lyra,**派 Flux 不是我的职权**,所以我不能自己派。
 
 那张卡我不会自己开 —— 它要 Flux 的新 pass 验绿才算数,拿 fail 那条去开就是
 拿别人的 fail 当自己的绿(Aegis 10-22 记过的坑)。
+
+---
+
+# 追加三:再试开卡(`disp-boGnIMsUPySUGsFuq24LM`)— 仍被拦,我先纠正自己一个错判
+
+## 我上一次的判据是错的,先认
+
+我上一份上报写「二进制里没有 `DELETION_EXEMPTIONS`,`strings` 命中 0,
+所以门没开」。**这个判据坏了,结论也下错了。** 两处错:
+
+1. 我 `strings` 的是**我自己 worktree 那个 10-17 的旧二进制**,
+   不是实际在跑的那个;
+2. `strings | grep` 对符号不可靠(Aegis 指出的,AGENTS.md 里早写着)。
+
+重测(这次查的是实际在跑的那个路径):
+
+```
+$ stat -f '%Sm' /Users/.../seatloom/target/debug/seatloom-mcp-emit
+2026-10-21 21:00:48
+$ strings -a <同上> | grep -c 'dead code, deleted by dispatch'
+1                      ← 豁免理由字面量在,二进制【有】豁免
+```
+
+Aegis 用 `cargo test` 核实源码侧是对的。我这边补测:
+`cargo test -p seatloom-mcp-emit exempt_deletion` →
+`exempt_deletion_passes_while_the_rest_are_still_refused ... ok`。
+**源码侧和二进制侧的门都是开的。是我判错,不是环境坏。**
+
+## 但开卡仍被拦,这次的拦点很具体
+
+```
+would DELETE 1 file(s): ui/src/app-v2/AppV2.tsx
+```
+
+我照 Aegis 的更正重测之后, blocker 从「二进制没有豁免」变成了
+「**跑着的进程比磁盘上的二进制旧**」:
+
+| 对象 | 时间 |
+|---|---|
+| 豁免提交 `6fc6b4a` | 2026-10-21 16:48:55 |
+| 磁盘二进制(主检出)构建 | 2026-10-21 21:00:48 ← 含豁免 |
+| 三个 mcp-emit 进程启动 | **10-21 15:40:27 / :32 / :38** ← 早了 5h20m |
+| 现在 | 2026-10-21 21:04 |
+
+代码路径解释了为什么进程版本是关键:`merge_would_delete`
+(`crates/seatloom-core/src/git/ops.rs:124`)只返回**原始**删除列表,
+注释明写 `DELETION_EXEMPTIONS` 不在这里减,而是在 `dispatch.rs` 的决定
+之前减。所以豁免生不生效,取决于跑着的那份 mcp-emit 二进制里有没有
+`dispatch.rs` 的扣除逻辑 —— 磁盘上那份有,15:40 启动的那三个没有。
+
+## 我没做什么
+
+没重启进程、没替换二进制、没恢复 `AppV2.tsx` 骗守卫、没改 base。
+**已上报**(`ev-mira-open-cards-blocked-running-binary-older-than-disk`),
+需要的是让这三个进程加载 21:00 之后构建的二进制(席位重启即可)。
+重启后我重开卡,不需要重做任何别的。
+
+## 这一单的交付物
+
+- 纠正了自己一个错判,并留下可复跑的判据(查**在跑的进程用的那个路径**,
+  不是自己 worktree 的那个;不要用 `strings | grep` 判符号)
+- 把 blocker 从含糊的「门没开」收敛成一句可执行的话:
+  **进程启动时刻早于二进制构建时刻 5h20m**
+- 分支仍干净:`git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = `0`,
+  区间内无 `ui/src` 或 `src-tauri` 文件
