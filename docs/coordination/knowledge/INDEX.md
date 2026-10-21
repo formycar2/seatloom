@@ -64,3 +64,4 @@ python3 scripts/migrate-agent-memory.py
 > 拿它当判据会把 Aegis 的推断标成张先生的原话,正好是 `confidence` 这个字段存在要防的事。
 | [v5_honesty_ranks_first_because_it_makes_other_values_trustworthy](v5_honesty_ranks_first_because_it_makes_other_values_trustworthy.md) | preference | quoted | 界面显示不存在的数字比缺功能更糟 —— 用户因此无法分辨哪页是真的;判据:每个数字都答得出「数谁、什么范围、何时截止、从哪来」,答不出就写暂无 |
 | [ui_cannot_launch_app_yet_and_two_holes_must_not_stack](ui_cannot_launch_app_yet_and_two_holes_must_not_stack.md) | decision | inferred | 应用当前零进程启动能力;要加只能加固定用途(打开沙箱 app)且路径由后端认定。同时 DocumentsWorkspace.tsx:359 的 marked 输出未净化是已存在的洞,与启动权限叠加即可执行任意程序,须单独修 |
+| [a_seat_branch_must_not_be_verified_until_it_is_synced_to_track](a_seat_branch_must_not_be_verified_until_it_is_synced_to_track.md) | failure | inferred | 分支落后主干 19 个提交时,沙箱里项目过滤消失,操作者报「功能坏了」—— 实为版本旧。派单/装沙箱只查「有没有那件事的提交」不够,还要查缺不缺别的 |
