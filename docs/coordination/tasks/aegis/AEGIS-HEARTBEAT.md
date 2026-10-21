@@ -21,7 +21,10 @@
 > 有没有别的进程以 seat-aegis-001 身份在写账本。
 > 看进程的工作目录,不要看进程名。
 
-这是 `scripts/aegis-self-wake.sh`(系统 crontab,每 :11/:41)叫醒 Aegis 时发给它的指令内容。
+这是 `scripts/aegis-self-wake.sh`(系统 crontab,每小时 :00)叫醒 Aegis 时发给它的指令内容。
+(2026-10-20 由每 30 分钟一次改为每小时一次,张先生的要求。间隔写在两处:
+`scripts/install-aegis-self-wake.sh` 的 CRON_MINUTE 与 `scripts/fleet-status.sh` 的
+判死阈值 75 分钟。只改一处会让健康检查误报「自醒死了」。)
 改心跳行为改这个文件,不用改脚本、不用重装 crontab。
 
 ## 它为什么存在
@@ -35,7 +38,7 @@
 根本不存在。所以自醒改成了系统 crontab + `tmux send-keys`,和 `seatloom-waker`
 叫醒别的席位是同一条通道。
 
-**验证自醒活着的方式**:看 `/tmp/seatloom_aegis_waker.log` 有没有按 :11/:41 长出
+**验证自醒活着的方式**:看 `/tmp/seatloom_aegis_waker.log` 有没有按 :00 长出
 `POKED` 行。没有行就是自醒死了 —— 那是比任何单点故障都严重的事,先修它。
 
 ## 每一轮按顺序做
@@ -64,6 +67,23 @@
 
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
+
+2b. **查"干完了但没人接"的活 —— 这一步 2026-10-21 补,之前是空的。**
+    🔴 空洞实例:净化单 `disp-FzldOwJuxCfxc2TGq9dMw` 04:15 完成、 Mira 同一秒
+    发了 SupervisorMessage,但我随后 8 轮心跳每轮都只查"有没有 ready 派单",
+    于是每次报"队列空、无需动作"。**那单在账本上躺了 8 个多小时,直到张先生
+    来告诉我"Mira 完成了"。** 一个需要操作者来通知的流程,和停摆没有区别。
+    命令(不只看 done,要看 done **且没有验收卡**的):
+    ```sql
+    select d.id, d.target_seat_id, d.completed_at
+      from dispatches d
+     where d.status='done'
+       and not exists (select 1 from acceptances a where a.dispatch_id=d.id)
+       and d.completed_at > now() - interval '48 hours'
+     order by d.completed_at desc;
+    ```
+    查到就该接:写交付说明、派 Flux 验绿、验过就开卡给张先生。
+    **只查 48 小时内的** —— 更早的要么已处理,要么是要单独裁决的历史遗留。
 
 3. **有席位等门事件,就按「live 可用」核真实条件**:
    门的条件是"能不能真的跑成功",**不是**"代码合没合进来"。

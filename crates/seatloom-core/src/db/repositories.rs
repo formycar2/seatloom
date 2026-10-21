@@ -95,6 +95,42 @@ impl SeatloomDb {
         rows.iter().map(row_to_seat).collect()
     }
 
+    /// The seats **belonging to one project**, resolved through
+    /// `project_role_bindings`.
+    ///
+    /// **Why a JOIN and not a WHERE.** `seats` has no `project_id` column — a seat
+    /// is a global registry entry, and its association with a project is a row in
+    /// `project_role_bindings`. So "the seats under this project" is not a
+    /// predicate on `seats`; it is a predicate on the binding table, and the seat
+    /// row is reached by joining. Adding `WHERE project_id = $1` to the `seats`
+    /// query would be a syntax error, not a filter.
+    ///
+    /// **An empty result is a real answer, not a failure.** A project with no
+    /// binding rows genuinely has no seats — the historical-corpus projects are
+    /// corpus-derived and drive no seat. That is why the callers distinguish
+    /// "project_id was not supplied" (an error) from "project_id was supplied and
+    /// matched nothing" (an empty list): collapsing them would make a missing
+    /// parameter look like a project with no seats.
+    ///
+    /// The same runtime-triple validation as [`Self::list_seats`] runs on every
+    /// row, so an out-of-domain `default_harness` fails this read exactly as it
+    /// fails the global one — a domain violation is not made invisible by scoping.
+    pub async fn list_seats_for_project(&self, project_id: &str) -> Result<Vec<SeatRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT s.id, s.name, s.default_harness, s.default_agent, s.default_model, \
+                 s.capability_tags, s.status, s.created_at \
+                 FROM seats s \
+                 JOIN project_role_bindings b ON b.seat_id = s.id \
+                 WHERE b.project_id = $1 \
+                 ORDER BY s.name ASC",
+                &[&project_id],
+            )
+            .await?;
+        rows.iter().map(row_to_seat).collect()
+    }
+
     pub async fn get_seat(&self, seat_id: &str) -> Result<Option<SeatRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client

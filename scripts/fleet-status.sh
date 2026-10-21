@@ -134,10 +134,12 @@ else
       printf "  Aegis 自醒           ⚠️  日志有时间戳但解析不出来 —— 别当成正常\n"; need=1;;
     *)
       ago=$(( ( $(date +%s) - last_epoch ) / 60 ))
-      if [ "$ago" -le 35 ]; then
+      # 每小时 :00 一次(张先生 2026-10-20 定的,原为每 30 分钟)。阈值必须新于间隔,
+      # 否则每轮都会把「还没到下一班」误报成「自醒死了」。间隔改,这里必须同步改。
+      if [ "$ago" -le 75 ]; then
         printf "  Aegis 自醒           在跑(%s 分钟前最后一次)\n" "$ago"
       else
-        printf "  Aegis 自醒           ❌ %s 分钟没有记录了(每 :11/:41 一次,超过 35 分钟就是死了)\n" "$ago"
+        printf "  Aegis 自醒           ❌ %s 分钟没有记录了(每小时 :00 一次,超过 75 分钟就是死了)\n" "$ago"
         need=1
         printf "                     修:bash scripts/install-aegis-self-wake.sh\n"
       fi;;

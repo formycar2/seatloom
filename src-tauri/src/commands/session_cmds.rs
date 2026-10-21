@@ -28,10 +28,14 @@ use tauri::{AppHandle, Emitter, State};
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn cmd_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionDto>, String> {
+pub async fn cmd_list_sessions(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<SessionDto>, String> {
+    let pid = crate::commands::require_project_id("cmd_list_sessions", project_id)?;
     state
         .db
-        .list_sessions()
+        .list_sessions_for_project(&pid)
         .await
         .map(|rows| rows.into_iter().map(SessionDto::from).collect())
         .map_err(|e| e.to_string())

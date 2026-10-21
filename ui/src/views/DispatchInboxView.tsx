@@ -278,10 +278,19 @@ function useResolvedDeps(deps: DispatchDependencyDto[]): ResolvedDep[] {
     [deps],
   );
 
+  // Scoped to the selected project. This window exists to render the human text of
+  // the events this inbox's dependency edges name, so reading every project's
+  // events would resolve edges against rows the operator is not looking at.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+
   useEffect(() => {
     let alive = true;
+    if (!activeProjectId) {
+      setEvents([]);
+      return;
+    }
     api
-      .listEvents(EVENT_WINDOW)
+      .listEvents(activeProjectId, EVENT_WINDOW)
       .then((rows) => {
         if (alive) setEvents(rows);
       })
@@ -291,7 +300,7 @@ function useResolvedDeps(deps: DispatchDependencyDto[]): ResolvedDep[] {
     return () => {
       alive = false;
     };
-  }, [eventValues]);
+  }, [eventValues, activeProjectId]);
 
   return useMemo(() => {
     const byId = new Map(events.map((e) => [e.id, e]));
@@ -639,30 +648,47 @@ const DispatchInboxView: React.FC = () => {
   // dispatches.target_seat_id — NOT from the UI store, whose active project may be
   // mock data with different ids.
   //
-  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): the project is
-  // now passed to every read that accepts one. `api.listDispatches(projectId, limit)`
-  // has always accepted it — this view simply never passed it, so every project saw
-  // the backend's default project's dispatches.
+  // Scoped to the selected project. `seats` has no project_id, so the backend
+  // resolves this through project_role_bindings — meaning a seat bound in another
+  // project is correctly absent here rather than silently present.
   const activeProjectId = useDataStore((s) => s.activeProjectId);
   const backendHydrated = useDataStore((s) => s.backendHydrated);
+  const selection = useRef(activeProjectId);
+  selection.current = activeProjectId;
 
   useEffect(() => {
+    let alive = true;
+    setSeatsDb([]);
+    if (!activeProjectId || !backendHydrated) return;
     api
-      .listSeats()
-      .then(setSeatsDb)
-      .catch(() => setSeatsDb([]));
-  }, []);
+      .listSeats(activeProjectId)
+      .then((rows) => {
+        if (alive) setSeatsDb(rows);
+      })
+      .catch(() => {
+        if (alive) setSeatsDb([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeProjectId, backendHydrated]);
 
   const load = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       setError(null);
+      // No project → nothing to show. The old code deliberately omitted the project
+      // arg so the backend would fall back to seatloom, which is exactly how this
+      // inbox showed another project's dispatches and looked populated.
+      if (!activeProjectId || !backendHydrated) {
+        setDispatches([]);
+        setError('no project selected');
+        if (!silent) setLoading(false);
+        return;
+      }
       try {
-        // The active project, always. Omitted before, which meant the backend fell back
-        // to its own default project and every project showed the same dispatches.
-        // With no project resolved yet we pass nothing and SAY so below — silently
-        // showing another project's rows is the defect, not the fallback.
-        const rows = await api.listDispatches(activeProjectId ?? undefined);
+        const rows = await api.listDispatches(activeProjectId);
+        if (selection.current !== activeProjectId) return;
 
         const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
         const changed: Record<string, number> = {};
@@ -686,15 +712,15 @@ const DispatchInboxView: React.FC = () => {
           }, 2600);
         }
       } catch (e) {
-        setError(String(e));
+        if (selection.current === activeProjectId) {
+          setDispatches([]);
+          setError(String(e));
+        }
       } finally {
-        if (!silent) setLoading(false);
+        if (selection.current === activeProjectId && !silent) setLoading(false);
       }
-      // The project is a dependency: switching projects must reload, or the inbox shows
-      // the previous project's rows until the next 5s poll — which is exactly the
-      // "switching filters nothing" bug, one poll-interval wide.
     },
-    [activeProjectId],
+    [activeProjectId, backendHydrated],
   );
 
   useEffect(() => {
@@ -884,27 +910,10 @@ const DispatchInboxView: React.FC = () => {
   const sortLabel = sortKey ? LABEL_BY_SORT.get(sortKey) : undefined;
   const clearQuery = useCallback(() => setQuery(''), []);
 
-  // 2026-10-17 (Mr. Zhang's bug: switching projects filtered nothing): with no
-  // project resolved yet, or with the hydration read having failed, this says so
-  // rather than showing another project's rows. Silently falling back to the
-  // backend's default project was the defect.
   if (!activeProjectId || !backendHydrated) {
     return (
-      <div className="flex-1 overflow-y-auto p-10 bg-background">
-        <div className="max-w-5xl">
-          <div
-            role="status"
-            className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 space-y-2"
-          >
-            <p className="text-sm font-bold text-text-primary">
-              还没有选定项目 —— 下面这些不是你的派单。
-            </p>
-            <p className="text-[12.5px] leading-relaxed text-text-secondary">
-              派单是按项目分的。项目还没读出来(或者数据库那次读取失败了), 所以这里一个都不显示;按
-              house 规则,不拿别处的数据顶着。 页面顶部的红框写着后端原样返回的错误和下一步该做什么。
-            </p>
-          </div>
-        </div>
+      <div role="status" className="p-10">
+        请选择一个项目；项目数据未读就绪时不显示其他项目的派单。
       </div>
     );
   }

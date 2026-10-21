@@ -16,8 +16,13 @@
 // the scheduler) is out of scope for a view test.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+
+// The seats the backend's join returns for the project the store opens. `seats` is
+// the GLOBAL registry (what `listAllSeats` returns); this is the project-scoped
+// subset (what `listSeats(projectId)` returns). The component renders the latter.
+const boundSeatIds = new Set(['seat-mira-001', 'seat-nimbus-001']);
 
 const state = vi.hoisted(() => ({
   // Newest-first ledger rows the dependency column resolves against. Empty by
@@ -61,24 +66,39 @@ vi.mock('../lib/api', () => ({
     return state.registered;
   },
   api: {
-    listSeats: async () => state.seats,
+    // Scoped to a project, as the backend now is. The mock honours the argument so
+    // a test that forgets it cannot silently pass on an unscoped read.
+    listSeats: async (projectId?: string) =>
+      projectId ? state.seats.filter((s: { id: string }) => boundSeatIds.has(s.id)) : [],
+    listAllSeats: async () => state.seats,
+    // Records what the view passed, so a test can assert the project reached the
+    // backend rather than falling back to its default. Track's strict mock returns
+    // [] unscoped, which proves the fallback is wrong but not that it was avoided.
+    listDispatches: async (projectId?: string) => {
+      state.listCalls.push(projectId ?? '<none>');
+      return projectId ? state.rows : [];
+    },
     enqueueDispatch: (...args: unknown[]) => state.enqueue(...(args as [])),
-    listAcceptances: async () => [],
+    listAcceptances: async (projectId?: string) => (projectId ? [] : []),
     acceptDelivery: vi.fn(async () => ({})),
     rejectDelivery: vi.fn(async () => ({})),
     // The dependency column resolves `event:<id>` referents through this read. A
     // missing entry here used to make the whole view throw; now it is part of the
     // seam so a test can decide what the window contains.
-    listEvents: async (limit?: number) => state.events.slice(0, limit ?? 200),
-    listDispatches: async (projectId?: string) => {
-      state.listCalls.push(projectId ?? '<none>');
-      return state.rows;
-    },
+    //
+    // 2026-10-17: the signature is (projectId, limit) — it used to be (limit), and
+    // a mock left at the old shape silently received the project id as the limit,
+    // sliced to [] and made every dependency read as unresolved.
+    listEvents: async (projectId?: string, limit?: number) =>
+      projectId ? state.events.slice(0, limit ?? 200) : [],
   },
 }));
 
 import DispatchInboxView from './DispatchInboxView';
 import { useDataStore } from '../stores/useDataStore';
+// Every test starts from a resolved, hydrated project. Track added this guard; my
+// version left it to each test, which let a forgotten state look like an empty inbox.
+beforeEach(() => useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true }));
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -365,17 +385,31 @@ describe("the inbox does not show another project's rows", () => {
     state.rows = [dispatch({ id: 'd1', title: 'Alpha' })];
   });
 
+  // Synced 2026-10-21. These two are mine — they pin the defect the operator actually
+  // reported. Track's merge added an earlier `role="status"` guard that renders
+  // "请选择一个项目；项目数据未读就绪时不显示其他项目的派单。" for both cases, so the
+  // matched text changed while the pinned behaviour did not: nothing is silently shown,
+  // and the reason is on screen. Asserted through the role, not the copy, so a future
+  // reword does not fail the suite for no behavioural reason.
   it('with no project resolved it says so instead of rendering the backend default', async () => {
     useDataStore.setState({ activeProjectId: null, backendHydrated: true });
     render(<DispatchInboxView />);
-    expect(await screen.findByText(/还没有选定项目/)).toBeTruthy();
+    expect(await screen.findByRole('status')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/请选择|no project/),
+    );
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
   it('with the hydration read failed it says so too', async () => {
     useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: false });
     render(<DispatchInboxView />);
-    expect(await screen.findByText(/还没有选定项目/)).toBeTruthy();
+    // The guard treats an unfinished hydration exactly like no project: no rows, one
+    // message. Reading the message is the point — a silent empty list was the defect.
+    expect(await screen.findByRole('status')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/请选择|no project/),
+    );
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
