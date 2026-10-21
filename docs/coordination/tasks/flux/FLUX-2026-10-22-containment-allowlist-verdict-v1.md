@@ -5,7 +5,8 @@
   packet `AEGIS-2026-10-22-containment-allowlist-v1`, commit `6fc6b4a` on
   `packet/nimbus/containment-allowlist` (the object lives in Nimbus's own worktree, where it is
   reachable as an ancestor of the checked-out branch).
-- **Verdict event**: `ev-kZ5x8eixmJZYrzbj7GRk-` — emitted as required.
+- **Verdict event**: `ev-kZ5x8eixmJZYrzbj7GRk-` — emitted as required. (The commit is recorded
+  in the event payload rather than as a ref: `ref_type: "commit"` is not an allowed ref type.)
 - **VERDICT: PASS** — with **one finding**, and it is the one Nimbus himself escalated: the
   `git/ops.rs` header comment promises a containment re-run at decision time that does not happen.
 
