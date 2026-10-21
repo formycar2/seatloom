@@ -82,20 +82,29 @@ else
   # 第一版用 grep ' seatloom-mcp-emit' 带空格匹配,而进程名前的空格数不定,
   # 于是永远匹配不到、解析永远空 —— 而空值时脚本还继续跑了(那是静默失败)。
   # 现在:先整行 grep,再用 sed 剥掉星期和后面的路径,只剩 4 个字段给 date -j。
+  # 进程启动时刻。三次迭代都在这段上栽过,记下来免得再来第四次:
+  #  1) grep ' seatloom-mcp-emit' 带前导空格 -> 永远匹配不到(进程名前空格数不定)
+  #  2) 解析失败时 fail 掉整个重启 -> 可它只是「要不要重启」的依据,
+  #     不是「能不能重启」的依据;真正该拦的是下面「席位有没有在飞的活」
+  #  3) Aegis 这边正常、张先生那边报算不出 -> 有环境差异,不猜原因
+  # 现在:算不出就**把原始输出摊开**让人自己对,不静默也不拦死。
   RUN_EPOCH="$(ps -axo lstart=,comm= 2>/dev/null | grep 'seatloom-mcp-emit' | head -1 \
-    | sed -E 's/^[A-Za-z]{3} +([A-Za-z]{3}) +([0-9]+) +([0-9:]+) +([0-9]{4}).*/\1 \2 \3 \4/' \
+    | sed -E 's/^[A-Za-z]{3} +([A-Za-z]{3}) +([0-9]+) +([0-9:]+) +([0-9]{4}).*/\\1 \\2 \\3 \\4/' \
     | while read -r m d t y; do date -j -f '%b %d %H:%M:%S %Y' "$m $d $t $y" +%s 2>/dev/null; done)"
-  if [ "${RUN_EPOCH:-0}" -gt 0 ] 2>/dev/null; then
+  FIRST_RUN="$(ps -axo lstart=,comm= 2>/dev/null | grep 'seatloom-mcp-emit' | head -1 | awk '{print $1,$2,$3,$4,$5}')"
+  if [ -n "${RUN_EPOCH:-}" ] && [ "${RUN_EPOCH:-0}" -gt 0 ] 2>/dev/null; then
     DIFF_MIN=$(( (DISK_EPOCH - RUN_EPOCH) / 60 ))
-    say "  在跑进程启动(最早那条): $(ps -axo lstart=,comm= | grep 'seatloom-mcp-emit' | head -1 | awk '{print $1,$2,$3,$4,$5}')"
+    say "  在跑进程启动(最早那条): ${FIRST_RUN:-?}"
     if [ "$DIFF_MIN" -gt 0 ]; then
       say "  ✅ 进程比二进制旧 ${DIFF_MIN} 分钟 —— 重启有意义"
     else
-      say "  ℹ️  进程不比二进制旧 —— 重启没有意义,先确认上面两个时间"
+      say "  ℹ️  进程不比二进制旧(差 ${DIFF_MIN} 分钟)—— 重启没意义,先确认上面两个时间"
     fi
   else
-    fail "算不出在跑进程的启动时刻 —— 这一项没验成,不重启。" \
-         "一个报不出错的检查比没有检查更有害;手工核: ps -axo lstart=,comm= | grep seatloom-mcp-emit"
+    say "  ⚠️  算不出进程启动 epoch —— **这一项没验成**,但不当成拦住重启的理由"
+    say "     原始 ps 第一行: ${FIRST_RUN:-（没取到）}"
+    say "     磁盘二进制构建于: $DISK_TIME"
+    say "     自己比一下:那个时刻若明显早于磁盘构建时刻,重启就有意义"
   fi
 fi
 
