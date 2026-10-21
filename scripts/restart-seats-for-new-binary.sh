@@ -76,17 +76,26 @@ if [ "$NRUN" = "0" ]; then
   say "  ℹ️  当前没有在跑的 mcp-emit 进程 —— 不需要重启"
 else
   # 进程启动时刻:用 ps 的 lstart,转成 epoch 比较
-  RUN_EPOCH="$(ps -axo lstart,pid,comm 2>/dev/null | grep 'seatloom-mcp-emit' | grep -v grep | head -1 | sed 's/^[A-Za-z]* *[0-9]* *[0-9:]* *[0-9]* //' | xargs -I{} date -j -f '%b %d %H:%M:%S %Y' '{}' +%s 2>/dev/null || echo 0)"
-  if [ "$RUN_EPOCH" -gt 0 ] 2>/dev/null; then
+  # 进程启动时刻:用 ps 的 lstart。第一版那段解析失败却继续跑(报「没验成」
+  # 然后照旧重启)—— 一个报不出错的检查比没有检查更有害,所以现在解析失败就停。
+  # 进程启动时刻:ps 的 lstart 是 5 个字段(星期 月 日 时:分:秒 年)。
+  # 第一版用 grep ' seatloom-mcp-emit' 带空格匹配,而进程名前的空格数不定,
+  # 于是永远匹配不到、解析永远空 —— 而空值时脚本还继续跑了(那是静默失败)。
+  # 现在:先整行 grep,再用 sed 剥掉星期和后面的路径,只剩 4 个字段给 date -j。
+  RUN_EPOCH="$(ps -axo lstart=,comm= 2>/dev/null | grep 'seatloom-mcp-emit' | head -1 \
+    | sed -E 's/^[A-Za-z]{3} +([A-Za-z]{3}) +([0-9]+) +([0-9:]+) +([0-9]{4}).*/\1 \2 \3 \4/' \
+    | while read -r m d t y; do date -j -f '%b %d %H:%M:%S %Y' "$m $d $t $y" +%s 2>/dev/null; done)"
+  if [ "${RUN_EPOCH:-0}" -gt 0 ] 2>/dev/null; then
     DIFF_MIN=$(( (DISK_EPOCH - RUN_EPOCH) / 60 ))
-    say "  在跑进程启动(最早那条): $(ps -axo lstart,comm | grep 'seatloom-mcp-emit' | grep -v grep | head -1 | awk '{print $1,$2,$3,$4,$5}')"
+    say "  在跑进程启动(最早那条): $(ps -axo lstart=,comm= | grep 'seatloom-mcp-emit' | head -1 | awk '{print $1,$2,$3,$4,$5}')"
     if [ "$DIFF_MIN" -gt 0 ]; then
       say "  ✅ 进程比二进制旧 ${DIFF_MIN} 分钟 —— 重启有意义"
     else
       say "  ℹ️  进程不比二进制旧 —— 重启没有意义,先确认上面两个时间"
     fi
   else
-    say "  ⚠️  算不出进程启动时刻(ps 输出格式没解析成功)—— 这一项没验成"
+    fail "算不出在跑进程的启动时刻 —— 这一项没验成,不重启。" \
+         "一个报不出错的检查比没有检查更有害;手工核: ps -axo lstart=,comm= | grep seatloom-mcp-emit"
   fi
 fi
 
@@ -132,12 +141,25 @@ for s in $SEATS; do
     continue
   fi
   say "  → $s ($T):发重启指令"
-  # 先清输入行残留,再发 Ctrl-C 两次让 agent 退出,harness 会重新拉起
+  # 先清输入行残留,再用 /quit 退出 agent(不是 C-c —— 那只是取消当前操作,
+  # 我第一版用 C-c,四个 agent 一个没退,mcp-emit 进程 pid 全没变,重启等于没做)。
+  # 依据:saih 的 interactive-mode.ts:4344 明写 quit 是 Ctrl+D / Ctrl+C / /quit 三者之一,
+  # 但实测 C-c 在 TUI 里被当成「取消」而非「退出」,所以这里用最明确的 /quit。
+  # 退出时 saih 会打印一条 resume 命令,那是恢复会话用的,不影响我们重启。
   tmux send-keys -t "$T" C-u 2>/dev/null || true
   sleep 0.3
-  tmux send-keys -t "$T" C-c 2>/dev/null || true
-  sleep 1
-  tmux send-keys -t "$T" C-c 2>/dev/null || true
+  tmux send-keys -t "$T" -l '/quit' 2>/dev/null || true
+  sleep 0.3
+  tmux send-keys -t "$T" Enter 2>/dev/null || true
+  sleep 3
+  # 退出后 shell 会显示提示符;agent 不在的话由 seat-launch 那条命令重新拉起
+  # —— 但这里**不自动重拉**:重启后由谁拉起、用什么身份,是另一个决定,
+  # 不由这个脚本猜。先确认它真的退了。
+  if pgrep -P "$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1)" >/dev/null 2>&1; then
+    say "    ⚠️  $s 退出后仍有子进程 —— 可能没退干净,人工看一眼 $T"
+  else
+    say "    ✅ $s 已退出(现在 shell 里)"
+  fi
 done
 
 say ""
