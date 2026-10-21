@@ -249,3 +249,100 @@ ui/src/app-v2/AppV2.tsx — the delivery must not remove merged work
 
 两条我都能做,但**选哪条不该由我定** —— 它决定的是合并时的产品状态,
 不是我的交付方式。
+
+---
+
+# 追加二:同步分支(含 src-tauri)+ 请求 Flux 重验(`disp-LvzirigAl8WNLHcbnYqp3`)
+
+## 一、同步了,这次有实质内容
+
+派单 `AEGIS-2026-10-22-mira-resync-2-v1`。判据按新的来(看范围不看数字):
+
+```
+$ git rev-list --count packet/mira/knowledge-panel..track/infra-foundation
+19                                    ← 第一次同步前
+$ git log --name-only --format= <同区间> | grep -E '^(ui/src|src-tauri)/' | sort -u
+src-tauri/src/commands/acceptance_cmds.rs      src-tauri/src/commands/document_cmds.rs
+src-tauri/src/commands/artifact_cmds.rs        src-tauri/src/commands/handoff_cmds.rs
+src-tauri/src/commands/dispatch_cmds.rs        src-tauri/src/commands/mod.rs
+src-tauri/src/commands/operator_decision_cmds.rs  src-tauri/src/commands/seat_cmds.rs
+src-tauri/src/commands/session_cmds.rs         src-tauri/src/commands/timeline_cmds.rs
+src-tauri/src/commands/workitem_cmds.rs        src-tauri/src/dto.rs
+src-tauri/src/main.rs                          ui/src/app-v2/hooks/useSupervisorData.ts
+ui/src/app-v2/panel/SupervisorIntent.tsx       ui/src/app-v2/views/DocumentsWorkspace.tsx
+ui/src/components/AcceptanceSection.tsx        ui/src/components/OperatorDecisionSection.test.tsx
+ui/src/components/OperatorDecisionSection.tsx  ui/src/lib/api.ts
+ui/src/lib/types-dto.ts                        ui/src/stores/seatAttribution.test.ts
+ui/src/stores/useDataStore.ts                  ui/src/views/DispatchInboxView.test.tsx
+ui/src/views/DispatchInboxView.tsx
+```
+
+判据命中:区间里有 `src-tauri/src/commands/` 和 `ui/src/` 的改动,必须同步。
+**合并无冲突**,`git status` 干净。之后 track 又前进 1 个(`e834ff7`,纯 Aegis
+文档),也合了。
+
+同步前后我的修复都在:`useDataStore.ts:1614` 仍是 `activeProjectId: null`,
+`App.tsx` 里 `restoredPosition` 命中 7 处,`App.restartRestore.test.tsx` 在。
+
+### 合并带入 5 条挂掉的测试,已修
+
+`OperatorDecisionSection.test.tsx`(Nimbus 新代码)5 条全挂。根因和上一轮
+**完全同一个模式**:该组件读 `useDataStore` 的 `activeProjectId`,而测试不声明它,
+靠的正是 10-22 被我改成 `null` 的那个缺陷默认值 `'p-1'`。
+(在 track 上这 5 条是全过的 —— 我用独立 worktree 实测确认过,
+所以是合并把我这边的默认值改掉了,不是 Nimbus 的代码坏。)
+
+修法同前两次:测试显式声明前置条件,不把默认值改回去。
+这是同一模式的**第三次**:`SupervisorIntent`(6 条)、`AcceptanceSection`(16 条)、
+`OperatorDecisionSection`(5 条),共 27 条。
+
+改完全量:`251 passed (21 files)`、typecheck 干净、build 通过。
+
+## 二、卡还是没开成,但根因变了
+
+第一次开卡尝试(在读派单包之前做的)被拒,合并后再试,仍被拒:
+
+```
+merging "packet/mira/knowledge-panel" into "track/infra-foundation"
+would DELETE 1 file(s): ui/src/app-v2/AppV2.tsx
+```
+
+**但这次源码侧的门确实开了。** 实测:
+
+- 豁免清单已进 track(`3e29017` 合入 `6fc6b4a`),`dispatch.rs:1683` 的
+  `DELETION_EXEMPTIONS` 第一条就是 `path: "ui/src/app-v2/AppV2.tsx"`,
+  `ruled_by: "human:supervisor"`,理由写明是 `disp-DFeH6Ut_aNfzIbuuR21V5` item 3b
+  的死代码删除。我的分支 HEAD 也含它(命中 7 处)。
+- 可跑着守卫的二进制是旧的:
+  - 本 worktree `target/debug/seatloom-mcp-emit` 构建于 **10-17 17:36**,
+    `strings | grep -c DELETION_EXEMPTIONS` = **0**
+  - 主检出 `target/debug/seatloom-mcp-emit` 构建于 **10-16 12:58**,同样 **0**
+  - 豁免清单提交 `6fc6b4a` 的时间是 **2026-10-21 16:48**
+
+也就是说:**Aegis 说「门已开」在源码上成立,在运行态上不成立。** 守卫跑在我这个
+席位启动那一刻加载的二进制镜像里,重建二进制不等于换上新的。
+
+改 live 二进制/重启服务超出我的权限,所以我没碰,已用
+`SupervisorMessage`(`ev-mira-open-cards-still-blocked-stale-binary`)上报,
+把两条实测事实(源码有豁免 / 二进制里没有)和需要做的事(重建 + 让 MCP 子进程
+换上新二进制)写清了。**换上新二进制后我重开卡,不需要重做任何别的。**
+
+## 三、Flux 重验:只能请求,不能自己派
+
+派单要我「让 Flux 重验重启回原位」。`enqueue_dispatch` 的 issuer 只允许
+Aegis / Lyra,**派 Flux 不是我的职权**,所以我不能自己派。
+
+已用 `SupervisorMessage`(`ev-mira-requests-flux-reverify-restart-restore`)请求,
+并附上:
+
+- 要重验的实现单 `disp-DFeH6Ut_aNfzIbuuR21V5`,现有验绿是
+  `ev-mkwI3idecZKlZBGXOoC31` **fail**(2026-10-21T08:21:44Z)
+- fail 之后改了什么(三段顺序契约、默认值 `p-1`→`null`、`InitDialog` 同源缺陷、
+  7 条新测试含二次启动闭环、六个变异五个被杀死)
+- 写进卡里的验法:切到某项目某标签 → 关掉 → 重开 → 回原处;记录的项目不存在时
+  行为明确;后端无项目时不编造
+- 我在 `d884fac` 自己跑的门(typecheck 干净 / 251 passed / build 通过),
+  并明确标注这不能替代 Flux 独立重验
+
+那张卡我不会自己开 —— 它要 Flux 的新 pass 验绿才算数,拿 fail 那条去开就是
+拿别人的 fail 当自己的绿(Aegis 10-22 记过的坑)。
