@@ -14,9 +14,9 @@ use crate::db::models::{
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
     DocumentVersionRow, HandoffReceiptRow, HandoffRow, HistoryProjectRow, KnowledgeL2Pointer,
     KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
-    ObjectRefRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow,
-    PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, TopicRow, VerdictFacts, WorkItemRow,
+    ObjectRefRow, OperatorDecisionRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow,
+    PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, TopicRow, VerdictFacts, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -26,6 +26,26 @@ use chrono::Utc;
 
 pub struct SeatloomDb {
     pool: Pool,
+}
+
+/// Everything a NEW operator obligation carries (020).
+///
+/// A struct rather than nine positional arguments: the write is a single act
+/// with a single meaning, and a call site that transposes `consequence` and
+/// `target` would compile silently — nine same-typed `&str`s in a row is exactly
+/// the shape a transposition hides in.
+#[derive(Debug, Clone)]
+pub struct NewOperatorDecision<'a> {
+    pub decision_id: &'a str,
+    pub project_id: &'a str,
+    pub target: &'a str,
+    pub choices: &'a [String],
+    pub decider: &'a str,
+    pub consequence: &'a str,
+    pub evidence: &'a [String],
+    /// The creator. Already resolved from the server env by the caller; this
+    /// function does not re-derive it, so identity has one source.
+    pub created_by: &'a str,
 }
 
 impl SeatloomDb {
@@ -1596,6 +1616,280 @@ impl SeatloomDb {
             .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
             .await?;
         let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    // =========================================================================
+    // Operator decisions (020) — the structured "waiting on the human" object.
+    //
+    // Why these are repository functions and not raw SQL in the tool: the same
+    // row + event must land in ONE transaction, and the immutability of a
+    // resolved decision must have exactly one implementation — never a second,
+    // divergent copy in a command or a script.
+    // =========================================================================
+
+    /// One operator decision by id. `None` when no such obligation exists.
+    pub async fn get_operator_decision(
+        &self,
+        decision_id: &str,
+    ) -> Result<Option<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_operator_decision))
+    }
+
+    /// The pending obligations of a project, oldest first.
+    ///
+    /// `decider` filters by WHO the obligation is for, because the packet's rule
+    /// is that not everything defaults to the operator: a row Aegis created for
+    /// itself (`decider = 'seat:seat-aegis-001'`) must not appear in the
+    /// operator's "等你拍板" count. Passing `None` returns every pending row of
+    /// the project.
+    pub async fn list_pending_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' AND decider = $2 \
+                         ORDER BY created_at ASC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' \
+                         ORDER BY created_at ASC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// The RESOLVED obligations of a project, newest ruling first — the audit
+    /// side of the object. `decider` filters the same way the pending list does.
+    pub async fn list_resolved_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' AND decider = $2 \
+                         ORDER BY resolved_at DESC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' \
+                         ORDER BY resolved_at DESC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// `request_operator_decision`: create the obligation + append
+    /// `OperatorDecisionRequested` in ONE transaction (contract rule 2).
+    ///
+    /// The write path enforces what the schema cannot express: `choices` is a
+    /// non-empty array of non-blank strings and `consequence` is non-blank. The
+    /// schema's CHECKs back this up, but the tool's job is a refusal that NAMES
+    /// what is missing — a raw CHECK violation tells the caller nothing.
+    ///
+    /// The caller has already resolved `created_by` from the server env; this
+    /// function does not re-derive it, so there is exactly one place identity
+    /// comes from.
+    pub async fn request_operator_decision(
+        &self,
+        new: NewOperatorDecision<'_>,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let NewOperatorDecision {
+            decision_id,
+            project_id,
+            target,
+            choices,
+            decider,
+            consequence,
+            evidence,
+            created_by,
+        } = new;
+        let choices_json =
+            serde_json::to_value(choices).map_err(|e| DbError::Internal(e.to_string()))?;
+        let evidence_json =
+            serde_json::to_value(evidence).map_err(|e| DbError::Internal(e.to_string()))?;
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        tx.execute(
+            "INSERT INTO operator_decisions \
+               (id, project_id, target, choices, decider, consequence, evidence, status, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
+            &[
+                &decision_id,
+                &project_id,
+                &target,
+                &choices_json,
+                &decider,
+                &consequence,
+                &evidence_json,
+                &created_by,
+            ],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionRequested,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: created_by.to_string(),
+            project_id: project_id.to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "choices": choices,
+                "decider": decider,
+                "consequence": consequence,
+                "evidence": evidence,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, created_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let row = row_to_operator_decision(&row);
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// `resolve_operator_decision`: the ruling lands + `OperatorDecisionResolved`
+    /// in ONE transaction.
+    ///
+    /// A row that is already `resolved` is REFUSED — same reasoning as 013/014:
+    /// the row is a projection of the append-only ledger, and a resolved
+    /// decision is a recorded fact. Re-deciding would be a silent rewrite.
+    ///
+    /// `chosen` must be one of the row's own `choices`. That check lives here
+    /// rather than in the schema because the choices are data, and because the
+    /// refusal must name the legal options instead of quoting a CHECK.
+    pub async fn resolve_operator_decision(
+        &self,
+        decision_id: &str,
+        chosen: &str,
+        resolved_by: &str,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1 \
+                   FOR UPDATE",
+                &[&decision_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::OperatorDecisionNotFound {
+                id: decision_id.to_string(),
+            });
+        };
+        let existing = row_to_operator_decision(&row);
+        if existing.status == "resolved" {
+            return Err(DbError::OperatorDecisionAlreadyResolved {
+                id: decision_id.to_string(),
+            });
+        }
+        if !existing.choices.iter().any(|c| c == chosen) {
+            return Err(DbError::OperatorDecisionChoiceNotOffered {
+                id: decision_id.to_string(),
+                chosen: chosen.to_string(),
+                choices: existing.choices.clone(),
+            });
+        }
+        let project_id = existing.project_id.clone();
+        let target = existing.target.clone();
+        let decider = existing.decider.clone();
+        tx.execute(
+            "UPDATE operator_decisions \
+                SET status = 'resolved', chosen = $2, resolved_by = $3, resolved_at = NOW() \
+              WHERE id = $1",
+            &[&decision_id, &chosen, &resolved_by],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionResolved,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: resolved_by.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "chosen": chosen,
+                "ruling_by": resolved_by,
+                "decider": decider,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, resolved_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, &existing.project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let updated = row_to_operator_decision(&updated);
         tx.commit().await?;
         Ok(updated)
     }
@@ -3237,6 +3531,40 @@ fn row_to_knowledge_memory_card(r: &Row, depth: MemoryLayer) -> KnowledgeMemoryC
     }
 }
 
+fn row_to_operator_decision(r: &Row) -> OperatorDecisionRow {
+    let choices_json: serde_json::Value = r.get(3);
+    let evidence_json: serde_json::Value = r.get(6);
+    OperatorDecisionRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        target: r.get(2),
+        choices: jsonb_to_strings(&choices_json),
+        decider: r.get(4),
+        consequence: r.get(5),
+        evidence: jsonb_to_strings(&evidence_json),
+        status: r.get(7),
+        created_by: r.get(8),
+        created_at: r.get(9),
+        chosen: r.get(10),
+        resolved_by: r.get(11),
+        resolved_at: r.get(12),
+    }
+}
+
+/// A JSONB array of strings, read defensively: a non-array or a non-string
+/// element yields nothing rather than a panic. The schema's CHECKs make that
+/// unreachable for rows written through this path, but a read must not crash on
+/// a row some other writer put there.
+fn jsonb_to_strings(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn row_to_topic(r: &Row) -> TopicRow {
     TopicRow {
         id: r.get(0),
@@ -3581,6 +3909,35 @@ pub enum DbError {
         "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
     )]
     MemoryNoTierChange { id: String, tier: String },
+    /// `020`: the decision id names no row. A read of a mistyped id must say so,
+    /// not render an empty obligation.
+    #[error("operator decision {id:?} not found")]
+    OperatorDecisionNotFound { id: String },
+    /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
+    /// same reason 013/014 refuse to roll a terminal row back: the row is a
+    /// projection of the append-only ledger, and re-deciding would rewrite a
+    /// recorded fact.
+    #[error(
+        "operator decision {id:?} is already resolved — a recorded ruling is immutable; \
+         a new question is a new decision, never a rewrite of an answered one"
+    )]
+    OperatorDecisionAlreadyResolved { id: String },
+    /// `020`: `chosen` is not one of the row's own `choices`. The legal options
+    /// are named so the caller can correct the call instead of guessing.
+    #[error(
+        "operator decision {id:?}: {chosen:?} is not one of the offered choices {choices:?} — \
+         the ruling must be one of the options the obligation stated"
+    )]
+    OperatorDecisionChoiceNotOffered {
+        id: String,
+        chosen: String,
+        choices: Vec<String>,
+    },
+    /// `020`: an internal serialisation failure while building the JSONB
+    /// arguments. Named rather than swallowed so a caller never mistakes a
+    /// refused write for a landed one.
+    #[error("operator decision argument could not be serialised: {0}")]
+    Internal(String),
     /// A stored string is outside the value domain its Rust type declares.
     /// Raised only at the row-hydration parse boundary (see `check_domain`).
     #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
