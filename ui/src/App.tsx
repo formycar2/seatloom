@@ -78,25 +78,17 @@ const App: React.FC = () => {
   // claim LIVE while tmux discovery is empty or has failed.
   const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
   const { projectUIStates, updateProjectUIState, setActiveProjectId } = useAppStore();
-  const persistedProjectId = useAppStore((s) => s.activeProjectId);
+  // Snapshot the launch record: no startup write may change the restore target.
+  const [persistedProjectId] = useState(() => useAppStore.getState().activeProjectId);
   const projectUIStatesRef = useRef(projectUIStates);
   useEffect(() => {
     projectUIStatesRef.current = projectUIStates;
   });
 
-  // ── Item 1: restart lands back in the last project ──────────────────────────
-  //
-  // `useAppStore` already persists each project's tab and selected object (the
-  // `persist` middleware writes `seatloom-app-store` to localStorage), so only the
-  // PROJECT ITSELF was missing: it lived in useDataStore's in-memory state and was
-  // re-derived from the default on every launch. So: once the backend read
-  // succeeds and we know which projects actually exist, restore the recorded one —
-  // and only if it still exists. Nothing is written here, so a stored id naming a
-  // deleted project simply does not restore, and a storage failure cannot throw:
-  // `persist` hands back the default state and the app carries on with the normal
-  // default tab.
-  // The project list read by the restore effect, held in a ref so that effect can
-  // run once when the read lands instead of re-running on every store change.
+  // Restore only after a successful backend read. Until this phase completes,
+  // the persistence effect below is disabled. A deleted/missing project falls
+  // back to the first real backend project (or no project for an empty list).
+  // Keep a ref to the latest backend project list without retriggering restore.
   const projectDataOrderRef = useRef<string[]>([]);
   useEffect(() => {
     projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
@@ -107,13 +99,14 @@ const App: React.FC = () => {
     if (!backendHydrated) return; // do not guess before the read lands
     const ids = new Set(projectDataOrderRef.current);
     if (!ids.has(persistedProjectId ?? '')) {
-      // No record, or the recorded project is gone — keep the normal default.
+      // The backend has already selected the first real project, or null.
+      if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
       setRestoredPosition(true);
       return;
     }
     setActiveProject(persistedProjectId as string);
     setRestoredPosition(true);
-  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject]);
+  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject, setActiveProjectId]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -138,6 +131,10 @@ const App: React.FC = () => {
   // 过渡态,不是说要删掉。契约:LYRA-2026-10-16-first-screen-contract-v1 §6.2 slice 1。
   const [activeTab, setActiveTab] = useState<Tab>('dispatches');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
+  // An effect's state updates are visible only on the next render. Gate writes
+  // on this acknowledgement, not effect order, so the old tab cannot overwrite
+  // the destination's saved tab during startup OR a later project switch.
+  const [loadedUIProjectId, setLoadedUIProjectId] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
   const [showSupervisorIM, setShowSupervisorIM] = useState(
@@ -226,10 +223,15 @@ const App: React.FC = () => {
   const [protectionType, setProtectionType] = useState<'session' | 'form' | null>(null);
 
   useEffect(() => {
-    if (!activeProjectId && activeTab !== 'all-projects' && activeTab !== 'live-seats') {
+    if (
+      restoredPosition &&
+      !activeProjectId &&
+      activeTab !== 'all-projects' &&
+      activeTab !== 'live-seats'
+    ) {
       setIsInitOpen(true);
     }
-  }, [activeProjectId, activeTab]);
+  }, [restoredPosition, activeProjectId, activeTab]);
 
   useGlobalShortcuts(
     () => {
@@ -255,9 +257,11 @@ const App: React.FC = () => {
         );
       }
     }
+    setLoadedUIProjectId(activeProjectId);
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;
     if (activeProjectId && activeProjectId !== 'all-projects' && activeTab !== 'all-projects') {
       updateProjectUIState(activeProjectId, {
         activeTab,
@@ -267,7 +271,15 @@ const App: React.FC = () => {
       // Remember which project the operator is in, so the next launch returns here.
       setActiveProjectId(activeProjectId);
     }
-  }, [activeTab, selectedObject, activeProjectId, updateProjectUIState, setActiveProjectId]);
+  }, [
+    restoredPosition,
+    loadedUIProjectId,
+    activeTab,
+    selectedObject,
+    activeProjectId,
+    updateProjectUIState,
+    setActiveProjectId,
+  ]);
 
   // ─── Project switching ───
   const handleProjectSwitchRequest = (id: string) => {
@@ -596,7 +608,13 @@ const App: React.FC = () => {
         isOpen={isInitOpen}
         onClose={() => setIsInitOpen(false)}
         onInitialize={() => {
-          setActiveProject('p-1');
+          // Re-read the project list instead of planting a seeded id. There is no
+          // seeded project to "initialize" any more — clicking this button used to
+          // call setActiveProject('p-1'), i.e. put a test-only project into state
+          // where the persistence effect then wrote it to disk as the recorded
+          // position. Re-reading is the honest action: either the backend has
+          // projects by now and the list lands, or the empty state explains itself.
+          void hydrateFromBackend();
           setIsInitOpen(false);
         }}
       />

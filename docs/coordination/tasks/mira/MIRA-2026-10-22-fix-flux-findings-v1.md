@@ -1,0 +1,139 @@
+# 修 Flux 验绿指出的两处 — 交付说明
+
+| Field | Value |
+|---|---|
+| dispatch | `disp-gjdWWBy949yMqAxi-tswd` |
+| packet | `AEGIS-2026-10-22-mira-fix-flux-findings-v1` |
+| 分支 | `packet/mira/knowledge-panel` |
+| 头提交 | `git rev-parse --short HEAD` = `af0e2a1` |
+| 落后数 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = **0** |
+| 日期 | 2026-10-22 |
+
+## 第一件:重启回到上次位置 — 修好了
+
+### 改前是什么
+
+三条缺陷叠在一起,Flux 的行号我逐条核过,全部属实:
+
+1. `App.tsx:268` 的写入效果(`setActiveProjectId(activeProjectId)`)先跑,
+   把 `useDataStore` 的启动默认值 `'p-1'` 落盘 —— 恢复效果(101–116)要读的值
+   **先被覆盖掉了**。顺序上写入赢。
+2. `useDataStore.ts:1614` 以测试专用 id `'p-1'`(SEED_PROJECTS_FOR_TESTS 第一行)
+   开场。真实启动落在一个不在任何数据库里的项目上。
+3. 于是位置**永久丢失**:盘上留下 `'p-1'`,下一次启动也从那里开始。
+
+顺带查出同源缺陷第三处(派单没点名,但同一个坑):`InitDialog` 的
+「初始化演示仓」按钮 `onInitialize={() => setActiveProject('p-1')}` —— 点一下
+就把假项目塞进 activeProjectId,再被写盘。一并修掉了。
+
+### 改后是什么
+
+顺序从「靠巧合」变成「有保证」的三段契约(`ui/src/App.tsx`):
+
+1. **启动记录只快照一次**:`const [persistedProjectId] = useState(() => useAppStore.getState().activeProjectId)`。
+   在第一个效果之前取,组件自己再怎么写也动不了它。
+2. **恢复等后端读完**:恢复效果门在 `backendHydrated` 上,读完才决定目的地。
+   记录的项目不在后端返回里 → 落第一个真实项目;后端一个项目都没有 → `null`。
+3. **写入等两件事**:`restoredPosition`(恢复已决定)和
+   `loadedUIProjectId === activeProjectId`(标签已按新项目落定)。后者防的是
+   上一个项目的已存标签在恢复的同一趟渲染里把目的地的标签写掉。
+
+`useDataStore.ts:1614` 的启动默认值 `'p-1'` → `null`。真启动不再从测试种子开场。
+
+### 怎么验的
+
+新测试 `ui/src/App.restartRestore.test.tsx`,7 条,挂载真实 App,断言全部
+**实测**:
+
+| # | 断言 | 对应缺陷 |
+|---|---|---|
+| 1 | 后端读落地前,activeProjectId 仍是启动默认;读完才是记录的项目 | 竞态 |
+| 2 | **任何一次**写入都不带 `'p-1'`(逐条看落盘值,不看最终值) | 缺陷 1 |
+| 3 | 落在记录项目的**已存标签**上,不是另一个项目的 | 缺陷 3 |
+| 4 | 记录的项目后端没返回 → 落第一个真实项目,记录被修好 | 已删项目 |
+| 5 | 后端一个项目都没有 → `null`,不编造项目 | 空库 |
+| 6 | 启动默认值不是任何 SEED_PROJECTS_FOR_TESTS 的 id | 缺陷 2 |
+| 7 | 关掉重开(重挂载 + 从盘上重读),回到同一个项目**和同一个标签**,且中间没写过别的标签 | 完整闭环 |
+
+**变异验证**(Flux 教的方法:改坏源码,看测试是否红)。六个变异,
+五个被抓住,一个是等价变异:
+
+| 变异 | 结果 |
+|---|---|
+| 恢复效果去掉 `backendHydrated` 门 | RED(3 条) |
+| 写入效果去掉 `restoredPosition` 门 | RED(3 条) |
+| 写入效果去掉 `loadedUIProjectId` 门 | RED(1 条) |
+| 启动默认值改回 `'p-1'` | RED(1 条) |
+| 整个写入效果删掉 | RED(全部) |
+| 恢复效果的依赖数组改回去 | 全绿 —— 等价变异(zustand action 引用恒定),非守卫缺失 |
+
+第 3 个变异一开始**没被抓到**:我的断言只看了最终落盘值。原始 bug 恰恰是
+「最终值看起来对,但第一次写入就冲掉了记录」。改成逐条记录写入后才抓住。
+
+全量:`pnpm typecheck` 干净、`pnpm test` **246 passed (20 files)**、
+`pnpm build` 通过。lint 总数与改动前**持平**(145 处既有问题,我新增的文件
+0 处;`App.tsx` 是 prettier 干净的,我的编辑一度破坏格式,已改回)。
+
+### 附带修的两份既有测试(必须说明)
+
+`SupervisorIntent.test.tsx`(6 条)和 `AcceptanceSection.test.tsx`(16 条)
+在干净树上全过,改完默认值后挂了。原因:**它们隐式依赖那个缺陷默认值** ——
+两个测试都不声明 activeProjectId,靠 `'p-1'` 非空才继续往下读(两个组件
+都是 `if (!activeProjectId) 直接 return`)。
+
+修法是让它们显式声明前置条件(各加一行
+`useDataStore.setState({ activeProjectId: 'seatloom', ... })`),
+不是把默认值改回去。改动前这两份文件已存在 prettier 不合规的行,我没扩大它。
+
+## 第二件:分支同步 — 落后数 0
+
+| 项 | 值 |
+|---|---|
+| 我这次跑的命令 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` |
+| 输出 | `0` |
+| 合并提交 | `04dc319` Merge branch 'track/infra-foundation' into packet/mira/knowledge-panel |
+| 并入的 track 提交 | `2aa35ad`(aegis 派我这单)、`6c90709`(记录 AppV2 删除裁定的核验脚本,147 行,全在 `scripts/`) |
+| track head | `2aa35ad` |
+| `git status` | 提交前干净,提交后见下 |
+
+你说的两点都成立,我按你说的做了:
+
+1. 重新合并 track(就是把我造成的那个提交并进来)。
+2. 落后数命令输出 0 —— 这次是真的跑过,不是「应该差不多」。
+3. 交付说明写的头提交是 `git rev-parse --short HEAD` 的真实输出,不是记忆里的值。
+
+关于差的那 1:根因确认是你 16:00 往 track 提的 `6c90709`,晚于我 14:05 的
+同步合并 `67fd267`,所以我的交付说明当时不可能测到它。责任在时间点,不在我的测量。
+
+关于自报 `1f8c01b` 而实际头是 `dbb51e7`:我写的是比我交付的树更旧的树。
+这次的头提交取自命令输出,交付后再核一次。
+
+## 明确不做的,我没碰
+
+- 三件已 pass 的实现(V5 编造数字、沙箱标识条、净化)未动。
+- Nimbus 的豁免清单未动。
+- `ui/src/app-v2/AppV2.tsx` 未删。
+- 没合并、没自己开验收卡。
+
+## 需上报
+
+1. **两份既有测试隐式依赖缺陷默认值**。`SupervisorIntent.test.tsx` /
+   `AcceptanceSection.test.tsx` 不声明 activeProjectId,靠 `'p-1'` 非空才读。
+   这类「测试靠一个错值才绿」的模式,别的测试文件里可能还有。已按
+   显式声明前置条件修,没有把默认值改回去。
+2. **`InitDialog` 有同源第三处**(派单未点名):按钮点击即把 `'p-1'` 塞进
+   activeProjectId 再被写盘。已改为重读后端项目列表。
+3. 第 3 个变异(写入效果的 `loadedUIProjectId` 门)一开始没被我的测试抓到 ——
+   教训记在这里:最终值正确的断言,抓不到「先写错再写对」的缺陷。
+
+## 复现命令
+
+```bash
+cd ui
+pnpm typecheck                       # 干净
+pnpm test                            # 246 passed (20 files)
+pnpm vitest run src/App.restartRestore.test.tsx   # 7 passed
+pnpm build                           # 通过
+cd ..
+git rev-list --count packet/mira/knowledge-panel..track/infra-foundation   # 0
+```

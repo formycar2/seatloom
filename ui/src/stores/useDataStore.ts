@@ -1611,7 +1611,7 @@ export const useDataStore = create<DataState>((set, get) => ({
   // 空,不是那三条种子。见 SEED_PROJECTS_FOR_TESTS 的说明:静默退回假数据比白屏更坏。
   projects: [],
   projectData: {},
-  activeProjectId: 'p-1',
+  activeProjectId: null,
   backendHydrated: false,
   backendHydrateError: null,
 
