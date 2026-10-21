@@ -83,3 +83,23 @@ git add -A && git commit -q -m "aegis: 派净化单 + 存三类载荷被保留�
 disp-FzldOwJuxCfxc2TGq9dMw 给 Mira。派单写死:只拆雷不启用界面,
 白名单净化而非 default 全放,测试必须两个方向都有断言(攻击被挡 +
 正常文档没被误伤),测试不许改成恒真。" && git log --oneline -1
+
+---
+
+## 2026-10-21 Flux 独立验绿补的两个缺口(verdict = pass,但它没放过)
+
+验绿事件 `ev-ucN0gvx2vIB_MmDMiZEgz`,点名实现单 `disp-FzldOwJuxCfxc2TGq9dMw`。
+他用**变异测试**证明测试有效(把净化函数改成原样返回 → 6 个攻击测试红;
+白名单清空 → 4 个正常文档测试红)。但第三项变异暴露了缺口:
+
+**「调用点没有测试」。** 他改掉 `DocumentsWorkspace.tsx:407`、
+让它绕过净化直接返回 html —— **14 个测试仍然全绿**。
+因为净化函数的测试自己拼 markdown,从来没走过
+「marked → sanitize → dangerouslySetInnerHTML」这条真正的线。
+
+这正是本项目反复付的代价:**检查存在,但它所代表的那件事没被验证。**
+
+第二个缺口:`img` 不在白名单里,会被静默丢掉。实测 0 篇现有文档带图,
+所以今天没损失;但等那个视图被挂载,带图的文档会静默少图。
+
+**我已登记为后续,不等它变成事故。** 优先级:调用点测试 > img 白名单决定。
