@@ -194,12 +194,32 @@ fi
 rm -rf "$SAND_APP" || fail "删不掉旧的 $SAND_APP"
 cp -R "$BUILT" "$SAND_APP" || fail "复制到 $SAND_APP 失败"
 # 重命名可执行文件,让它和主版可区分 —— 否则 pgrep/活动监视器里两份同名,
-# 分不清哪个是哪个,也就无法只停其中一个
-mv "$SAND_APP/Contents/MacOS/seatloom-tauri" "$SAND_APP/Contents/MacOS/seatloom-sandbox" 2>/dev/null \
+# 分不清哪个是哪个,也就无法只停其中一个。
+# 🔴 2026-10-21 第一版只改了文件名,没改 Info.plist 的 CFBundleExecutable,
+#    于是 macOS 按 plist 找 seatloom-tauri 找不到,启动报
+#    「executable is missing」(张先生实测撞到)。
+#    **改一半比不改更糟:不改只是两份同名,改一半是根本起不来。**
+#    所以这里同步改 plist,并且装完必须核对一致才许启动。
+mv "$SAND_APP/Contents/MacOS/seatloom-tauri" "$SAND_APP/Contents/MacOS/$SAND_EXE" 2>/dev/null \
   || say "  ⚠️ 重命名可执行文件失败,两份将同名"
-# 窗口标题也改掉,让他一眼看出在看哪份
-plutil -replace CFBundleDisplayName -string "SeatLoom 沙箱" "$SAND_APP/Contents/Info.plist" 2>/dev/null \
-  || say "  ⚠️ 改显示名失败(plutil 不可用?)"
+# plist 里的入口必须指向同一份文件,否则系统找不到入口
+if command -v plutil >/dev/null 2>&1; then
+  plutil -replace CFBundleExecutable -string "$SAND_EXE" "$SAND_APP/Contents/Info.plist" 2>/dev/null \
+    || say "  ⚠️ 改 CFBundleExecutable 失败"
+  # 窗口标题也改掉,让他一眼看出在看哪份
+  plutil -replace CFBundleDisplayName -string "SeatLoom 沙箱" "$SAND_APP/Contents/Info.plist" 2>/dev/null \
+    || say "  ⚠️ 改显示名失败"
+else
+  say "  ⚠️ 没有 plutil —— plist 未改,入口仍指向 seatloom-tauri,沙箱起不来"
+fi
+# 核对:plist 说的入口必须真在那儿。缺这一条就会重演「可执行文件缺失」。
+PLIST_EXE="$(plutil -extract CFBundleExecutable raw "$SAND_APP/Contents/Info.plist" 2>/dev/null)"
+if [ "$PLIST_EXE" = "$SAND_EXE" ] && [ -x "$SAND_APP/Contents/MacOS/$SAND_EXE" ]; then
+  say "  ✅ 入口一致:plist 说 $PLIST_EXE,文件在且可执行"
+else
+  fail "沙箱不可启动:plist 的入口是 '$PLIST_EXE',实际可执行文件是 '$SAND_EXE'。修好再启动 —— 一个装好了起不来的沙箱比不装更糟。"
+fi
+say "  ✅ 已安装:$SAND_APP"
 say "  ✅ 已安装:$SAND_APP"
 
 # ---- 以操作者身份启动沙箱 ----
