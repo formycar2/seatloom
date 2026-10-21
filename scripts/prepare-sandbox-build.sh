@@ -157,6 +157,23 @@ else
   say "  主版在跑      : 没在跑(也不启动它)"
 fi
 
+# 🔴 装之前先问:这条分支比主干旧多少?
+# 2026-10-21 踩到的坑:为让张先生验净化单,让他装 packet/mira/knowledge-panel,
+# 没查它落不落后主干 —— 结果那条分支落后 track 18 个提交,项目过滤的代码
+# (2c69adb)根本不在上面。沙箱里席位全平铺,他以为功能坏了,差点打回一件对的活。
+# **一个装错代码的沙箱比没有沙箱更糟。**
+BASE="track/infra-foundation"
+if git -C "$REPO" rev-parse --verify "$BASE" >/dev/null 2>&1 && [ "$BRANCH" != "$BASE" ]; then
+  BEHIND="$(git -C "$REPO" rev-list --count "$BRANCH..$BASE" 2>/dev/null || echo '?')"
+  AHEAD="$(git -C "$REPO" rev-list --count "$BASE..$BRANCH" 2>/dev/null || echo '?')"
+  say "  与主干对比    : 领先 $AHEAD 个提交 / 落后 $BEHIND 个提交"
+  if [ "$BEHIND" != "0" ] && [ "$BEHIND" != "?" ]; then
+    say ""
+    say "  ⚠️  这条分支比主干旧 $BEHIND 个提交。沙箱会**缺**那 $BEHIND 个提交里的功能。"
+    say "     落后越多,你在沙箱里看不到的越多 —— 那不等于那些功能坏了。"
+  fi
+fi
+
 if [ "$APPLY" != "1" ]; then
   say ""
   say "预演到此为止。要真的构建并安装,加 --apply。"
