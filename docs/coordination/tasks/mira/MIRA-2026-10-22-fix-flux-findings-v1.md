@@ -411,3 +411,56 @@ would DELETE 1 file(s): ui/src/app-v2/AppV2.tsx
   **进程启动时刻早于二进制构建时刻 5h20m**
 - 分支仍干净:`git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = `0`,
   区间内无 `ui/src` 或 `src-tauri` 文件
+
+---
+
+# 追加四:heredoc token 单(`disp-p5lYwMYGRq1I708UgJc02`)— 规矩收下,并替你把重启脚本预演跑通了
+
+## 这一单没有代码改动,先说清楚
+
+派单 `AEGIS-2026-10-22-use-edit-not-heredoc-v1` 立的是**给下一件改代码的活**
+的规矩。本单本身没有代码要改,所以:
+
+- 代码改动走 `edit`:**本单无代码改动,所以计数 0**(没有 heredoc 改代码的操作)
+- 我这一单用的工具:`read`(读派单包、读脚本)、`bash` **只读**(合并、跑预演、查状态),无 heredoc
+- 三条规矩已收下(改代码走 edit / 不写 `cd <绝对路径> &&` / 多处改动不合成巨型 heredoc),
+  **下一件改代码的活照做**,这份交付说明本身不追述过去的习惯
+
+## 顺手做的一件实事:替你把重启脚本预演跑通了
+
+你合并进来的 `scripts/restart-seats-for-new-binary.sh` 正是我前几单上报的
+那个 blocker 的解法(进程比二进制旧 5h20m)。预演是**纯只读**(`--apply` 才真动),
+我替你先跑了一遍。**主检出**的结果:
+
+```
+磁盘二进制        : 2026-10-21 21:00:48
+含删除豁免        : ✅ 豁免测试通过(exempt_deletion ... ok)
+在跑的 mcp-emit进程: 4 个,最早 15:40:16 启动
+四个席位在飞的活   : flux / lyra / onyx / vela 全 ✅ 空闲
+结论              : 进程比二进制旧 5h20m,重启有意义,四席位不被打断
+```
+
+**所以你随时可以真重启:**
+```
+cd ~/Documents/GitHub/seatloom
+bash scripts/restart-seats-for-new-binary.sh --apply
+```
+
+## 一个要注意的坑(我在自己 worktree 里发现的)
+
+**这个脚本必须在主检出跑,不能在我这种 worktree 里跑。** 脚本第 39 行
+`REPO="$(cd "$(dirname "$0")/..")"` 只看脚本自己所在的位置。我在
+`seatloom-worktrees/mira` 里跑,它就把我 worktree 那个 **10-17 的旧二进制**
+当成「磁盘二进制」,于是:
+
+```
+磁盘二进制 : 2026-10-17 17:36:00     ← 错的,这是我 worktree 的旧件
+```
+
+而在主检出跑才读到 21:00:48 那份对的。**如果张先生在我分支的 worktree 里跑
+`--apply`,重启后加载的还是旧二进制,白重启一次。** 所以那条命令里我特意写了
+`cd ~/Documents/GitHub/seatloom`(主检出),不是随便哪个有这脚本的目录。
+
+另外脚本里「算不出进程启动 epoch」这一项在这台机子上没验成(Aegis 注释里
+预见过有环境差异),但原始 ps 时间已摊开给人自己比,不影响人工判断 ——
+这一项处理得对,没静默也没拦死。
