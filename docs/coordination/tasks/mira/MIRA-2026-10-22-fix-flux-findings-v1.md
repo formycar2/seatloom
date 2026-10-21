@@ -190,3 +190,62 @@ git log --name-only  packet/mira/knowledge-panel..track/infra-foundation | grep 
 ```
 
 写本节时实测的最后一行输出:`区间内无 ui/src 或 src-tauri 改动`。
+
+---
+
+# 追加:开卡那一单(`disp-ZUh7-jSZF3IWfSp6gHsKO`)— 一张都没开成,卡在 `AppV2.tsx`
+
+派单 `AEGIS-2026-10-22-mira-open-cards-v1` 要我给四件已验绿的活各开一张卡。
+**结果:一张都没开成。** 不是我没做,是一道守卫把四张全挡住了,而这道门
+不该由我绕。下面是实测到的事实。
+
+## 发生了什么
+
+第一张卡(V5 三处编造数字,`disp-RWEf5ATPvICLkGtF__fEY`,验绿
+`ev-1ZDgqPoVkpeEB7T7O7hgY` pass)提交后,`request_acceptance` 拒绝:
+
+```
+merging "packet/mira/knowledge-panel" into "track/infra-foundation"
+would DELETE 1 file(s) tracked on "track/infra-foundation":
+ui/src/app-v2/AppV2.tsx — the delivery must not remove merged work
+```
+
+守卫看的是**分支**,不是派单。所以这张被挡,另外三张会被同一道门挡住。
+四张卡的 `dispatch_id`、`flux_verdict_ref`、`acceptance_plan` 我都已按派单
+逐条备好(每张点自己的验绿,没有互借),差的就是过这道门。
+
+## 根因(实测,不是推断)
+
+| 事实 | 怎么测的 |
+|---|---|
+| `ui/src/app-v2/AppV2.tsx` 在我分支上不存在,在 track 上存在 | `git ls-tree --name-only <ref> <path>` 对 `5dbbf1d`(merge-base)、`track/infra-foundation`、`packet/mira/knowledge-panel` 三方各跑一次 |
+| 删除它的是我分支的祖先 `21c9974`(2026-10-20 19:46),即「状态记忆 + 项目脱节 + 遗留假数据」那单的实现 | `git log --diff-filter=D -- ui/src/app-v2/AppV2.tsx packet/mira/knowledge-panel` |
+| 豁免清单的**实现** `6fc6b4a` 只在 `packet/nimbus/project-scoped-reads` 上,**未进 track** | `git merge-base --is-ancestor 6fc6b4a track/infra-foundation` → 否 |
+| track 上只有清单的**文档**,没有起作用的实现 | `git grep -l exemption track/infra-foundation -- '*.rs'` 在 track 上无命中 |
+
+也就是说:Aegis 派单里预判的情况成真了 ——
+「清单目前还没合进 track,所以你现在开卡可能仍被拦」。
+
+## 我没做什么(重要)
+
+- 没有改用别的 base 或别的分支
+- 没有把 `AppV2.tsx` 恢复回来骗过守卫
+- 没有合并 Nimbus 的分支
+- 没有把四张合成一张(派单明确不许)
+- 没有跳过还没重验的重启回原位那件
+
+重启回原位那件的卡我本来也不该开:Aegis 更正过,它的实现单是
+`disp-DFeH6Ut_aNfzIbuuR21V5`,验绿是 `ev-mkwI3idecZKlZBGXOoC31` **fail**,
+需要 Flux 重验通过才算数。我自己修自己说不算,这条我认。
+
+## 需要裁定的事
+
+已用 SupervisorMessage(`ev-mira-open-cards-blocked-by-appv2-deletion`)上报,
+请 Aegis 或张先生在两条里定一条:
+
+- **(a)** 把 Nimbus 的豁免清单实现 `6fc6b4a` 合进 track,我重开卡;
+- **(b)** 承认 `AppV2.tsx` 的删除推迟到合并时(Aegis 10-22 派单里写过
+  「不删 `AppV2.tsx`,那是合并时的事」),我先把该文件在我分支上恢复,再开卡。
+
+两条我都能做,但**选哪条不该由我定** —— 它决定的是合并时的产品状态,
+不是我的交付方式。
