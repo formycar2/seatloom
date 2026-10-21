@@ -194,6 +194,48 @@ export interface AcceptanceCardDto {
 export type AcceptanceDecisionDto = AcceptanceCardDto;
 
 // ---------------------------------------------------------------------------
+// Operator decisions (020) — "what only the operator can rule on"
+// ---------------------------------------------------------------------------
+// Mirrors src-tauri/src/dto.rs's OperatorDecisionCardDto field for field.
+//
+// NOT an acceptance card and deliberately not merged into that type: an
+// acceptance is about a dispatch and asks whether to take delivered work; an
+// operator decision is about anything at all and asks which way to rule.
+// `choices` is the non-empty list of legal options (one option is not a
+// choice), `consequence` is what happens once it is decided — the field that
+// makes a decision possible rather than a coin flip in the dark.
+
+export interface OperatorDecisionCardDto {
+  id: string;
+  projectId: string;
+  /** The concrete thing to decide — not a paragraph. */
+  target: string;
+  choices: string[];
+  /** Who is entitled to rule. */
+  decider: string;
+  /** What happens once it is decided. */
+  consequence: string;
+  /** The support chain: dispatch ids, verdict refs, ruling refs. */
+  evidence: string[];
+  /** 'pending' | 'resolved' (terminal). */
+  status: string;
+  createdBy: string;
+  createdAt: string;
+  /** The ruling — set IFF resolved. */
+  chosen?: string | null;
+  resolvedBy?: string | null;
+  resolvedAt?: string | null;
+}
+
+export interface OperatorDecisionResolveResultDto {
+  decisionId: string;
+  status: string;
+  chosen?: string | null;
+  resolvedBy?: string | null;
+  target: string;
+}
+
+// ---------------------------------------------------------------------------
 // Acceptance card lineage (acceptance-lineage milestone, Lane B)
 // ---------------------------------------------------------------------------
 // Mirrors src-tauri/src/dto.rs's AcceptanceLineageDto ONE field at a time: the

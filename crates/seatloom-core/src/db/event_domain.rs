@@ -92,6 +92,17 @@ pub enum EventType {
     // (018, D5 Phase 2) the closure transition for 'unresolved' records — an
     // EXPLICIT tool act (resolve), never a background sweep (contract §G3).
     MemoryResolved, // active -> resolved; payload carries resolved_by/resolved_at
+    // (020, operator decisions) the object that answers "what is waiting on the
+    // human?". Two transitions, each mapping to EXACTLY ONE: the obligation goes
+    // IN as OperatorDecisionRequested and the ruling comes back as
+    // OperatorDecisionResolved. Reused vocabulary was ruled out for the same
+    // reason 019 rejected it: in an append-only ledger one word for two meanings
+    // can never be split once rows carry both — a SeatDispatchIssued would record
+    // a human obligation as a work unit, a SupervisorMessage as a message, an
+    // AcceptanceGranted as a merge. Sign-off requested from Lyra under
+    // VALUE-DOMAIN-2026-10-22-operator-decision-020-v1.
+    OperatorDecisionRequested, // (none) -> pending; actor = the requester (operator or Aegis)
+    OperatorDecisionResolved,  // pending -> resolved; payload carries chosen + ruling_by
     // (019, topic creation) a topic is OPENED — the governed creation of a recall
     // scope (Aegis ruling 2026-10-11). A new object with its own lifecycle
     // (open|closed|merged) and its own actor (`opened_by`), so it gets its own
@@ -145,6 +156,11 @@ pub enum RefType {
     // used for 'delegation', 012 for 'dispatch', 014 for 'acceptance'. Lyra
     // sign-off 2026-10-10 (VALUE-DOMAIN-2026-10-10-knowledge-layer-v1 §6).
     Memory,
+    // (020, operator decisions) `operator_decisions` is its own object: the two
+    // decision events must name the obligation they are about, exactly as
+    // 012/014/015 did for their tables. Same no-FK reasoning as every other
+    // ref_type — ref_id is polymorphic by design.
+    Decision,
 }
 
 const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStatusChanged, \
@@ -155,17 +171,18 @@ const EVENT_TYPE_EXPECTED: &str = "SessionStarted, WorkItemCreated, WorkItemStat
                                    SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, \
                                    AcceptanceRequested, AcceptanceGranted, AcceptanceRejected, AcceptanceCancelled, \
                                    MemoryCreated, MemoryRecalled, MemoryPromoted, MemoryForgotten, \
-                                   MemoryResolved, TopicOpened";
+                                   MemoryResolved, OperatorDecisionRequested, \
+                                   OperatorDecisionResolved, TopicOpened";
 
 const REF_ROLE_EXPECTED: &str = "subject, actor, context";
 
 const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document, seat, topic, \
-                                 project, delegation, dispatch, acceptance, memory";
+                                 project, delegation, dispatch, acceptance, memory, decision";
 
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 28] = [
+    pub const ALL: [EventType; 30] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -193,6 +210,8 @@ impl EventType {
         EventType::MemoryPromoted,
         EventType::MemoryForgotten,
         EventType::MemoryResolved,
+        EventType::OperatorDecisionRequested,
+        EventType::OperatorDecisionResolved,
         EventType::TopicOpened,
     ];
 
@@ -225,6 +244,8 @@ impl EventType {
             EventType::MemoryPromoted => "MemoryPromoted",
             EventType::MemoryForgotten => "MemoryForgotten",
             EventType::MemoryResolved => "MemoryResolved",
+            EventType::OperatorDecisionRequested => "OperatorDecisionRequested",
+            EventType::OperatorDecisionResolved => "OperatorDecisionResolved",
             EventType::TopicOpened => "TopicOpened",
         }
     }
@@ -262,6 +283,8 @@ impl FromStr for EventType {
             "MemoryPromoted" => Ok(EventType::MemoryPromoted),
             "MemoryForgotten" => Ok(EventType::MemoryForgotten),
             "MemoryResolved" => Ok(EventType::MemoryResolved),
+            "OperatorDecisionRequested" => Ok(EventType::OperatorDecisionRequested),
+            "OperatorDecisionResolved" => Ok(EventType::OperatorDecisionResolved),
             "TopicOpened" => Ok(EventType::TopicOpened),
             _ => Err(ParseValueError {
                 domain: "EventType",
@@ -328,7 +351,7 @@ impl fmt::Display for RefRole {
 }
 
 impl RefType {
-    pub const ALL: [RefType; 12] = [
+    pub const ALL: [RefType; 13] = [
         RefType::WorkItem,
         RefType::Session,
         RefType::Handoff,
@@ -341,6 +364,7 @@ impl RefType {
         RefType::Dispatch,
         RefType::Acceptance,
         RefType::Memory,
+        RefType::Decision,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -357,6 +381,7 @@ impl RefType {
             RefType::Dispatch => "dispatch",
             RefType::Acceptance => "acceptance",
             RefType::Memory => "memory",
+            RefType::Decision => "decision",
         }
     }
 }
@@ -378,6 +403,7 @@ impl FromStr for RefType {
             "dispatch" => Ok(RefType::Dispatch),
             "acceptance" => Ok(RefType::Acceptance),
             "memory" => Ok(RefType::Memory),
+            "decision" => Ok(RefType::Decision),
             _ => Err(ParseValueError {
                 domain: "RefType",
                 value: s.to_string(),
@@ -434,10 +460,13 @@ mod tests {
     /// yet — so the honest Rust pin here is 26, and the database reaches 26 when
     /// 017 lands alongside 015. Declared, not silently reconciled.
     ///
+    /// 020 adds the two operator-decision transitions (+2) and `decision`
+    /// (+1 ref_type). 28 -> 30 and 12 -> 13.
+    ///
     /// If a migration widens a domain, this test is where the Rust side must
     /// follow — kept verbatim, never loosened.
     #[test]
-    fn serialized_sets_match_schema_010_012_013_014_015_017_018_019_checks() {
+    fn serialized_sets_match_schema_010_012_013_014_015_017_018_019_020_checks() {
         let events: Vec<&str> = EventType::ALL.iter().map(|v| v.as_str()).collect();
         assert_eq!(
             events,
@@ -476,6 +505,10 @@ mod tests {
                 "MemoryForgotten",
                 // 018 (D5 Phase 2): the closure transition
                 "MemoryResolved",
+                // 020 (operator decisions): the human-obligation object's two
+                // transitions. IN as a request, OUT as a ruling — one each.
+                "OperatorDecisionRequested",
+                "OperatorDecisionResolved",
                 // 019 (topic creation): a topic is opened
                 "TopicOpened",
             ],
@@ -502,8 +535,10 @@ mod tests {
                 "acceptance",
                 // 015 (D5 knowledge layer)
                 "memory",
+                // 020 (operator decisions)
+                "decision",
             ],
-            "must equal 010:270-276 + 012 + 014 + 015's event_object_refs_ref_type_vocab"
+            "must equal 010:270-276 + 012 + 014 + 015 + 020's event_object_refs_ref_type_vocab"
         );
     }
 

@@ -29,6 +29,8 @@ import type {
   InboxPayloadDto,
   LaunchRequest,
   LiveSessionDto,
+  OperatorDecisionCardDto,
+  OperatorDecisionResolveResultDto,
   ProjectDto,
   ReconcileResultDto,
   ReconcileRunDto,
@@ -210,6 +212,25 @@ export const api = {
     invoke('cmd_accept_delivery', { acceptanceId }),
   rejectDelivery: (acceptanceId: string, feedback: string): Promise<AcceptanceDecisionDto> =>
     invoke('cmd_reject_delivery', { acceptanceId, feedback }),
+
+  // --- Operator decisions (020): what only the operator can rule on ---
+  // A DIFFERENT object from an acceptance, deliberately not merged into the
+  // 待验收 list: an acceptance asks "do I take this delivered work?" and is
+  // about a dispatch; an operator decision asks "which way do I rule on this?"
+  // and may be about anything. A merged list would make the count wrong — the
+  // exact defect 020 exists to fix.
+  listOperatorDecisions: (
+    projectId: string,
+    status?: 'pending' | 'resolved',
+  ): Promise<OperatorDecisionCardDto[]> =>
+    invoke('cmd_list_operator_decisions', { projectId, status }),
+  countPendingOperatorDecisions: (projectId: string): Promise<number> =>
+    invoke('cmd_count_pending_operator_decisions', { projectId }),
+  resolveOperatorDecision: (
+    decisionId: string,
+    chosen: string,
+  ): Promise<OperatorDecisionResolveResultDto> =>
+    invoke('cmd_resolve_operator_decision', { decisionId, chosen }),
 
   // --- Supervisor IM ---
   listSupervisorMessages: (
