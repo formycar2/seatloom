@@ -36,6 +36,7 @@ use commands::{
     reconcile_cmds::{
         cmd_get_reconcile_run, cmd_list_reconcile_items, cmd_list_reconcile_runs, cmd_reconcile,
     },
+    runtime_cmds::cmd_get_runtime_identity,
     seat_cmds::{
         cmd_get_delegation, cmd_get_seat, cmd_list_delegations, cmd_list_role_bindings,
         cmd_list_seats,
@@ -154,6 +155,8 @@ fn main() {
             cmd_pty_resize,
             cmd_kill_session,
             cmd_list_live_sessions,
+            // runtime identity (sandbox banner)
+            cmd_get_runtime_identity,
             // documents
             cmd_list_documents,
             cmd_get_document,

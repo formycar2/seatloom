@@ -14,6 +14,7 @@ import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import EventDetail from './components/EventDetail';
 import HydrationFailure from './components/HydrationFailure';
+import { SandboxBanner } from './components/SandboxBanner';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
 import HandoffDetail from './components/HandoffDetail';
@@ -566,6 +567,13 @@ const App: React.FC = () => {
         isTerminalOpen={isTerminalOpen}
         onTerminalToggle={() => setIsTerminalOpen(!isTerminalOpen)}
       >
+        {/* 第二层「我在看哪一份构建」。第一层是图标(只解决 Dock 和 Cmd-Tab),
+            窗口打开后两份内容一模一样,所以这里常驻一条身份条:只有沙箱会渲染,
+            主版什么都不渲染。它读后端命令,不读 localStorage —— 那三个无命名空间的
+            键两个版本同时开会互抢。它没有关闭按钮:这是身份,不是提示。
+            详见 components/SandboxBanner.tsx。 */}
+        <SandboxBanner />
+
         {/* Every surface declares its provenance here, in exactly one place, so
             no view can silently read as live. See lib/provenance.ts. */}
         <ProvenanceFrame

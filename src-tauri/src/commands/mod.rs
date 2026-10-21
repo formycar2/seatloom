@@ -10,6 +10,7 @@ pub mod knowledge_cmds;
 pub mod project_cmds;
 pub mod prompt_cmds;
 pub mod reconcile_cmds;
+pub mod runtime_cmds;
 pub mod seat_cmds;
 pub mod session_cmds;
 pub mod supervisor_cmds;
