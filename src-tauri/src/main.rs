@@ -31,6 +31,10 @@ use commands::{
     },
     inbox_cmds::cmd_get_inbox,
     knowledge_cmds::{cmd_get_knowledge_tree, cmd_get_topic_memories},
+    operator_decision_cmds::{
+        cmd_count_pending_operator_decisions, cmd_list_operator_decisions,
+        cmd_resolve_operator_decision,
+    },
     project_cmds::{cmd_get_project, cmd_list_projects},
     prompt_cmds::{cmd_list_active_prompts, cmd_list_prompt_actions, cmd_list_prompts_for_session},
     reconcile_cmds::{
@@ -181,6 +185,12 @@ fn main() {
             cmd_accept_delivery,
             cmd_reject_delivery,
             cmd_get_acceptance_lineage,
+            // operator decisions (020) — the operator's read + resolve path for
+            // "what only he can decide". NOT an acceptance: different object,
+            // different question, listed separately on purpose.
+            cmd_list_operator_decisions,
+            cmd_count_pending_operator_decisions,
+            cmd_resolve_operator_decision,
             // knowledge read model (overnight step 4) — the topic tree + the
             // memories-by-topic card list, progressive disclosure
             cmd_get_knowledge_tree,

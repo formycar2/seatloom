@@ -42,7 +42,10 @@ fi
 busy_n=$(PSQL "select count(*) from dispatches where status='in_flight'")
 ready_n=$(PSQL "select count(*) from dispatches where status='ready'")
 blocked_n=$(PSQL "select count(*) from dispatches where status='blocked'")
+# 020: 等你拍板的件数现在有两类,分开数。验收卡 + 只有操作者能裁的事。
+# 合成一个数字会把两件不同的事说成一件 —— 而张先生要回答的是"有几件在等我"。
 cards_n=$(PSQL "select count(*) from acceptances where status='pending'")
+dec_n=$(PSQL "select count(*) from operator_decisions where status='pending' and decider='human:supervisor'")
 if [ "${busy_n:-0}" -gt 0 ]; then
   echo "▶ 项目在推进中:${busy_n} 个席位在干活,${ready_n} 件排队。"
 elif [ "${ready_n:-0}" -gt 0 ]; then
@@ -51,6 +54,11 @@ elif [ "${blocked_n:-0}" -gt 0 ]; then
   echo "⏸ 全部停在依赖上:${blocked_n} 件在等前置条件完成。"
 else
   echo "⏸ 全队空闲,队列是空的。"
+fi
+# 等他的事单独一句:活可以全空,但他名下仍可能压着没裁的事 ——
+# 那正是 020 之前看不见的东西。
+if [ "${cards_n:-0}" -gt 0 ] || [ "${dec_n:-0}" -gt 0 ]; then
+  echo "👉 有你的事:${cards_n} 件待验收,${dec_n} 件要你裁定(见下方「等你拍板」)。"
 fi
 echo
 
@@ -78,7 +86,22 @@ echo
 
 # ── 等你拍板 ──────────────────────────────────────────────────
 echo "── 等你拍板 ──"
-if [ "${cards_n:-0}" = "0" ]; then echo "  (没有)"; else
+# 020: 这里以前只读 acceptances —— 于是产品方向的裁定、只有你能解的前置条件
+# ("要不要给防护加豁免"、"沙箱连哪个库"、"删不删那个文件")只以消息存在,
+# 没有任何一处能回答"现在有几件事在等他"。失败模式是静默遗漏。
+# 现在两类分开数、分开列,并且标明哪类是验收、哪类是裁定 ——
+# 合并成一张表会让这个数字变错,而那正是 020 要修的问题。
+cards_n=$(PSQL "select count(*) from acceptances where status='pending'")
+dec_n=$(PSQL "select count(*) from operator_decisions where status='pending' and decider='human:supervisor'")
+# 表可能还没建到库里(迁移由张先生执行)。表不存在时这个数是空的,
+# 必须说出来,不能当成 0 —— 一个沉默的 0 和一个真实的 0 不是一回事。
+dec_table=$(PSQL "select count(*) from pg_tables where tablename='operator_decisions'")
+if [ "${dec_table:-0}" != "1" ]; then
+  echo "  ⚠️ 读不到裁定清单(operator_decisions 表还没建)—— 这一项没被检查,不是'没有'"
+  echo "     修:bash scripts/apply-schema-to-live.sh"
+  need=1
+fi
+if [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)"; else
   for id in $(PSQL "select id from acceptances where status='pending'"); do
     br=$(PSQL "select coalesce(branch,'?') from acceptances where id='$id'")
     base=$(PSQL "select coalesce(base,'?') from acceptances where id='$id'")
@@ -92,6 +115,19 @@ if [ "${cards_n:-0}" = "0" ]; then echo "  (没有)"; else
       echo "     原因:要合进的分支「${base}」不存在,点了只会报错,不会损坏任何东西"
     fi
     echo "     卡号 $id"
+    echo "     类型:验收(交付做完了,要不要收)"
+  done
+  # 裁定类:目标、选项、定了之后会怎样。三样都列 ——
+  # 说不清后果的选择是让他在黑箱里点,这正是 020 拒绝创建的那种。
+  for id in $(PSQL "select id from operator_decisions where status='pending' and decider='human:supervisor' order by created_at"); do
+    tgt=$(PSQL "select replace(target, E'\\n', ' ') from operator_decisions where id='$id'")
+    ch=$(PSQL "select array_to_string(ARRAY(select jsonb_array_elements_text(choices)), ' / ') from operator_decisions where id='$id'")
+    cons=$(PSQL "select replace(consequence, E'\\n', ' ') from operator_decisions where id='$id'")
+    echo "  ⚖️ 要你裁定:$tgt"
+    echo "     选项:$ch"
+    echo "     定了之后:$cons"
+    echo "     编号 $id"
+    echo "     类型:裁定(只有你能定的事)"
   done
 fi
 echo

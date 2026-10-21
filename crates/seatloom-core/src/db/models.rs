@@ -738,6 +738,43 @@ pub struct AcceptanceRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// One decision only the operator can rule on (020) — the structured answer
+/// to "what is waiting on the human?", which until 020 existed only as a
+/// message.
+///
+/// `choices` is the non-empty array of legal options (a single option is not a
+/// choice); `consequence` is what happens once it is decided, and it is
+/// REQUIRED — an obligation that does not say its consequence is asking the
+/// operator to click in the dark. `evidence` is the support chain (dispatch
+/// ids, verdict refs, ruling refs) so the claim can be checked rather than
+/// trusted.
+///
+/// `decider` is who is entitled to rule. It defaults to the operator, and a
+/// seat decider means Aegis created this for ITSELF — so it must NOT appear in
+/// the operator's pending count.
+///
+/// `status` is `pending` or `resolved`; `resolved` is terminal and immutable.
+/// `chosen` / `resolved_by` / `resolved_at` are set IFF resolved.
+#[derive(Debug, Clone)]
+pub struct OperatorDecisionRow {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    /// The only two creators: `human:*` or `seat:seat-aegis-001`.
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
 /// An acceptance joined to the dispatch it gates plus the Flux verdict's
 /// rendered facts — the read model the Tauri `cmd_list_acceptances` returns.
 /// `flux_verdict` / `flux_verdict_occurred_at` are `None` when the referenced

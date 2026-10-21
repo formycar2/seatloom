@@ -20,6 +20,7 @@ import { useDataStore } from '../stores/useDataStore';
 import { CanonicalEventDto, DispatchDto, DispatchDependencyDto, SeatDto } from '../lib/types-dto';
 import { eventToText } from '../app-v2/lib/eventText';
 import AcceptanceSection from '../components/AcceptanceSection';
+import OperatorDecisionSection from '../components/OperatorDecisionSection';
 
 // DispatchInboxView — the governed-dispatch (G19) seat inbox. Reads the live
 // `dispatches` projection via cmd_list_dispatches. Mirrors the V1 AppShell
@@ -1246,6 +1247,15 @@ const DispatchInboxView: React.FC = () => {
               live={autoRefresh}
               onLocateDispatch={locateDispatch}
             />
+
+            {/* 020: the THIRD question this page answers — "which way do I rule
+                on this?" A different object from an acceptance (which asks "do I
+                take this delivered work?" and is about a dispatch), so it is a
+                separate section with a separate count. Merging the two would
+                make the operator's number wrong, which is the defect 020 exists
+                to fix. Mounted here because this is the page the operator already
+                opens to decide things — the first-screen structure is untouched. */}
+            <OperatorDecisionSection live={autoRefresh} />
           </div>
         </div>
       </div>

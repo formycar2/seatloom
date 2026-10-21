@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow, CheckpointRow,
     DispatchDependencyRow, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow, ProjectRoleBindingRow,
-    ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, OperatorDecisionRow, PipelineRunRow,
+    ProjectRoleBindingRow, ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -792,6 +792,65 @@ pub struct AcceptanceResult {
     /// The auto-enqueued rework dispatch on a reject (lineage jump link).
     pub rework_dispatch_id: Option<String>,
     pub error: Option<String>,
+}
+
+/// One operator decision (020): the obligation awaiting the operator's ruling,
+/// or the recorded ruling.
+///
+/// This is NOT an acceptance card and must not be merged into one: an acceptance
+/// asks "do I take this delivered work?" and is about a dispatch; an operator
+/// decision asks "which way do I rule on this?" and may be about anything at
+/// all. The two are listed separately on purpose — a merged list would make the
+/// operator's count wrong, which is the defect 020 exists to fix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionCardDto {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<String>,
+}
+
+impl From<OperatorDecisionRow> for OperatorDecisionCardDto {
+    fn from(r: OperatorDecisionRow) -> Self {
+        Self {
+            id: r.id,
+            project_id: r.project_id,
+            target: r.target,
+            choices: r.choices,
+            decider: r.decider,
+            consequence: r.consequence,
+            evidence: r.evidence,
+            status: r.status,
+            created_by: r.created_by,
+            created_at: r.created_at.to_rfc3339(),
+            chosen: r.chosen,
+            resolved_by: r.resolved_by,
+            resolved_at: r.resolved_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// The result of the operator's ruling on an obligation (020).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionResolveResultDto {
+    pub decision_id: String,
+    pub status: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
