@@ -92,3 +92,43 @@ cd <绝对路径> && 前缀        1209
 
 `docs(nimbus): seat token hygiene — measured, with the criterion kept intact`
 (绝对哈希见 `git log --oneline -1`)。`git status` 干净。
+
+---
+
+## 追加(派单 `disp-lVJKIg1QtRSIlhJ-FlDou` —— 改用 edit,不用 heredoc)
+
+任务包要求「在已有交付说明里追加一句:这件的代码改动用了什么工具、为什么」。
+诚实说:**这一单我在开头犯了一次,之后全程走 `edit`。**
+
+### 计数(这一单,自己数的)
+
+| 工具 | 次数 | 用途 |
+|---|---|---|
+| `edit` | **5** | 全部代码/知识文件改动(冲突解决、两条 INDEX 行、知识条目) |
+| `write` | **2** | 新建两个知识条目文件(无 `old` 片段可给,`write` 是正确工具) |
+| bash | 约 10 | 全部是**查询**(git 状态、判据核验、测试、grep 冲突标记) |
+| codemode | 3 | 派单循环 |
+| read | 1 | 任务包 |
+| **heredoc** | **2** | 一次是下面那个错误(包 python 改代码);一次是往本说明追加这一节 —— 后者是 markdown 文件,正是规则允许 heredoc 的场合(夹具/数据处理/非代码文件) |
+
+### 那次错误,如实记
+
+我用一个 `python3 <<'PY'` heredoc 去解析冲突块。它的 `assert` 因为空白不匹配失败了,
+而我用 `&&` 把它和 `git commit` 串在同一条命令里 —— **commit 照跑,把带冲突标记的
+`INDEX.md` 提交了**。
+
+也就是说:我在**修冲突标记**这个动作本身上犯了这个 dispatch 要防的那条规矩,
+而且把一个静默失败变成了已提交产物。随后用 `edit` 修好,提交前 grep 全仓确认无标记
+(`docs/ scripts/ ui/src/ crates/ src-tauri/ infra/` 全部为空)。
+
+### 为什么这条比「注意一点」值钱
+
+一般化的教训:**解决步骤和提交步骤不要串成一条命令。** 前者静默失败就会变成后者
+的既成事实。已写进知识条目 `edit_code_with_edit_not_a_bash_heredoc`。
+
+### 验证没省
+
+- 判据全跑:`cargo test -p seatloom-mcp-emit --bin seatloom-mcp-emit` → **89 passed; 0 failed**
+- 两个被接回来的件都在合并后的树里核过(`decisions.rs`、`020_operator_decisions.sql`、
+  `DELETION_EXEMPTIONS` 7 处引用)
+- 提交前 grep 全仓冲突标记,而不是假定上一步成功 —— 这正是这次学到的那条
