@@ -38,16 +38,66 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   一个查不到真数据的检查比没有检查更有害。改成函数,参数不会被拆。
 q(){ podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -X -U seatloom -d seatloom -tAc "$1" 2>/dev/null; }
 
-CARD=""; APPLY=0
+# 🔴 2026-10-21 实测的错:我把派单号 disp-xxx 当成卡号给了张先生,
+#    脚本也照收,然后报「账本里没有验收卡 disp-xxx」—— 而那个号是派单号,
+#    卡号是 acc-xxx。一条「用错了号」被报成「账本里没有」,等于说谎:
+#    账本里明明有那个派单,只是它不是卡。
+#    改成:两种号都收,并且按号前缀走各自的路;不猜、不混报。
+DISPID_ARG=""; CARD=""
 for a in "$@"; do
   case "$a" in
     --apply) APPLY=1;;
     acc-*) CARD="$a";;
+    disp-*) DISPID_ARG="$a";;
     "") ;;
-    *) [ -z "$CARD" ] && CARD="$a";;
+    *) [ -z "$CARD" ] && [ -z "$DISPID_ARG" ] && CARD="$a";;
   esac
 done
-[ -n "$CARD" ] || fail "要给一个验收卡号,例如 acc-disp-9H3OCmprBFAkiYBa5MDwE"
+
+# 给了派单号:先看它已完成,再从它反查卡;还没有卡就直接说要先开卡,
+# 不要报「账本里没有」把它说成别的问题。
+if [ -n "$DISPID_ARG" ]; then
+  DSTATE="$(q "select status from dispatches where id='$DISPID_ARG'" | tr -d ' ')"
+  if [ -z "$DSTATE" ]; then
+    fail "账本里没有派单 $DISPID_ARG"
+  fi
+  CARD="$(q "select id from acceptances where dispatch_id='$DISPID_ARG' order by created_at desc limit 1" | tr -d ' ')"
+  if [ -z "$CARD" ]; then
+    say ""
+    say "派单 $DISPID_ARG 状态是 $DSTATE —— 它还没有验收卡。"
+    say "卡要等 Flux 独立验绿通过之后才有(那是规矩:不许自己验自己)。"
+    say ""
+    # 席位名从账本拿,不写死。target_seat_id 是 enum 不是 text,
+    # replace() 直接用在 enum 上会报错 —— 而 q() 里的 2>/dev/null 会把它吞成空值,
+    # 于是分支名变成 packet//*(2026-10-21 实测)。先显式转 text。
+    SEAT_SHORT="$(q "select replace(target_seat_id::text,'seat-','') from dispatches where id='$DISPID_ARG'" | tr -d ' ')"
+    SEAT_SHORT="${SEAT_SHORT%-001}"
+    CAND_BRANCH="$(git -C "$REPO" branch -a --list "packet/$SEAT_SHORT/*" 2>/dev/null | sed 's/^[*+ ]*//;s#^remotes/origin/##' | grep -v '^$' | sort -u)"
+    say "注意:派单表不记分支名,所以这里反查不到要装哪一版。"
+    say "**现在就想看这一版**,用分支名直接装。$SEAT_SHORT 的分支有:"
+    if [ -n "$CAND_BRANCH" ]; then
+      printf '%s\n' "$CAND_BRANCH" | sed 's/^/     /'
+      # 🔴 不许按字母序取第一条当建议 —— 那会拿到 live-mirror-um0 而不是
+      #    本单所在的 knowledge-panel(2026-10-21 差点重犯同一个错)。
+      #    改为主检出正在用的那条,那几乎总是席位当前干活的分支;
+      #    仍要他自己确认,因为多分支时猜错就是让他验错东西。
+      CHECKED_OUT="$(for d in "$(cd "$REPO/.." && pwd)/seatloom-worktrees/$SEAT_SHORT/"; do git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null; done)"
+      if [ -n "$CHECKED_OUT" ]; then
+        say "  最可能是这条($SEAT_SHORT 工作区当前检出):"
+        say "    bash scripts/prepare-sandbox-build.sh $CHECKED_OUT"
+      else
+        say "  $SEAT_SHORT 没有工作区检出在上面这些里,请自己指一条"
+      fi
+      say "  ⚠️ 多分支时别让脚本替你猜,指错就是让你验错东西。"
+    else
+      say "     (这个席位名下没找到 packet/$SEAT_SHORT/* 形式的分支)"
+      say "     分支列全: git -C .. branch -a"
+    fi
+    exit 0
+    exit 0
+  fi
+fi
+[ -n "$CARD" ] || fail "要给一个验收卡号(acc-xxx),或一个派单号(disp-xxx)"
 
 # ---- 一、从账本读这张卡 ----
 line; say "一 — 这张卡是什么"; line
