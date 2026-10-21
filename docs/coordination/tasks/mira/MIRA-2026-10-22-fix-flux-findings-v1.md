@@ -6,7 +6,7 @@
 | packet | `AEGIS-2026-10-22-mira-fix-flux-findings-v1` |
 | 分支 | `packet/mira/knowledge-panel` |
 | 实现提交 | `0e71598` — 标题「mira: 修 Flux 验绿指出的两处(重启位置被抢跑 / 落后数差 1)」,7 个文件。**绝对哈希,不用 `HEAD~n`**:写本说明的每个提交都会让相对引用后移一位,我为此连错三次,所以只写绝对值和标题。 |
-| 落后数 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` = **0** |
+| 同步判据 | 命令 + 当时真实输出 + 区间里的提交落在哪些目录。**「落后数 == 0」这个数字判据已作废** —— 见第二节
 | 日期 | 2026-10-22 |
 
 ## 第一件:重启回到上次位置 — 修好了
@@ -85,28 +85,58 @@
 `useDataStore.setState({ activeProjectId: 'seatloom', ... })`),
 不是把默认值改回去。改动前这两份文件已存在 prettier 不合规的行,我没扩大它。
 
-## 第二件:分支同步 — 落后数 0
+## 第二件:分支同步 — 判据从「数字」改成「命令 + 范围」
 
-| 项 | 值 |
-|---|---|
-| 我这次跑的命令 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` |
-| 输出 | `0` |
-| 合并提交 | `04dc319` Merge branch 'track/infra-foundation' into packet/mira/knowledge-panel |
-| 并入的 track 提交 | `2aa35ad`(aegis 派我这单)、`6c90709`(记录 AppV2 删除裁定的核验脚本,147 行,全在 `scripts/`) |
-| track head | `2aa35ad` |
-| `git status` | 提交前干净,提交后见下 |
+> Aegis 在 `AEGIS-2026-10-22-mira-resync-and-fix-the-criterion-v1` 里把原来的
+> 「落后数 == 0」作废了,换成:给命令 + 当时真实输出 + 要求那区间里不得有改动落在
+> `ui/src` 或 `src-tauri` 下的提交。本节按新判据重写。旧的那版(我写「输出 0」)
+> 保留在下面的「改前」里,因为它记录了我是怎么追着自己的尾巴跑的。
 
-你说的两点都成立,我按你说的做了:
+### 命令与当时真实输出
 
-1. 重新合并 track(就是把我造成的那个提交并进来)。
-2. 落后数命令输出 0 —— 这次是真的跑过,不是「应该差不多」。
-3. 交付说明写的头提交是 `git rev-parse --short HEAD` 的真实输出,不是记忆里的值。
+```
+$ git merge --no-edit track/infra-foundation
+Updating 6a83348..5a7943e
+Fast-forward
+ ...6-10-22-mira-resync-and-fix-the-criterion-v1.md | 81 ++++++++++++++++++++++
+ 1 file changed, 81 insertions(+)
+ create mode 100644 docs/coordination/tasks/aegis/AEGIS-2026-10-22-mira-resync-and-fix-the-criterion-v1.md
 
-关于差的那 1:根因确认是你 16:00 往 track 提的 `6c90709`,晚于我 14:05 的
-同步合并 `67fd267`,所以我的交付说明当时不可能测到它。责任在时间点,不在我的测量。
+$ git rev-list --count packet/mira/knowledge-panel..track/infra-foundation
+0
+```
 
-关于自报 `1f8c01b` 而实际头是 `dbb51e7`:我写的是比我交付的树更旧的树。
-这次的头提交取自命令输出,交付后再核一次。
+### 区间里的提交,以及它们落在哪些目录
+
+合并前,区间里有 2 个提交,都是 Aegis 侧的纯文档:
+
+| 绝对哈希 | 标题 | 落在哪些目录 |
+|---|---|---|
+| `b8123d9` | aegis: Nimbus 豁免清单验绿 pass;派 V3 待决对象(更 2 处自己的错) | `docs/coordination/tasks/aegis/` 1 个 md(96 行新增) |
+| `5a7943e` | aegis: 派 Mira 重同步(改判据)+ 接 Nimbus V3 待决对象并派验绿 | `docs/coordination/tasks/aegis/` 1 个 md(81 行新增) |
+
+**`ui/src` 和 `src-tauri` 下:零个提交。** 合并后区间为空,所以 count 输出 0。
+
+本轮同步共合并两次(第一次只并入 `b8123d9`,Aegis 随后又提了 `5a7943e`,
+第二次才把它并进来)。两次并进来的都是纯文档。
+
+### 关于 Aegis 说的「我为追数字连写 5 个提交」
+
+属实,而且原因就在判据本身。Aegis 18 点往 track 提 `b8123d9`,晚于我的同步,
+数字又从 0 变 1;我为了在说明里写对一个**会自己变的数字**,连着提交了 5 次
+交付说明,把 `0e71598` 先后误写成 `4d4786d`、`fad70b0`。
+**追一个会自己变的目标没有终点。** 换成看内容(那区间里有没有人改界面或 Rust)
+之后,这一节不再有「追」的动作。
+
+### 改前(记录我原来的写法,保留备查)
+
+> | 我这次跑的命令 | `git rev-list --count packet/mira/knowledge-panel..track/infra-foundation` |
+> | 输出 | `0` |
+> | 并入的 track 提交 | `2aa35ad`、`6c90709`(147 行,全在 `scripts/`) |
+>
+> 两点确认:一、差的那 1 是 Aegis 16:00 提的 `6c90709`,晚于我 14:05 的同步
+> 合并 `67fd267`,我的交付说明当时不可能测到它;二、我自报 `1f8c01b` 而实际头是
+> `dbb51e7`,写的是比我交付的树更旧的树 —— 这正是新判据要防的事。
 
 ## 明确不做的,我没碰
 
@@ -128,10 +158,10 @@
 
 ## 历史里多余的提交(如实记下,不重写)
 
-`0e71598` 之后有一串只改本说明文字的提交。它们全是我在追自己的哈希留下的:
-每提交一次交付说明,`HEAD~1` 就后移一位,我连着把 `0e71598` 写成 `4d4786d`、
-又写成 `fad70b0`,三次都错。**写这一节的本身又让数量 +1** —— 所以这里不写数字,
-要看有几个就跑:
+`0e71598` 之后有一串只改本说明文字的提交(Aegis 数出来是 5 个)。它们全是我在追
+自己的哈希留下的:每提交一次交付说明,`HEAD~1` 就后移一位,我连着把 `0e71598` 写成
+`4d4786d`、又写成 `fad70b0`,三次都错。**写这一节的本身又让数量 +1** —— 所以这里
+不写数字,要看有几个就跑:
 
 ```
 git log --oneline 0e71598..HEAD
@@ -144,10 +174,19 @@ git log --oneline 0e71598..HEAD
 
 ```bash
 cd ui
-pnpm typecheck                       # 干净
-pnpm test                            # 246 passed (20 files)
-pnpm vitest run src/App.restartRestore.test.tsx   # 7 passed
-pnpm build                           # 通过
+pnpm typecheck                                  # 干净
+pnpm test                                       # 246 passed (20 files)
+pnpm vitest run src/App.restartRestore.test.tsx # 7 passed
+pnpm build                                      # 通过
 cd ..
-git rev-list --count packet/mira/knowledge-panel..track/infra-foundation   # 0
+
+# 同步判据(新):合并 + 看区间里有没有落在 ui/src 或 src-tauri 的提交。
+# 注意:这条命令的输出**会自己变** —— Aegis 在 track 上提交后它就不是 0。
+# 判据不是这个数字,是区间里有没有界面/Rust 改动。
+git merge --no-edit track/infra-foundation
+git rev-list --count packet/mira/knowledge-panel..track/infra-foundation
+git log --oneline packet/mira/knowledge-panel..track/infra-foundation
+git log --name-only  packet/mira/knowledge-panel..track/infra-foundation | grep -E '^(ui/src|src-tauri)/' || echo '区间内无 ui/src 或 src-tauri 改动'
 ```
+
+写本节时实测的最后一行输出:`区间内无 ui/src 或 src-tauri 改动`。
