@@ -370,7 +370,9 @@ pub enum DispatchRejection {
     /// `request_acceptance` (containment defence): the merge would DELETE files
     /// tracked on the base — the failure mode that let an Accept destroy
     /// already-merged work. The paths are listed so the caller knows exactly
-    /// what would be lost.
+    /// what would be lost. A deletion the operator ruled on
+    /// ([`DELETION_EXEMPTIONS`]) is not here: it is subtracted before the
+    /// decision, so this variant carries only what is still being defended.
     MergeWouldDelete {
         branch: String,
         base: String,
@@ -1653,6 +1655,76 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 }
 
 // =============================================================================
+// The deletion exemption list (containment allowlist, 2026-10-22)
+// =============================================================================
+
+/// One deletion the OPERATOR has explicitly ruled on.
+///
+/// `path` is the repository-relative path the merge would delete. `ruled_by`
+/// and `why` are mandatory: a bare path in a year reads as legacy cruft, and
+/// someone will route around it — so the ruling travels with the line.
+struct DeletionExemption {
+    path: &'static str,
+    ruled_by: &'static str,
+    why: &'static str,
+}
+
+/// Deletions the operator has ruled on. THE OPERATOR, not this process: the
+/// list is a compile-time constant, so the only way onto it is a code change
+/// that goes through review and leaves a git record. An env var or a runtime
+/// config file could open it without any of that, which would turn a defence
+/// into an option.
+///
+/// SCOPE. It is consumed ONLY by `MergeWouldDelete`. `BranchNotSynced` has no
+/// exemption at all: a branch that never saw the base is unsynced no matter
+/// what any operator said about any file. A deletion NOT on this list is
+/// refused exactly as before — subtracting the list from the previewed
+/// deletion set leaves the rest to be listed in the refusal.
+const DELETION_EXEMPTIONS: &[DeletionExemption] = &[DeletionExemption {
+    path: "ui/src/app-v2/AppV2.tsx",
+    ruled_by: "human:supervisor",
+    why: "dead code, deleted by dispatch disp-DFeH6Ut_aNfzIbuuR21V5 item 3b; \
+           zero importers, no route mounted, already unreachable on the base",
+}];
+
+/// The list is audited by the COMPILER, not only by a test someone may delete:
+/// an entry with no path, no ruling, or no reason fails the build. That is the
+/// point of making the audit fields part of the type — a bare path would pass
+/// every test and still be a hole in six months.
+const _: () = {
+    let mut i = 0;
+    while i < DELETION_EXEMPTIONS.len() {
+        let exemption = &DELETION_EXEMPTIONS[i];
+        assert!(
+            !exemption.path.is_empty(),
+            "an entry with no path exempts nothing and documents nothing"
+        );
+        assert!(
+            !exemption.ruled_by.is_empty(),
+            "no `ruled_by`: nobody can tell whose ruling this is"
+        );
+        assert!(
+            !exemption.why.is_empty(),
+            "no `why`: in a year this line reads as legacy cruft"
+        );
+        i += 1;
+    }
+};
+
+/// Is this previewed deletion exempt — i.e. did the operator rule on this exact
+/// path?
+///
+/// Matching is EXACT, never a prefix, a glob, or a substring: `ui/src` must not
+/// exempt `ui/src/app-v2/AppV2.tsx`, and `AppV2.tsx` must not exempt
+/// `ui/src/app-v2/other.tsx`. A fuzzy match would quietly widen the hole every
+/// time a path moved.
+fn is_deletion_exempt(path: &str) -> bool {
+    DELETION_EXEMPTIONS
+        .iter()
+        .any(|exemption| exemption.path == path)
+}
+
+// =============================================================================
 // Tool 5 — request_acceptance (seat side, 014 — the D2 acceptance gate)
 // =============================================================================
 
@@ -1753,11 +1825,18 @@ pub async fn request_acceptance(
             base: base.clone(),
             detail,
         })?;
-    if !would_delete.is_empty() {
+    // Subtract the operator-ruled exemptions BEFORE deciding to refuse. The
+    // remaining set is what the defence actually protects: an empty remainder
+    // means every deletion was ruled on, so there is nothing to defend.
+    let undeleted: Vec<String> = would_delete
+        .into_iter()
+        .filter(|path| !is_deletion_exempt(path))
+        .collect();
+    if !undeleted.is_empty() {
         return Err(DispatchRejection::MergeWouldDelete {
             branch: args.branch.clone(),
             base,
-            paths: would_delete,
+            paths: undeleted,
         });
     }
 
@@ -2628,6 +2707,203 @@ mod tests {
             None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The deletion exemption list (Aegis dispatch
+    /// AEGIS-2026-10-22-containment-allowlist-v1): the operator's ruling on ONE
+    /// path opens exactly that path. The scratch repo carries three shapes that
+    /// between them pin the whole contract:
+    ///
+    ///   - exempt:  deletes only the ruled-on path        -> refused no longer
+    ///   - mixed:   deletes the ruled-on path AND another -> STILL refused, and
+    ///              the refusal names only what is left
+    ///   - unsynced: deletes only the ruled-on path, but never saw the base
+    ///              -> `BranchNotSynced`, which has no exemption at all
+    ///
+    /// The list is a compile-time constant, so nothing about the environment can
+    /// widen it; these assertions are what would fail if someone turned it into
+    /// a wildcard.
+    #[tokio::test]
+    async fn exempt_deletion_passes_while_the_rest_are_still_refused() {
+        let _guard = ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!("seatloom-allowlist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        // The two files the base tracks: one is the operator-ruled deletion, the
+        // other is a deletion nobody has ruled on.
+        std::fs::create_dir_all(root.join("ui/src/app-v2")).unwrap();
+        std::fs::write(root.join("keep.txt"), "base\n").unwrap();
+        std::fs::write(root.join("ui/src/app-v2/AppV2.tsx"), "dead\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        // The base moves on FIRST: every branch below is measured against the
+        // base as it stands at request time, not as it stood when forked.
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base moves on"]);
+        ok(&["checkout", "-b", "packet/seat/base"]);
+        // exempt: synced, deletes ONLY the ruled-on path.
+        ok(&["checkout", "-b", "packet/seat/exempt"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path only"]);
+        // mixed: synced, deletes the ruled-on path AND a file nobody ruled on.
+        ok(&["checkout", "-b", "packet/seat/mixed", "track"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        std::fs::remove_file(root.join("keep.txt")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path and another"]);
+        // unsynced: forked from before the base moved on, deletes only the
+        // ruled-on path. Being unsynced is not something any operator waived.
+        ok(&["checkout", "-b", "packet/seat/unsynced", "track~1"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path, never synced"]);
+        ok(&["checkout", "packet/seat/base"]);
+
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track");
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let args = |branch: &str| RequestAcceptanceArgs {
+            dispatch_id: "disp-allowlist".into(),
+            branch: branch.into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+            acceptance_id: None,
+        };
+
+        // 1. the ruled-on deletion is gone from the decision: the request gets
+        //    past the defence and reaches the database.
+        let err = request_acceptance(&pool, args("packet/seat/exempt"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "the ruled-on deletion must not block the card: {err}"
+        );
+
+        // 2. an UNRULED deletion is still refused — and the refusal lists only
+        //    what is actually being defended, not the exempted path.
+        let err = request_acceptance(&pool, args("packet/seat/mixed"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::MergeWouldDelete { paths, .. } => {
+                assert_eq!(
+                    paths,
+                    vec!["keep.txt".to_string()],
+                    "the exemption subtracts only its own path: {paths:?}"
+                );
+            }
+            other => panic!("expected MergeWouldDelete, got {other:?}"),
+        }
+        assert!(
+            msg.contains("keep.txt"),
+            "the refusal lists what would be lost: {msg}"
+        );
+        assert!(
+            !msg.contains("AppV2.tsx"),
+            "an exempted path is not reported as blocked: {msg}"
+        );
+
+        // 3. `BranchNotSynced` is untouched by the list: the ruled-on deletion
+        //    does not launder an unsynced branch through the gate.
+        let err = request_acceptance(&pool, args("packet/seat/unsynced"))
+            .await
+            .unwrap_err();
+        match err {
+            DispatchRejection::BranchNotSynced { branch, base } => {
+                assert_eq!(branch, "packet/seat/unsynced");
+                assert_eq!(base, "track");
+            }
+            other => panic!("expected BranchNotSynced, got {other:?}"),
+        }
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The list itself is audited by the code, not just by whoever added a line:
+    /// every entry carries a path, who ruled, and why; no entry is a glob; and
+    /// matching is exact, so no entry can be widened by a path that merely
+    /// contains it.
+    #[test]
+    fn deletion_exemptions_are_explicit_audited_and_exact() {
+        assert!(
+            !DELETION_EXEMPTIONS.is_empty(),
+            "an empty list is indistinguishable from a deleted defence — say so \
+             rather than shipping a hole that looks like a feature"
+        );
+        for exemption in DELETION_EXEMPTIONS {
+            assert!(
+                !exemption.path.is_empty(),
+                "an entry with no path exempts nothing and documents nothing"
+            );
+            assert!(
+                !exemption.ruled_by.is_empty(),
+                "{path:?}: no `ruled_by` — nobody can tell whose ruling this is",
+                path = exemption.path
+            );
+            assert!(
+                !exemption.why.is_empty(),
+                "{path:?}: no `why` — in a year this line reads as legacy cruft",
+                path = exemption.path
+            );
+            for glob in ['*', '?', '['] {
+                assert!(
+                    !exemption.path.contains(glob),
+                    "{path:?} contains {glob:?} — a glob widens the exemption to \
+                     every path it happens to match",
+                    path = exemption.path
+                );
+            }
+        }
+        // The concrete ruling that motivated the list (Aegis 2026-10-22).
+        assert!(
+            is_deletion_exempt("ui/src/app-v2/AppV2.tsx"),
+            "the ruled-on path must be exempt"
+        );
+        // Exact match only: a directory, a prefix, a suffix, a bare filename,
+        // or an empty string never inherits the exemption.
+        for near in [
+            "ui/src/app-v2",
+            "ui/src",
+            "ui/src/app-v2/",
+            "ui/src/app-v2/AppV2.tsx.bak",
+            "AppV2.tsx",
+            "app-v2/AppV2.tsx",
+            "",
+            "*",
+        ] {
+            assert!(
+                !is_deletion_exempt(near),
+                "{near:?} must not inherit the exemption for AppV2.tsx"
+            );
+        }
     }
 
     /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
