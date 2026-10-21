@@ -57,3 +57,29 @@ dangerouslySetInnerHTML={{ __html: rendered }}
 `DocumentsWorkspace.tsx:359` 的未净化 HTML 注入 —— `marked` 输出需要净化
 (DOMPurify 或同类),否则任何能写文档的人都能在应用内执行脚本。
 这一条严重程度**高于**启动沙箱这个便利功能:它今天是已存在的洞,不是加了新能力才有。
+
+---
+
+## 2026-10-21 实测补证(在主线 track 上跑 node 得到,非推测)
+
+```
+marked 输入                          marked 输出
+正常文字                          → <p>正常文字</p>
+<script>alert("执行")</script>     → <script>alert("执行")</script>   ← 原样保留
+<img src=x onerror=alert(1)>      → <img src=x onerror=alert(1)>      ← 原样保留
+[点我](javascript:alert(2))       → <a href="javascript:alert(2)">    ← 原样保留
+```
+
+`body` 来自 `DocumentsWorkspace.tsx:298` 的 `doc.bodyText`(数据库文档正文),
+输出经 `:359` `dangerouslySetInnerHTML` 注入。`tauri.conf.json:21` 为 `"csp": null`。
+
+**"渲染给我看"与"执行"是同一个动作** —— 浏览器没有"显示但不执行"的模式。
+这就是该 prop 名字里 `dangerously` 的含义。
+
+已派 `disp-FzldOwJuxCfxc2TGq9dMw` 给 Mira:白名单净化,正常文档排版不变,
+**不挂载 AppV2、不启用文档浏览界面**(那件事等第一屏定位)。EOF
+git add -A && git commit -q -m "aegis: 派净化单 + 存三类载荷被保留的实测证据
+
+disp-FzldOwJuxCfxc2TGq9dMw 给 Mira。派单写死:只拆雷不启用界面,
+白名单净化而非 default 全放,测试必须两个方向都有断言(攻击被挡 +
+正常文档没被误伤),测试不许改成恒真。" && git log --oneline -1
