@@ -68,6 +68,23 @@
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
 
+2b. **查"干完了但没人接"的活 —— 这一步 2026-10-21 补,之前是空的。**
+    🔴 空洞实例:净化单 `disp-FzldOwJuxCfxc2TGq9dMw` 04:15 完成、 Mira 同一秒
+    发了 SupervisorMessage,但我随后 8 轮心跳每轮都只查"有没有 ready 派单",
+    于是每次报"队列空、无需动作"。**那单在账本上躺了 8 个多小时,直到张先生
+    来告诉我"Mira 完成了"。** 一个需要操作者来通知的流程,和停摆没有区别。
+    命令(不只看 done,要看 done **且没有验收卡**的):
+    ```sql
+    select d.id, d.target_seat_id, d.completed_at
+      from dispatches d
+     where d.status='done'
+       and not exists (select 1 from acceptances a where a.dispatch_id=d.id)
+       and d.completed_at > now() - interval '48 hours'
+     order by d.completed_at desc;
+    ```
+    查到就该接:写交付说明、派 Flux 验绿、验过就开卡给张先生。
+    **只查 48 小时内的** —— 更早的要么已处理,要么是要单独裁决的历史遗留。
+
 3. **有席位等门事件,就按「live 可用」核真实条件**:
    门的条件是"能不能真的跑成功",**不是**"代码合没合进来"。
    迁移在 track 上 ≠ 迁移在跑着的库里;工具编进二进制 ≠ 工具能成功调用一次。
