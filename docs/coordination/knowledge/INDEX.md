@@ -65,4 +65,8 @@ python3 scripts/migrate-agent-memory.py
 | [v5_honesty_ranks_first_because_it_makes_other_values_trustworthy](v5_honesty_ranks_first_because_it_makes_other_values_trustworthy.md) | preference | quoted | 界面显示不存在的数字比缺功能更糟 —— 用户因此无法分辨哪页是真的;判据:每个数字都答得出「数谁、什么范围、何时截止、从哪来」,答不出就写暂无 |
 | [ui_cannot_launch_app_yet_and_two_holes_must_not_stack](ui_cannot_launch_app_yet_and_two_holes_must_not_stack.md) | decision | inferred | 应用当前零进程启动能力;要加只能加固定用途(打开沙箱 app)且路径由后端认定。同时 DocumentsWorkspace.tsx:359 的 marked 输出未净化是已存在的洞,与启动权限叠加即可执行任意程序,须单独修 |
 | [a_seat_branch_must_not_be_verified_until_it_is_synced_to_track](a_seat_branch_must_not_be_verified_until_it_is_synced_to_track.md) | failure | inferred | 分支落后主干 19 个提交时,沙箱里项目过滤消失,操作者报「功能坏了」—— 实为版本旧。派单/装沙箱只查「有没有那件事的提交」不够,还要查缺不缺别的 |
+<<<<<<< HEAD
 | [seat_tool_calls_must_not_restate_cwd_or_reread_files](seat_tool_calls_must_not_restate_cwd_or_reread_files.md) | failure | quoted | 席位一件事 582 次工具调用,其中 261 次是 `cd <绝对路径> &&` 前缀(信息增量零)、同一文件读 11 次。张先生裁定「Nimbus 做一件事太长了,步骤太多了,也很费 token」。可核判据:同文件 read ≤2、cd 前缀每命令 ≤1、一件事调用 ≤300。省调用不减验证。
+=======
+| [root_cause_of_token_cost_is_seat_tool_choice_not_config](root_cause_of_token_cost_is_seat_tool_choice_not_config.md) | decision | inferred | token 大头不是压缩/thinking 配置,是席位把代码塞进 bash heredoc 改文件(占 toolCall 的 58%、且同一份代码付两次)。改代码用 edit。vela 14% 证明是习惯不是天性。判据已写进 ENGINEERING_STANDARDS |
+>>>>>>> track/infra-foundation

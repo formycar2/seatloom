@@ -153,6 +153,30 @@ seat switching to its packet branch switches it for everyone. Per-seat
 as a **Nimbus follow-up**. Until then, only one seat may hold a non-`track`
 branch checked out at a time.
 
+## Tool use and token cost
+
+Measured 2026-10-21 across 11+ seat sessions (see
+`docs/coordination/tasks/aegis/AEGIS-2026-10-21-seat-token-hotspots-v1.md`).
+Tool-call payload was 36% of all tokens — MORE than thinking (17%). Within
+that, `bash` was half, and 58% of `bash` was **code edits smuggled through
+`python3 - <<'EOF'` heredocs**. The same code is paid for twice: once as the
+command argument, once when it is read back into context later.
+
+- **Edit code with `edit`, never a `bash` heredoc.** `edit` takes only the
+  changed fragment (`old`+`new`), carries a diff, is revertible, and can
+  dry-run. A heredoc re-sends the whole block every call. The one `edit`-heavy
+  seat (vela) used heredoc for 14% of its code edits; the two heredoc-heavy
+  seats (mira 61%, nimbus 45%) were never given this rule — it is a habit, not
+  a trait.
+- **`bash` heredoc is for what it is good at**: test-fixture generation,
+  one-off data processing, non-code files. NOT for editing source.
+- **Do not prefix `cd <absolute-path> &&`.** A seat's `bash` already starts in
+  its own worktree; cwd is correct. This alone was ~75k tokens across the team
+  (8% of `bash`).
+- A dispatch that changes seat behavior carries these three lines verbatim
+  (see `COORDINATION_RULES.md` dispatch template). This standard is the shared
+  source; the dispatch template is where every seat reads it before acting.
+
 ## Documents
 
 Per `DOCUMENT_TEMPLATES.md`: every doc under `docs/` begins with the universal
