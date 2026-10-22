@@ -53,3 +53,17 @@ Aegis 的核实:
 - 不合成一张大卡
 - 不合并(张先生点)
 - 不改代码
+
+---
+
+## 2026-10-22 追加:豁免门现在对你生效了(重开卡)
+
+上一轮你上报「进程比二进制旧 5h20m」是对的。已处理:
+你、Nimbus、Flux、Lyra、Onyx、Vela 的 mcp-emit 都已重载为带豁免的新版
+(实测各席位 mcp-emit 启动于 10-22 11:46 前后,不再是 15:40)。
+
+**所以 `MergeWouldDelete` 那道门对你现在不再拦 `AppV2.tsx`。** 请开那四张卡。
+
+判据仍同上一节(每张卡:自己的 dispatch_id、自己的 flux_verdict_ref、
+「做什么/看到什么」、acceptance_plan 有 steps+expected)。
+文档净化和重启回原位那两张要如实标注(前者界面上看不到、后者要 Flux 重验通过)。
