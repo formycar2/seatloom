@@ -661,55 +661,68 @@ const DispatchInboxView: React.FC = () => {
     let alive = true;
     setSeatsDb([]);
     if (!activeProjectId || !backendHydrated) return;
-    api.listSeats(activeProjectId)
-      .then((rows) => { if (alive) setSeatsDb(rows); })
-      .catch(() => { if (alive) setSeatsDb([]); });
-    return () => { alive = false; };
+    api
+      .listSeats(activeProjectId)
+      .then((rows) => {
+        if (alive) setSeatsDb(rows);
+      })
+      .catch(() => {
+        if (alive) setSeatsDb([]);
+      });
+    return () => {
+      alive = false;
+    };
   }, [activeProjectId, backendHydrated]);
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    // No project → nothing to show. The old code deliberately omitted the project
-    // arg so the backend would fall back to seatloom, which is exactly how this
-    // inbox showed another project's dispatches and looked populated.
-    if (!activeProjectId || !backendHydrated) {
-      setDispatches([]);
-      setError('no project selected');
-      if (!silent) setLoading(false);
-      return;
-    }
-    try {
-      const rows = await api.listDispatches(activeProjectId);
-      if (selection.current !== activeProjectId) return;
-
-      const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
-      const changed: Record<string, number> = {};
-      for (const r of rows) {
-        const prev = before.get(r.id);
-        if (prev !== undefined && prev !== r.status) changed[r.id] = Date.now();
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      setError(null);
+      // No project → nothing to show. The old code deliberately omitted the project
+      // arg so the backend would fall back to seatloom, which is exactly how this
+      // inbox showed another project's dispatches and looked populated.
+      if (!activeProjectId || !backendHydrated) {
+        setDispatches([]);
+        setError('no project selected');
+        if (!silent) setLoading(false);
+        return;
       }
-      lastRowsRef.current = rows;
+      try {
+        const rows = await api.listDispatches(activeProjectId);
+        if (selection.current !== activeProjectId) return;
 
-      setDispatches(rows);
-      setLastRefreshAt(Date.now());
+        const before = new Map(lastRowsRef.current.map((r) => [r.id, r.status]));
+        const changed: Record<string, number> = {};
+        for (const r of rows) {
+          const prev = before.get(r.id);
+          if (prev !== undefined && prev !== r.status) changed[r.id] = Date.now();
+        }
+        lastRowsRef.current = rows;
 
-      if (Object.keys(changed).length > 0) {
-        setFlashes((f) => ({ ...f, ...changed }));
-        window.setTimeout(() => {
-          setFlashes((f) => {
-            const next = { ...f };
-            for (const id of Object.keys(changed)) delete next[id];
-            return next;
-          });
-        }, 2600);
+        setDispatches(rows);
+        setLastRefreshAt(Date.now());
+
+        if (Object.keys(changed).length > 0) {
+          setFlashes((f) => ({ ...f, ...changed }));
+          window.setTimeout(() => {
+            setFlashes((f) => {
+              const next = { ...f };
+              for (const id of Object.keys(changed)) delete next[id];
+              return next;
+            });
+          }, 2600);
+        }
+      } catch (e) {
+        if (selection.current === activeProjectId) {
+          setDispatches([]);
+          setError(String(e));
+        }
+      } finally {
+        if (selection.current === activeProjectId && !silent) setLoading(false);
       }
-    } catch (e) {
-      if (selection.current === activeProjectId) { setDispatches([]); setError(String(e)); }
-    } finally {
-      if (selection.current === activeProjectId && !silent) setLoading(false);
-    }
-  }, [activeProjectId, backendHydrated]);
+    },
+    [activeProjectId, backendHydrated],
+  );
 
   useEffect(() => {
     void load();
@@ -899,7 +912,11 @@ const DispatchInboxView: React.FC = () => {
   const clearQuery = useCallback(() => setQuery(''), []);
 
   if (!activeProjectId || !backendHydrated) {
-    return <div role="status" className="p-10">请选择一个项目；项目数据未读就绪时不显示其他项目的派单。</div>;
+    return (
+      <div role="status" className="p-10">
+        请选择一个项目；项目数据未读就绪时不显示其他项目的派单。
+      </div>
+    );
   }
 
   return (

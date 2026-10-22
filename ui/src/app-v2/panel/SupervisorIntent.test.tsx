@@ -89,6 +89,7 @@ vi.mock('../../lib/api', () => ({
 }));
 
 import { SupervisorIntent } from './SupervisorIntent';
+import { useDataStore } from '../../stores/useDataStore';
 
 const proposalJson = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -196,6 +197,11 @@ const typeAndSubmit = (v: string) => {
 describe('SupervisorIntent', () => {
   beforeEach(() => {
     cleanup();
+    // Declared precondition, not an inherited default: every read in this surface
+    // is project-scoped, so the tests say which project they run under. They used
+    // to rely on useDataStore's launch default — a SEED_PROJECTS_FOR_TESTS id that
+    // named no project in any database.
+    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
     state.seatsOk = true;
     state.acceptances = [];
     state.dispatches = [];

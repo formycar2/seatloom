@@ -1611,7 +1611,7 @@ export const useDataStore = create<DataState>((set, get) => ({
   // 空,不是那三条种子。见 SEED_PROJECTS_FOR_TESTS 的说明:静默退回假数据比白屏更坏。
   projects: [],
   projectData: {},
-  activeProjectId: 'p-1',
+  activeProjectId: null,
   backendHydrated: false,
   backendHydrateError: null,
 
@@ -1850,9 +1850,7 @@ export const useDataStore = create<DataState>((set, get) => ({
       // first one. Never invented — an id the backend does not return is dropped.
       const storedActive = get().activeProjectId;
       const projects: Project[] = projectsDto.map(projectFromDto);
-      const nextActive =
-        projects.find((p) => p.id === storedActive)?.id ?? projects[0]?.id ?? null;
-
+      const nextActive = projects.find((p) => p.id === storedActive)?.id ?? projects[0]?.id ?? null;
       set({ projects, activeProjectId: nextActive });
 
       // Read ONE project's data, scoped. See hydrateProjectData for why this is
@@ -1898,7 +1896,15 @@ export const useDataStore = create<DataState>((set, get) => ({
   hydrateProjectData: async (projectId: string) => {
     if (!isTauri()) return;
     try {
-      const [seatsDto, workitemsDto, handoffsDto, artifactsDto, sessionsDto, eventsDto, documentsDto] = await Promise.all([
+      const [
+        seatsDto,
+        workitemsDto,
+        handoffsDto,
+        artifactsDto,
+        sessionsDto,
+        eventsDto,
+        documentsDto,
+      ] = await Promise.all([
         api.listSeats(projectId),
         api.listWorkitems(projectId),
         api.listHandoffs(projectId),
@@ -1987,7 +1993,8 @@ export const useDataStore = create<DataState>((set, get) => ({
             id: `inbox-ho-${h.id}`,
             priority: h.required_receipt ? 'Critical' : 'Normal',
             type: 'HandoffPending',
-            actor: typeof h.from_ref === 'string' ? h.from_ref : (h.from_ref as any).Seat ?? 'unknown',
+            actor:
+              typeof h.from_ref === 'string' ? h.from_ref : ((h.from_ref as any).Seat ?? 'unknown'),
             object_ref: h.id,
             summary: `Handoff ${h.status.toLowerCase()}: ${h.purpose}`,
             timestamp: h.sent_at ?? h.created_at,

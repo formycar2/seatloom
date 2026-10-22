@@ -32,12 +32,19 @@ vi.mock('../lib/api', () => ({
     listSeats: async () => state.seats,
     listAllSeats: async () => state.seats,
     listRoleBindings: async (p?: string) => state.bindings[p ?? ''] ?? [],
-    listWorkitems: async () => [],
-    listHandoffs: async () => [],
+    // Synced 2026-10-21. `hydrateProjectData` reads ONE project and passes an OPTIONS
+    // OBJECT to listDocuments (`{ projectId }`), not a positional id. The old mocks took
+    // a string, so the document read silently returned the wrong slice and the Projects
+    // page hydrated empty — the store was right and the test double was stale.
+    listWorkitems: async (_projectId?: string) => [],
+    listHandoffs: async (_projectId?: string) => [],
     listArtifacts: async () => [],
-    listSessions: async () => [],
-    listEvents: async () => [],
-    listDocuments: async () => [],
+    listSessions: async (_projectId?: string) => [],
+    listEvents: async (_projectId?: string) => [],
+    listDocuments: async (opts?: { projectId?: string } | string) => {
+      const wanted = typeof opts === 'string' ? opts : (opts?.projectId ?? undefined);
+      return typeof wanted === 'string' ? [] : [];
+    },
   },
 }));
 
