@@ -35,7 +35,20 @@ fail(){ say ""; say "❌ $*"; exit 1; }
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
-SEATS="flux lyra onyx vela"
+# 要重启的席位:默认四个常在手的;位置参数可覆盖(空格分隔的短名),
+# 例如 `--apply mira nimbus` 只动这两个,不重动已加载新二进制的那四个。
+DEFAULT_SEATS="flux lyra onyx vela"
+SEATS="$DEFAULT_SEATS"
+APPLY=0
+_explicit=""
+for a in "$@"; do
+  case "$a" in
+    --apply) APPLY=1;;
+    -*) ;;
+    *) _explicit="$_explicit $a";;
+  esac
+done
+[ -n "$_explicit" ] && SEATS="$_explicit"
 # 拉起用的东西(2026-10-21 补:退出必须拉起,否则舰队断)。
 # saih 启动器:fleet 从 pi 迁到 saih 后,pi 符号链接没了、seat-launch.sh/restart-aegis.sh
 # 都还指着 ~/.local/bin/pi(已失效)。真正在跑的是 saih/bin/saih(= node .../cli.js)。
@@ -151,6 +164,9 @@ for s in $SEATS; do
     lyra) T="Lyra-po-seatloom";;
     onyx) T="Onyx-data-seatloom";;
     vela) T="Vela-DataWash-seatloom";;
+    mira) T="Mira-UX/UED-seatloom";;
+    nimbus) T="Nimbus-TechArchi-seatloom";;
+    *) say "  ⚠️ 不知道席位 $s 的会话名,跳过"; continue;;
   esac
   if ! tmux has-session -t "$T" 2>/dev/null; then
     say "  ⚠️  会话 $T 不在,跳过 $s"
@@ -198,6 +214,7 @@ for s in $SEATS; do
   case "$s" in
     flux) T="Flux-Quality&Ops-seatloom";; lyra) T="Lyra-po-seatloom";;
     onyx) T="Onyx-data-seatloom";; vela) T="Vela-DataWash-seatloom";;
+    mira) T="Mira-UX/UED-seatloom";; nimbus) T="Nimbus-TechArchi-seatloom";;
   esac
   pane="$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1)"
   child="$(pgrep -P "$pane" 2>/dev/null | head -1)"
