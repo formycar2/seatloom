@@ -35,7 +35,27 @@ fail(){ say ""; say "❌ $*"; exit 1; }
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 BIN="$REPO/target/debug/seatloom-mcp-emit"
-SEATS="flux lyra onyx vela"
+# 要重启的席位:默认四个常在手的;位置参数可覆盖(空格分隔的短名),
+# 例如 `--apply mira nimbus` 只动这两个,不重动已加载新二进制的那四个。
+DEFAULT_SEATS="flux lyra onyx vela"
+SEATS="$DEFAULT_SEATS"
+APPLY=0
+_explicit=""
+for a in "$@"; do
+  case "$a" in
+    --apply) APPLY=1;;
+    -*) ;;
+    *) _explicit="$_explicit $a";;
+  esac
+done
+[ -n "$_explicit" ] && SEATS="$_explicit"
+# 拉起用的东西(2026-10-21 补:退出必须拉起,否则舰队断)。
+# saih 启动器:fleet 从 pi 迁到 saih 后,pi 符号链接没了、seat-launch.sh/restart-aegis.sh
+# 都还指着 ~/.local/bin/pi(已失效)。真正在跑的是 saih/bin/saih(= node .../cli.js)。
+SAIH_BIN="${SEATLOOM_SAIH_BIN:-$REPO/saih/bin/saih}"
+WROOT="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
+CONTAINER="${SEATLOOM_PG_CONTAINER:-seatloom-postgres}"
+FAILED=""
 APPLY=0; for a in "$@"; do [ "$a" = "--apply" ] && APPLY=1; done
 
 DBQ(){ podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -X -U seatloom -d seatloom -tAc "$1" 2>/dev/null | tr -d ' '; }
@@ -144,6 +164,9 @@ for s in $SEATS; do
     lyra) T="Lyra-po-seatloom";;
     onyx) T="Onyx-data-seatloom";;
     vela) T="Vela-DataWash-seatloom";;
+    mira) T="Mira-UX/UED-seatloom";;
+    nimbus) T="Nimbus-TechArchi-seatloom";;
+    *) say "  ⚠️ 不知道席位 $s 的会话名,跳过"; continue;;
   esac
   if ! tmux has-session -t "$T" 2>/dev/null; then
     say "  ⚠️  会话 $T 不在,跳过 $s"
@@ -160,26 +183,50 @@ for s in $SEATS; do
   tmux send-keys -t "$T" -l '/quit' 2>/dev/null || true
   sleep 0.3
   tmux send-keys -t "$T" Enter 2>/dev/null || true
-  sleep 3
-  # 退出后 shell 会显示提示符;agent 不在的话由 seat-launch 那条命令重新拉起
-  # —— 但这里**不自动重拉**:重启后由谁拉起、用什么身份,是另一个决定,
-  # 不由这个脚本猜。先确认它真的退了。
-  if pgrep -P "$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1)" >/dev/null 2>&1; then
-    say "    ⚠️  $s 退出后仍有子进程 —— 可能没退干净,人工看一眼 $T"
-  else
-    say "    ✅ $s 已退出(现在 shell 里)"
+  # 等它退到 shell。**必须等退干净再拉起** —— 否则在旧 agent 还占着时又起一个,
+  # 会得到两个 agent 抢同一个面板(我抢救时就是这么把 flux 起到 vela 面板里的)。
+  wpane="$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  for _ in $(seq 1 15); do pgrep -P "$wpane" >/dev/null 2>&1 || break; sleep 1; done
+  if pgrep -P "$wpane" >/dev/null 2>&1; then
+    say "    ⚠️  $s 退出后仍有子进程,没退干净 —— **不拉起**(会在旧 agent 上又叠一个)"
+    say "       人工看一眼 $T,处理干净后单独重跑这一个席位"
+    FAILED="$FAILED $s"
+    continue
   fi
+  say "    ✅ 已退到 shell"
+  # ── 重新拉起(上一版缺的就是这步:『退出不拉起』= 舰队断,实测四个席位全变空 shell) ──
+  # 拉起三契约缺一不可:对的工作区 + saih 启动器 + --approve(漏 --approve 停在
+  # "Trust project folder?" 弹窗,永不加载 MCP)。模型按席位从账本取,不写死。
+  seat_model="$(podman exec -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -tAc "select default_model from seats where id='seat-$s-001'" 2>/dev/null | tr -d ' ')"
+  [ -n "$seat_model" ] || seat_model="modelproxy-anthropic/step-5-preview-sys"
+  seat_wt="$WROOT/$s"
+  [ -d "$seat_wt" ] || { say "    ⚠️ 找不到工作区 $seat_wt —— 不拉起"; FAILED="$FAILED $s"; continue; }
+  tmux send-keys -t "$T" "cd $seat_wt && $SAIH_BIN --approve --model $seat_model" Enter
+  say "    已拉起(cwd=$seat_wt model=$seat_model)"
 done
 
 say ""
-say "等 20 秒让它们重新拉起…"
-sleep 20
+say "等 25 秒让 agent 起来并加载 MCP…"
+sleep 25
 say ""
-say "重启后的 mcp-emit 进程:"
-ps -axo pid,lstart,comm 2>/dev/null | grep 'seatloom-mcp-emit' | grep -v grep | awk '{print "  "$1"  "$4" "$5" "$6" "$7" "$8}' | head -6
+say "验证(看每个面板的子进程+自己的工作区+有无自己的 mcp-emit,不看面板文字):"
+for s in $SEATS; do
+  case "$s" in
+    flux) T="Flux-Quality&Ops-seatloom";; lyra) T="Lyra-po-seatloom";;
+    onyx) T="Onyx-data-seatloom";; vela) T="Vela-DataWash-seatloom";;
+    mira) T="Mira-UX/UED-seatloom";; nimbus) T="Nimbus-TechArchi-seatloom";;
+  esac
+  pane="$(tmux list-panes -t "$T" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  child="$(pgrep -P "$pane" 2>/dev/null | head -1)"
+  cwd="$(lsof -a -p "$child" -d cwd 2>/dev/null | tail -1 | awk '{print $NF}')"
+  has_mcp="$(pgrep -P "$child" 2>/dev/null | while read c; do ps -o comm= -p "$c" 2>/dev/null | grep -q mcp-emit && echo yes; done | head -1)"
+  mark="✅"; [ "$cwd" = "$WROOT/$s" ] || mark="❌工作区不对"; [ "$has_mcp" = "yes" ] || mark="$mark ❌无MCP"
+  say "  $mark $s: 工作区=$(basename "${cwd:-无}") MCP=${has_mcp:-无}"
+done
+[ -n "${FAILED:-}" ] && say "" && say "  ⚠️ 这几个没拉起,需人工处理:$FAILED"
 
 line; say "接下来"; line
-say "  1. 让 Mira 重开卡(她的四张卡应该不再被那道门拦)"
+say "  1. 让 Mira 重开卡(各席位已加载带豁免的 mcp-emit,她的卡应该不再被那道门拦)"
 say "  2. 开卡后你会在「等你拍板」看到它们"
 say ""
 say "  如果还被拦,把新的报错贴回来 —— 那说明拦点不是进程版本,要继续查。"
