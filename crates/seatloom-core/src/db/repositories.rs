@@ -78,7 +78,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects ORDER BY name ASC",
                 &[],
             )
@@ -90,7 +90,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects WHERE id = $1",
                 &[&project_id],
             )
@@ -3299,6 +3299,7 @@ fn row_to_project(r: &Row) -> ProjectRow {
         created_at: r.get(2),
         worker_budget_tokens: r.get(3),
         supervisor_budget_tokens: r.get(4),
+        home_path: r.get(5),
     }
 }
 

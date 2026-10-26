@@ -122,7 +122,7 @@ const AllProjectsView: React.FC<AllProjectsViewProps> = ({ onSelectProject }) =>
                       {project.name}
                     </h3>
                     <div className="flex items-center gap-2 text-xs text-text-muted font-bold opacity-60 truncate">
-                      <span className="monospace">{project.path}</span>
+                      <span className="monospace">{project.path ?? '无 home_path'}</span>
                     </div>
                   </div>
 

@@ -104,7 +104,7 @@ const ProjectSwitcher: React.FC<ProjectSwitcherProps> = ({ onSelect }) => {
                             </span>
                             {project.id === activeProjectId && <Check size={12} className="text-primary" />}
                           </div>
-                          <div className="text-[10px] text-muted-foreground truncate font-mono opacity-80 mt-0.5">{project.path}</div>
+                          <div className="text-[10px] text-muted-foreground truncate font-mono opacity-80 mt-0.5">{project.path ?? '无 home_path'}</div>
                           <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
                             <span>{inboxCount} 条待处理</span>
                             <span>·</span>

@@ -270,7 +270,14 @@ export interface InboxItem {
 export interface Project {
   id: ProjectId;
   name: string;
-  path: string;
+  /**
+   * The project's home path, or null when the ledger recorded none.
+   *
+   * Nullable on purpose. It was `string` and always filled — by the mapper, with
+   * `'~/' + name` — which is how 张先生 came to see `~/networkOrchestrator`
+   * sitting beside a correct full path in the same window.
+   */
+  path: string | null;
   isPinned: boolean;
   last_accessed: string;
 }
