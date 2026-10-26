@@ -27,7 +27,7 @@
 // binds `window.localStorage` when the store is created (see the module's note).
 import './test/installLocalStorage';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
 const STORAGE_KEY = 'seatloom-app-store';
@@ -53,6 +53,15 @@ const calls = vi.hoisted(() => ({ order: [] as string[] }));
 const appStoreWrites = vi.hoisted(() => ({ values: [] as string[] }));
 
 const CANNED: Record<string, unknown> = {
+  // The Tauri event plugin: `listen()` calls `invoke('plugin:event|listen')` and
+  // resolves to an event id, and `unlisten` goes back through the same channel.
+  // App.tsx subscribes to supervisor:detached / supervisor:reembedded on every
+  // mount with NO .catch() on that promise, so an unmocked command here surfaces
+  // as an unhandled rejection per mount. Answering it is what keeps this suite's
+  // error count from growing with every test that mounts the real App.
+  'plugin:event|listen': 1,
+  'plugin:event|unlisten': undefined,
+  cmd_supervisor_window_status: { detached: false },
   cmd_list_projects: BACKEND_PROJECTS,
   cmd_list_seats: [],
   cmd_list_all_seats: [],
@@ -65,25 +74,49 @@ const CANNED: Record<string, unknown> = {
   cmd_list_documents: [],
 };
 
-// `@tauri-apps/api/core`'s `invoke` is what `api.*` calls, so mocking the api
-// object alone would leave the stores talking to a Tauri that is not there. Route
-// invoke through the SAME canned responses: one source of truth for "the backend".
+// ONE source of truth for "the backend", answering every command the app can
+// send. Both mocks below route through this, because there are two paths and
+// they are easy to assume are one:
+//
+//   - `api.*` calls `invoke` from `@tauri-apps/api/core`, which is the path most
+//     commands take;
+//   - Tauri's `listen()` (and the presence check `isTauri()`) goes through
+//     `window.__TAURI_INTERNALS__.invoke`.
+//
+// The two were NOT the same mock in the first version of this file: the module
+// mock answered CANNED while `__TAURI_INTERNALS__` threw for everything. That
+// divergence is why this suite carries pre-existing unhandled rejections — every
+// mount's `onSupervisorDetached` subscription reaches the internals mock, which
+// never had an answer for it. Sharing one table is what makes a command either
+// answered everywhere or missing everywhere, so a missing one is a single clear
+// failure instead of a rejection attributed to whichever effect got there first.
+const answerCommand = async (cmd: string, args?: unknown): Promise<unknown> => {
+  calls.order.push(`${cmd}${args ? ` ${JSON.stringify(args)}` : ''}`);
+  if (cmd in CANNED) return CANNED[cmd];
+  throw new Error(`unmocked Tauri command: ${cmd}`);
+};
+
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: async (cmd: string, args?: unknown) => {
-    calls.order.push(`${cmd}${args ? ` ${JSON.stringify(args)}` : ''}`);
-    if (cmd in CANNED) return CANNED[cmd];
-    throw new Error(`unmocked Tauri command: ${cmd}`);
-  },
+  invoke: (cmd: string, args?: unknown) => answerCommand(cmd, args),
 }));
 
 // Tauri presence is detected via window.__TAURI_INTERNALS__, not via the api
-// module — so the mock alone would leave every store on the browser path.
+// module — so the module mock alone would leave every store on the browser path.
+// Same table, so an unmocked command fails the same way from either door.
 beforeAll(() => {
   (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
-    invoke: async () => {
-      throw new Error('unmocked Tauri invoke');
-    },
+    invoke: (cmd: string, args?: unknown) => answerCommand(cmd, args),
     transformCallback: () => 1,
+  };
+  // The event plugin's own internals: `listen()` resolves to an id and the
+  // returned unlisten goes straight here. Without this, answering
+  // `plugin:event|listen` only moves the failure to cleanup — every unsubscribe
+  // would throw instead of every subscribe rejecting. Both doors, or the count
+  // of unhandled errors just changes shape.
+  (
+    window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }
+  ).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
   };
 });
 
@@ -353,3 +386,122 @@ describe('restart lands back in the recorded project, and the write cannot win t
 //     → RED: 'never persists the launch default while the real position is being restored'
 //  5. the whole persistence effect removed
 //     → RED: every test that asserts the record on disk
+
+// ── The InitDialog path: the third fix to the same root cause ────────────────
+//
+// Flux's re-verification (ev-mAztaqFFzPSAQ-Fm3asBD) reported F1, a coverage gap
+// rather than a defect: his mutation M6 restored the button's old one-liner
+//   `setActiveProject('p-1')`
+// and ALL SEVEN tests above stayed green. Nothing in this suite ever opened that
+// dialog, so the third of the commit's three fixes had no test behind it — the
+// commit message claimed more than the evidence supported.
+//
+// The path is only reachable when the backend has no projects at all: the dialog
+// opens from `restoredPosition && !activeProjectId`, and a non-empty list always
+// restores onto a real project. That is why every other test missed it — each
+// mounts with a populated list, where the dialog never appears.
+//
+// The tests below drive the REAL dialog (its real button, its real click) and
+// assert on the call log the file already instruments. Two scenarios, because
+// the fix has two halves a single case could not separate:
+//
+//   1. the backend is still empty — clicking must not invent a project;
+//   2. projects have appeared since launch — clicking must land on a real one.
+//
+// Scenario 2 is what keeps the fix honest in the other direction: a handler that
+// merely closes the dialog without re-reading would strand the operator on "no
+// project" forever, which is the failure this half pins.
+
+/**
+ * Click the DIALOG's button, the way the operator does.
+ *
+ * The name has to be the full one — '初始化演示仓' alone also matches the status
+ * bar's own initialize button, and clicking that one would test a different
+ * surface entirely.
+ */
+async function clickInitializeButton() {
+  const button = await screen.findByRole('button', { name: /初始化演示仓 \(INITIALIZE\)/ });
+  await act(async () => {
+    fireEvent.click(button);
+  });
+}
+
+/** The dialog is showing. */
+const dialogIsOpen = () =>
+  screen.queryByRole('button', { name: /初始化演示仓 \(INITIALIZE\)/ }) !== null;
+
+/** Every project id the app asked the backend to read, in order. */
+function readProjectIds(): string[] {
+  return calls.order
+    .filter((c) => c.startsWith('cmd_list_seats '))
+    .map((c) => {
+      const m = c.match(/"projectId":"([^"]*)"/);
+      return m ? m[1] : '';
+    });
+}
+
+describe('the InitDialog button does not plant a project that exists only in tests', () => {
+  it('with no backend projects at all, clicking invents nothing and records nothing', async () => {
+    CANNED.cmd_list_projects = [];
+    try {
+      mountApp();
+      // The dialog is the state an empty backend produces, and it is where the
+      // path no other test could reach begins.
+      await waitFor(() => expect(dialogIsOpen()).toBe(true));
+      expect(useDataStore.getState().activeProjectId).toBeNull();
+
+      await clickInitializeButton();
+
+      // No project was invented: the old code planted the test seed id here,
+      // which exists in no database, and the write effect then persisted it as
+      // the operator's recorded position.
+      expect(useDataStore.getState().activeProjectId).toBeNull();
+      expect(writtenProjectIds()).not.toContain(OLD_LAUNCH_DEFAULT);
+      // Nor is anything recorded: there is still no honest position to persist.
+      expect(readStoredAppStore().activeProjectId).toBeNull();
+      // The button DID re-read (a second listProjects beyond the mount-time one):
+      // the fix is "ask the backend again", not "give up and close".
+      expect(calls.order.filter((c) => c === 'cmd_list_projects').length).toBeGreaterThan(1);
+      // The dialog closes so it does not sit there unclickable forever.
+      await waitFor(() => expect(dialogIsOpen()).toBe(false));
+    } finally {
+      CANNED.cmd_list_projects = BACKEND_PROJECTS;
+    }
+  });
+
+  it('when projects have appeared since launch, clicking lands on a real one', async () => {
+    CANNED.cmd_list_projects = [];
+    try {
+      mountApp();
+      await waitFor(() => expect(dialogIsOpen()).toBe(true));
+
+      // The backend now has projects — the operator created one, or another seat
+      // did. Only a re-read can know that; the old one-liner could not.
+      CANNED.cmd_list_projects = BACKEND_PROJECTS;
+
+      await clickInitializeButton();
+
+      await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(FIRST_REAL_PROJECT));
+      expect(useDataStore.getState().activeProjectId).not.toBe(OLD_LAUNCH_DEFAULT);
+      // ...and it is a project the backend actually returned.
+      expect(useDataStore.getState().projects.map((p) => p.id)).toContain(FIRST_REAL_PROJECT);
+      // The re-read is what proves it: the click has to TALK to the backend. A
+      // handler that only closed the dialog, or set an id without reading, would
+      // leave the store holding whatever it held before (null here).
+      expect(calls.order).toContain('cmd_list_projects');
+
+      // THE ASSERTION THE OTHER SEVEN TESTS CANNOT MAKE: the app must never even
+      // briefly sit on a project id that exists in no database. A final-value
+      // check is blind here — `hydrateFromBackend` awaits the list and then picks
+      // `storedActive` if the backend returned it, else the first project, so a
+      // seed id planted BEFORE the await is corrected afterwards and the end
+      // state looks clean. The observable trace is what was read: an id the
+      // backend does not return must never appear in a scoped read. (This is the
+      // same shape as the 'p-1' write effect: right in the end, wrong in the
+      // window — and the window is where the operator loses his position.)
+      expect(readProjectIds()).not.toContain(OLD_LAUNCH_DEFAULT);
+    } finally {
+      CANNED.cmd_list_projects = BACKEND_PROJECTS;
+    }
+  });
+});
