@@ -14,6 +14,7 @@ import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import EventDetail from './components/EventDetail';
 import HydrationFailure from './components/HydrationFailure';
+import { SandboxBanner } from './components/SandboxBanner';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
 import HandoffDetail from './components/HandoffDetail';
@@ -76,11 +77,36 @@ const App: React.FC = () => {
   // Live seat discovery status (UM0 HOLD-3): the provenance banner must not
   // claim LIVE while tmux discovery is empty or has failed.
   const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
-  const { projectUIStates, updateProjectUIState } = useAppStore();
+  const { projectUIStates, updateProjectUIState, setActiveProjectId } = useAppStore();
+  // Snapshot the launch record: no startup write may change the restore target.
+  const [persistedProjectId] = useState(() => useAppStore.getState().activeProjectId);
   const projectUIStatesRef = useRef(projectUIStates);
   useEffect(() => {
     projectUIStatesRef.current = projectUIStates;
   });
+
+  // Restore only after a successful backend read. Until this phase completes,
+  // the persistence effect below is disabled. A deleted/missing project falls
+  // back to the first real backend project (or no project for an empty list).
+  // Keep a ref to the latest backend project list without retriggering restore.
+  const projectDataOrderRef = useRef<string[]>([]);
+  useEffect(() => {
+    projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
+  });
+  const [restoredPosition, setRestoredPosition] = useState(false);
+  useEffect(() => {
+    if (restoredPosition) return;
+    if (!backendHydrated) return; // do not guess before the read lands
+    const ids = new Set(projectDataOrderRef.current);
+    if (!ids.has(persistedProjectId ?? '')) {
+      // The backend has already selected the first real project, or null.
+      if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
+      setRestoredPosition(true);
+      return;
+    }
+    setActiveProject(persistedProjectId as string);
+    setRestoredPosition(true);
+  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject, setActiveProjectId]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -105,6 +131,10 @@ const App: React.FC = () => {
   // 过渡态,不是说要删掉。契约:LYRA-2026-10-16-first-screen-contract-v1 §6.2 slice 1。
   const [activeTab, setActiveTab] = useState<Tab>('dispatches');
   const [selectedObject, setSelectedObject] = useState<SelectedObject>(null);
+  // An effect's state updates are visible only on the next render. Gate writes
+  // on this acknowledgement, not effect order, so the old tab cannot overwrite
+  // the destination's saved tab during startup OR a later project switch.
+  const [loadedUIProjectId, setLoadedUIProjectId] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
   const [showSupervisorIM, setShowSupervisorIM] = useState(
@@ -193,10 +223,15 @@ const App: React.FC = () => {
   const [protectionType, setProtectionType] = useState<'session' | 'form' | null>(null);
 
   useEffect(() => {
-    if (!activeProjectId && activeTab !== 'all-projects' && activeTab !== 'live-seats') {
+    if (
+      restoredPosition &&
+      !activeProjectId &&
+      activeTab !== 'all-projects' &&
+      activeTab !== 'live-seats'
+    ) {
       setIsInitOpen(true);
     }
-  }, [activeProjectId, activeTab]);
+  }, [restoredPosition, activeProjectId, activeTab]);
 
   useGlobalShortcuts(
     () => {
@@ -222,17 +257,29 @@ const App: React.FC = () => {
         );
       }
     }
+    setLoadedUIProjectId(activeProjectId);
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;
     if (activeProjectId && activeProjectId !== 'all-projects' && activeTab !== 'all-projects') {
       updateProjectUIState(activeProjectId, {
         activeTab,
         selectedObjectId: selectedObject?.id || null,
         selectedObjectType: selectedObject?.type || null,
       });
+      // Remember which project the operator is in, so the next launch returns here.
+      setActiveProjectId(activeProjectId);
     }
-  }, [activeTab, selectedObject, activeProjectId, updateProjectUIState]);
+  }, [
+    restoredPosition,
+    loadedUIProjectId,
+    activeTab,
+    selectedObject,
+    activeProjectId,
+    updateProjectUIState,
+    setActiveProjectId,
+  ]);
 
   // ─── Project switching ───
   const handleProjectSwitchRequest = (id: string) => {
@@ -532,6 +579,13 @@ const App: React.FC = () => {
         isTerminalOpen={isTerminalOpen}
         onTerminalToggle={() => setIsTerminalOpen(!isTerminalOpen)}
       >
+        {/* 第二层「我在看哪一份构建」。第一层是图标(只解决 Dock 和 Cmd-Tab),
+            窗口打开后两份内容一模一样,所以这里常驻一条身份条:只有沙箱会渲染,
+            主版什么都不渲染。它读后端命令,不读 localStorage —— 那三个无命名空间的
+            键两个版本同时开会互抢。它没有关闭按钮:这是身份,不是提示。
+            详见 components/SandboxBanner.tsx。 */}
+        <SandboxBanner />
+
         {/* Every surface declares its provenance here, in exactly one place, so
             no view can silently read as live. See lib/provenance.ts. */}
         <ProvenanceFrame
@@ -554,7 +608,13 @@ const App: React.FC = () => {
         isOpen={isInitOpen}
         onClose={() => setIsInitOpen(false)}
         onInitialize={() => {
-          setActiveProject('p-1');
+          // Re-read the project list instead of planting a seeded id. There is no
+          // seeded project to "initialize" any more — clicking this button used to
+          // call setActiveProject('p-1'), i.e. put a test-only project into state
+          // where the persistence effect then wrote it to disk as the recorded
+          // position. Re-reading is the honest action: either the backend has
+          // projects by now and the list lands, or the empty state explains itself.
+          void hydrateFromBackend();
           setIsInitOpen(false);
         }}
       />

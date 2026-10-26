@@ -272,3 +272,89 @@ describe('project-scoped mirror rendering', () => {
     expect(useLiveSeatsMirrorStore.getState().attachments).toHaveLength(1);
   });
 });
+
+// THE SCROLL DEFECT (operator, 2026-10-26): "the live-seats page sometimes will not
+// scroll up or down". Root cause is a chain, and the DOM half of it is asserted here.
+//
+// Inactive attachment layers were hidden with `display: none`. A display:none
+// ancestor has NO LAYOUT BOX, so xterm's character-measure element has no box
+// either and FitAddon.fit() returns early without resizing — the viewport then
+// sits at the pane's attach-time row/col seed, which is normally TALLER than this
+// slot. Content shorter than that seed row count leaves the scroll area equal to
+// the viewport height: the page is visibly there and cannot be scrolled at all.
+//
+// The fix hides with `visibility: hidden` (plus pointerEvents: none), which keeps
+// the box, so a terminal mounted while its attachment is inactive is measurable
+// and is fitted correctly the moment it is armed.
+//
+// WHAT THIS FILE CANNOT ASSERT: jsdom performs no layout — every element's
+// clientWidth/clientHeight is 0 and getComputedStyle returns the inline style
+// verbatim. So "the hidden layer still has a real box" is asserted structurally
+// (`display` is not `none`, `visibility` is `hidden`), not measured. The
+// measured half — FitAddon's early return when cell metrics are 0, and the
+// component's retry once they are valid — lives in
+// src/app-v2/panel/SessionTerminal.geometry.test.tsx, which drives the real
+// component against a TRANSCRIPTION of the addon's contract.
+describe('the scroll defect: inactive attachments stay laid out', () => {
+  /** Attach the given number of seats the way the operator does. */
+  async function attachSeats(count: number) {
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+    for (let i = 1; i < count; i++) {
+      await act(async () => {
+        fireEvent.click(screen.getAllByText('接入实时镜像', { selector: 'button' })[0]);
+      });
+    }
+    await waitFor(() => expect(screen.getAllByTestId('terminal')).toHaveLength(count));
+  }
+
+  it('the ACTIVE layer is visible and interactive', async () => {
+    await attachSeats(2);
+    const active = useLiveSeatsMirrorStore.getState().activeName!;
+    const layer = document.querySelector(`[data-session="sl-live-${active}"]`)!.parentElement!;
+    const style = getComputedStyle(layer);
+
+    expect(style.visibility).toBe('visible');
+    expect(style.pointerEvents).toBe('auto');
+    expect(style.display).not.toBe('none');
+  });
+
+  it('an INACTIVE layer is hidden without display:none, so it keeps its box', async () => {
+    await attachSeats(2);
+    const active = useLiveSeatsMirrorStore.getState().activeName!;
+    const inactive = useLiveSeatsMirrorStore
+      .getState()
+      .attachments.find((a) => a.seat.sessionName !== active)!;
+    const layer = document.querySelector(`[data-session="${inactive.dto.id}"]`)!.parentElement!;
+    const style = getComputedStyle(layer);
+
+    // The whole point: hidden, but NOT display:none.
+    expect(style.visibility).toBe('hidden');
+    expect(style.display).not.toBe('none');
+    // And it must not intercept the wheel or a click aimed at the live pane.
+    expect(style.pointerEvents).toBe('none');
+  });
+
+  it('switching seats flips which layer is visible and never unloads a terminal', async () => {
+    await attachSeats(2);
+    const before = useLiveSeatsMirrorStore.getState().attachments;
+    const first = useLiveSeatsMirrorStore.getState().activeName!;
+
+    act(() => {
+      useLiveSeatsMirrorStore.setState({
+        activeName: before.find((a) => a.seat.sessionName !== first)!.seat.sessionName,
+      });
+    });
+
+    // Both terminals are still mounted — the scrollback, the fit and the pipe
+    // subscription all survive a switch. Unmounting would lose them.
+    expect(screen.getAllByTestId('terminal')).toHaveLength(2);
+    for (const a of before) {
+      const layer = document.querySelector(`[data-session="${a.dto.id}"]`)!.parentElement!;
+      const style = getComputedStyle(layer);
+      const expected = a.seat.sessionName === useLiveSeatsMirrorStore.getState().activeName;
+      expect(style.visibility).toBe(expected ? 'visible' : 'hidden');
+      expect(style.pointerEvents).toBe(expected ? 'auto' : 'none');
+    }
+  });
+});

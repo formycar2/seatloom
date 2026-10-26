@@ -23,9 +23,24 @@
 #   3. Check that blob's COMPRESSED bytes appear verbatim in the app executable.
 #      tauri emits `include_bytes!(compressed)`, so that is direct evidence THIS app
 #      carries THIS asset.
-#   4. Report which strings prove what. `isComposing` and `proposeDimensions` come
-#      from @xterm/addon-fit (a ui/package.json dependency) — they prove xterm is
-#      bundled, NOT that SeatLoom's code shipped. SeatLoom's own strings do.
+#   4. Report which strings prove what. The labels below carry PROVENANCE, and
+#      provenance goes stale the moment another seat's code lands — so re-check them
+#      against ui/src before trusting the label.
+#
+#      History of this label (2026-10-26, found by Flux disp-i_ZLKc4E2S0Bm78K-Zmdy):
+#      it first read "NOT SeatLoom" for BOTH strings, which was already wrong when
+#      written — Mira's shift fix had merged to track at 16:25 and brought
+#      `isComposing` into SeatLoom's own source (ui/src/hooks/useGlobalShortcuts.ts:31)
+#      before this script was written at 20:01.
+#
+#      Measured now (re-run this before believing it):
+#        isComposing      → ui/src/hooks/useGlobalShortcuts.ts:31 (SeatLoom's own);
+#                          grep of @xterm/addon-fit finds nothing.
+#        proposeDimensions → NOT in ui/src except a test that asserts the scroll
+#                          behaviour; it lives in @xterm/addon-fit/lib/addon-fit.js.
+#
+#      So neither string alone identifies the author. The load-bearing check is the
+#      byte-for-byte content match in step 3, not these labels.
 #   5. Check the HTML for references to files ui/dist does not contain (a 404 on
 #      every launch, which is how the missing favicon was found).
 #
@@ -118,8 +133,11 @@ for p, comp, out in blobs:
     if p.endswith('.js') and comp in binary and (main is None or len(out) > len(main)):
         main = out
 if main:
-    for s, who in (('isComposing', '@xterm/addon-fit — NOT SeatLoom'),
-                   ('proposeDimensions', '@xterm/addon-fit — NOT SeatLoom')):
+    # The labels carry provenance that goes stale. Re-check against ui/src before
+    # trusting them — see the header's history note. The verdict does not depend on
+    # these labels (the content match does), but a wrong label misleads the reader.
+    for s, who in (('isComposing', 'SeatLoom useGlobalShortcuts.ts:31 (was mislabelled xterm-only)'),
+                   ('proposeDimensions', '@xterm/addon-fit (SeatLoom only asserts it in a test)')):
         print(f"  {s:20} x{main.count(s.encode()):<3} <- {who}")
     print(f"  {'等你裁定':20} x{main.count('等你裁定'.encode()):<3} <- SeatLoom's own 020 code; THIS is the one that proves it shipped")
 else:

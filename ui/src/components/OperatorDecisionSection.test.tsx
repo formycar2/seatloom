@@ -16,6 +16,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+import { useDataStore } from '../stores/useDataStore';
 
 const state = vi.hoisted(() => ({
   rows: [] as unknown[],
@@ -53,6 +54,11 @@ const renderSection = () => render(<OperatorDecisionSection live />);
 describe('OperatorDecisionSection', () => {
   beforeEach(() => {
     cleanup();
+    // Declared precondition, not an inherited default: this section reads under a
+    // project, so the tests say which one. They used to rely on useDataStore's
+    // launch default ('p-1', a SEED_PROJECTS_FOR_TESTS id naming no real project);
+    // that default became null on 2026-10-22 when the restart-restore fix landed.
+    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
     state.rows = [];
     state.resolve = vi.fn(async () => ({}));
   });

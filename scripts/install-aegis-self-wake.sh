@@ -82,6 +82,20 @@ if cp "$SRC" "$DEST" && chmod +x "$DEST"; then
 else say "  ❌ 拷贝失败 —— 停"; exit 1; fi
 say ""
 
+# ── 一之二:装「通知张先生」的脚本 ──────────────────────────────────
+# 同一个 TCC 理由:自醒脚本在 cron 里跑,读不到 ~/Documents,所以通知逻辑
+# 也要有一份在 ~/.local/bin/。仓库存的是 scripts/notify-operator.sh(原本,
+# 给人审),这里装的是 cron 能跑的那份。
+line; say "一之二 — 装通知脚本"; line
+NOTIFY_SRC="$REPO/scripts/notify-operator.sh"
+NOTIFY_DEST="$HOME/.local/bin/seatloom-notify-operator.sh"
+if [ ! -r "$NOTIFY_SRC" ]; then
+  say "  ⚠️  原本不在:$NOTIFY_SRC —— 跳过(自醒仍可用,只是不会主动通知)"
+elif cp "$NOTIFY_SRC" "$NOTIFY_DEST" && chmod +x "$NOTIFY_DEST"; then
+  cmp -s "$NOTIFY_SRC" "$NOTIFY_DEST" && say "  ✅ 已装:$NOTIFY_DEST" || say "  ⚠️  拷完但内容不一致"
+else say "  ⚠️  拷贝失败 —— 跳过通知(自醒仍可用)"; fi
+say ""
+
 # ── 二:装 crontab(幂等) ────────────────────────────────────────────
 line; say "二 — 装 crontab"; line
 existing="$(crontab -l 2>/dev/null || true)"

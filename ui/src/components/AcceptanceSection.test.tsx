@@ -31,6 +31,7 @@ vi.mock('../lib/api', () => ({
 }));
 
 import AcceptanceSection from './AcceptanceSection';
+import { useDataStore } from '../stores/useDataStore';
 import { ACCEPTANCE_CMDS_REGISTERED } from '../lib/api';
 
 const seats: Record<string, string> = {
@@ -80,6 +81,10 @@ const renderSection = (onLocateDispatch = vi.fn()) => {
 describe('AcceptanceSection', () => {
   beforeEach(() => {
     cleanup();
+    // Declared precondition, not an inherited default: the section reads under a
+    // project, so the tests say which one. They used to rely on useDataStore's
+    // launch default — a SEED_PROJECTS_FOR_TESTS id naming no real project.
+    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
     state.accept.mockClear();
     state.reject.mockClear();
     state.cards = [card()];
