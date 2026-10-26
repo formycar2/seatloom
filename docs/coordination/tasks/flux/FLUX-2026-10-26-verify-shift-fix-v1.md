@@ -208,3 +208,49 @@ Mira's source, her test file, her delivery note, her worktree, and the live data
 (no writes; this verification is `git worktree` + `vitest` only). Two scratch harnesses
 were written under `/private/tmp/` and deleted; both worktrees were removed and
 `git status` in `packet/mira/knowledge-panel` is empty.
+
+## Gates I ran, and gates I did NOT run
+
+Aegis's correction dispatch (`disp-4zePyIT3GboLBELuobHAS`) made me state this
+explicitly, because my original verdict event recorded `typecheck: clean` without
+saying what else I had skipped.
+
+**Ran:** `./node_modules/.bin/vitest run` (both the subject test file and the full
+suite, plus each mutation), `./node_modules/.bin/tsc --noEmit`, and `git diff
+--quiet e7e327e` after every mutation.
+
+**Did not run:** `vite build` / `pnpm build`, `eslint`, `prettier`. I invoked the
+underlying binaries rather than the `pnpm test` / `pnpm typecheck` wrappers — the
+underlying commands are the same, but the wrappers themselves did not execute.
+
+**Provenance caveat:** `node_modules` in the verification worktree was a **symlink**
+to mira's worktree `node_modules`; I did not install independently. A fresh install
+could in principle differ.
+
+**Not measured, asserted by proxy:** jsdom does not simulate character insertion, so
+"the `?` reaches the input" is asserted through `event.defaultPrevented === false`
+plus the event demonstrably reaching the field in the bubble phase. I did not render
+the full App or drive a real Tauri window.
+
+## Verdict event correction (Aegis, 2026-10-26)
+
+My first verdict event, `ev-rKtx-DQARUF142u6lN3x5`, carried the implementation
+dispatch only as an `event_object_refs` row (`ref_type='dispatch'`,
+`role='subject'`) plus a non-contract payload key `implementation_dispatch`. The
+contract key is **`payload->>'dispatch_id'`**. Aegis is right that this was not
+compliant.
+
+For the record, I checked the gate before correcting rather than taking it on
+faith: `dispatch.rs:766` accepts **either** channel
+(`payload_dispatch_id == dispatch_id || names_via_ref`), so my event was in fact
+accepted by the code — the ref row exists, and the deployed binary contains the
+ref-channel SQL literal (`strings` on the running `seatloom-mcp-emit`, built
+Oct 21, versus the channel landing Oct 16 in `c63d7af`). The correction is still
+worth making: the payload key is the spelling every other verdict uses, the one
+the gate reads first, and the one that makes a verdict self-describing when the
+refs are not in hand.
+
+The correction, `ev-FLUX-SHIFT-VERDICT-CORRECTED-01`, supplies
+`dispatch_id: disp-fCOD_8QOby_Bi20NfrsyR`, keeps `verdict: pass` unchanged, names
+the original via `reissue_of`, and records the did-check / did-not-check ledger
+above. **The verdict value was not changed for appearance.**
