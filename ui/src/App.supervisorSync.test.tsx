@@ -36,10 +36,12 @@ import React from 'react';
 
 // ── The injected api surface ────────────────────────────────────────────────
 //
-// `rejectListenFor` names the events whose subscription must reject. Everything
-// else resolves, so a test states exactly which channel is broken.
+// `rejectListenFor` names the events whose subscription must reject, and
+// `rejectStatus` makes the STARTUP QUERY reject. Everything else resolves, so a
+// test states exactly which of the three reads is broken.
 const state = vi.hoisted(() => ({
   rejectListenFor: [] as string[],
+  rejectStatus: false,
   listenCalls: [] as string[],
   statusCalls: 0,
   /** Every unlisten fn handed to the app, so a leak is observable. */
@@ -54,6 +56,9 @@ vi.mock('./lib/api', () => ({
   api: {
     supervisorWindowStatus: async () => {
       state.statusCalls += 1;
+      if (state.rejectStatus) {
+        return Promise.reject(new Error('backend refused the status query'));
+      }
       return { detached: false };
     },
     openSupervisorWindow: async () => {},
@@ -117,6 +122,7 @@ beforeAll(() => {
 beforeEach(() => {
   window.localStorage.clear();
   state.rejectListenFor = [];
+  state.rejectStatus = false;
   state.listenCalls = [];
   state.unlistenCalls = [];
   state.statusCalls = 0;
@@ -271,5 +277,101 @@ describe('the cleanup still stands', () => {
     // leaving the listener registered for the life of the page.
     expect(state.unlistenCalls).toContain('supervisor:detached');
     expect(state.unlistenCalls).toContain('supervisor:reembedded');
+  });
+});
+
+// ── The STARTUP QUERY's failure path (Flux's F1) ────────────────────────────
+//
+// The subscription half above was the original dispatch. Flux, verifying it,
+// measured the neighbouring path and found it still swallowed:
+// `shownWhenQueryFails=false, shownWhenSubFails=true` — not inferred, measured
+// by injecting a rejecting `supervisorWindowStatus()` and asserting its reason
+// never reached the screen.
+//
+// It is the SAME confident lie through a different door, and strictly worse:
+// this is the FIRST read, so `supervisorDetached` had never been answered at
+// all. A stale answer was once right; this one never was.
+//
+// Why a SEPARATE strip shape rather than reusing the subscription's:
+//   - 'never-answered' gets a RETRY button, because re-reading is what fixes a
+//     single failed query — the same reason the database read offers one;
+//   - 'stale' gets none, because re-subscribing against a broken event bus
+//     produces noise and no state.
+// Collapsing them would tell the operator "something is wrong" without telling
+// them whether there is anything they can do about it, and the actionable half
+// is the part that differs.
+
+describe('when the startup query is refused', () => {
+  it('the failure is stated, not swallowed, and the state is not left claiming false', async () => {
+    state.rejectStatus = true;
+
+    await mountApp();
+
+    const strip = await screen.findByTestId(STRIP);
+    // The never-answered shape, not the stale one: this is the first read.
+    expect(strip.getAttribute('data-kind')).toBe('never-answered');
+    // The backend's error verbatim — not an empty catch that leaves the operator
+    // guessing what the desktop said.
+    expect(strip.textContent).toContain('backend refused the status query');
+    // ...and the wording says the state was NEVER answered, which is the
+    // difference from the subscription case. A message that only said
+    // "stopped being maintained" would be wrong here: there was nothing to
+    // maintain yet.
+    expect(strip.textContent).toContain('没问到');
+    expect(strip.textContent).toContain('不知道');
+    // It must NOT claim the startup answer is what is being shown — there was
+    // none. This is the assertion that distinguishes the two shapes.
+    expect(strip.textContent).not.toContain('启动时查到的那一次');
+    // The consequence is still stated, because the frozen false still drives
+    // ⌘K and the embedded-panel gate.
+    expect(strip.textContent).toContain('⌘K');
+  });
+
+  it('the failure is not an unhandled rejection', async () => {
+    const seen: unknown[] = [];
+    const onUnhandled = (e: PromiseRejectionEvent) => seen.push(e.reason);
+    window.addEventListener('unhandledrejection', onUnhandled);
+    state.rejectStatus = true;
+
+    try {
+      await mountApp();
+      await screen.findByTestId(STRIP);
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it('the retry button re-asks, and succeeding removes the strip', async () => {
+    // The retry is only honest if it actually works: a button that re-asks and
+    // leaves the warning up would be a lie with a click handler.
+    state.rejectStatus = true;
+
+    await mountApp();
+    await screen.findByTestId(STRIP);
+    expect(state.statusCalls).toBe(1);
+
+    // The transient failure clears — the operator's database came back.
+    state.rejectStatus = false;
+    const retry = await screen.findByRole('button', { name: /再问一次/ });
+    await act(async () => {
+      retry.click();
+    });
+
+    await waitFor(() => expect(state.statusCalls).toBe(2));
+    await waitFor(() => expect(screen.queryByTestId(STRIP)).toBeNull());
+  });
+
+  it('the stale shape has no retry button, because re-subscribing cannot fix it', async () => {
+    // The other half of the distinction, asserted from the other side: offering
+    // "再问一次" on a broken event bus would be a button that cannot work.
+    state.rejectListenFor = ['supervisor:detached'];
+
+    await mountApp();
+
+    const strip = await screen.findByTestId(STRIP);
+    expect(strip.getAttribute('data-kind')).toBe('stale');
+    expect(screen.queryByRole('button', { name: /再问一次/ })).toBeNull();
   });
 });
