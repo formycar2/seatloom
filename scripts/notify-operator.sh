@@ -48,7 +48,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-q(){ podman exec -e PGPASSWORD=seatloom "$CONTAINER" psql -X -U seatloom -d "$DB" -tAc "$1" 2>/dev/null; }
+# ── 找 podman:cron 的 PATH 极简(实测只有 /usr/bin:/bin),而 podman 在 ──
+#    /opt/homebrew/bin。找不到就明说失败,**不静默跳过** ——
+#    一个查不到账本就认为「没待办」的通知,比没有通知更有害:它会一直安静。
+PODMAN_BIN=""
+for c in "$(command -v podman || true)" /opt/homebrew/bin/podman /usr/local/bin/podman /usr/bin/podman; do
+  [ -n "$c" ] && [ -x "$c" ] && { PODMAN_BIN="$c"; break; }
+done
+if [ -z "$PODMAN_BIN" ]; then
+  say "❌ 找不到 podman(PATH=$PATH)—— 查不到账本,这一轮不能当成『没有待办』"
+  exit 1
+fi
+
+q(){ "$PODMAN_BIN" exec -e PGPASSWORD=seatloom "$CONTAINER" psql -X -U seatloom -d "$DB" -tAc "$1" 2>/dev/null; }
 
 # 已经弹过的事(键 = dispatch/card id)
 touch "$SEEN" 2>/dev/null || true
