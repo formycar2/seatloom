@@ -36,6 +36,13 @@ MODEL="stepplan-wash-anthropic/step-5-preview"
 SEAT_RUNTIME="Pi"
 SEAT_HARNESS="Pi"
 SEAT_AGENT="Pi"
+# 角色绑定:照 QL 的真实行填。QL 是外部项目交付席位,role = custom(worker);
+# networkOrchestrator 是同一类(项目交付,不是产品席位),所以同 role。
+# 🔴 这一步不能省:UI 的实时席位页不是显示所有 tmux 会话,而是
+#    list_seats_for_project() JOIN project_role_bindings,再拿这个名单
+#    过滤 tmux 会话(boundMirrorNames)。没有绑定行 → 席位名单是空的 →
+#    一个席位都不显示。Aegis 第一版就是漏了这里,张先生在 UI 里搜不到。
+SEAT_ROLE="custom(worker)"
 # parent_project_id 全表没人用(QL 那行也是空),所以这里也不挂父项目。
 TMUX_SESSION="NetworkOrchestrator-seatloom"
 SESSION_UUID="01a177a8-94cb-7571-ba17-8982de5299f6"
@@ -112,6 +119,13 @@ say "    ON CONFLICT (id) DO UPDATE SET default_model = EXCLUDED.default_model,"
 say "                                     status = 'active';"
 say ""
 
+say "  -- 角色绑定(幂等)。照 QL 的真实行:role = custom(worker)。"
+say "  -- 🔴 少了这一行,UI 的席位列表就是空的(它 JOIN 这张表再过滤 tmux)。"
+say "  INSERT INTO project_role_bindings (seat_id, project_id, role)"
+say "    VALUES ('$SEAT_ID', '$PROJECT_ID', '$SEAT_ROLE')"
+say "    ON CONFLICT (seat_id, project_id) DO UPDATE SET role = EXCLUDED.role;"
+say ""
+
 if [ "$APPLY" != 1 ]; then
   line; say "这是 DRY-RUN,什么都没改。确认上面这些就是你要的,然后跑:"; line
   say ""
@@ -133,6 +147,10 @@ INSERT INTO seats (id, name, default_runtime, default_harness,
           '$SEAT_AGENT', '$MODEL', 'active', now())
   ON CONFLICT (id) DO UPDATE SET default_model = EXCLUDED.default_model,
                                    status = 'active';
+
+INSERT INTO project_role_bindings (seat_id, project_id, role)
+  VALUES ('$SEAT_ID', '$PROJECT_ID', '$SEAT_ROLE')
+  ON CONFLICT (seat_id, project_id) DO UPDATE SET role = EXCLUDED.role;
 "
 printf '%s\n' "$SQL" | podman exec -i -e "PGPASSWORD=$DB_PASS" "$DB_CONTAINER" \
   psql -X -U "$DB_USER" -d "$DB_NAME" >/tmp/no-adopt-psql.log 2>&1 || {
@@ -142,10 +160,12 @@ say "  ✅ SQL 已执行(项目 + 席位)"
 # ── 4. 读回核对:不看"执行成功",看账本真的变了 ─────────────────────
 line; say "4 — 读回核对"; line
 p_now="$(q "select id||' | '||home_path from projects where id='$PROJECT_ID';" | tr -d '\n')"
-s_now="$(q "select id||' | '||name||' | '||default_model from seats where id='$SEAT_ID';" | tr -d '\n')"
+s_now="$(q "select id||' | '||name from seats where id='$SEAT_ID';" | tr -d '\n')"
+b_now="$(q "select seat_id||' → '||project_id||' as '||role from project_role_bindings where seat_id='$SEAT_ID' and project_id='$PROJECT_ID';" | tr -d '\n')"
 say "  项目: ${p_now:-❌没有}"
 say "  席位: ${s_now:-❌没有}"
-[ -n "$p_now" ] && [ -n "$s_now" ] || { say "❌ 读回对不上,账本没真的变。停。"; exit 1; }
+say "  绑定: ${b_now:-❌没有}"
+[ -n "$p_now" ] && [ -n "$s_now" ] && [ -n "$b_now" ] || { say "❌ 读回对不上,账本没真的变。停。"; exit 1; }
 say ""
 
 # ── 5. tmux 里起 saih(带 resume),并配 MCP ─────────────────────────
