@@ -11,6 +11,15 @@ export interface ProjectDto {
   createdAt: string;
   workerBudgetTokens: number;
   supervisorBudgetTokens: number;
+  /**
+   * The project's home path from the ledger, or null when none was recorded.
+   *
+   * It exists because the frontend used to SYNTHESISE a path — `'~/' + name` —
+   * which is why 张先生 saw `~/networkOrchestrator` in the project switcher while
+   * the ledger held `/Users/…/project_delivery/networkOrchestrator`. A fabricated
+   * path is worse than an absent one: it looks like data.
+   */
+  homePath: string | null;
 }
 
 export interface SeatDto {

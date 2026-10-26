@@ -4,6 +4,12 @@
 // page. What he saw was three hardcoded seed cards — identifiable because their paths
 // were `~/Documents/GitHub/…` while `projectFromDto` synthesises `~/<name>`.
 //
+// (2026-10-26: that `~/<name>` synthesis is now GONE — it was the cause of
+// `~/networkOrchestrator` appearing beside a correct full path in the project
+// switcher. The mapper carries the ledger's real home_path, or null. The seeds keep
+// their `~/Documents/GitHub/…` paths, which is what makes them still recognisable
+// as seeds — the tell survives, the fabrication does not.)
+//
 // Four things are pinned here, one per requirement:
 //   1. the store no longer starts from the seeds — the product path cannot show them;
 //   2. a failed hydration is STATED, with the backend's own error text, never a silent
@@ -44,12 +50,13 @@ vi.mock('../lib/api', () => ({
 import { SEED_PROJECTS_FOR_TESTS, useDataStore } from '../stores/useDataStore';
 import AllProjectsView from '../views/AllProjectsView';
 
-const proj = (id: string, name: string) => ({
+const proj = (id: string, name: string, homePath: string | null = null) => ({
   id,
   name,
   createdAt: '2026-10-16T00:00:00Z',
   workerBudgetTokens: 0,
   supervisorBudgetTokens: 0,
+  homePath,
 });
 
 /** Reset the store to its shipped initial state before each test. */
@@ -99,15 +106,38 @@ describe('the Projects page reflects the database', () => {
     expect(useDataStore.getState().backendHydrateError).toBeNull();
   });
 
-  it('a hydrated project renders with the path the mapper synthesises, not a seed path', async () => {
+  it('a hydrated project renders the ledger path, never a synthesised one', async () => {
     state.projects = [proj('ql_delivery', 'ql_delivery')];
     await act(async () => {
       await useDataStore.getState().hydrateFromBackend();
     });
     render(<AllProjectsView onSelectProject={() => {}} />);
-    // projectFromDto synthesises '~/' + name — so a seed path is a tell.
+    // The seeds' path was `~/Documents/GitHub/…`; the mapper used to synthesise
+    // `~/<name>`. NEITHER may appear now — only the ledger's own home_path may.
     expect(screen.getByText('ql_delivery')).toBeTruthy();
     expect(screen.queryByText('~/Documents/GitHub/ql_delivery')).toBeNull();
+    expect(screen.queryByText('~/ql_delivery')).toBeNull();
+  });
+
+  it('the ledger home_path is rendered verbatim, and a missing one says so', async () => {
+    // The 2026-10-26 defect (Mr. Zhang): the switcher showed `~/networkOrchestrator`
+    // beside a correct full path. The cause was `path: '~/' + d.name` in
+    // projectFromDto. Both directions pinned here: the real path must appear
+    // unchanged, and a row with NO home_path must say that rather than invent one.
+    state.projects = [
+      proj('project_delivery/networkOrchestrator', 'networkOrchestrator',
+           '/Users/jyxc-dz-0100609/Documents/GitHub/project_delivery/networkOrchestrator'),
+      proj('no-home', 'no-home', null),
+    ];
+    await act(async () => {
+      await useDataStore.getState().hydrateFromBackend();
+    });
+    render(<AllProjectsView onSelectProject={() => {}} />);
+    expect(
+      screen.getByText('/Users/jyxc-dz-0100609/Documents/GitHub/project_delivery/networkOrchestrator'),
+    ).toBeTruthy();
+    expect(screen.queryByText('~/networkOrchestrator')).toBeNull();
+    expect(screen.getAllByText('无 home_path').length).toBeGreaterThan(0);
   });
 
   it('the seeds are still available for tests, under a name that says so', () => {

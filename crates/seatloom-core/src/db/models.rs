@@ -10,6 +10,11 @@ pub struct ProjectRow {
     pub created_at: DateTime<Utc>,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, NULL when the corpus never recorded one (an
+    /// archive-derived project has no home). Carried so the UI can show the real
+    /// path instead of synthesising one — see `projectFromDto`, which for a while
+    /// rendered `'~/' + name` for every project.
+    pub home_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]

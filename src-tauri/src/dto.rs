@@ -28,6 +28,9 @@ pub struct ProjectDto {
     pub created_at: String,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, or null. Sent so the UI shows the real path; the
+    /// frontend used to synthesise `'~/' + name` because it was not given one.
+    pub home_path: Option<String>,
 }
 
 impl From<ProjectRow> for ProjectDto {
@@ -38,6 +41,7 @@ impl From<ProjectRow> for ProjectDto {
             created_at: iso(r.created_at),
             worker_budget_tokens: r.worker_budget_tokens,
             supervisor_budget_tokens: r.supervisor_budget_tokens,
+            home_path: r.home_path,
         }
     }
 }
