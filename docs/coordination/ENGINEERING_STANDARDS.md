@@ -153,6 +153,42 @@ seat switching to its packet branch switches it for everyone. Per-seat
 as a **Nimbus follow-up**. Until then, only one seat may hold a non-`track`
 branch checked out at a time.
 
+## A dispatch is not done when the work is done
+
+Measured 2026-10-26/27. Four separate times the chain ran end to end and stopped one
+centimetre short of the operator: work merged, verdict green, tests passing — and
+no acceptance card existed, so the operator had nothing to click. Each time the
+cause was the same: **the dispatch packet did not say that opening the card is part
+of the job.**
+
+A dispatch is complete only when ALL of these are true. Aegis writes the first four
+into every packet; the seat owns the last three.
+
+1. The packet names **what to do**, **how it will be judged**, and **what not to do**
+   (three parts; a packet missing any of the three is not a packet).
+2. The packet names the **base** branch the work will merge into.
+3. The packet says, verbatim: **"on delivery, open your own acceptance card"**, and
+   names the arguments `request_acceptance` needs — `base`, and a
+   `flux_verdict_ref` that is a `ReviewVerdictIssued` whose `verdict` is `pass`
+   AND which is about THIS dispatch.
+4. The packet says what to do when the gate refuses: **report the tool's exact
+   words, never adjust the ref to make it pass.**
+5. The seat calls `request_acceptance` on its OWN completed dispatch. It cannot be
+   done by anyone else — the guard is `NotCompleted` (the dispatch must belong to
+   the calling seat), and that is deliberate: another seat opening the card would
+   be somebody else certifying a delivery they did not make.
+6. The seat reports the resulting acceptance id, or says in words why it is not
+   opening one. **Silence is not an option** — a dispatch that ends without either
+   a card or a stated reason is indistinguishable from work nobody did.
+7. Only then does the operator have something to accept.
+
+Why the guard exists (read `crates/seatloom-mcp-emit/src/dispatch.rs`):
+`NotCompleted` (not your dispatch), `UnknownFluxVerdict` (no such event),
+`VerdictNotGreen` (a red verdict is not a merge criterion),
+`VerdictNotAboutThisDispatch` (another unit of work's verdict cannot stand in),
+`AcceptancePending` (would displace a card somebody is still waiting on).
+All five have been hit on live. None of them is a bug to route around.
+
 ## Tool use and token cost
 
 Measured 2026-10-21 across 11+ seat sessions (see
