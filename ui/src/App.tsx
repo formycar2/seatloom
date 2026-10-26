@@ -14,6 +14,7 @@ import SupervisionDashboard from './components/SupervisionDashboard';
 import SeatDetail from './components/SeatDetail';
 import EventDetail from './components/EventDetail';
 import HydrationFailure from './components/HydrationFailure';
+import SupervisorSyncLost from './components/SupervisorSyncLost';
 import { SandboxBanner } from './components/SandboxBanner';
 import SessionDetail from './components/SessionDetail';
 import WorkItemDetail from './components/WorkItemDetail';
@@ -141,6 +142,10 @@ const App: React.FC = () => {
     () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
   const [supervisorDetached, setSupervisorDetached] = useState(false);
+  /// Set when the supervisor panel's live-state subscription fails. The state it
+  /// was maintaining stays where the startup query left it, so this string is
+  /// what keeps that from reading as a live answer. null = the link is fine.
+  const [supervisorSyncLost, setSupervisorSyncLost] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('seatloom.supervisor.open', showSupervisorIM ? 'true' : 'false');
@@ -149,8 +154,52 @@ const App: React.FC = () => {
   // Reflect the current detached/embedded state from the backend on mount so
   // reopening the main window after detaching the IM doesn't re-show the
   // embedded panel next to the detached window.
+  //
+  // THE TWO SUBSCRIPTIONS BELOW USED TO HAVE NO FAILURE HANDLING. A rejecting
+  // `listen()` was an unhandled rejection and — worse than the noise — the state
+  // these subscriptions keep current silently froze at the startup answer.
+  // `supervisorDetached === false` would then read as "the panel is in this
+  // window" when the truth is "I no longer know".
+  //
+  // Three decisions, stated rather than left implicit:
+  //
+  // 1. NOT `.catch(() => {})` (which is what the status query above does).
+  //    Swallowing turns "something failed" into "nothing failed and the state is
+  //    real". The state here is load-bearing for ⌘K and for whether the embedded
+  //    panel renders, so a silently stale value produces a wrong visible
+  //    behaviour. The failure is surfaced instead, with its concrete consequence.
+  // 2. `listen()` only reaches this catch when Tauri IS present: the effect
+  //    returns early in a browser. So a rejection here is "Tauri is up but the
+  //    event bus did not accept this subscription" — one case, one message. The
+  //    non-Tauri case is not an error at all and is not reported as one.
+  // 3. The cleanup still stands, and now covers the in-flight window. Without
+  //    `cancelled`, unmounting while `listen()` is still pending leaks a
+  //    subscription: the resolve handler would assign the unlisten fn after the
+  //    cleanup had already run, and nothing would ever call it. With it, a
+  //    subscription that lands after unmount is dropped on the floor.
   useEffect(() => {
     if (!isTauri()) return;
+    let cancelled = false;
+
+    // Set only when a subscription fails. The startup query above still answers
+    // the state; this records that the answer has stopped being maintained.
+    //
+    // Both channels are subscribed in parallel, so both can fail in the same
+    // tick. The first version kept only the last message and silently dropped
+    // the other — a reader could not tell that BOTH links were down, which is
+    // the difference between "one channel is flaky" and "the event bus is not
+    // accepting subscriptions at all". Each channel keeps its OWN reason, and
+    // both are shown, because the two refusals are not necessarily the same
+    // failure and collapsing them would invent a single cause.
+    const lostChannels = new Map<string, string>();
+    const reportSubscriptionFailure = (eventName: string) => (err: unknown) => {
+      if (cancelled) return;
+      lostChannels.set(eventName, err instanceof Error ? err.message : String(err));
+      const lines = [...lostChannels].map(([name, detail]) => `订阅 ${name} 失败:${detail}`);
+      if (lostChannels.size > 1) lines.push('(两条通道都断了)');
+      setSupervisorSyncLost(lines.join('; '));
+    };
+
     api
       .supervisorWindowStatus()
       .then((s) => setSupervisorDetached(s.detached))
@@ -160,15 +209,30 @@ const App: React.FC = () => {
     onSupervisorDetached(() => {
       setSupervisorDetached(true);
       setShowSupervisorIM(false);
-    }).then((fn) => {
-      offDetached = fn;
-    });
+    })
+      .then((fn) => {
+        if (cancelled) {
+          // The component went away while the subscription was still being set
+          // up; the listener was registered, so it must be removed.
+          fn();
+          return;
+        }
+        offDetached = fn;
+      })
+      .catch(reportSubscriptionFailure('supervisor:detached'));
     onSupervisorReembedded(() => {
       setSupervisorDetached(false);
-    }).then((fn) => {
-      offReembed = fn;
-    });
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        offReembed = fn;
+      })
+      .catch(reportSubscriptionFailure('supervisor:reembedded'));
     return () => {
+      cancelled = true;
       if (offDetached) offDetached();
       if (offReembed) offReembed();
     };
@@ -566,6 +630,11 @@ const App: React.FC = () => {
           onRetry={() => void hydrateFromBackend()}
         />
       )}
+      {/* Outside the `showSupervisorIM && !supervisorDetached` block on purpose: a
+          stale `supervisorDetached === false` is exactly the case where the panel
+          is believed embedded, and hiding the warning behind that belief would
+          make it invisible precisely when it is needed. */}
+      {supervisorSyncLost !== null && <SupervisorSyncLost reason={supervisorSyncLost} />}
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {
