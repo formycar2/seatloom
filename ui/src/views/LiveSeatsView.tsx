@@ -604,7 +604,33 @@ const LiveSeatsView: React.FC = () => {
                 style={{
                   position: 'absolute',
                   inset: 0,
-                  display: a.seat.sessionName === activeName ? 'block' : 'none',
+                  // Inactive attachments are hidden with `visibility`, NOT
+                  // `display: none`. This is the fix for "the live-seats page
+                  // sometimes will not scroll":
+                  //
+                  // A `display: none` ancestor removes the terminal from
+                  // layout, so xterm cannot measure a character cell — its DOM
+                  // measure strategy reads offsetWidth/offsetHeight of a
+                  // measure element that no longer has a box.
+                  // FitAddon.fit() then returns early WITHOUT resizing (its
+                  // own proposeDimensions() bails on css.cell.width === 0),
+                  // so the viewport silently stays at the pane's attach-time
+                  // row/col seed — normally TALLER than this slot. When the
+                  // pane's content is not longer than that seed row count the
+                  // scroll area equals the viewport height and the operator
+                  // cannot scroll at all.
+                  //
+                  // `visibility: hidden` keeps the box (these layers are
+                  // already position: absolute, so they are out of flow either
+                  // way), so a terminal mounted while its attachment is
+                  // inactive is still measurable and is fitted correctly the
+                  // moment it is armed. It also keeps the hidden terminal out
+                  // of the a11y tree and unfocusable, which display: none was
+                  // providing for free.
+                  visibility: a.seat.sessionName === activeName ? 'visible' : 'hidden',
+                  // Belt and braces: an inactive layer must never swallow a
+                  // wheel or a click even if a browser still routes events.
+                  pointerEvents: a.seat.sessionName === activeName ? 'auto' : 'none',
                 }}
               >
                 <SessionTerminal
