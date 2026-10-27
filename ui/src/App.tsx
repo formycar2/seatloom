@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AppShell from './layouts/AppShell';
 import MasterDetail from './layouts/MasterDetail';
 import InboxView from './views/InboxView';
@@ -142,10 +142,22 @@ const App: React.FC = () => {
     () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
   const [supervisorDetached, setSupervisorDetached] = useState(false);
-  /// Set when the supervisor panel's live-state subscription fails. The state it
-  /// was maintaining stays where the startup query left it, so this string is
-  /// what keeps that from reading as a live answer. null = the link is fine.
-  const [supervisorSyncLost, setSupervisorSyncLost] = useState<string | null>(null);
+  /// Set when the supervisor panel's state cannot be trusted. Two shapes, because
+  /// the two failures are not the same thing:
+  ///
+  ///   'never-answered' — the startup query failed, so the state was never
+  ///     answered at all (the FIRST read). Red, with a retry.
+  ///   'stale' — a subscription failed, so an answer that WAS correct has
+  ///     stopped being maintained. Yellow, no retry.
+  ///
+  /// null = the state is trustworthy. Kept separate from `supervisorDetached`
+  /// rather than folding the uncertainty into it: nulling the answer would
+  /// corrupt the answer to express doubt about it, and would widen a boolean
+  /// every read site handles.
+  const [supervisorSyncLost, setSupervisorSyncLost] = useState<{
+    kind: 'never-answered' | 'stale';
+    reason: string;
+  } | null>(null);
 
   useEffect(() => {
     localStorage.setItem('seatloom.supervisor.open', showSupervisorIM ? 'true' : 'false');
@@ -155,34 +167,60 @@ const App: React.FC = () => {
   // reopening the main window after detaching the IM doesn't re-show the
   // embedded panel next to the detached window.
   //
-  // THE TWO SUBSCRIPTIONS BELOW USED TO HAVE NO FAILURE HANDLING. A rejecting
-  // `listen()` was an unhandled rejection and — worse than the noise — the state
-  // these subscriptions keep current silently froze at the startup answer.
-  // `supervisorDetached === false` would then read as "the panel is in this
-  // window" when the truth is "I no longer know".
+  // ── Three ways this state can fail, and why they are not one thing ─────────
   //
-  // Three decisions, stated rather than left implicit:
+  // 1. THE STARTUP QUERY FAILS. `supervisorDetached` then keeps its `useState`
+  //    initial `false` — and that value is not neutral, it is the claim "the
+  //    panel is in this window". This is the FIRST read, so the state was never
+  //    answered at all. Reported as `never-answered` (red, with a retry):
+  //    re-reading is what fixes a single failed query.
   //
-  // 1. NOT `.catch(() => {})` (which is what the status query above does).
-  //    Swallowing turns "something failed" into "nothing failed and the state is
-  //    real". The state here is load-bearing for ⌘K and for whether the embedded
-  //    panel renders, so a silently stale value produces a wrong visible
-  //    behaviour. The failure is surfaced instead, with its concrete consequence.
-  // 2. `listen()` only reaches this catch when Tauri IS present: the effect
-  //    returns early in a browser. So a rejection here is "Tauri is up but the
-  //    event bus did not accept this subscription" — one case, one message. The
-  //    non-Tauri case is not an error at all and is not reported as one.
-  // 3. The cleanup still stands, and now covers the in-flight window. Without
-  //    `cancelled`, unmounting while `listen()` is still pending leaks a
-  //    subscription: the resolve handler would assign the unlisten fn after the
-  //    cleanup had already run, and nothing would ever call it. With it, a
-  //    subscription that lands after unmount is dropped on the floor.
+  //    This used to be `.catch(() => {})`, which is the exact shape this whole
+  //    design exists to remove — Flux found it as F1 while verifying the
+  //    subscription half, and measured it (`shownWhenQueryFails=false,
+  //    shownWhenSubFails=true`) rather than inferring it.
+  //
+  // 2. A SUBSCRIPTION FAILS. An answer that WAS correct has stopped being
+  //    maintained. Reported as `stale` (yellow, no retry): re-subscribing
+  //    against a broken event bus produces noise and no state.
+  //
+  // 3. NOT Tauri at all. The effect returns on its first line, so nothing here
+  //    runs and nothing is reported. A browser dev session is not an error.
+  //
+  // The two reported shapes are kept apart rather than merged into one message:
+  // "I do not know and there is something you can do" and "I knew and it has
+  // gone quiet" are different things to an operator, and only one of them has
+  // a button.
+  // Ask the desktop where the supervisor panel is. Lives at component scope, not
+  // inside the effect, because the never-answered strip's retry button calls it
+  // too — a button that could only re-run the mount effect would not be a retry.
+  //
+  // `cancelled` is per effect run, so this deliberately does NOT check it: the
+  // retry is an explicit operator action taken while mounted, and a read that
+  // lands after an unmount would only set state on an unmounted component.
+  const askSupervisorWindowStatus = useCallback(() => {
+    api
+      .supervisorWindowStatus()
+      .then((s) => {
+        setSupervisorDetached(s.detached);
+        // A successful read clears a previous failure: the retry button is only
+        // honest if succeeding actually removes the strip.
+        setSupervisorSyncLost(null);
+      })
+      .catch((err) => {
+        setSupervisorSyncLost({
+          kind: 'never-answered',
+          reason: `查询监督面板位置失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }, []);
+
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
 
-    // Set only when a subscription fails. The startup query above still answers
-    // the state; this records that the answer has stopped being maintained.
+    // Set when a subscription fails. The startup query above still answers the
+    // state; this records that the answer has stopped being maintained.
     //
     // Both channels are subscribed in parallel, so both can fail in the same
     // tick. The first version kept only the last message and silently dropped
@@ -197,13 +235,11 @@ const App: React.FC = () => {
       lostChannels.set(eventName, err instanceof Error ? err.message : String(err));
       const lines = [...lostChannels].map(([name, detail]) => `订阅 ${name} 失败:${detail}`);
       if (lostChannels.size > 1) lines.push('(两条通道都断了)');
-      setSupervisorSyncLost(lines.join('; '));
+      setSupervisorSyncLost({ kind: 'stale', reason: lines.join('; ') });
     };
 
-    api
-      .supervisorWindowStatus()
-      .then((s) => setSupervisorDetached(s.detached))
-      .catch(() => {});
+    askSupervisorWindowStatus();
+
     let offDetached: (() => void) | null = null;
     let offReembed: (() => void) | null = null;
     onSupervisorDetached(() => {
@@ -236,7 +272,12 @@ const App: React.FC = () => {
       if (offDetached) offDetached();
       if (offReembed) offReembed();
     };
-  }, []);
+    // `askSupervisorWindowStatus` is a useCallback with an empty dependency list,
+    // so it is referentially stable for the life of the component. Listing it is
+    // therefore correct AND free: the effect still runs exactly once, because the
+    // callback never changes identity. (It must stay mount-only — re-running
+    // would double-register the two subscriptions.)
+  }, [askSupervisorWindowStatus]);
 
   // ⌘K toggles the Supervisor IM — the L1 surface. The V1 command bar is
   // still registered on ⌘⇧K for backwards compatibility with existing
@@ -634,7 +675,13 @@ const App: React.FC = () => {
           stale `supervisorDetached === false` is exactly the case where the panel
           is believed embedded, and hiding the warning behind that belief would
           make it invisible precisely when it is needed. */}
-      {supervisorSyncLost !== null && <SupervisorSyncLost reason={supervisorSyncLost} />}
+      {supervisorSyncLost !== null && (
+        <SupervisorSyncLost
+          kind={supervisorSyncLost.kind}
+          reason={supervisorSyncLost.reason}
+          onRetry={() => askSupervisorWindowStatus()}
+        />
+      )}
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {
