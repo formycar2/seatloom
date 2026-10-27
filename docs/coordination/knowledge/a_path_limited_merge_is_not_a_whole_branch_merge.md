@@ -57,3 +57,55 @@ tags: [git, merge, path-limited, self-inflicted, verification]
 "两个文件"听起来像小改动,所以大脑会跳过检查。但文件的数量和改动的大小
 没有关系:一份 373 个提交没同步的 `ENGINEERING_STANDARDS.md`,和一个
 拼错的单词一样,都是一个文件。
+
+---
+
+## 2026-10-28 04:00 复发,同一个坑换了位置
+
+Mira 独立核 Flux 的验单时发现:我合并 Nimbus 双渲染那次(`f72b515`),
+**分支改了 5 个文件,我漏了 1 个** —— `ui/src/stores/useConversationStore.test.ts`
+(7128 字节,11 个 `it`)。而那个 commit 的说明里写着
+"useConversationStore.ts(前端累积器,11 测试)"。
+
+**说明声称的件数和实际带进来的不一致,而我当时信了说明。**
+
+### 为什么漏的
+
+Nimbus 的活分在两个 commit:`cae7f8c`(wip,带 `lib.rs` / `api.ts` / `types-dto.ts`)
+和 `3b52ea2`(定稿,5 个文件)。我按 **commit message 里点名的文件**去拿,
+没有拿 `git diff --name-only base...branch` 的完整清单对一遍。
+于是拿了 7 个文件(比定稿那次还多 2 个),偏偏漏了测试。
+
+**"多拿了"和"漏拿了"同时发生,而且我当时以为自己核过了。**
+
+### 判据(这次是真验过的,不是又一条规矩)
+
+补回之后:
+
+```
+npx vitest run src/stores/useConversationStore.test.ts   → 11 passed
+npx vitest run                                          → 25 files / 311 passed
+```
+
+并且验了它承重,三个变异:
+
+| 变异 | 结果 |
+|---|---|
+| `turnStarted` 改成 no-op | **8 failed / 3 passed** ← 承重 |
+| `MAX_TURNS_KEPT` 50 → 51 | 11 passed ← **抓不到** |
+| 超限裁剪方向前后颠倒 | 11 passed ← **抓不到** |
+
+后两条如实记下来,**不当成覆盖**。这个测试保的是"轮次累积"这条主路,
+不保"上限数值"和"裁剪方向"。
+
+### 补上的那条判据
+
+路径限定合并后,必须做这一步,**没有例外**:
+
+```bash
+git diff --name-only <base>...<branch> -- <每个相关目录>   # 完整清单
+git show --name-only --format= <我的合并commit>            # 实际带进来的
+# 两个清单逐行对,一个都不能少
+```
+
+**commit message 里写的件数不是证据**,我这次就是被它骗的。
