@@ -7,10 +7,16 @@
 | id | engineering-standards-v1 |
 | status | active |
 | author | aegis |
-| date | 2026-09-29 |
-| version | v1 |
+| date | 2026-10-27 |
+| version | v2 |
 | depends_on | `docs/coordination/COORDINATION_RULES.md`, `docs/coordination/DOCUMENT_TEMPLATES.md`, `.gitlab-ci.yml` |
-| tags | engineering, ci, code-standards, quality-gates, ratchet |
+| tags | engineering, ci, code-standards, quality-gates, ratchet, acceptance, verification-gate-class |
+
+> Changelog: v1 (2026-09-29) aegis — initial standard. v2 (2026-10-27)
+> lyra — added `## Acceptance gate class` (decision
+> `docs/coordination/acceptance/2026-10-27-verification-gate-class-rule-decision.md`).
+> v2 keeps id `engineering-standards-v1` so existing `depends_on` and document
+> references stay resolvable; the version row records the content revision.
 
 ## Purpose
 
@@ -278,6 +284,82 @@ Non-obvious CI facts, all verified 2026-09-29 against a fresh database:
   base the same way and CI fetches that ref explicitly.
 
 ## Follow-ups (not in this packet)
+
+## Acceptance gate class
+
+**Authoritative decision**: `docs/coordination/acceptance/2026-10-27-verification-gate-class-rule-decision.md`
+(v1, lyra, 2026-10-27). That memo owns the rationale, the ruled-out options and
+the backlog for the eight blocked dispatches; this section owns the **rule**.
+
+`request_acceptance` requires `flux_verdict_ref` to name an existing
+`ReviewVerdictIssued` event whose `payload.dispatch_id` names the very dispatch
+being accepted. That guard is correct for implementation work, but it left an
+undefined square on the board: a seat can never open an acceptance card for its
+**own** completed dispatch, because no one may issue an independent verdict
+about their own work. The eight Flux dispatches listed in the memo sat
+completed and unaccepted behind this hole.
+
+The rule below closes it without pretending a self-verdict is verification.
+
+### Every completed dispatch carries exactly one class
+
+The issuing seat writes `acceptance_class` into the dispatch payload
+(`implementation` or `verification`). The class is declared at issue time, is
+never edited in flight, and is settled by the **content of the dispatch**, not
+by which seat happened to run it.
+
+| Class | Content | Opens an acceptance card? | Evidence the card carries |
+|---|---|---|---|
+| `implementation` | Changes product code, config, schema, migrations, seeds, scripts, or any build/CI input | **Yes** | a GREEN `ReviewVerdictIssued` about this dispatch from a seat other than the actor, **plus** the operator runs the PO-authored plan in `acceptance_plan` |
+| `verification` | Reads state and issues a verdict; changes none of the above; commits no diff | **Yes** — a `verification` dispatch is a delivery like any other | a pass `ReviewVerdictIssued` about this dispatch, plus its own evidence |
+| `review` (non-acceptance read-only) | Investigates, audits, or reports; changes none of the above; opens no acceptance card | **No** | its own durable artifact, named as the work product |
+
+Consequences:
+
+1. **The three classes are about the work, not the seat.** A Flux dispatch
+   verifies Mira's code, and that is `implementation` work *for Mira's
+   dispatch* and `verification` work *for Flux's dispatch* — each gets judged
+   by its own class. A `review` dispatch is defined by having no diff and no
+   card, whoever runs it.
+2. **A seat never supplies the verdict for its own dispatch.** The independent
+   verdict for any `implementation` dispatch is issued by a seat other than the
+   actor; a self-issued verdict is invalid even when technically produced.
+3. **`review` does not mean free of evidence.** It means *no acceptance card*
+   (there is no merge candidate), not *no artifact*. Every `review` dispatch
+   still writes its durable artifact and is still open to escalation.
+
+### Who may open which card
+
+| Card's dispatch owner | Card opener | Independent verdict issued by |
+|---|---|---|
+| Mira / Nimbus / Onyx / Vela (workers) | the owning worker seat | Flux |
+| Flux | the operator, from a Flux-issued verification packet | a worker seat that did not do the work |
+| Lyra / Aegis (governance) | the governance seat itself | a designated independent reviewer |
+
+Three consequences that need stating once, plainly:
+
+1. **`verdict_exempt` does not exist.** There is no payload value that lets a
+   dispatch skip the verdict. A card needs a real pass verdict about itself.
+2. **A `verification` dispatch still gets a verdict** — because the verification
+   work itself was produced by someone, and its quality is a claim like any
+   other. This is what keeps the verifier from becoming the one unchecked seat.
+3. **A seat's `review` output is auditable, not exempt.** Any seat may be
+   dispatched to re-check a `review` conclusion; that re-check is itself a
+   `verification` dispatch and needs its own verdict.
+
+### Ledger facts the gate relies on
+
+- A Flux `ReviewVerdictIssued` names the implementation dispatch in
+  `payload.dispatch_id` (or via an `event_object_refs` row with
+  `ref_type='dispatch'`). A verdict that names nothing is not about anything.
+- A Flux verdict for a Flux dispatch is permitted when the verdict is about the
+  *work the Flux dispatch verified* — the dispatch named is the implementation
+  unit, and the accepting card belongs to the seat that owns that unit. What is
+  forbidden is a verdict whose named dispatch is the issuer's own.
+- `request_acceptance` needs a **named local base branch** (the integration
+  branch), never a floating workspace state. A `review` dispatch that commits
+  nothing opens no card and so needs no branch; if it commits, it is
+  `implementation` by definition.
 
 1. **Nimbus** — per-seat `git worktree` so packet branches don't collide.
 2. **Onyx** — real migration runner + separate idempotent seed; refit
