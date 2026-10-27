@@ -25,7 +25,17 @@
 #   notify-operator.sh --push --apply           # 同上(兼容旧写法)
 #
 # 去重:同一件事不重复弹。已弹过的事记在 /tmp/seatloom_notified.txt,
-#      用 dispatch/card id 做键。想重弹:删掉那一行,或 --force。
+#      每行 `<键> <epoch>`。想重弹:删掉那一行,或 --force。
+#
+# 🔴 为什么带时间戳(2026-10-27 加):原来每行只有键,于是"弹过一次"等于
+#    "永远不再弹"。实测踩到:两张验收卡 11 小时没人点,通知早在第 1 小时就
+#    弹完并记账,之后每小时都只说"该弹的都弹过了"—— 张先生再也不会被提醒,
+#    而卡还挂在那儿等他。
+#    去重要防的是"每分钟烦他一次",不是"提醒到事情结束为止"。
+#    所以现在:同一张卡每 REPEAT_SECONDS 重提一次,并在文案里说清它等了多久。
+#    旧格式(只有键、没有时间戳)按 epoch=0 读,也就是"很久以前弹过",
+#    下次就会重提 —— 那是对的,那些卡确实等太久了。
+REPEAT_SECONDS="${SEATLOOM_NOTIFY_REPEAT_SECONDS:-21600}"   # 6 小时
 set -uo pipefail
 
 say(){ printf '%s\n' "$*"; }
@@ -64,13 +74,44 @@ q(){ "$PODMAN_BIN" exec -e PGPASSWORD=seatloom "$CONTAINER" psql -X -U seatloom 
 
 # 已经弹过的事(键 = dispatch/card id)
 touch "$SEEN" 2>/dev/null || true
-seen(){ grep -qxF "$1" "$SEEN" 2>/dev/null; }
-mark(){ printf '%s\n' "$1" >> "$SEEN" 2>/dev/null || true; }
+# 这条弹过吗?弹过就返回 0 并打印最近一次是什么时候(调用方决定要不要重提)。
+#
+# 🔴 取"最近一次",不是"第一行":格式迁移期间同一个键会有两行 ——
+#    旧格式(只有键)和之后的 `<键> <epoch>`。2026-10-27 实测踩到:
+#    grep -m1 先命中旧行,拿到 epoch=0,于是当成"很久以前弹过"每分钟重弹。
+#    修法是同一个键取所有行里最大的 epoch。
+# 兼容两种行格式:
+#   `<键> <epoch>`  新格式
+#   `<键>`           旧格式(2026-10-27 之前),当成 epoch=0
+seen_at(){
+  [ -f "$SEEN" ] || return 1
+  local ts
+  ts="$(awk -v k="$1" '{ n=split($0,a," "); if (a[1]!=k) next; e=(n>=2?a[2]:0); if (e+0>m) m=e+0 } END { if (m=="") exit 1; print m }' "$SEEN" 2>/dev/null)" || return 1
+  [ -n "$ts" ] || return 1
+  printf '%s' "$ts"
+  return 0
+}
+mark(){ printf '%s %s\n' "$1" "$(date +%s)" >> "$SEEN" 2>/dev/null || true; }
 
 # 弹一条。副标题固定标来源,免得他以为是什么垃圾广告。
+#
+# 去重语义:**不是"弹过就永远安静"**。同一张卡每 REPEAT_SECONDS 重提一次,
+# 文案里带它等了多久 —— 一张挂了 11 小时的卡,值得再提醒一次。
 pop(){
   local t="$1" b="$2" key="$3"
-  seen "$key" && { say "  (已弹过,跳过:$key)"; return 1; }
+  local at="" waited=""
+  at="$(seen_at "$key")" && waited="$at"
+  if [ -n "$at" ] && [ "$FORCE" != "1" ]; then
+    local now age
+    now="$(date +%s)"
+    age=$(( now - at ))
+    if [ "$age" -lt "$REPEAT_SECONDS" ]; then
+      say "  (弹过,跳过:$key —— $(( age / 60 )) 分钟前弹的)"
+      return 1
+    fi
+    # 超过重提间隔:把等待时长加进文案,让他知道这不是新事、是还没办的事
+    b="$(printf '%s(已等 %d 小时,还没人点)' "$b" $(( age / 3600 )))"
+  fi
   osascript -e "display notification \"$b\" with title \"SeatLoom\" subtitle \"$t\"" 2>/dev/null
   mark "$key"
   say "  ✅ 已弹:$t"
@@ -83,7 +124,7 @@ if [ "$MODE" = "list" ]; then
   n=0
   while read -r cid; do
     [ -z "$cid" ] && continue
-    seen "$cid" && echo "  [已通知过] $cid" || echo "  [未通知]   $cid"
+    if _at="$(seen_at "$cid")"; then echo "  [已通知过] $cid"; else echo "  [未通知]   $cid"; fi
     n=$((n+1))
   done < <(q "select id from acceptances where status='pending' order by created_at;")
   [ "$n" = "0" ] && say "  (没有待拍板的验收卡)"
@@ -91,7 +132,7 @@ if [ "$MODE" = "list" ]; then
   say "  待你执行的命令(不弹,只提醒):"
   # 022 视图没应用就要提醒一次 —— 它是三张单卡 10 天的唯一真因
   if [ "$(q "select count(*) from information_schema.views where table_name='v_memory_session_join';" | tr -d ' ')" != "1" ]; then
-    seen "022-view" && say "    [已通知过] 022 桥接视图未应用" || say "    [未通知]   022 桥接视图未应用"
+    if _at="$(seen_at "022-view")"; then say "    [已通知过] 022 桥接视图未应用"; else say "    [未通知]   022 桥接视图未应用"; fi
   fi
   exit 0
 fi
