@@ -279,6 +279,65 @@ export const SessionTerminal: React.FC<Props> = ({
     const elementResizeObserver = term.element ? new ResizeObserver(retryIfUnfitted) : null;
     if (term.element && elementResizeObserver) elementResizeObserver.observe(term.element);
     const resizeSubscription = term.onResize(retryIfUnfitted);
+
+    // ── Wheel scrolling, bound by us because xterm will not ────────────────
+    //
+    // THE OPERATOR'S BUG (2026-10-27): "the live-seats pane cannot be scrolled
+    // up freely to read history". Measured, in this order, to rule out the
+    // obvious suspects:
+    //
+    //   * `scrollback: 10000` is already set, and 200 lines of output really do
+    //     land in the buffer — so it is NOT a too-small scrollback.
+    //   * there is no `scrollToBottom` anywhere in this file — so it is NOT a
+    //     forced return to the bottom.
+    //   * writing NEW output while the viewport is parked mid-history leaves it
+    //     parked (measured: 174 before the write, 174 after) — so output does
+    //     NOT yank the operator back.
+    //   * `scrollLines()` moves the viewport fine — so the viewport itself is
+    //     not stuck.
+    //
+    // What is actually broken is that THE WHEEL LISTENER IS NEVER REGISTERED.
+    // xterm binds `wheel` on its element only when a mouse-reporting protocol is
+    // active: the binding is gated on `16 & protocolMask` inside
+    // `coreMouseService.onProtocolChange`, and the mask only becomes non-zero
+    // after the program in the pane emits DECSET 1000/1006/1015. Measured: with
+    // no protocol the element has no `enable-mouse-events` class; after writing
+    // `ESC[?1000h` the class appears. A tmux mirror pane does not emit those
+    // sequences on our behalf — tmux's own `mouse on` is consumed by tmux, and
+    // this xterm is a SEPARATE display surface from the pane — so the mask stays
+    // zero here and the wheel event goes nowhere.
+    //
+    // The fix is therefore not a scrollback number and not an option flag: bind
+    // the wheel ourselves and drive xterm's own public `scrollLines`, which is
+    // the same call its internal handler would have made. `preventDefault` is
+    // called so the page does not also scroll underneath the panel.
+    //
+    // Deliberately NOT done: enabling a mouse-reporting protocol ourselves. That
+    // would make the pane's program start receiving mouse events it never asked
+    // for, changing what the operator's session does — a behaviour change far
+    // beyond "let me read my history".
+    const WHEEL_LINES_PER_NOTCH = 3;
+    const onWheel = (event: WheelEvent) => {
+      // A modifier wheel means something else (zoom in most apps); leave it alone
+      // rather than scrolling under an intent we are guessing at.
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      // Kept even though xterm's own handler also calls preventDefault: ours is
+      // bound directly to the element and must not depend on xterm's internal
+      // listener being registered, which (per the note above) is exactly the
+      // assumption that broke scrolling in the first place. Measured redundant
+      // today, load-bearing if xterm's binding ever changes.
+      event.preventDefault();
+      // xterm's contract: positive scrolls DOWN toward newer output, negative
+      // scrolls UP toward history. A trackpad's deltaY is negative when the
+      // user scrolls up, which is the direction that reads history.
+      term.scrollLines(event.deltaY < 0 ? -WHEEL_LINES_PER_NOTCH : WHEEL_LINES_PER_NOTCH);
+    };
+    // Registered on the terminal element (not the container) so the listener is
+    // scoped to the pane the operator is actually pointing at — the container
+    // also holds the padding, and a wheel over the padding is not a wheel over
+    // the terminal. `passive: false` is required for preventDefault to work.
+    term.element?.addEventListener('wheel', onWheel, { passive: false });
+
     const onWindowResize = () => syncGeometry();
     window.addEventListener('resize', onWindowResize);
 
@@ -308,6 +367,7 @@ export const SessionTerminal: React.FC<Props> = ({
     return () => {
       fontsPending = false;
       window.removeEventListener('resize', onWindowResize);
+      term.element?.removeEventListener('wheel', onWheel);
       resizeObserver.disconnect();
       elementResizeObserver?.disconnect();
       resizeSubscription.dispose();
