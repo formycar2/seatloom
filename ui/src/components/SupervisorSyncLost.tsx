@@ -35,6 +35,19 @@
 // wrong" without telling them whether there is anything they can do about it.
 // The distinction is the actionable part, so it is kept.
 //
+// BOTH CAN FAIL AT ONCE, and the worse one must not lose. The first version of
+// this accumulated record was a single slot, so whichever reporter wrote last
+// won — and the subscription rejections land in a later microtask, so they
+// always did. Flux measured the result as F2: with the query AND the
+// subscriptions both failing, the operator was shown `stale` only, told "you had
+// an answer that went quiet" when the truth was "you never got one", with the
+// query's error text — the evidence they are asked to hand over — gone and the
+// one useful action not offered.
+//
+// So the kind is the WORST of what happened and every reason is kept. A
+// subscription failing second does not demote a never-answered into a stale, and
+// no error text is dropped.
+//
 // What this deliberately does NOT do: guess. It never invents a position for
 // the panel, and it does not claim to know which of the two subscription
 // channels broke beyond naming the ones that reported.
@@ -51,10 +64,16 @@ export type SupervisorSyncLostKind = 'never-answered' | 'stale';
 
 export const SupervisorSyncLost: React.FC<{
   kind: SupervisorSyncLostKind;
-  reason: string;
+  /// Every reason reported, in order. Never collapsed into one: the query's error
+  /// text is the evidence the operator is asked to hand to Aegis.
+  reasons: string[];
+  /// True when a subscription failed too — what makes "both are down" sayable
+  /// rather than implied.
+  subscriptionsDown?: boolean;
   onRetry?: () => void;
-}> = ({ kind, reason, onRetry }) => {
+}> = ({ kind, reasons, subscriptionsDown = false, onRetry }) => {
   const neverAnswered = kind === 'never-answered';
+  const bothDown = neverAnswered && subscriptionsDown;
 
   return (
     <div
@@ -98,10 +117,17 @@ export const SupervisorSyncLost: React.FC<{
         {neverAnswered ? (
           <>
             <p>
-              启动时要问一次桌面端「监督面板现在停在哪个窗口」,<strong>这次没问到</strong>。
-              在问到之前,这个界面<strong>不知道</strong>面板在哪 —— 不拿「应该在主窗口里」顶着,
-              那比不知道更坏。
+              启动时要问一次桌面端「监督面板现在停在哪个窗口」,
+              <strong>这次没问到</strong>。在问到之前,这个界面<strong>不知道</strong>
+              面板在哪 —— 不拿「应该在主窗口里」顶着,那比不知道更坏。
             </p>
+            {bothDown && (
+              <p style={{ marginTop: 6 }}>
+                <strong>而且实时推送也接不上</strong>
+                —— 也就是说就算重启后立刻再拖一次面板,这个界面也还是不知道。两件事一起坏,
+                下面两条错误原文都列出来,一条都不要丢。
+              </p>
+            )}
             <p style={{ marginTop: 6 }}>
               看得见的后果:把面板拖成独立窗口后,这里可能还不知道,⌘K 于是会在主窗口里再开一份;
               把面板合回主窗口后,这里也可能还以为它是分离的,⌘K 就只顾着去聚焦那个窗口,面板不回来。
@@ -121,7 +147,25 @@ export const SupervisorSyncLost: React.FC<{
         )}
 
         <p style={{ marginTop: 6 }}>后端原样返回的错误(实测,不是转述):</p>
-        <div style={{ ...mono, marginTop: 4, fontSize: 11, color: 'var(--sl-red)' }}>{reason}</div>
+        {/* Every reason, in the order it was reported. A list rather than one
+            string, so the query's error and each channel's stay individually
+            readable — they are different failures and are not interchangeable. */}
+        <ul
+          style={{
+            ...mono,
+            margin: '4px 0 0 18px',
+            padding: 0,
+            fontSize: 11,
+            color: 'var(--sl-red)',
+            lineHeight: 1.8,
+          }}
+        >
+          {reasons.map((r, i) => (
+            <li key={`${i}-${r}`} style={{ wordBreak: 'break-all' }}>
+              {r}
+            </li>
+          ))}
+        </ul>
 
         <p style={{ marginTop: 8 }}>
           {neverAnswered ? (
