@@ -179,9 +179,7 @@ struct OutputEventPayload {
 #[serde(rename_all = "camelCase", tag = "kind")]
 enum TurnStreamPayload {
     /// A turn began (the harness's working indicator appeared).
-    TurnStarted {
-        session_id: String,
-    },
+    TurnStarted { session_id: String },
     /// Bytes belonging to the turn in progress.
     Chunk {
         session_id: String,
@@ -189,9 +187,7 @@ enum TurnStreamPayload {
         frame: bool,
     },
     /// The turn ended (the working indicator was replaced by the status line).
-    TurnEnded {
-        session_id: String,
-    },
+    TurnEnded { session_id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

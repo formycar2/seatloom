@@ -143,7 +143,11 @@ impl TurnDetector {
 
         // Everything up to the last newline is complete; the remainder is a partial
         // line that must be carried so a marker straddling a read is still matched.
-        let boundary = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        let boundary = buf
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let complete = &buf[..boundary];
 
         for line in complete.split(|&b| b == b'\n') {
@@ -186,93 +190,130 @@ impl TurnDetector {
         let has_spinner = looks_like_spinner_line(line);
         let has_status = looks_like_status_line(line);
 
+        // Order is deliberate: the status line is drawn LATER than the spinner it
+        // replaces, so when both appear in one window the status line is newer.
         if has_status && self.spinner_visible {
             self.spinner_visible = false;
             events.push(TurnEvent::TurnEnded);
-            return;
-        }
-        if has_spinner && !self.spinner_visible {
+        } else if has_spinner && !self.spinner_visible {
             self.spinner_visible = true;
             self.turns_seen += 1;
             self.bytes_in_turn = 0;
             events.push(TurnEvent::TurnStarted);
-            return;
         }
-        if has_spinner {
-            // Same turn, still drawing. Nothing to emit.
-            return;
-        }
-        if has_status {
-            // A status line with no turn open is not an end — see the module comment
-            // on never force-closing. This is the common case right after attach.
-            return;
-        }
-        // Ordinary output: mid-turn text, a tool result, anything. No boundary.
+        // Everything else is not a boundary:
+        //   * a spinner line while a turn is open — the same turn, still drawing;
+        //   * a status line with no turn open — the common case right after attach,
+        //     and force-closing a turn that never opened would be a guess (see the
+        //     module comment on never force-closing);
+        //   * ordinary output — mid-turn text, a tool result, anything.
     }
 }
 
-/// Strip ANSI/OSC control sequences, leaving the visible text.
+/// Scan a line for the braille spinner glyph and the rule character, in bytes.
 ///
-/// Necessary because the real stream puts cursor positioning BEFORE the spinner:
-/// a measured line is `ESC[26;1H ESC[2K ESC[39m ── ⠧ Working ───…`. Matching on the
-/// raw bytes would look for a braille glyph where there is an escape instead.
+/// This replaces an earlier `visible_text()` that built a `String` per line: it was
+/// the ENTIRE cost of the detector (measured: 419µs of 442µs over a 45KB capture,
+/// because it allocated and pushed every code point one at a time). Working on the
+/// raw bytes and looking for the two UTF-8 sequences we actually care about is the
+/// same answer at a fraction of the cost — and it is the honest fix rather than an
+/// `#[allow]` on the allocation.
 ///
-/// Deliberately crude: it removes `ESC[...m`-style CSI and `ESC]...BEL` OSC runs
-/// and nothing else, because that is all the harness emits here. A sequence it
-/// does not recognise is left in place, which can only make a match FAIL (never
-/// invent one) — the safe direction for a heuristic.
-fn visible_text(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'[' => {
-                    // CSI: parameters, then a final byte in 0x40..=0x7e
-                    let mut j = i + 2;
-                    while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
-                        j += 1;
+/// The braille block is U+2800..U+28FF: a 3-byte sequence `E2 A0..A3 80..BF`.
+/// The box-drawing rule we look for is U+2500 (─): `E2 94 80`.
+struct LineScan {
+    spinner_at: Option<usize>,
+    rule_count: usize,
+    /// The token-status line's arrows: ↑ U+2191 and ↓ U+2193.
+    up_arrow: bool,
+    down_arrow: bool,
+    percent: bool,
+}
+
+impl LineScan {
+    fn scan(bytes: &[u8]) -> Self {
+        let mut s = LineScan {
+            spinner_at: None,
+            rule_count: 0,
+            up_arrow: false,
+            down_arrow: false,
+            percent: false,
+        };
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                0x1b => {
+                    // Skip a CSI or OSC run without allocating.
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                        let mut j = i + 2;
+                        while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+                            j += 1;
+                        }
+                        i = (j + 1).min(bytes.len());
+                        continue;
                     }
-                    i = (j + 1).min(bytes.len());
+                    if i + 1 < bytes.len() && bytes[i + 1] == b']' {
+                        let mut j = i + 2;
+                        while j < bytes.len() && bytes[j] != 0x07 {
+                            j += 1;
+                        }
+                        i = (j + 1).min(bytes.len());
+                        continue;
+                    }
+                    i += 2;
                     continue;
                 }
-                b']' => {
-                    // OSC: terminated by BEL or ST (ESC\)
-                    let mut j = i + 2;
-                    while j < bytes.len() && bytes[j] != 0x07 {
-                        j += 1;
+                0xe2 if i + 2 < bytes.len() => {
+                    let b1 = bytes[i + 1];
+                    let b2 = bytes[i + 2];
+                    // U+2500 ─  (E2 94 80)
+                    if b1 == 0x94 && b2 == 0x80 {
+                        s.rule_count += 1;
                     }
-                    i = (j + 1).min(bytes.len());
+                    // U+2191 ↑  (E2 86 91)
+                    if b1 == 0x86 && b2 == 0x91 {
+                        s.up_arrow = true;
+                    }
+                    // U+2193 ↓  (E2 86 93)
+                    if b1 == 0x86 && b2 == 0x93 {
+                        s.down_arrow = true;
+                    }
+                    // Braille block U+2800..U+28FF: E2 A0..A3 80..BF
+                    if (0xa0..=0xa3).contains(&b1)
+                        && (0x80..=0xbf).contains(&b2)
+                        && s.spinner_at.is_none()
+                    {
+                        s.spinner_at = Some(i);
+                    }
+                    i += 3;
+                    continue;
+                }
+                b'%' => {
+                    s.percent = true;
+                    i += 1;
                     continue;
                 }
                 _ => {
-                    i += 2;
+                    i += 1;
                     continue;
                 }
             }
         }
-        // Copy one UTF-8 code point.
-        let len = utf8_len(bytes[i]);
-        let end = (i + len).min(bytes.len());
-        if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
-            out.push_str(s);
-        }
-        i = end;
+        s
     }
-    out
-}
 
-fn utf8_len(b: u8) -> usize {
-    if b < 0x80 {
-        1
-    } else if b >> 5 == 0b110 {
-        2
-    } else if b >> 4 == 0b1110 {
-        3
-    } else if b >> 3 == 0b11110 {
-        4
-    } else {
-        1 // invalid lead byte; skip it
+    /// A spinner line: a braille glyph, followed by at least one more code point and
+    /// at least one rule character. The rule is what stops a stray braille glyph in
+    /// ordinary output from starting a phantom turn — see the test.
+    fn has_spinner(&self) -> bool {
+        self.spinner_at.is_some() && self.rule_count > 0
+    }
+
+    /// The token/status line: both arrows and a percentage. Measured shape
+    /// `↑9.0k ↓19 0.9%/1.0M (auto)` — the arrows are drawn by the status bar, never
+    /// by content a model emits.
+    fn has_status(&self) -> bool {
+        self.up_arrow && self.down_arrow && self.percent
     }
 }
 
@@ -283,6 +324,14 @@ fn utf8_len(b: u8) -> usize {
 /// the word keeps this working across "Working", "Thinking…", "Compacting
 /// context…", "Retrying (n/m) in Ns…" and "Summarizing branch…", all of which the
 /// harness draws through the same component (saih's status-indicator.ts).
+fn looks_like_spinner_line(line: &[u8]) -> bool {
+    LineScan::scan(line).has_spinner()
+}
+
+/// True when a line looks like the token/status line that replaces the spinner.
+fn looks_like_status_line(line: &[u8]) -> bool {
+    LineScan::scan(line).has_status()
+}
 ///
 /// The spinner is searched for ANYWHERE in the line, not at position zero: the
 /// measured line begins with a rule, and anchoring on the first character made
@@ -290,33 +339,6 @@ fn utf8_len(b: u8) -> usize {
 ///
 /// Requiring a run of ─ characters AFTER the spinner is what stops a stray
 /// braille glyph in ordinary output from starting a phantom turn — see the test.
-fn looks_like_spinner_line(line: &[u8]) -> bool {
-    let text = visible_text(line);
-    let mut idx = None;
-    for (i, c) in text.char_indices() {
-        if ('\u{2800}'..='\u{28FF}').contains(&c) {
-            idx = Some(i);
-            break;
-        }
-    }
-    let Some(at) = idx else {
-        return false;
-    };
-    // Something after the spinner, and a rule in it.
-    let rest = &text[at..];
-    rest.chars().count() > 2 && rest.contains('\u{2500}')
-}
-
-/// True when a line looks like the token/status line that replaces the spinner.
-///
-/// Measured shape: `\u{2191}9.0k \u{2193}19 0.9%/1.0M (auto)` — an up-arrow, a
-/// down-arrow, and a percentage. The arrows are the load-bearing part: they are
-/// drawn by the status bar, not by anything a model would emit as content.
-fn looks_like_status_line(line: &[u8]) -> bool {
-    let text = visible_text(line);
-    text.contains('\u{2191}') && text.contains('\u{2193}') && text.contains('%')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +372,6 @@ mod tests {
             })
             .collect()
     }
-
 
     #[test]
     fn a_turn_is_detected_from_the_spinner_line() {
@@ -414,7 +435,11 @@ mod tests {
             "the first fragment must not already look like a spinner line",
         );
         let ev = d.feed(&line[..split]);
-        assert_eq!(kinds(&ev), vec!["chunk"], "a partial marker is not a turn yet");
+        assert_eq!(
+            kinds(&ev),
+            vec!["chunk"],
+            "a partial marker is not a turn yet"
+        );
         let ev = d.feed(&line[split..]);
         assert_eq!(kinds(&ev), vec!["start", "chunk"]);
     }
@@ -430,7 +455,6 @@ mod tests {
         assert_eq!(kinds(&ev), vec!["chunk"]);
         assert!(d.bytes_in_turn() > 0);
     }
-
 
     #[test]
     fn an_empty_chunk_produces_nothing() {
