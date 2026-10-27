@@ -135,6 +135,23 @@ not steal the shape` 走的是反方向(扣住查询,让订阅先失败)。那�
    理由:这个改动虽然只碰注释+测试,但它修正的是一条 Flux 自己发错的结论,而且新测试让 Flux
    原来的变异第一次能被杀。让 Flux 看到"你的方向对、数字错、现在有测试了"比让第三方验更有信息量。
    如果 Aegis 认为该派别人,我按裁决改。
-2. **Nimbus 那条错误归因值得单独记**:他说查询链多一个 `.then`。这个理由如果被下一个人采用,
-   会推出错的结论(比如有人去删那个 `.then`)。已写进交付说明,并会进 memory。
-3. **遗留**:`dto-to-v1.ts:159` 的 `isPinned: true` 硬编码仍未修(前几条派单已报)。
+
+   **已派**:`disp-PFvlPjNO8cbKeke9gtT2K`(priority 100),预声明的 verdict event id 是
+   `ev-N8vSfa-3zKNWukPsfzcrZ`,payload 里附了交付说明路径、我的四个实测数字、以及"验出 fail
+   就照实发 fail"的明确规则。
+
+   **卡还没开,原因是工具拦的,不是漏工**:`request_acceptance` 要求 `flux_verdict_ref` 指向一个
+   **已存在**的 pass verdict。我试了一次(用预声明的那个 id),被拒;隔了几分钟再查账本,
+   `disp-x7QjIhw2ZsvokB_yidBj1` 名下仍然 0 条 verdict。**在 verdict 落库之前,这张卡开不出来,
+   而且不该由我自己发一个去填** —— 那正是 Lyra 裁决要防的自我认证。
+   **等 Flux 的 verdict 一到,我就开卡。** 这一条在这份交付里是未闭合项,不是已完成项。
+
+2. **合并 track 又被拦了一次,和上次同一条**。`request_acceptance` 要求交付分支包含 base。
+   我合并前核过 interval:30 个文件全是 `docs/`,不碰 `ui/src`/`src-tauri`,按 AGENTS.md
+   "任何 ui/src/src-tauri 变更才需要合并"的判断本该不用合。**但工具不认这个判断,它只认
+   `merge-base --is-ancestor`。** 所以实际规则比 AGENTS.md 写的严:开卡前必须让 base 成为
+   祖先,与 interval 内容无关。合并后复跑门禁(337 passed / tsc 干净 / eslint 143 baseline)再开。
+
+3. **Nimbus 那条错误归因值得单独记**:他说查询链多一个 `.then`。这个理由如果被下一个人采用,
+   会推出错的结论(比如有人去删那个 `.then`)。已写进交付说明,并已入 memory。
+4. **遗留**:`dto-to-v1.ts:159` 的 `isPinned: true` 硬编码仍未修(前几条派单已报)。
