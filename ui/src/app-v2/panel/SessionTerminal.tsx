@@ -33,6 +33,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
 import { api, decodeSessionOutput, onSessionExit, onSessionOutput } from '../../lib/api';
+import { dropStaleSnapshotViewport } from './dropStaleSnapshotViewport';
 
 interface Props {
   sessionId: string;
@@ -89,8 +90,9 @@ export const SessionTerminal: React.FC<Props> = ({
   /// latest target so a window drag cannot spam tmux.
   const inFlightResizeRef = useRef<Promise<unknown> | null>(null);
   const pendingResizeRef = useRef<{ rows: number; cols: number } | null>(null);
-  /// The stale attach-time snapshot is dropped exactly once, on the first
-  /// effective geometry sync after mount.
+  /// The stale attach-time snapshot's VIEWPORT is cleared exactly once, on the
+  /// first effective geometry sync after mount. Its SCROLLBACK is deliberately
+  /// kept — see the long note at the clear site for why this is not `reset()`.
   const clearedStaleSnapshotRef = useRef(false);
 
   useEffect(() => {
@@ -210,15 +212,56 @@ export const SessionTerminal: React.FC<Props> = ({
       const { rows, cols } = terminal;
       if (!clearedStaleSnapshotRef.current) {
         clearedStaleSnapshotRef.current = true;
-        // The snapshot was painted at the pane's launch geometry. Once the
-        // pane follows the viewport the TUI repaints from scratch (SIGWINCH),
-        // so drop the stale absolutely-positioned frame instead of leaving it
-        // underneath the repaint — that layering is what made pi's input box
-        // read as garbled. Only needed when the fitted geometry actually
-        // differs from the seed; an exact match needs no repaint.
+        // The snapshot was painted at the pane's launch geometry. Once the pane
+        // follows the viewport the TUI repaints from scratch (SIGWINCH), so the
+        // stale absolutely-positioned frame must not be left UNDERNEATH the
+        // repaint — that layering is what made pi's input box read as garbled.
+        // Only needed when the fitted geometry actually differs from the seed;
+        // an exact match needs no repaint.
+        //
+        // ── WHY THIS IS NOT `reset()` ANY MORE (P0, 2026-10-27) ─────────────
+        //
+        // This used to be `terminal.clear(); terminal.reset();`. BOTH destroy
+        // the scrollback, measured rather than assumed:
+        //
+        //   · `clear()` -> `BufferService.clear()` sets `lines.length = 1`;
+        //   · `reset()` -> `BufferService.reset()` does `this._normal = new
+        //     Buffer(...)`, i.e. a brand-new buffer object.
+        //
+        // Measured on a 300-line history: `clear()`+`reset()` left 40 lines
+        // (== the row count) with the oldest line empty. So every seat except
+        // the one the operator happened to be looking at had NO scrollback at
+        // all — the P0 report: "除了 ql 这个 seat 实时席位可以上下翻,其他所有
+        // seat 都不能".
+        //
+        // Why QL worked: its fitted geometry matched the pane seed, so this
+        // branch never ran for it. That is the whole difference between seats —
+        // not anything about QL itself.
+        //
+        // What is actually needed is only to clear WHAT IS ON SCREEN, so the
+        // repaint does not layer over the stale frame. Measured: `ESC[2J ESC[H`
+        // clears the viewport and leaves the scrollback untouched (301 lines
+        // before and after), and the repainted content lands correctly in the
+        // viewport. `resize` itself also does NOT clear the scrollback — a
+        // 300-line history stayed at 301 lines through a 80->120 column resize,
+        // and through a 80->78 one, with the oldest line intact. The garbling
+        // only ever came from the stale frame in the VIEWPORT, never from the
+        // scrollback.
+        //
+        // The residual, stated because it is real: a line WIDER than the new
+        // column count is reflowed onto extra rows by `resize`, and those
+        // reflowed rows stay in the scrollback. A tmux pane is typically 200+
+        // columns and the UI viewport is usually narrower, so lines that fit
+        // the pane but not the viewport are the ones affected. Measured with
+        // 45-character lines (what a real TUI emits) resized 80->78: zero
+        // reflow, `lines.length` unchanged, oldest line intact. So the damage
+        // is confined to genuinely over-wide lines, which is a far better
+        // trade than having no history at all — and it is the honest limit of
+        // what a UI-side fix can do without re-capturing at the new geometry.
         if (!seedDims || seedDims.rows !== rows || seedDims.cols !== cols) {
-          terminal.clear();
-          terminal.reset();
+          // Viewport only — see dropStaleSnapshotViewport for why this is not
+          // clear()+reset() and what the residual reflow damage is.
+          dropStaleSnapshotViewport(terminal);
         }
       }
       const last = lastPushedRef.current;
@@ -306,8 +349,9 @@ export const SessionTerminal: React.FC<Props> = ({
     //
     //   * `scrollback: 10000` is already set, and 200 lines of output really do
     //     land in the buffer — so it is NOT a too-small scrollback.
-    //   * there is no `scrollToBottom` anywhere in this file — so it is NOT a
-    //     forced return to the bottom.
+    //   * `scrollToBottom` is called ONCE, at the stale-snapshot clear, and
+    //     measured to leave a parked viewport parked (see below) — so it is NOT
+    //     a repeated forced return to the bottom.
     //   * writing NEW output while the viewport is parked mid-history leaves it
     //     parked (measured: 174 before the write, 174 after) — so output does
     //     NOT yank the operator back.
