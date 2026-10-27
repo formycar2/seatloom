@@ -24,8 +24,14 @@
 // so a session that exited while the view was away is not shown as connected.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
-import { api, isTauri, onSessionExit, onSessionOutput } from '../lib/api';
+import { AlertTriangle, Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
+import {
+  api,
+  isTauri,
+  onSessionExit,
+  onSessionMirrorLost,
+  onSessionOutput,
+} from '../lib/api';
 import { useDataStore } from '../stores/useDataStore';
 import { boundMirrorNames } from '../lib/project-scope';
 import { parseSeatSession, seatKey, sortSeats, type ParsedSeat } from '../lib/tmux-seats';
@@ -83,6 +89,9 @@ const LiveSeatsView: React.FC = () => {
   const addBytes = useLiveSeatsMirrorStore((s) => s.addBytes);
   const pruneDead = useLiveSeatsMirrorStore((s) => s.pruneDead);
   const markAutoAttached = useLiveSeatsMirrorStore((s) => s.markAutoAttached);
+  const mirrorLost = useLiveSeatsMirrorStore((s) => s.mirrorLost);
+  const markMirrorLost = useLiveSeatsMirrorStore((s) => s.markMirrorLost);
+  const clearMirrorLost = useLiveSeatsMirrorStore((s) => s.clearMirrorLost);
 
   const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
   const clearSession = useLiveSessionsStore((s) => s.clearSession);
@@ -143,9 +152,20 @@ const LiveSeatsView: React.FC = () => {
   useEffect(() => {
     let offOut: (() => void) | null = null;
     let offExit: (() => void) | null = null;
+    let offMirror: (() => void) | null = null;
 
     onSessionOutput((event) => {
       // event.data is base64; decoded length is what actually crossed the FIFO.
+      //
+      // A session whose mirror we could not prove is not counted. Two reasons,
+      // both about not lying: the bytes are not vouched for, and the session has
+      // no attachment any more — so this record would be an orphan that only
+      // exists to make a "last output" clock tick. Measured: without this guard,
+      // output arriving after a mirror-lost event re-creates the activity entry
+      // the store had just deleted.
+      const broken = useLiveSeatsMirrorStore.getState().mirrorLost;
+      const brokenFor = Object.values(broken).some((b) => b.sessionId === event.sessionId);
+      if (brokenFor) return;
       const approxBytes = Math.floor((event.data.length * 3) / 4);
       const slot = pendingRef.current[event.sessionId] ?? { bytes: 0, chunks: 0, lastAt: 0 };
       slot.bytes += approxBytes;
@@ -163,11 +183,33 @@ const LiveSeatsView: React.FC = () => {
       offExit = fn;
     });
 
+    // R1: the backend could no longer prove this mirror is ours. Stop showing it
+    // and say so. A log line is not a fix — the incident this closes rendered
+    // another seat's output in this seat's slot for three hours in silence.
+    onSessionMirrorLost((event) => {
+      // Attribute to a seat, not just a session id: the operator needs to know
+      // WHICH slot is untrustworthy.
+      const seatName =
+        useLiveSeatsMirrorStore
+          .getState()
+          .attachments.find((a) => a.dto.id === event.sessionId)?.seat.sessionName ??
+        event.tmuxSessionName;
+      markMirrorLost(seatName, event.sessionId, event.reason, event.detail);
+      removeAttachment(event.sessionId);
+      clearSession(event.sessionId);
+      // Drop the in-flight batch too: the tick below would otherwise flush bytes
+      // that arrived before the event into a session the store just forgot.
+      delete pendingRef.current[event.sessionId];
+    }).then((fn) => {
+      offMirror = fn;
+    });
+
     return () => {
       if (offOut) offOut();
       if (offExit) offExit();
+      if (offMirror) offMirror();
     };
-  }, [clearSession, removeAttachment]);
+  }, [clearSession, removeAttachment, markMirrorLost]);
 
   // Single tick drives both the counter flush and the relative clocks.
   useEffect(() => {
@@ -202,6 +244,9 @@ const LiveSeatsView: React.FC = () => {
         });
         addAttachment({ seat, dto });
         setActiveName(seat.sessionName);
+        // A successful attach retires any earlier mirror-lost banner for this
+        // seat, so the UI cannot say "broken" over a working terminal.
+        clearMirrorLost(seat.sessionName);
         // Let the Supervisor IM route messages to this seat's real pane.
         setSessionForSeat(seatKey(seat.seatName), dto.id);
       } catch (e) {
@@ -210,7 +255,7 @@ const LiveSeatsView: React.FC = () => {
         setBusy((b) => ({ ...b, [seat.sessionName]: false }));
       }
     },
-    [addAttachment, setActiveName, setSessionForSeat],
+    [addAttachment, clearMirrorLost, setActiveName, setSessionForSeat],
   );
 
   const detach = useCallback(
@@ -289,6 +334,17 @@ const LiveSeatsView: React.FC = () => {
   }, [attachments, seats]);
 
   const active = activeName ? attachedByName.get(activeName) : undefined;
+
+  // Which seat's mirror-lost banner (if any) should be on screen. Prefer the seat
+  // the operator is looking at; otherwise the most recent failure, so a breakage
+  // is never invisible just because the active tab moved.
+  const lostSeatName = useMemo(() => {
+    if (activeName && mirrorLost[activeName]) return activeName;
+    const entries = Object.entries(mirrorLost);
+    if (entries.length === 0) return null;
+    return entries.sort((a, b) => b[1].at - a[1].at)[0][0];
+  }, [activeName, mirrorLost]);
+  const lostSeat = lostSeatName ? mirrorLost[lostSeatName] : undefined;
 
   const totalBytes = useMemo(
     () => Object.values(activity).reduce((sum, a) => sum + a.bytes, 0),
@@ -510,6 +566,27 @@ const LiveSeatsView: React.FC = () => {
                       >
                         已接入 {att.dto.paneCols ?? '?'}×{att.dto.paneRows ?? '?'}
                       </span>
+                      {/* R2: which pane is this slot really showing? During the
+                          2026-10-27 incident the operator had no way to answer
+                          that from the UI, which is why it ran three hours. Two
+                          slots with different ttys cannot both be showing the
+                          same pane — that is the whole point of printing it.
+                          "?" is printed when tmux did not answer; a made-up
+                          value would be worse than none. */}
+                      <span
+                        title="这个 slot 实际显示的 tmux pane（pid / tty）"
+                        style={{
+                          fontSize: 10,
+                          padding: '2px 6px',
+                          borderRadius: 'var(--sl-radius-sm)',
+                          background: 'var(--sl-surface-2, rgba(255,255,255,0.06))',
+                          color: 'var(--sl-text-secondary)',
+                          fontFamily: 'ui-monospace, monospace',
+                        }}
+                      >
+                        {att.dto.panePid ? `pid ${att.dto.panePid}` : 'pid ?'} ·{' '}
+                        {att.dto.paneTty ? att.dto.paneTty.replace('/dev/', '') : 'tty ?'}
+                      </span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -588,12 +665,78 @@ const LiveSeatsView: React.FC = () => {
               <span style={{ fontWeight: 700, color: 'var(--sl-text-primary)' }}>
                 {active.seat.seatName}
               </span>
+              {/* R2 again, on the thing that is actually on screen. The seat card
+                  is in a sidebar the operator may not be looking at; this is next
+                  to the bytes being rendered. */}
+              <code style={{ fontSize: 10.5, opacity: 0.75 }}>
+                {active.dto.panePid ? `pid ${active.dto.panePid}` : 'pid ?'} ·{' '}
+                {active.dto.paneTty ? active.dto.paneTty.replace('/dev/', '') : 'tty ?'}
+              </code>
               <code style={{ fontSize: 10.5 }}>{active.seat.sessionName}</code>
               <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>
                 {formatBytes((activity[active.dto.id] ?? EMPTY_ACTIVITY).bytes)} ·{' '}
                 {formatAgo((activity[active.dto.id] ?? EMPTY_ACTIVITY).lastAt, now)}
               </span>
               <span style={{ opacity: 0.7 }}>键入即写回真实 pane</span>
+            </div>
+          )}
+
+          {/* ── R1: a mirror we cannot prove is shown as BROKEN, not as content ──
+              This is the whole fix. The 2026-10-27 incident was not an empty slot;
+              it was a slot rendering another seat's output while claiming to be
+              fine. So the state is rendered as an explicit refusal with a
+              reconnect button, and the terminal for that seat is unmounted
+              (the store removed the attachment when the event arrived). */}
+          {lostSeat && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+                padding: '10px 14px',
+                background: 'rgba(248, 81, 73, 0.12)',
+                borderBottom: '1px solid rgba(248, 81, 73, 0.35)',
+                fontSize: 12,
+                color: 'var(--sl-text-primary)',
+                flexShrink: 0,
+              }}
+            >
+              <AlertTriangle size={15} style={{ color: '#f85149', flexShrink: 0, marginTop: 1 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, marginBottom: 3 }}>镜像已断开</div>
+                <div style={{ lineHeight: 1.55, color: 'var(--sl-text-secondary)' }}>
+                  {lostSeat.detail}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 10.5, opacity: 0.75 }}>
+                  reason: <code>{lostSeat.reason}</code>
+                  {lostSeat.reason === 'cross_wired' && ' — 已停止显示，因为无法区分哪些字节属于这个席位'}
+                  {lostSeat.reason === 'lost' && ' — 已停止显示，因为没有进程在写入这个席位对应的 FIFO'}
+                  {lostSeat.reason === 'probe_failed' && ' — 已停止显示，因为无法证明它仍然属于本 app'}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const seat = seats.find((x) => x.sessionName === lostSeatName);
+                  if (seat) void attach(seat);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '5px 10px',
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  color: '#fff',
+                  background: 'var(--sl-brand)',
+                  border: 'none',
+                  borderRadius: 'var(--sl-radius-sm)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <RefreshCw size={12} />
+                重新接入
+              </button>
             </div>
           )}
 

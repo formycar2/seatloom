@@ -213,6 +213,35 @@ command argument, once when it is read back into context later.
   (see `COORDINATION_RULES.md` dispatch template). This standard is the shared
   source; the dispatch template is where every seat reads it before acting.
 
+## Live tmux debugging — `pipe-pane` is destructive
+
+Measured 2026-10-27 during the cross-wiring incident
+(`AEGIS-2026-10-27-live-seat-mirror-cross-wiring-v1`). Two agents ran the same
+command believing it was a query. It is not.
+
+- **Query pipe state with `tmux display-message -p -t <target> '#{pane_pipe}'`.**
+  That prints `1` or `0` and changes nothing.
+- **`tmux pipe-pane` with no argument STOPS the pipe.** It is not a "show me the
+  current pipe" command and there is no flag that makes it one. Running it to
+  "check" kills the live mirror for that pane.
+- **A pipe is per-pane, not per-client, and it is not reference counted.** A
+  second `pipe-pane` replaces the first unconditionally; the previous `cat` dies.
+  SeatLoom's attach path therefore never uses `-o` (see the `-o` measurement in
+  `pty/mod.rs`) and re-attach replaces rather than accumulates.
+- **To find which FIFO a pane is writing, do not guess from names.** Read the
+  process table for the writer's command line, or match the transcript content.
+  Two agents mis-paired panes with FIFOs during this incident and one of them
+  took three hours to surface.
+- **`growth is not correctness`.** "The transcript file is growing" was used as
+  proof that a re-attached pipe was correct. It grew because it was the pipe
+  just attached — which tells you nothing about whether it is the right one.
+
+Why this is in the standard rather than in a delivery doc: the failure is not
+"someone was careless". It is that the obvious command for the question ("what is
+this pane piped to?") is the destructive one, and the safe one has a name nobody
+guesses. That is a documentation problem, and it is cheaper to fix here than to
+have a third agent learn it from an incident.
+
 ## Documents
 
 Per `DOCUMENT_TEMPLATES.md`: every doc under `docs/` begins with the universal
