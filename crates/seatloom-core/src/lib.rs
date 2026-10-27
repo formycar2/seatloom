@@ -13,4 +13,7 @@ pub mod pipeline;
 pub mod pty;
 pub mod reconcile;
 pub mod storage;
+/// Turn boundaries over the EXISTING tmux mirror byte stream — a heuristic, not a
+/// claim about what the model did. Read the module header before trusting one.
+pub mod turn_stream;
 pub mod views;

@@ -166,6 +166,30 @@ struct OutputEventPayload {
     data: String, // base64-encoded raw bytes — preserves ANSI/UTF-8 fidelity
 }
 
+/// One event on the turn-aware channel. A SECOND VIEW of the same bytes, not a
+/// second capture: `session:output` stays exactly as it is and xterm keeps reading
+/// it. This is the shape a "conversation window" needs (turn boundaries), and it
+/// deliberately carries no claim about what the model DID — see
+/// `seatloom_core::turn_stream`'s module header on why a boundary is a heuristic.
+///
+/// `chunk` is the same base64 payload `session:output` carries, byte-for-byte.
+/// `frame` marks a synchronized-output redraw boundary, so a UI can batch without
+/// having to re-derive it from escape sequences.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum TurnStreamPayload {
+    /// A turn began (the harness's working indicator appeared).
+    TurnStarted { session_id: String },
+    /// Bytes belonging to the turn in progress.
+    Chunk {
+        session_id: String,
+        data: String,
+        frame: bool,
+    },
+    /// The turn ended (the working indicator was replaced by the status line).
+    TurnEnded { session_id: String },
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExitEventPayload {
@@ -220,15 +244,41 @@ pub async fn cmd_attach_tmux_session(
     let id_for_events = id.clone();
     let sessions_for_exit = state.sessions.clone();
     tokio::spawn(async move {
+        // The turn detector is a SECOND CONSUMER of the same bytes, not a second
+        // capture path. `session:output` below is unchanged and xterm keeps reading
+        // it; this only adds a shape on top. If the detector is wrong about a
+        // boundary, the terminal is still right — which is why it is additive and
+        // why nothing here can block or drop the raw stream.
+        let mut turn = seatloom_core::turn_stream::TurnDetector::new();
         loop {
             match rx.recv().await {
                 Ok(PtyEvent::Output(bytes)) => {
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     let payload = OutputEventPayload {
                         session_id: id_for_events.clone(),
-                        data: encoded,
+                        data: encoded.clone(),
                     };
                     let _ = app_for_events.emit("session:output", payload);
+
+                    // Turn-aware view. Emitted on its own event name so a consumer
+                    // that only wants the terminal is not forced to filter these.
+                    for event in turn.feed(&bytes) {
+                        use seatloom_core::turn_stream::TurnEvent;
+                        let turn_payload = match event {
+                            TurnEvent::TurnStarted => TurnStreamPayload::TurnStarted {
+                                session_id: id_for_events.clone(),
+                            },
+                            TurnEvent::Chunk { bytes, frame } => TurnStreamPayload::Chunk {
+                                session_id: id_for_events.clone(),
+                                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                                frame,
+                            },
+                            TurnEvent::TurnEnded => TurnStreamPayload::TurnEnded {
+                                session_id: id_for_events.clone(),
+                            },
+                        };
+                        let _ = app_for_events.emit("session:turn", turn_payload);
+                    }
                 }
                 Ok(PtyEvent::Exited { exit_code, signal }) => {
                     let payload = ExitEventPayload {

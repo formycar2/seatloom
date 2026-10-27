@@ -672,6 +672,23 @@ export interface SessionOutputEvent {
   data: string; // base64-encoded bytes
 }
 
+/**
+ * One event on the turn-aware channel (`session:turn`).
+ *
+ * A SECOND VIEW of the bytes `session:output` already delivers — not a second
+ * capture, and not a claim about what the model did. The boundary comes from
+ * `seatloom_core::turn_stream`, which INFERS it from the shape of the terminal
+ * output (the harness's working indicator appearing, then being replaced by the
+ * status line). Treat a boundary as a hint: if the harness changes how it draws,
+ * the hint goes stale while the bytes stay correct.
+ *
+ * `chunk.data` is byte-identical to the matching `session:output` payload.
+ */
+export type SessionTurnEvent =
+  | { kind: 'turnStarted'; sessionId: string }
+  | { kind: 'chunk'; sessionId: string; data: string; frame: boolean }
+  | { kind: 'turnEnded'; sessionId: string };
+
 export interface SessionExitEvent {
   sessionId: string;
   exitCode: number | null;
