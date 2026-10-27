@@ -142,22 +142,72 @@ const App: React.FC = () => {
     () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
   const [supervisorDetached, setSupervisorDetached] = useState(false);
-  /// Set when the supervisor panel's state cannot be trusted. Two shapes, because
-  /// the two failures are not the same thing:
-  ///
-  ///   'never-answered' — the startup query failed, so the state was never
-  ///     answered at all (the FIRST read). Red, with a retry.
-  ///   'stale' — a subscription failed, so an answer that WAS correct has
-  ///     stopped being maintained. Yellow, no retry.
-  ///
-  /// null = the state is trustworthy. Kept separate from `supervisorDetached`
-  /// rather than folding the uncertainty into it: nulling the answer would
-  /// corrupt the answer to express doubt about it, and would widen a boolean
-  /// every read site handles.
+  // ── One report, three ways it can be incomplete ────────────────────────
+  //
+  // The supervisor panel's position is learned from ONE query and TWO
+  // subscriptions. Any of the three can fail, and the failures are NOT the same
+  // thing:
+  //
+  //   query fails -> the state was NEVER answered. The worse of the two: there is
+  //                 no answer to fall back on, and re-reading is what fixes it.
+  //                 Shape `never-answered` (red, retry).
+  //   sub fails   -> an answer that WAS correct has stopped being maintained.
+  //                 Re-subscribing cannot fix a broken event bus. Shape `stale`
+  //                 (yellow, no retry).
+  //   not Tauri   -> the effect returns on its first line. Not an error.
+  //
+  // WHY ONE ACCUMULATED OBJECT RATHER THAN A SINGLE SLOT: the first version had
+  // the query's .catch and the subscriptions' reporter each writing the same
+  // slot, so the last writer won — and the subscription rejections land in a
+  // LATER microtask, so they always did. Flux measured the consequence as F2:
+  // when the query AND the subscriptions both fail, the worse failure
+  // (never-answered, carrying the query's error text and the only useful action)
+  // was hidden behind `stale`. The operator was told "you had an answer that
+  // went quiet" when the truth was "you never got one", and the error text they
+  // are asked to hand over was gone.
+  //
+  // So both reporters write into ONE accumulated record: the kind is the WORST of
+  // what happened, and every reason is kept. Nothing is overwritten, so the worse
+  // failure can no longer lose by arriving second.
   const [supervisorSyncLost, setSupervisorSyncLost] = useState<{
     kind: 'never-answered' | 'stale';
-    reason: string;
+    /// Every reason, in the order it was reported. Never collapsed: the query's
+    /// error text is the evidence the operator is asked to hand to Aegis, and a
+    /// subscription's names which channel broke.
+    reasons: string[];
+    /// True when a subscription failed too. Only meaningful alongside
+    /// `never-answered` — it is what makes "both are down" sayable.
+    subscriptionsDown: boolean;
   } | null>(null);
+
+  // Kept in one place so the two reporters cannot disagree about severity: the
+  // query failing always outranks a subscription failing, whichever arrives
+  // first. Referentially stable (no state in deps), so listing it in the effect's
+  // dependency array costs nothing.
+  const reportSupervisorFailure = useCallback(
+    (failure: { kind: 'never-answered' | 'stale'; reason: string }) => {
+      setSupervisorSyncLost((prev) => {
+        const reasons = prev ? [...prev.reasons, failure.reason] : [failure.reason];
+        // The query's failure is the worse one, so it decides the shape no matter
+        // who reported first. A subscription arriving second must not demote a
+        // never-answered into a stale.
+        // The `prev?.kind` half is defensive rather than load-bearing TODAY: the
+        // query is invoked before the two subscriptions (askSupervisorWindowStatus
+        // at the top of the effect, the subscriptions after), so its rejection
+        // lands first and `failure.kind` alone would give the same answer. It is
+        // kept because the rule is about WHAT failed, not about call order — if
+        // anyone reorders the effect, or a future third reporter is added,
+        // dropping it would silently reintroduce "last writer wins".
+        const kind: 'never-answered' | 'stale' =
+          prev?.kind === 'never-answered' || failure.kind === 'never-answered'
+            ? 'never-answered'
+            : 'stale';
+        const subscriptionsDown = (prev?.subscriptionsDown ?? false) || failure.kind === 'stale';
+        return { kind, reasons, subscriptionsDown };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     localStorage.setItem('seatloom.supervisor.open', showSupervisorIM ? 'true' : 'false');
@@ -187,10 +237,6 @@ const App: React.FC = () => {
   // 3. NOT Tauri at all. The effect returns on its first line, so nothing here
   //    runs and nothing is reported. A browser dev session is not an error.
   //
-  // The two reported shapes are kept apart rather than merged into one message:
-  // "I do not know and there is something you can do" and "I knew and it has
-  // gone quiet" are different things to an operator, and only one of them has
-  // a button.
   // Ask the desktop where the supervisor panel is. Lives at component scope, not
   // inside the effect, because the never-answered strip's retry button calls it
   // too — a button that could only re-run the mount effect would not be a retry.
@@ -203,17 +249,32 @@ const App: React.FC = () => {
       .supervisorWindowStatus()
       .then((s) => {
         setSupervisorDetached(s.detached);
-        // A successful read clears a previous failure: the retry button is only
-        // honest if succeeding actually removes the strip.
-        setSupervisorSyncLost(null);
+        // A successful read clears the QUERY's own failure: the retry button is
+        // only honest if succeeding actually removes it.
+        //
+        // It clears only the query's failure. A broken subscription is a separate
+        // fact the operator still needs to know — wiping it here would make the
+        // retry hide a live problem, which is the mirror image of F2 (there: a
+        // failure hidden by arriving second; here: a failure hidden by an
+        // unrelated success). So the shape demotes to stale with the
+        // subscription reasons kept.
+        setSupervisorSyncLost((prev) => {
+          if (!prev || prev.kind !== 'never-answered') return prev;
+          if (!prev.subscriptionsDown) return null;
+          return {
+            kind: 'stale',
+            reasons: prev.reasons.filter((r) => !r.startsWith('查询监督面板位置失败')),
+            subscriptionsDown: true,
+          };
+        });
       })
       .catch((err) => {
-        setSupervisorSyncLost({
+        reportSupervisorFailure({
           kind: 'never-answered',
           reason: `查询监督面板位置失败:${err instanceof Error ? err.message : String(err)}`,
         });
       });
-  }, []);
+  }, [reportSupervisorFailure]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -235,7 +296,7 @@ const App: React.FC = () => {
       lostChannels.set(eventName, err instanceof Error ? err.message : String(err));
       const lines = [...lostChannels].map(([name, detail]) => `订阅 ${name} 失败:${detail}`);
       if (lostChannels.size > 1) lines.push('(两条通道都断了)');
-      setSupervisorSyncLost({ kind: 'stale', reason: lines.join('; ') });
+      reportSupervisorFailure({ kind: 'stale', reason: lines.join('; ') });
     };
 
     askSupervisorWindowStatus();
@@ -272,12 +333,12 @@ const App: React.FC = () => {
       if (offDetached) offDetached();
       if (offReembed) offReembed();
     };
-    // `askSupervisorWindowStatus` is a useCallback with an empty dependency list,
-    // so it is referentially stable for the life of the component. Listing it is
-    // therefore correct AND free: the effect still runs exactly once, because the
-    // callback never changes identity. (It must stay mount-only — re-running
-    // would double-register the two subscriptions.)
-  }, [askSupervisorWindowStatus]);
+    // Both callbacks are useCallback with empty (or all-stable) dependency lists,
+    // so they are referentially stable for the life of the component. Listing
+    // them is therefore correct AND free: the effect still runs exactly once,
+    // because neither ever changes identity. (It must stay mount-only —
+    // re-running would double-register the two subscriptions.)
+  }, [askSupervisorWindowStatus, reportSupervisorFailure]);
 
   // ⌘K toggles the Supervisor IM — the L1 surface. The V1 command bar is
   // still registered on ⌘⇧K for backwards compatibility with existing
@@ -678,7 +739,8 @@ const App: React.FC = () => {
       {supervisorSyncLost !== null && (
         <SupervisorSyncLost
           kind={supervisorSyncLost.kind}
-          reason={supervisorSyncLost.reason}
+          reasons={supervisorSyncLost.reasons}
+          subscriptionsDown={supervisorSyncLost.subscriptionsDown}
           onRetry={() => askSupervisorWindowStatus()}
         />
       )}

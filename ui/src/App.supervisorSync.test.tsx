@@ -42,6 +42,8 @@ import React from 'react';
 const state = vi.hoisted(() => ({
   rejectListenFor: [] as string[],
   rejectStatus: false,
+  /** Hold the startup query's promise so a subscription can fail first. */
+  holdQuery: false,
   listenCalls: [] as string[],
   statusCalls: 0,
   /** Every unlisten fn handed to the app, so a leak is observable. */
@@ -49,6 +51,8 @@ const state = vi.hoisted(() => ({
   /** Resolve `listen` late, to test the unmount window. */
   deferDetached: false,
   deferredResolve: null as ((fn: () => void) => void) | null,
+  /** Set while the startup query is being held, so the test can fail it later. */
+  pendingQueryReject: null as ((e: unknown) => void) | null,
 }));
 
 vi.mock('./lib/api', () => ({
@@ -56,6 +60,13 @@ vi.mock('./lib/api', () => ({
   api: {
     supervisorWindowStatus: async () => {
       state.statusCalls += 1;
+      if (state.holdQuery) {
+        // Never settles until the test flips holdQuery and lets the microtask
+        // queue drain; the reject below is reached on the next call.
+        return new Promise((_resolve, reject) => {
+          state.pendingQueryReject = reject;
+        });
+      }
       if (state.rejectStatus) {
         return Promise.reject(new Error('backend refused the status query'));
       }
@@ -123,6 +134,8 @@ beforeEach(() => {
   window.localStorage.clear();
   state.rejectListenFor = [];
   state.rejectStatus = false;
+  state.holdQuery = false;
+  state.pendingQueryReject = null;
   state.listenCalls = [];
   state.unlistenCalls = [];
   state.statusCalls = 0;
@@ -373,5 +386,176 @@ describe('when the startup query is refused', () => {
     const strip = await screen.findByTestId(STRIP);
     expect(strip.getAttribute('data-kind')).toBe('stale');
     expect(screen.queryByRole('button', { name: /再问一次/ })).toBeNull();
+  });
+});
+
+// ── BOTH failing at once (Flux's F2) ────────────────────────────────────────
+//
+// The two reporters used to write the same single slot, so the last writer won —
+// and the subscription rejections land in a LATER microtask, so they always did.
+// Flux measured the consequence: with the query AND the subscriptions failing,
+// the operator saw `stale` only. They were told "you had an answer that went
+// quiet" when the truth was "you never got one", the query's error text — the
+// evidence they are asked to hand to Aegis — was gone, and the one useful action
+// (the retry) was not offered.
+//
+// These tests pin all four combinations, because the defect only shows up in the
+// fourth and a regression in any of the others would be just as invisible.
+//
+// The rule the fix follows, and the rule these tests enforce: the KIND is the
+// WORST of what happened, and every REASON is kept. A failure that arrives
+// second must neither overwrite the worse kind nor drop its own text.
+
+/** Drive one combination through the real app and report what the strip says. */
+async function observe({ queryFails, subsFail }: { queryFails: boolean; subsFail: boolean }) {
+  state.rejectStatus = queryFails;
+  state.rejectListenFor = subsFail ? ['supervisor:detached', 'supervisor:reembedded'] : [];
+  await mountApp();
+  const strip = await waitFor(() => {
+    const el = screen.queryByTestId(STRIP);
+    return el ?? null;
+  });
+  return {
+    kind: strip?.getAttribute('data-kind') ?? null,
+    text: strip?.textContent ?? '',
+    hasRetry: screen.queryByRole('button', { name: /再问一次/ }) !== null,
+  };
+}
+
+describe('the four failure combinations', () => {
+  it('query OK + subscriptions OK -> no strip', async () => {
+    const seen = await observe({ queryFails: false, subsFail: false });
+    expect(seen.kind).toBeNull();
+    expect(seen.hasRetry).toBe(false);
+  });
+
+  it('query OK + subscriptions fail -> yellow stale, no retry, the channel reasons', async () => {
+    const seen = await observe({ queryFails: false, subsFail: true });
+    expect(seen.kind).toBe('stale');
+    expect(seen.hasRetry).toBe(false);
+    expect(seen.text).toContain('event bus refused supervisor:detached');
+    expect(seen.text).toContain('event bus refused supervisor:reembedded');
+    // It must NOT claim the query failed — it did not.
+    expect(seen.text).not.toContain('查询监督面板位置失败');
+  });
+
+  it('query fails + subscriptions OK -> red never-answered, with retry', async () => {
+    const seen = await observe({ queryFails: true, subsFail: false });
+    expect(seen.kind).toBe('never-answered');
+    expect(seen.hasRetry).toBe(true);
+    expect(seen.text).toContain('backend refused the status query');
+  });
+
+  it('query fails AND subscriptions fail -> the worse one wins, and nothing is lost', async () => {
+    // THE F2 CASE. The subscriptions reject in a later microtask than the query,
+    // so under the old single-slot design they overwrote it.
+    const seen = await observe({ queryFails: true, subsFail: true });
+
+    // 1. The WORSE failure decides the shape, even though it was reported first.
+    expect(seen.kind).toBe('never-answered');
+    // 2. The one useful action is offered.
+    expect(seen.hasRetry).toBe(true);
+    // 3. The query's error text survives — the evidence the operator is asked to
+    //    hand over. Losing it is what made F2 more than cosmetic.
+    expect(seen.text).toContain('backend refused the status query');
+    // 4. The subscriptions' reasons survive too. Two failures, two pieces of
+    //    evidence, and they are not interchangeable.
+    expect(seen.text).toContain('event bus refused supervisor:detached');
+    expect(seen.text).toContain('event bus refused supervisor:reembedded');
+    // 5. The copy says BOTH are down rather than only naming the query's half.
+    expect(seen.text).toContain('实时推送也接不上');
+    // 6. And it must NOT fall back to the stale wording, which asserts an answer
+    //    existed. There was none.
+    expect(seen.text).not.toContain('启动时查到的那一次');
+  });
+
+  it('a subscription arriving second does not demote the kind', async () => {
+    // The ordering half of F2, asserted directly rather than through the
+    // combination: the query's rejection resolves first, so if severity were
+    // decided by arrival order the shape would end up stale.
+    const seen = await observe({ queryFails: true, subsFail: true });
+    expect(seen.kind).toBe('never-answered');
+    expect(seen.hasRetry).toBe(true);
+  });
+});
+
+describe('the retry does not hide a failure it did not fix', () => {
+  it('a successful query with subscriptions still down demotes to stale, keeping their reasons', async () => {
+    // The mirror image of F2: the first version cleared the whole record on a
+    // successful query, which would hide a live subscription failure behind an
+    // unrelated success. Same disease, other direction.
+    state.rejectStatus = true;
+    state.rejectListenFor = ['supervisor:detached'];
+    await mountApp();
+    await waitFor(() =>
+      expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('never-answered'),
+    );
+
+    // The query starts working; the subscription does not.
+    state.rejectStatus = false;
+    const retry = await screen.findByRole('button', { name: /再问一次/ });
+    await act(async () => {
+      retry.click();
+    });
+
+    await waitFor(() => expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('stale'));
+    const text = screen.getByTestId(STRIP).textContent ?? '';
+    // The query's failure is gone (it was fixed) ...
+    expect(text).not.toContain('backend refused the status query');
+    // ... and the subscription's is still there (it was not).
+    expect(text).toContain('event bus refused supervisor:detached');
+    // No retry button on the stale shape: re-reading cannot fix an event bus.
+    expect(screen.queryByRole('button', { name: /再问一次/ })).toBeNull();
+  });
+
+  it('a successful query with everything else fine removes the strip entirely', async () => {
+    state.rejectStatus = true;
+    await mountApp();
+    await screen.findByTestId(STRIP);
+
+    state.rejectStatus = false;
+    const retry = await screen.findByRole('button', { name: /再问一次/ });
+    await act(async () => {
+      retry.click();
+    });
+
+    await waitFor(() => expect(screen.queryByTestId(STRIP)).toBeNull());
+  });
+});
+
+describe('the worse failure wins regardless of arrival order', () => {
+  it('a subscription failing BEFORE the query does not steal the shape', async () => {
+    // The M2 gap this test closes. Severity must be a function of WHAT failed,
+    // not of who reported first. The mock above rejects both in the same tick,
+    // which does not distinguish the two rules — so this one makes the
+    // subscription reject strictly FIRST by holding the query back.
+    //
+    // A late-resolving query is the honest way to say "the query answered after
+    // the subscriptions had already given up", which is the ordering the old
+    // single-slot design got wrong.
+    state.holdQuery = true;
+    state.rejectListenFor = ['supervisor:detached'];
+
+    await mountApp();
+
+    // The subscription has already failed and reported, while the query is still
+    // in flight and has answered nothing.
+    await waitFor(() => expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('stale'));
+
+    // Now the held query REJECTS. It must UPGRADE the shape rather than being
+    // ignored — severity is about what failed, not who reported first.
+    expect(state.pendingQueryReject).not.toBeNull();
+    await act(async () => {
+      state.pendingQueryReject!(new Error('backend refused the status query'));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('never-answered'),
+    );
+    // Both reasons still present, and the retry is offered.
+    const text = screen.getByTestId(STRIP).textContent ?? '';
+    expect(text).toContain('event bus refused supervisor:detached');
+    expect(screen.queryByRole('button', { name: /再问一次/ })).not.toBeNull();
   });
 });
