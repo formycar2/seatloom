@@ -39,9 +39,14 @@ import type {
   SessionDto,
   SessionExitEvent,
   SessionOutputEvent,
+  SessionTurnEvent,
   TmuxSessionInfo,
   WorkItemDto,
 } from './types-dto';
+
+// Re-exported so consumers keep importing event shapes from `api` — the same
+// pattern `SessionOutputEvent` and `SessionExitEvent` already follow.
+export type { SessionTurnEvent } from './types-dto';
 
 /**
  * True when running inside the Tauri webview; false in plain-browser `vite`.
@@ -283,6 +288,27 @@ export function onSessionOutput(handler: (event: SessionOutputEvent) => void): P
 
 export function onSessionExit(handler: (event: SessionExitEvent) => void): Promise<UnlistenFn> {
   return listen<SessionExitEvent>('session:exit', (e: Event<SessionExitEvent>) =>
+    handler(e.payload),
+  );
+}
+
+/**
+ * The turn-aware view of the same byte stream. Subscribe to this to build a
+ * conversation window; subscribe to `onSessionOutput` to drive xterm. They carry
+ * the same bytes, and either can be used without the other.
+ *
+ * This is the surface the four known interaction pain points are meant to be
+ * solved ON TOP OF (they need content a terminal cannot give):
+ *   1. alternate screen drops scrollback  -> keep the accumulated text yourself
+ *   2. links are blocked by window.open   -> extract URLs from the text
+ *   3. "Successfully wrote" hides the path -> the text carries it, unmangled
+ *   4. no search                          -> the text is searchable
+ * None of those are solved here; the point is that none of them is BLOCKED here.
+ */
+export function onSessionTurn(
+  handler: (event: SessionTurnEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionTurnEvent>('session:turn', (e: Event<SessionTurnEvent>) =>
     handler(e.payload),
   );
 }
