@@ -113,7 +113,25 @@ export const SessionTerminal: React.FC<Props> = ({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    // A handler is REQUIRED here, not optional polish. WebLinksAddon's default
+    // handler is `window.open()`, and Tauri's webview blocks window.open by
+    // design — so without this the addon still recognises the URL and still
+    // receives the click, but the open is a no-op that only logs a warning. That
+    // was the operator's bug (dispatch disp-H66BOKrYda4xltEgIwvuG): a link in a
+    // live-seats pane looked clickable and did nothing.
+    //
+    // The handler is synchronous by xterm's contract (it returns a boolean), so
+    // the async command is fired and its rejection is reported. Returning true
+    // tells the addon we took responsibility, which stops it from also trying
+    // its own default.
+    term.loadAddon(
+      new WebLinksAddon((_event: MouseEvent, uri: string) => {
+        api.openExternalUrl(uri).catch((err) => {
+          console.error('[SessionTerminal] openExternalUrl failed:', uri, err);
+        });
+        return true;
+      }),
+    );
     term.open(containerRef.current);
 
     termRef.current = term;

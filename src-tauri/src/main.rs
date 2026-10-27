@@ -27,7 +27,7 @@ use commands::{
     handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs, cmd_list_handoffs_for_project},
     history_cmds::{
         cmd_get_history_session_turns, cmd_list_history_projects, cmd_list_history_sessions,
-        cmd_open_local_path, cmd_read_history_context_slice,
+        cmd_open_external_url, cmd_open_local_path, cmd_read_history_context_slice,
     },
     inbox_cmds::cmd_get_inbox,
     knowledge_cmds::{cmd_get_knowledge_tree, cmd_get_topic_memories},
@@ -207,6 +207,7 @@ fn main() {
             // read the pointed-at slice, and open the source file. No body is stored
             // in the database and none crosses MCP (011's rule stands).
             cmd_read_history_context_slice,
+            cmd_open_external_url,
             cmd_open_local_path,
             // supervisor IM
             cmd_list_supervisor_messages,
