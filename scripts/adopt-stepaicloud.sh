@@ -189,18 +189,51 @@ else
 fi
 
 # 只在 pane 停在 shell 上时才发命令。往 agent 里塞文本不是启动,是乱按键。
+#
+# 🔴 为什么走 .saih/start.sh 而不是直接 send-keys 'saih --approve':
+#    2026-10-27 实测,直接发会 `zsh: command not found: saih` ——
+#    saih 在 ~/Documents/GitHub/seatloom/saih/bin/,不在 pane 的 PATH 里。
+#    (networkOrchestrator 那次踩过同一个坑并修了,这份派生脚本漏了那处修复。)
+#
+# 🔴 为什么发完要轮询核验,不是 sleep 25 就宣布成功:
+#    实测就是那样"成功"了,而 pane 里躺着 command not found。
+#    一个只等待不核验的启动,和不启动一样,只是多等 25 秒。
+START_SH="$PROJECT_HOME/.saih/start.sh"
+if [ ! -f "$START_SH" ]; then
+  cat > "$START_SH" <<'EOS'
+#!/usr/bin/env bash
+exec "$HOME/Documents/GitHub/seatloom/saih/bin/saih" --approve
+EOS
+  chmod +x "$START_SH"
+  say "  ✅ 已生成 $START_SH(绝对路径调 saih)"
+else
+  say "  $START_SH 已存在"
+fi
+
 pane_cmd="$(tmux list-panes -t "$TMUX_SESSION" -F '#{pane_current_command}' | head -1)"
 say "  pane 当前跑的是: $pane_cmd"
 if [ "$pane_cmd" = "zsh" ] || [ "$pane_cmd" = "bash" ] || [ "$pane_cmd" = "sh" ]; then
-  # resume 用 saih 自己的提示:saih --session <uuid>
-  tmux send-keys -t "$TMUX_SESSION" -l "saih --approve"
+  tmux send-keys -t "$TMUX_SESSION" -l "bash .saih/start.sh"
   sleep 0.3
   tmux send-keys -t "$TMUX_SESSION" Enter
-  say "  ✅ 已发出 resume 命令,等它起来…"
-  sleep 25
+  say "  已发出启动命令,等它起来…"
+  up=0; got=""
+  for _ in $(seq 1 20); do
+    sleep 3
+    got="$(tmux list-panes -t "$TMUX_SESSION" -F '#{pane_current_command}' 2>/dev/null | head -1)"
+    if [ "$got" = "node" ] || [ "$got" = "bun" ]; then up=1; break; fi
+  done
+  if [ "$up" = 1 ]; then
+    say "  ✅ saih 起来了(pane 跑的是 $got)"
+  else
+    say "  ❌ 60 秒后 pane 还不是 agent(还是 '$got')—— 没起来。"
+    say "     跑 tmux attach -t $TMUX_SESSION 看它显示什么,把那几行告诉 Aegis。"
+    say "     不要当成成功:一个没起来的席位,UI 里看到名字也指挥不了。"
+    exit 1
+  fi
 else
   say "  ⚠️ pane 不是 shell(是 $pane_cmd),不自动发命令"
-  say "     你在这个会话里手动跑: saih --session $SESSION_UUID --approve"
+  say "     你在这个会话里手动跑: bash .saih/start.sh"
 fi
 
 line; say "完成。接下来:"; line
