@@ -191,11 +191,28 @@ const App: React.FC = () => {
         // The query's failure is the worse one, so it decides the shape no matter
         // who reported first. A subscription arriving second must not demote a
         // never-answered into a stale.
-        // The `prev?.kind` half is defensive rather than load-bearing TODAY: the
-        // query is invoked before the two subscriptions (askSupervisorWindowStatus
-        // at the top of the effect, the subscriptions after), so its rejection
-        // lands first and `failure.kind` alone would give the same answer. It is
-        // kept because the rule is about WHAT failed, not about call order — if
+        // The `prev?.kind` half is NOT covered by the tests today, and it is
+        // not dead code either — those are different claims, and conflating them
+        // is how a guard gets deleted by someone reading a note like the earlier
+        // version of this one.
+        //
+        // NOT COVERED: the query is invoked before the two subscriptions
+        // (askSupervisorWindowStatus at the top of the effect, the subscriptions
+        // after), so its rejection lands first and `failure.kind` alone gives the
+        // same answer. Mutation M2 (`kind = failure.kind`) therefore passes every
+        // test in this suite — including the order-independence one, which passes
+        // for a different reason than intended: the query's own rejection already
+        // carries `kind: 'never-answered'`, so it upgrades the shape by itself and
+        // never exercises this guard.
+        //
+        // NOT EQUIVALENT: Flux's control mutation — M2 PLUS moving the query after
+        // the two subscriptions — turns RED (2 failures). Under that ordering the
+        // query's rejection lands LAST, and only `prev?.kind` keeps the shape at
+        // never-answered instead of letting the subscription demote it to stale.
+        // So the guard is load-bearing under reordering; today's call order merely
+        // hides it.
+        //
+        // Kept because the rule is about WHAT failed, not about call order — if
         // anyone reorders the effect, or a future third reporter is added,
         // dropping it would silently reintroduce "last writer wins".
         const kind: 'never-answered' | 'stale' =
