@@ -213,6 +213,25 @@ command argument, once when it is read back into context later.
   (see `COORDINATION_RULES.md` dispatch template). This standard is the shared
   source; the dispatch template is where every seat reads it before acting.
 
+## tmux pipe-pane is a stop command, not a query
+
+`tmux pipe-pane` with no shell-command **disables output copying for that pane**.
+It is not a query and it is not a toggle. Any agent or human who reaches for it to
+"take a look" kills the live mirror the app is reading.
+
+- **Query pipe state with `tmux display-message -p -t <target> '#{pane_pipe}'`.**
+  That is the only read. `pipe-pane` with no argument is a write.
+- **`pane_pipe=1` does not prove the pipe goes to the FIFO you think it does.**
+  tmux keeps ONE pipe per pane, not one per consumer: whoever runs `pipe-pane`
+  last wins and the previous `cat` dies immediately. To prove a FIFO belongs to a
+  pane, look for a string only that pane can print (its cwd prompt) inside that
+  FIFO's transcript.
+- **A growing transcript file does not prove the pipe is plugged into the right
+  pane.** It only proves this end has a writer. See
+  `docs/coordination/knowledge/a_growing_file_does_not_prove_the_pipe_is_plugged_into_the_right_pane.md`
+  for the 2026-10-27 incident where exactly that check certified a cross-wired
+  mirror: the operator's messages to Aegis were rendered inside Nimbus's slot.
+
 ## Documents
 
 Per `DOCUMENT_TEMPLATES.md`: every doc under `docs/` begins with the universal
