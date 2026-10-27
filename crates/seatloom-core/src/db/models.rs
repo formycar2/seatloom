@@ -10,6 +10,11 @@ pub struct ProjectRow {
     pub created_at: DateTime<Utc>,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, NULL when the corpus never recorded one (an
+    /// archive-derived project has no home). Carried so the UI can show the real
+    /// path instead of synthesising one — see `projectFromDto`, which for a while
+    /// rendered `'~/' + name` for every project.
+    pub home_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +451,43 @@ pub struct DispatchRow {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// One archived session, as the history read path returns it.
+///
+/// Mirrors `archived_sessions` (011) plus the three corpus columns `021` adds.
+/// The three corpus columns are `Option` because a database without `021` has
+/// them absent, and absent must read as "not loaded" rather than as zero.
+#[derive(Debug, Clone)]
+pub struct ArchivedSessionRow {
+    pub id: String,
+    pub harness: String,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub session_date: Option<String>,
+    pub bytes: Option<i64>,
+    /// INTEGER (INT4), so `i32` — tokio-postgres does not coerce INT4 into i64.
+    pub lines: Option<i32>,
+    pub sha256: Option<String>,
+    pub raw_path: String,
+    pub src_path: Option<String>,
+    /// `021`. INTEGER (INT4) → `i32`. `None` when the column does not exist.
+    pub message_count: Option<i32>,
+    /// `021`.
+    pub first_ts: Option<String>,
+    /// `021`.
+    pub last_ts: Option<String>,
+}
+
+/// One project row joined to its session and message totals.
+#[derive(Debug, Clone)]
+pub struct HistoryProjectRow {
+    pub id: String,
+    pub name: String,
+    pub home_path: Option<String>,
+    pub session_count: i64,
+    /// `None` when `archived_sessions.message_count` does not exist.
+    pub message_count: Option<i64>,
+}
+
 /// One dependency edge of a dispatch (readiness is an existence query over the
 /// referent; no FK, per 012).
 #[derive(Debug, Clone)]
@@ -597,6 +639,57 @@ pub struct DispatchReadModel {
     pub dependencies: Vec<DispatchDependencyStatus>,
 }
 
+/// What a Flux verdict reference actually says, and whether it is about a given
+/// dispatch — the two questions `event_or_artifact_exists` was being asked
+/// instead of the one it answers.
+///
+/// Field order is the reading order of the gate that consumes it: is it there,
+/// is it green, is it about this dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictFacts {
+    /// The referent names a row in `canonical_events` or `artifacts`.
+    pub exists: bool,
+    /// Its `event_type` when it is an event. `None` for an artifact, which has
+    /// none — never defaulted to `ReviewVerdictIssued`.
+    pub event_type: Option<String>,
+    /// `payload->>'verdict'`, verbatim. `None` when absent, null, or the referent
+    /// is an artifact. An absent value is an absence, not a fail and not a pass.
+    pub verdict: Option<String>,
+    /// `payload->>'dispatch_id'`, verbatim, when the verdict states one.
+    pub payload_dispatch_id: Option<String>,
+    /// Whether it names the dispatch under test — via `payload->>'dispatch_id'`
+    /// or via an `event_object_refs` row with `ref_type='dispatch'`. Either
+    /// channel counts; both are things Flux actually writes.
+    pub names_dispatch: bool,
+}
+
+impl VerdictFacts {
+    /// The gate's WHOLE question: does this verdict let the work be merged?
+    ///
+    /// Green means exactly `pass`. Measured on live, the values in use are
+    /// `pass` (27), `fail` (2) and `reject` (1) — so a `reject` is not green
+    /// either, and an absent value is not a pass.
+    ///
+    /// And it must be about the dispatch under test. `names_dispatch` was
+    /// computed by the reader for the dispatch the caller asked about, so this
+    /// ANDs it in rather than deriving it again — a second derivation would be a
+    /// second criterion that could drift from the first.
+    ///
+    /// # Why there is no `is_green()`
+    ///
+    /// There was one, and the proof caught what it invited: a method answering
+    /// only the value half is a method a future caller will use as the whole
+    /// criterion, which is precisely the defect this read exists to close. The
+    /// callers that need the two halves separately — to render two different
+    /// refusals — read the fields directly, which is honest about being partial.
+    pub fn is_merge_criterion(&self) -> bool {
+        self.exists
+            && self.event_type.as_deref() == Some("ReviewVerdictIssued")
+            && self.verdict.as_deref() == Some("pass")
+            && self.names_dispatch
+    }
+}
+
 /// One dependency edge with its referent's live existence.
 #[derive(Debug, Clone)]
 pub struct DispatchDependencyStatus {
@@ -648,6 +741,43 @@ pub struct AcceptanceRow {
     pub decided_by: Option<String>,
     pub decided_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+}
+
+/// One decision only the operator can rule on (020) — the structured answer
+/// to "what is waiting on the human?", which until 020 existed only as a
+/// message.
+///
+/// `choices` is the non-empty array of legal options (a single option is not a
+/// choice); `consequence` is what happens once it is decided, and it is
+/// REQUIRED — an obligation that does not say its consequence is asking the
+/// operator to click in the dark. `evidence` is the support chain (dispatch
+/// ids, verdict refs, ruling refs) so the claim can be checked rather than
+/// trusted.
+///
+/// `decider` is who is entitled to rule. It defaults to the operator, and a
+/// seat decider means Aegis created this for ITSELF — so it must NOT appear in
+/// the operator's pending count.
+///
+/// `status` is `pending` or `resolved`; `resolved` is terminal and immutable.
+/// `chosen` / `resolved_by` / `resolved_at` are set IFF resolved.
+#[derive(Debug, Clone)]
+pub struct OperatorDecisionRow {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    /// The only two creators: `human:*` or `seat:seat-aegis-001`.
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
 }
 
 /// An acceptance joined to the dispatch it gates plus the Flux verdict's

@@ -7,30 +7,30 @@
 @layer base {
   :root {
     /* ─── New design tokens (hex, for direct CSS usage) ─── */
-    --sl-canvas: #FFFFFF;
-    --sl-panel: #F8F9FA;
-    --sl-surface: #FFFFFF;
-    --sl-border: #E5E7EB;
-    --sl-border-subtle: #F3F4F6;
-    --sl-ink: #1A1A2E;
-    --sl-ink-secondary: #6B7280;
-    --sl-ink-muted: #9CA3AF;
-    --sl-primary: #3B82F6;
-    --sl-primary-hover: #2563EB;
-    --sl-primary-light: #EFF6FF;
-    --sl-success: #22C55E;
-    --sl-success-light: #F0FDF4;
-    --sl-warning: #F59E0B;
-    --sl-warning-light: #FFFBEB;
-    --sl-error: #EF4444;
-    --sl-error-light: #FEF2F2;
-    --sl-done: #94A3B8;
-    --sl-done-light: #F8FAFC;
-    --sl-review: #14B8A6;
-    --sl-review-light: #F0FDFA;
-    --sl-drift: #8B5CF6;
-    --sl-drift-light: #F5F3FF;
-    --sl-ring: #3B82F6;
+    --sl-canvas: #ffffff;
+    --sl-panel: #f8f9fa;
+    --sl-surface: #ffffff;
+    --sl-border: #e5e7eb;
+    --sl-border-subtle: #f3f4f6;
+    --sl-ink: #1a1a2e;
+    --sl-ink-secondary: #6b7280;
+    --sl-ink-muted: #9ca3af;
+    --sl-primary: #3b82f6;
+    --sl-primary-hover: #2563eb;
+    --sl-primary-light: #eff6ff;
+    --sl-success: #22c55e;
+    --sl-success-light: #f0fdf4;
+    --sl-warning: #f59e0b;
+    --sl-warning-light: #fffbeb;
+    --sl-error: #ef4444;
+    --sl-error-light: #fef2f2;
+    --sl-done: #94a3b8;
+    --sl-done-light: #f8fafc;
+    --sl-review: #14b8a6;
+    --sl-review-light: #f0fdfa;
+    --sl-drift: #8b5cf6;
+    --sl-drift-light: #f5f3ff;
+    --sl-ring: #3b82f6;
     --sl-radius: 6px;
     --sl-radius-lg: 8px;
     --sl-radius-full: 9999px;
@@ -40,7 +40,7 @@
     --sl-nav-collapsed: 48px;
     --sl-nav-expanded: 180px;
     --sl-list-collapsed: 280px;
-    --sl-terminal-bg: #1E1E2E;
+    --sl-terminal-bg: #1e1e2e;
 
     /* ─── Backward-compatible HSL tokens (for existing Tailwind opacity modifiers) ─── */
     --canvas: 0 0% 100%;
@@ -62,7 +62,7 @@
     --radius: 6px;
     --font-heading: 'Inter', sans-serif;
     --canvas-pattern: none;
-    --terminal-preview: #1E1E2E;
+    --terminal-preview: #1e1e2e;
   }
 
   * {
@@ -72,7 +72,13 @@
   body {
     background-color: var(--sl-panel);
     color: var(--sl-ink);
-    font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+    font-family:
+      'Inter',
+      'PingFang SC',
+      'Noto Sans SC',
+      system-ui,
+      -apple-system,
+      sans-serif;
     font-size: 14px;
     line-height: 1.571; /* 22px */
     letter-spacing: 0;
@@ -80,16 +86,30 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--sl-ink);
   }
 
-  h1 { font-size: 20px; line-height: 28px; }
-  h2 { font-size: 18px; line-height: 26px; }
-  h3 { font-size: 16px; line-height: 24px; }
+  h1 {
+    font-size: 20px;
+    line-height: 28px;
+  }
+  h2 {
+    font-size: 18px;
+    line-height: 26px;
+  }
+  h3 {
+    font-size: 16px;
+    line-height: 24px;
+  }
 }
 
 /* ─── Utility classes ─── */
@@ -174,6 +194,33 @@
   color: var(--sl-drift);
 }
 
+/* ─── Sandbox identity strip (second layer) ───
+   2026-10-21, AEGIS-2026-10-21-sandbox-build-banner-v1.
+   The icon is the first layer (Dock / Cmd-Tab). With a window open, the sandbox and the
+   main build look identical, so this strip names the build inside the window. It is
+   orange, matching the icon, so the two layers read as the same fact.
+   Only the sandbox ever renders it — there is deliberately no symmetric strip for the
+   main build. It has no dismiss control: it is an identity, not a notice. */
+.sl-sandbox-banner {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--sl-warning);
+  color: #442000;
+  border-bottom: 1px solid #b45309;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  user-select: text;
+}
+.sl-sandbox-banner--error {
+  background: var(--sl-error-light);
+  color: var(--sl-error);
+  border-bottom: 1px solid var(--sl-error);
+  font-family: inherit;
+  font-weight: 500;
+}
+
 /* ─── Meta header (artifact detail) ─── */
 
 .meta-header {
@@ -201,8 +248,12 @@
 /* ─── Animations ─── */
 
 @keyframes spin-slow {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 .animate-spin-slow {
   animation: spin-slow 8s linear infinite;
@@ -211,7 +262,10 @@
 /* ─── Master-Detail transition ─── */
 
 .sl-master-detail-list {
-  transition: width 200ms ease, min-width 200ms ease, opacity 150ms ease;
+  transition:
+    width 200ms ease,
+    min-width 200ms ease,
+    opacity 150ms ease;
 }
 
 .sl-master-detail-content {

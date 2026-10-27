@@ -1,0 +1,7 @@
+# seat_id	tmux_session  (used by seatloom-waker to nudge an idle seat on dispatch_ready)
+seat-mira-001	Mira-UX/UED-seatloom
+seat-nimbus-001	Nimbus-TechArchi-seatloom
+seat-flux-001	Flux-Quality&Ops-seatloom
+seat-onyx-001	Onyx-data-seatloom
+seat-lyra-001	Lyra-po-seatloom
+seat-vela-001	Vela-DataWash-seatloom

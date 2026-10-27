@@ -9,14 +9,14 @@ use tokio_postgres::Row;
 
 use crate::db::event_domain::{EventType, RefRole, RefType};
 use crate::db::models::{
-    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArchivedSessionRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, KnowledgeL2Pointer, KnowledgeMemoryCard,
-    KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow, ObjectRefRow,
-    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
-    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
-    SeatRow, SessionRow, TopicRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, HistoryProjectRow, KnowledgeL2Pointer,
+    KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
+    ObjectRefRow, OperatorDecisionRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow,
+    PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, TopicRow, VerdictFacts, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -26,6 +26,26 @@ use chrono::Utc;
 
 pub struct SeatloomDb {
     pool: Pool,
+}
+
+/// Everything a NEW operator obligation carries (020).
+///
+/// A struct rather than nine positional arguments: the write is a single act
+/// with a single meaning, and a call site that transposes `consequence` and
+/// `target` would compile silently — nine same-typed `&str`s in a row is exactly
+/// the shape a transposition hides in.
+#[derive(Debug, Clone)]
+pub struct NewOperatorDecision<'a> {
+    pub decision_id: &'a str,
+    pub project_id: &'a str,
+    pub target: &'a str,
+    pub choices: &'a [String],
+    pub decider: &'a str,
+    pub consequence: &'a str,
+    pub evidence: &'a [String],
+    /// The creator. Already resolved from the server env by the caller; this
+    /// function does not re-derive it, so identity has one source.
+    pub created_by: &'a str,
 }
 
 impl SeatloomDb {
@@ -58,7 +78,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects ORDER BY name ASC",
                 &[],
             )
@@ -70,7 +90,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects WHERE id = $1",
                 &[&project_id],
             )
@@ -90,6 +110,42 @@ impl SeatloomDb {
                  capability_tags, status, created_at \
                  FROM seats ORDER BY name ASC",
                 &[],
+            )
+            .await?;
+        rows.iter().map(row_to_seat).collect()
+    }
+
+    /// The seats **belonging to one project**, resolved through
+    /// `project_role_bindings`.
+    ///
+    /// **Why a JOIN and not a WHERE.** `seats` has no `project_id` column — a seat
+    /// is a global registry entry, and its association with a project is a row in
+    /// `project_role_bindings`. So "the seats under this project" is not a
+    /// predicate on `seats`; it is a predicate on the binding table, and the seat
+    /// row is reached by joining. Adding `WHERE project_id = $1` to the `seats`
+    /// query would be a syntax error, not a filter.
+    ///
+    /// **An empty result is a real answer, not a failure.** A project with no
+    /// binding rows genuinely has no seats — the historical-corpus projects are
+    /// corpus-derived and drive no seat. That is why the callers distinguish
+    /// "project_id was not supplied" (an error) from "project_id was supplied and
+    /// matched nothing" (an empty list): collapsing them would make a missing
+    /// parameter look like a project with no seats.
+    ///
+    /// The same runtime-triple validation as [`Self::list_seats`] runs on every
+    /// row, so an out-of-domain `default_harness` fails this read exactly as it
+    /// fails the global one — a domain violation is not made invisible by scoping.
+    pub async fn list_seats_for_project(&self, project_id: &str) -> Result<Vec<SeatRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT s.id, s.name, s.default_harness, s.default_agent, s.default_model, \
+                 s.capability_tags, s.status, s.created_at \
+                 FROM seats s \
+                 JOIN project_role_bindings b ON b.seat_id = s.id \
+                 WHERE b.project_id = $1 \
+                 ORDER BY s.name ASC",
+                &[&project_id],
             )
             .await?;
         rows.iter().map(row_to_seat).collect()
@@ -649,6 +705,74 @@ impl SeatloomDb {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
+    /// What a Flux verdict reference actually SAYS, and whether it is about a
+    /// given dispatch.
+    ///
+    /// # Why this exists
+    ///
+    /// `event_or_artifact_exists` answers one question — "is the referent there" —
+    /// and the acceptance gate had been using it as if it answered two more:
+    /// "is it green" and "is it about this dispatch". Measured on live, it does
+    /// not: three pending cards named `ev-verdict-history-sessions`, a **fail**
+    /// verdict about `disp-history-sessions-verify`, for three unrelated
+    /// dispatches Flux had never verified at all. Existence is not a verdict.
+    ///
+    /// So the gate reads the verdict's value and its subject, and refuses when
+    /// either is wrong. Both are things Flux actually writes — `payload->>'verdict'`
+    /// and `payload->>'dispatch_id'`, or an `event_object_refs` row with
+    /// `ref_type='dispatch'` — so neither criterion is invented. Measured across
+    /// all 30 `ReviewVerdictIssued` events on live: 27 carry `dispatch_id` in the
+    /// payload (the 3 that do not are pre-012 seed rows and a scenario fixture),
+    /// and 5 name a dispatch through `event_object_refs`. Either channel counts.
+    pub async fn flux_verdict_facts(
+        &self,
+        ref_id: &str,
+        dispatch_id: &str,
+    ) -> Result<VerdictFacts, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        // Existence, event type and the verdict value, in one round trip. The ref
+        // is polymorphic TEXT with no FK, so an artifact referent is possible —
+        // and an artifact carries no event_type and no payload, which is exactly
+        // why those fields are Option rather than defaulted.
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) AS is_event, \
+                        EXISTS (SELECT 1 FROM artifacts WHERE id = $1) AS is_artifact, \
+                        (SELECT event_type FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'verdict' FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'dispatch_id' FROM canonical_events WHERE id = $1)",
+                &[&ref_id],
+            )
+            .await?;
+        let is_event: bool = row.get(0);
+        let is_artifact: bool = row.get(1);
+        let event_type: Option<String> = row.get(2);
+        let verdict: Option<String> = row.get(3);
+        let payload_dispatch_id: Option<String> = row.get(4);
+
+        // The second way a verdict can name a dispatch. Asked separately because
+        // it is a different table and the two spellings are alternatives, not a
+        // conjunction.
+        let names_via_ref: bool = client
+            .query_one(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM event_object_refs \
+                      WHERE event_id = $1 AND ref_type = 'dispatch' AND ref_id = $2)",
+                &[&ref_id, &dispatch_id],
+            )
+            .await?
+            .get(0);
+
+        let names_dispatch = payload_dispatch_id.as_deref() == Some(dispatch_id) || names_via_ref;
+        Ok(VerdictFacts {
+            exists: is_event || is_artifact,
+            event_type,
+            verdict,
+            payload_dispatch_id,
+            names_dispatch,
+        })
+    }
+
     /// One dispatch's dependency edges (012).
     pub async fn list_dispatch_dependencies(
         &self,
@@ -693,13 +817,21 @@ impl SeatloomDb {
     /// The seat registry, reduced to the four columns routing needs.
     ///
     /// **Why not [`SeatloomDb::list_seats`]?** Because `list_seats` hydrates the
-    /// full runtime triple and validates `default_harness` against the closed
-    /// `Harness` domain — and the live registry currently contains a row
-    /// (`seat-vela-001`, `default_harness = 'Pi'`) that is out of that domain, so
-    /// the whole read fails. Routing has no opinion about which harness a seat
-    /// runs; making the intent surface fail because of an unrelated column's
-    /// domain violation would be a defect, not strictness. The domain violation
-    /// itself is reported to Aegis as data debt, not patched here.
+    /// full runtime triple and validates it against the closed `Harness` / `Agent`
+    /// domains, so a single out-of-domain row fails the WHOLE read. Routing has no
+    /// opinion about which harness or agent a seat runs; making the intent surface
+    /// fail because of an unrelated column's domain violation would be a defect,
+    /// not strictness.
+    ///
+    /// That failure was real and measured: on 2026-10-16 two live rows carried
+    /// `default_harness='Pi'` while the `Harness` domain had no `Pi` variant, and
+    /// `list_seats` failed for the whole table — which is what made the UI fall
+    /// back to three hard-coded fake project cards. It is now fixed at BOTH ends:
+    /// the data was corrected to `Stepcode`, and on the operator's 2026-10-17
+    /// ruling `Pi` is in the `Harness` domain as well as `Agent`. This read stays
+    /// domain-free regardless, because the structural reason — one bad row should
+    /// not fail an unrelated surface — is independent of which values are in the
+    /// domain today.
     pub async fn list_seat_routing_facts(&self) -> Result<Vec<SeatRoutingRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
@@ -781,6 +913,146 @@ impl SeatloomDb {
             dispatch_titles,
             named_referent_exists: BTreeMap::new(),
         })
+    }
+
+    // =========================================================================
+    // Historical session corpus (011 + 021) — the read path.
+    //
+    // ONE implementation, exposed twice over the same code: the `list_history_*`
+    // / `get_history_session_turns` MCP tools and their Tauri thin wrappers both
+    // come through here (the turns half adds `crate::history::read`, which is
+    // the file half). There is no second reader.
+    //
+    // Every query is written so that a database WITHOUT 021 answers honestly
+    // instead of lying: the corpus columns are probed with
+    // `to_regclass`/`information_schema` and a missing one is reported as
+    // `CorpusNotLoaded`, never read as zero.
+    // =========================================================================
+
+    /// Does `archived_sessions.message_count` exist? `021` adds it.
+    pub async fn corpus_columns_present(&self) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                  WHERE table_name = 'archived_sessions' AND column_name = 'message_count')",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// (a) Every project that has at least one corpus session, with its
+    /// session count and its total message count.
+    ///
+    /// A project with sessions but no corpus migration reads `message_count =
+    /// None` — the count is unknown, which is not the same as zero.
+    ///
+    /// THE INVENTORY FILTER (021's own header states the rule; Flux's verdict
+    /// `FLUX-2026-10-14-history-sessions-verdict-v1` §5 measured the cost of
+    /// omitting it): the live table also holds the 2026-10-08 manifest load —
+    /// 271 rows, 89 of them with no extracted conversation and therefore no
+    /// `message_count` — and 78 of those 89 carry a project slug that matches
+    /// one of the 38 project ids. Joining them in made `sum(sessionCount)` 261
+    /// against a corpus of 183 and reported 58 sessions under `sf-code/storage`
+    /// for a truth of 2. So the join filters on `message_count IS NOT NULL`
+    /// and a project with only inventory rows reports no sessions at all.
+    pub async fn list_history_projects(&self) -> Result<Vec<HistoryProjectRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let message_expr = if corpus {
+            "sum(a.message_count)::bigint"
+        } else {
+            "NULL::bigint"
+        };
+        let join = if corpus {
+            // The corpus rows, never the 89 inventory-only ones.
+            "LEFT JOIN archived_sessions a ON a.project = p.id AND a.message_count IS NOT NULL"
+        } else {
+            "LEFT JOIN archived_sessions a ON a.project = p.id"
+        };
+        let sql = format!(
+            "SELECT p.id, p.name, p.home_path, count(a.id)::bigint AS sessions, {message_expr} \
+               FROM projects p \
+               {join} \
+              GROUP BY p.id, p.name, p.home_path \
+             HAVING count(a.id) > 0 \
+              ORDER BY count(a.id) DESC, p.id ASC"
+        );
+        let rows = client.query(&sql, &[]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| HistoryProjectRow {
+                id: r.get(0),
+                name: r.get(1),
+                home_path: r.get(2),
+                session_count: r.get(3),
+                message_count: r.get(4),
+            })
+            .collect())
+    }
+
+    /// (b) One project's CORPUS sessions, dated first (newest first) and the
+    /// undated ones last and flagged — never silently interleaved, because
+    /// sorting 14 undated cursor sessions as if they were the oldest would be
+    /// a lie.
+    ///
+    /// The inventory-only rows are excluded for the same reason the projects
+    /// read filters them (see `list_history_projects`): they are manifest
+    /// entries, not sessions, and 78 of the 89 carry a slug matching one of the
+    /// 38 project ids. Flux measured the consequence on `seatloom`: 16 rows
+    /// where the corpus defines 14, one of them a gemini marker row with
+    /// `firstTs: null` that the tool nevertheless flagged `dated: true`.
+    pub async fn list_history_sessions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let corpus_filter = if corpus {
+            "AND a.message_count IS NOT NULL"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.project = $1 {corpus_filter} \
+              ORDER BY (a.first_ts IS NULL) ASC, \
+                       a.first_ts DESC NULLS LAST, \
+                       a.id ASC"
+        );
+        let rows = client.query(&sql, &[&project_id]).await?;
+        Ok(rows.iter().map(row_to_archived_session).collect())
+    }
+
+    /// The single row one session's turns are read for.
+    pub async fn get_archived_session(
+        &self,
+        harness: &str,
+        id: &str,
+    ) -> Result<Option<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.harness = $1 AND a.id = $2"
+        );
+        let row = client.query_opt(&sql, &[&harness, &id]).await?;
+        Ok(row.as_ref().map(row_to_archived_session))
     }
 
     // =========================================================================
@@ -1344,6 +1616,280 @@ impl SeatloomDb {
             .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
             .await?;
         let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    // =========================================================================
+    // Operator decisions (020) — the structured "waiting on the human" object.
+    //
+    // Why these are repository functions and not raw SQL in the tool: the same
+    // row + event must land in ONE transaction, and the immutability of a
+    // resolved decision must have exactly one implementation — never a second,
+    // divergent copy in a command or a script.
+    // =========================================================================
+
+    /// One operator decision by id. `None` when no such obligation exists.
+    pub async fn get_operator_decision(
+        &self,
+        decision_id: &str,
+    ) -> Result<Option<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_operator_decision))
+    }
+
+    /// The pending obligations of a project, oldest first.
+    ///
+    /// `decider` filters by WHO the obligation is for, because the packet's rule
+    /// is that not everything defaults to the operator: a row Aegis created for
+    /// itself (`decider = 'seat:seat-aegis-001'`) must not appear in the
+    /// operator's "等你拍板" count. Passing `None` returns every pending row of
+    /// the project.
+    pub async fn list_pending_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' AND decider = $2 \
+                         ORDER BY created_at ASC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' \
+                         ORDER BY created_at ASC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// The RESOLVED obligations of a project, newest ruling first — the audit
+    /// side of the object. `decider` filters the same way the pending list does.
+    pub async fn list_resolved_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' AND decider = $2 \
+                         ORDER BY resolved_at DESC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' \
+                         ORDER BY resolved_at DESC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// `request_operator_decision`: create the obligation + append
+    /// `OperatorDecisionRequested` in ONE transaction (contract rule 2).
+    ///
+    /// The write path enforces what the schema cannot express: `choices` is a
+    /// non-empty array of non-blank strings and `consequence` is non-blank. The
+    /// schema's CHECKs back this up, but the tool's job is a refusal that NAMES
+    /// what is missing — a raw CHECK violation tells the caller nothing.
+    ///
+    /// The caller has already resolved `created_by` from the server env; this
+    /// function does not re-derive it, so there is exactly one place identity
+    /// comes from.
+    pub async fn request_operator_decision(
+        &self,
+        new: NewOperatorDecision<'_>,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let NewOperatorDecision {
+            decision_id,
+            project_id,
+            target,
+            choices,
+            decider,
+            consequence,
+            evidence,
+            created_by,
+        } = new;
+        let choices_json =
+            serde_json::to_value(choices).map_err(|e| DbError::Internal(e.to_string()))?;
+        let evidence_json =
+            serde_json::to_value(evidence).map_err(|e| DbError::Internal(e.to_string()))?;
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        tx.execute(
+            "INSERT INTO operator_decisions \
+               (id, project_id, target, choices, decider, consequence, evidence, status, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
+            &[
+                &decision_id,
+                &project_id,
+                &target,
+                &choices_json,
+                &decider,
+                &consequence,
+                &evidence_json,
+                &created_by,
+            ],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionRequested,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: created_by.to_string(),
+            project_id: project_id.to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "choices": choices,
+                "decider": decider,
+                "consequence": consequence,
+                "evidence": evidence,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, created_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let row = row_to_operator_decision(&row);
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// `resolve_operator_decision`: the ruling lands + `OperatorDecisionResolved`
+    /// in ONE transaction.
+    ///
+    /// A row that is already `resolved` is REFUSED — same reasoning as 013/014:
+    /// the row is a projection of the append-only ledger, and a resolved
+    /// decision is a recorded fact. Re-deciding would be a silent rewrite.
+    ///
+    /// `chosen` must be one of the row's own `choices`. That check lives here
+    /// rather than in the schema because the choices are data, and because the
+    /// refusal must name the legal options instead of quoting a CHECK.
+    pub async fn resolve_operator_decision(
+        &self,
+        decision_id: &str,
+        chosen: &str,
+        resolved_by: &str,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1 \
+                   FOR UPDATE",
+                &[&decision_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::OperatorDecisionNotFound {
+                id: decision_id.to_string(),
+            });
+        };
+        let existing = row_to_operator_decision(&row);
+        if existing.status == "resolved" {
+            return Err(DbError::OperatorDecisionAlreadyResolved {
+                id: decision_id.to_string(),
+            });
+        }
+        if !existing.choices.iter().any(|c| c == chosen) {
+            return Err(DbError::OperatorDecisionChoiceNotOffered {
+                id: decision_id.to_string(),
+                chosen: chosen.to_string(),
+                choices: existing.choices.clone(),
+            });
+        }
+        let project_id = existing.project_id.clone();
+        let target = existing.target.clone();
+        let decider = existing.decider.clone();
+        tx.execute(
+            "UPDATE operator_decisions \
+                SET status = 'resolved', chosen = $2, resolved_by = $3, resolved_at = NOW() \
+              WHERE id = $1",
+            &[&decision_id, &chosen, &resolved_by],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionResolved,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: resolved_by.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "chosen": chosen,
+                "ruling_by": resolved_by,
+                "decider": decider,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, resolved_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, &existing.project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let updated = row_to_operator_decision(&updated);
         tx.commit().await?;
         Ok(updated)
     }
@@ -2709,7 +3255,8 @@ fn row_to_seat(r: &Row) -> Result<SeatRow, DbError> {
 
 /// The seat registry reduced to what routing needs — id, name, capability
 /// tags, status. No runtime triple, therefore no `Harness`/`Agent` domain
-/// validation, therefore no failure on a row whose harness is out of domain.
+/// validation, therefore no failure on a row whose runtime triple is out of
+/// domain.
 #[derive(Debug, Clone)]
 pub struct SeatRoutingRow {
     pub id: String,
@@ -2727,6 +3274,24 @@ fn row_to_seat_routing(r: &Row) -> SeatRoutingRow {
     }
 }
 
+fn row_to_archived_session(r: &Row) -> ArchivedSessionRow {
+    ArchivedSessionRow {
+        id: r.get(0),
+        harness: r.get(1),
+        project: r.get(2),
+        cwd: r.get(3),
+        session_date: r.get(4),
+        bytes: r.get(5),
+        lines: r.get(6),
+        sha256: r.get(7),
+        raw_path: r.get(8),
+        src_path: r.get(9),
+        message_count: r.get(10),
+        first_ts: r.get(11),
+        last_ts: r.get(12),
+    }
+}
+
 fn row_to_project(r: &Row) -> ProjectRow {
     ProjectRow {
         id: r.get(0),
@@ -2734,6 +3299,7 @@ fn row_to_project(r: &Row) -> ProjectRow {
         created_at: r.get(2),
         worker_budget_tokens: r.get(3),
         supervisor_budget_tokens: r.get(4),
+        home_path: r.get(5),
     }
 }
 
@@ -2964,6 +3530,40 @@ fn row_to_knowledge_memory_card(r: &Row, depth: MemoryLayer) -> KnowledgeMemoryC
         source_kind: r.get(15),
         source_ref: r.get(16),
     }
+}
+
+fn row_to_operator_decision(r: &Row) -> OperatorDecisionRow {
+    let choices_json: serde_json::Value = r.get(3);
+    let evidence_json: serde_json::Value = r.get(6);
+    OperatorDecisionRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        target: r.get(2),
+        choices: jsonb_to_strings(&choices_json),
+        decider: r.get(4),
+        consequence: r.get(5),
+        evidence: jsonb_to_strings(&evidence_json),
+        status: r.get(7),
+        created_by: r.get(8),
+        created_at: r.get(9),
+        chosen: r.get(10),
+        resolved_by: r.get(11),
+        resolved_at: r.get(12),
+    }
+}
+
+/// A JSONB array of strings, read defensively: a non-array or a non-string
+/// element yields nothing rather than a panic. The schema's CHECKs make that
+/// unreachable for rows written through this path, but a read must not crash on
+/// a row some other writer put there.
+fn jsonb_to_strings(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn row_to_topic(r: &Row) -> TopicRow {
@@ -3310,6 +3910,35 @@ pub enum DbError {
         "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
     )]
     MemoryNoTierChange { id: String, tier: String },
+    /// `020`: the decision id names no row. A read of a mistyped id must say so,
+    /// not render an empty obligation.
+    #[error("operator decision {id:?} not found")]
+    OperatorDecisionNotFound { id: String },
+    /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
+    /// same reason 013/014 refuse to roll a terminal row back: the row is a
+    /// projection of the append-only ledger, and re-deciding would rewrite a
+    /// recorded fact.
+    #[error(
+        "operator decision {id:?} is already resolved — a recorded ruling is immutable; \
+         a new question is a new decision, never a rewrite of an answered one"
+    )]
+    OperatorDecisionAlreadyResolved { id: String },
+    /// `020`: `chosen` is not one of the row's own `choices`. The legal options
+    /// are named so the caller can correct the call instead of guessing.
+    #[error(
+        "operator decision {id:?}: {chosen:?} is not one of the offered choices {choices:?} — \
+         the ruling must be one of the options the obligation stated"
+    )]
+    OperatorDecisionChoiceNotOffered {
+        id: String,
+        chosen: String,
+        choices: Vec<String>,
+    },
+    /// `020`: an internal serialisation failure while building the JSONB
+    /// arguments. Named rather than swallowed so a caller never mistakes a
+    /// refused write for a landed one.
+    #[error("operator decision argument could not be serialised: {0}")]
+    Internal(String),
     /// A stored string is outside the value domain its Rust type declares.
     /// Raised only at the row-hydration parse boundary (see `check_domain`).
     #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
@@ -3394,7 +4023,7 @@ mod tests {
             err.to_string(),
             "sessions row \"ses-flux-verify-001\": column agent is out of domain: \
              \"Bogus\" is not a valid Agent value (expected one of: ClaudeCode, Codex, \
-             CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>))"
+             CursorCli, GeminiCli, Opencode, Pi, Custom, Custom(<payload>))"
         );
     }
 

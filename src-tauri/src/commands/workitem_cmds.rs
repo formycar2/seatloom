@@ -1,14 +1,19 @@
 // WorkItem commands — read-only for Phase 1. Mutations added in later phases.
 
+use crate::commands::require_project_id;
 use crate::dto::WorkItemDto;
 use crate::state::AppState;
 use tauri::State;
 
 #[tauri::command]
-pub async fn cmd_list_workitems(state: State<'_, AppState>) -> Result<Vec<WorkItemDto>, String> {
+pub async fn cmd_list_workitems(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<WorkItemDto>, String> {
+    let pid = require_project_id("cmd_list_workitems", project_id)?;
     state
         .db
-        .list_workitems()
+        .list_workitems_for_project(&pid)
         .await
         .map(|rows| rows.into_iter().map(WorkItemDto::from).collect())
         .map_err(|e| e.to_string())

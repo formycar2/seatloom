@@ -1,9 +1,19 @@
 // Document commands — read, filter, and search the document authority layer.
 
+use crate::commands::require_project_id;
 use crate::dto::{DocumentAssociationDto, DocumentDto, DocumentSectionDto, DocumentVersionDto};
 use crate::state::AppState;
 use tauri::State;
 
+/// Documents for one project.
+///
+/// **This had the same silent-default fallback as `cmd_list_dispatches`.** It took
+/// `project_id: Option<String>` and substituted `state.default_project_id` when it
+/// was absent, and the UI called it as `api.listDocuments({})` — no project at all.
+/// So the Artifacts tab's document half was always `seatloom`'s documents under
+/// every project. Measured on live: `documents` is empty (0 rows), so the damage is
+/// currently latent rather than visible, which is exactly when a defect like this
+/// gets to survive.
 #[tauri::command]
 pub async fn cmd_list_documents(
     state: State<'_, AppState>,
@@ -11,7 +21,7 @@ pub async fn cmd_list_documents(
     template: Option<String>,
     subtype: Option<String>,
 ) -> Result<Vec<DocumentDto>, String> {
-    let pid = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let pid = require_project_id("cmd_list_documents", project_id)?;
     state
         .db
         .list_documents(&pid, template.as_deref(), subtype.as_deref())

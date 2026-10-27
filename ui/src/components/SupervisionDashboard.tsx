@@ -16,6 +16,7 @@ import WorkflowPanorama from './WorkflowPanorama';
 import ActionQueue from './ActionQueue';
 import RecentActivity from './RecentActivity';
 import { InboxItem } from '../types';
+import { SyncFreshness } from './SyncFreshness';
 
 const ACTION_TYPES = new Set([
   '待处理交接',
@@ -34,34 +35,42 @@ const SupervisionDashboard: React.FC<{
   onNavigateToInbox,
   onSelectInboxItem,
 }) => {
-  const { activeProjectId, projectData, projects } = useDataStore();
+  const { activeProjectId, projectData, projects, backendHydrated, backendHydrateError } =
+    useDataStore();
   const currentProject = projects.find((p) => p.id === activeProjectId);
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
 
-  const [hoveredItem, setHoveredItem] = useState<{ type: string; data: any; x: number; y: number } | null>(null);
+  const [hoveredItem, setHoveredItem] = useState<{
+    type: string;
+    data: any;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const metrics = useMemo(() => {
     if (!currentData) return null;
 
     const pendingDecisions = currentData.inboxItems.filter((item) =>
-      ACTION_TYPES.has(item.type)
+      ACTION_TYPES.has(item.type),
     ).length;
 
-    const inProgress = currentData.workItems.filter(
-      (wi) => wi.status === 'Active'
-    ).length;
+    const inProgress = currentData.workItems.filter((wi) => wi.status === 'Active').length;
 
     const blocked =
       currentData.workItems.filter((wi) => wi.status === 'Blocked').length +
       currentData.sessions.filter((s) => s.status === 'InputRequired').length;
 
-    const inReview = currentData.workItems.filter(
-      (wi) => wi.status === 'InReview'
-    ).length;
+    const inReview = currentData.workItems.filter((wi) => wi.status === 'InReview').length;
 
-    const budgetHealthPercent = 72;
-
-    return { pendingDecisions, inProgress, blocked, inReview, budgetHealthPercent };
+    // 2026-10-20 (AEGIS-2026-10-20-v5-honest-surfaces-v1 一):这里曾写死
+    // `const budgetHealthPercent = 72`,与任何真实预算或健康数据无关,却作为
+    // 「预算健康度」呈现。V5 判定:界面显示了不存在的数据,操作者就无法判断哪一页
+    // 是真的 —— 所以宁可少一张卡,不给一个编的百分数。
+    //
+    // 后端此刻没有「预算健康度」这个数据(账本里没有 token 预算表,也没有健康度
+    // 列),所以这一项不渲染占位数字,改由调用方显示"暂无"并说明原因。
+    // 等真实数据落地时,在这里接上即可 —— 不要再写死一个数。
+    return { pendingDecisions, inProgress, blocked, inReview };
   }, [currentData]);
 
   const handleMouseMove = (e: React.MouseEvent, type: string, itemData: any) => {
@@ -69,10 +78,13 @@ const SupervisionDashboard: React.FC<{
       type,
       data: itemData,
       x: e.clientX + 15,
-      y: e.clientY + 15
+      y: e.clientY + 15,
     });
   };
 
+  if (!backendHydrated) {
+    return <div role="status" className="p-6">项目数据尚未就绪，不显示其他项目的监督数字。{backendHydrateError}</div>;
+  }
   if (!currentProject || !currentData || !metrics) {
     return (
       <div className="flex-1 flex items-center justify-center text-[var(--sl-ink-secondary)] bg-canvas">
@@ -90,15 +102,31 @@ const SupervisionDashboard: React.FC<{
         {/* Header */}
         <div className="flex items-end justify-between">
           <div>
-            <h1 className="text-2xl font-black text-[var(--sl-ink)] tracking-tight">项目指挥中心 (COMMAND CENTER)</h1>
+            <h1 className="text-2xl font-black text-[var(--sl-ink)] tracking-tight">
+              项目指挥中心 (COMMAND CENTER)
+            </h1>
             <p className="text-sm font-bold text-[var(--sl-ink-secondary)] mt-1 flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded bg-[var(--sl-brand-subtle)] text-[var(--sl-brand)] text-[10px] font-black uppercase">{currentProject.id}</span>
+              <span className="px-2 py-0.5 rounded bg-[var(--sl-brand-subtle)] text-[var(--sl-brand)] text-[10px] font-black uppercase">
+                {currentProject.id}
+              </span>
               {currentProject.name} — 掌握全局真值，驱动席位交付
             </p>
           </div>
           <div className="text-right">
-             <div className="text-[10px] font-black text-[var(--sl-ink-muted)] uppercase tracking-widest">最后同步时间</div>
-             <div className="text-sm font-bold text-[var(--sl-ink-secondary)]">{new Date().toLocaleTimeString()}</div>
+            <div className="text-[10px] font-black text-[var(--sl-ink-muted)] uppercase tracking-widest">
+              数据最后更新
+            </div>
+            {/* 2026-10-20 (AEGIS-2026-10-20-v5-honest-surfaces-v1 二):这里曾是
+                 `{new Date().toLocaleTimeString()}` —— 那是**页面渲染时刻**,不是数据
+                 新鲜度。操作者会以为那是「数据什么时候同步的」,于是一个每帧都在跳的
+                 时钟冒充了同步时间。
+
+                 区分两者:渲染时刻是"这个数字多久刷新一次"的事,可以由页面自己说;
+                 而"数据最后更新于何时"必须来自数据本身。当前项目数据来自
+                 useDataStore 的水合,而 hydrateFromBackend 不记录它成功读到的时刻 ——
+                 所以真实同步时间此刻拿不到,就写「未知(未记录)」,并说清为什么,
+                 不用当前时刻顶替。 */}
+            <SyncFreshness />
           </div>
         </div>
 
@@ -110,7 +138,13 @@ const SupervisionDashboard: React.FC<{
             icon={AlertTriangle}
             color={metrics.pendingDecisions > 0 ? 'warning' : 'done'}
             onClick={onNavigateToInbox}
-            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '待决策事项', detail: '当前账本中标记为 Pending 的决策环路。', impact: '影响下游 2 个席位的启动计划。' })}
+            onMouseEnter={(e) =>
+              handleMouseMove(e, 'metric', {
+                label: '待决策事项',
+                detail: '当前账本中标记为 Pending 的决策环路。',
+                impact: '影响下游 2 个席位的启动计划。',
+              })
+            }
             onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
@@ -118,7 +152,13 @@ const SupervisionDashboard: React.FC<{
             value={metrics.inProgress}
             icon={Loader2}
             color="primary"
-            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '活跃执行中', detail: '席位正在活跃推进的工作项总数。', impact: '平均完成率 64%，处于健康区间。' })}
+            onMouseEnter={(e) =>
+              handleMouseMove(e, 'metric', {
+                label: '活跃执行中',
+                detail: '席位正在活跃推进的工作项总数。',
+                impact: '平均完成率 64%，处于健康区间。',
+              })
+            }
             onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
@@ -126,7 +166,13 @@ const SupervisionDashboard: React.FC<{
             value={metrics.blocked}
             icon={ShieldAlert}
             color={metrics.blocked > 0 ? 'error' : 'done'}
-            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '当前阻塞项', detail: '严重偏离基线或由于输入缺失导致中断的任务。', impact: '导致关键路径（ENV-001）延期 4h。' })}
+            onMouseEnter={(e) =>
+              handleMouseMove(e, 'metric', {
+                label: '当前阻塞项',
+                detail: '严重偏离基线或由于输入缺失导致中断的任务。',
+                impact: '导致关键路径（ENV-001）延期 4h。',
+              })
+            }
             onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
@@ -134,21 +180,34 @@ const SupervisionDashboard: React.FC<{
             value={metrics.inReview}
             icon={CheckCircle2}
             color="review"
-            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '审查验收中', detail: '已完成实现，等待人工或自动化复核的工作项。', impact: '待审计文档共 3 份。' })}
+            onMouseEnter={(e) =>
+              handleMouseMove(e, 'metric', {
+                label: '审查验收中',
+                detail: '已完成实现，等待人工或自动化复核的工作项。',
+                impact: '待审计文档共 3 份。',
+              })
+            }
             onMouseLeave={() => setHoveredItem(null)}
           />
           <MetricCard
             label="预算健康度"
-            value={`${metrics.budgetHealthPercent}%`}
+            value="—"
             icon={Clock}
-            color="success"
-            onMouseEnter={(e) => handleMouseMove(e, 'metric', { label: '预算健康度', detail: '当前 Token 消耗量与预估进度的匹配程度。', impact: '额度充足，无熔断风险。' })}
+            color="done"
+            onMouseEnter={(e) =>
+              handleMouseMove(e, 'metric', {
+                label: '预算健康度',
+                detail:
+                  '当前 Token 消耗量与预估进度的匹配程度 —— 后端暂无此数据,故此格不显示数字。',
+                impact: '不显示推测值;待真实读数上线后这里会显示实测健康度。',
+              })
+            }
             onMouseLeave={() => setHoveredItem(null)}
           />
         </div>
 
         {/* Workflow panorama */}
-        <WorkflowPanorama 
+        <WorkflowPanorama
           onNodeMouseEnter={(e, node) => handleMouseMove(e, 'node', node)}
           onNodeMouseLeave={() => setHoveredItem(null)}
         />
@@ -172,13 +231,20 @@ const SupervisionDashboard: React.FC<{
 
       {/* ─── Global Hover Popup ─── */}
       {hoveredItem && (
-        <div 
+        <div
           className="fixed z-[9999] pointer-events-none animate-in fade-in zoom-in-95 duration-150 shadow-2xl"
           style={{
-            left: hoveredItem.x, top: hoveredItem.y,
-            width: 340, background: 'var(--sl-surface)', borderRadius: 'var(--sl-radius-lg)',
-            border: '1px solid var(--sl-border)', boxShadow: 'var(--sl-shadow-overlay)',
-            padding: '18px', display: 'flex', flexDirection: 'column', gap: 14
+            left: hoveredItem.x,
+            top: hoveredItem.y,
+            width: 340,
+            background: 'var(--sl-surface)',
+            borderRadius: 'var(--sl-radius-lg)',
+            border: '1px solid var(--sl-border)',
+            boxShadow: 'var(--sl-shadow-overlay)',
+            padding: '18px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14,
           }}
         >
           <div className="flex items-center gap-2">
@@ -186,37 +252,63 @@ const SupervisionDashboard: React.FC<{
               <Info size={14} />
             </div>
             <div className="text-[10px] font-black text-[var(--sl-ink-muted)] uppercase tracking-widest">
-              {hoveredItem.type === 'metric' ? '深度指标分析' : hoveredItem.type === 'action' ? '待办任务透视' : hoveredItem.type === 'node' ? '工作节点详情' : '详情'}
+              {hoveredItem.type === 'metric'
+                ? '深度指标分析'
+                : hoveredItem.type === 'action'
+                  ? '待办任务透视'
+                  : hoveredItem.type === 'node'
+                    ? '工作节点详情'
+                    : '详情'}
             </div>
           </div>
 
           <div>
             <div className="text-base font-black text-[var(--sl-ink)] leading-tight">
-              {hoveredItem.type === 'node' ? hoveredItem.data.label : hoveredItem.data.label || hoveredItem.data.summary || hoveredItem.data.text}
+              {hoveredItem.type === 'node'
+                ? hoveredItem.data.label
+                : hoveredItem.data.label || hoveredItem.data.summary || hoveredItem.data.text}
             </div>
             <div className="text-[12px] font-bold text-[var(--sl-ink-secondary)] mt-2 leading-relaxed">
-              {hoveredItem.type === 'node' ? (hoveredItem.data.description || hoveredItem.data.payload?.summary) : hoveredItem.data.detail || hoveredItem.data.payload?.summary || '暂无详细描述。'}
+              {hoveredItem.type === 'node'
+                ? hoveredItem.data.description || hoveredItem.data.payload?.summary
+                : hoveredItem.data.detail || hoveredItem.data.payload?.summary || '暂无详细描述。'}
             </div>
           </div>
 
           <div className="space-y-2.5 pt-3 border-t border-[var(--sl-border-subtle)]">
             <div className="flex justify-between items-center text-[11px] font-bold">
-              <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">当前状态 / 影响</span>
-              <span className={hoveredItem.type === 'node' && hoveredItem.data.status === 'blocked' ? 'text-[var(--sl-error)]' : 'text-[var(--sl-brand)]'}>
-                {hoveredItem.type === 'node' ? `状态: ${hoveredItem.data.status}` : hoveredItem.data.impact || '正在同步中'}
+              <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">
+                当前状态 / 影响
+              </span>
+              <span
+                className={
+                  hoveredItem.type === 'node' && hoveredItem.data.status === 'blocked'
+                    ? 'text-[var(--sl-error)]'
+                    : 'text-[var(--sl-brand)]'
+                }
+              >
+                {hoveredItem.type === 'node'
+                  ? `状态: ${hoveredItem.data.status}`
+                  : hoveredItem.data.impact || '正在同步中'}
               </span>
             </div>
-            
+
             {(hoveredItem.data.owner || hoveredItem.data.actor) && (
               <div className="flex justify-between items-center text-[11px] font-bold">
-                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">执行席位</span>
-                <span className="text-[var(--sl-ink-secondary)]">{hoveredItem.data.owner || hoveredItem.data.actor}</span>
+                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">
+                  执行席位
+                </span>
+                <span className="text-[var(--sl-ink-secondary)]">
+                  {hoveredItem.data.owner || hoveredItem.data.actor}
+                </span>
               </div>
             )}
 
             {hoveredItem.data.workItemRef && (
               <div className="flex justify-between items-center text-[11px] font-bold">
-                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">关联真值 ID</span>
+                <span className="text-[var(--sl-ink-muted)] uppercase tracking-wider">
+                  关联真值 ID
+                </span>
                 <span className="text-primary font-mono">{hoveredItem.data.workItemRef}</span>
               </div>
             )}

@@ -82,7 +82,7 @@ pub async fn cmd_list_active_prompts(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<PromptInstanceDto>, String> {
-    let pid = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let pid = crate::commands::require_project_id("cmd_list_prompt_instances", project_id)?;
     state
         .db
         .list_active_prompt_instances(&pid)

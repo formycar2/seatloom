@@ -93,6 +93,23 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// Default age after which an `in_flight` claim is considered stale.
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+/// How long between two HEARTBEAT nudges to the same seat.
+///
+/// **Why this value, and why it is not the dispatch cooldown.** The dispatch
+/// cooldown (`DEFAULT_POKE_COOLDOWN`, 120 s) exists because a NOTIFY can fire
+/// while a seat is busy, so it is about not *losing* work — it has to be short.
+/// A heartbeat nudge loses nothing: it reminds an idle seat of duties it already
+/// has. So it is deliberately long. 30 minutes is 15x the dispatch cooldown and
+/// means a seat is interrupted at most twice an hour, while still short enough
+/// that a seat which goes idle is not left for a day. It is a separate knob
+/// (`SEATLOOM_HEARTBEAT_COOLDOWN_SECS`) on a separate [`Poker`], so tuning one
+/// never moves the other.
+const DEFAULT_HEARTBEAT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+/// The directory holding each seat's heartbeat document, relative to the working
+/// directory the same way `SEATLOOM_SEAT_MAP`'s default is. The convention is
+/// `<tasks_dir>/<seat>/<SEAT>-HEARTBEAT.md` — already established by
+/// `AEGIS-HEARTBEAT.md` and `LYRA-HEARTBEAT.md`, so this is not a new layout.
+const DEFAULT_TASKS_DIR: &str = "docs/coordination/tasks";
 /// Multiplier applied to `stale_after` when `SEATLOOM_STALE_HARD_AFTER_SECS` is
 /// not set: the backstop age past which a stale claim is poked REGARDLESS of
 /// what the pane looks like. Four times the soft threshold — long enough that a
@@ -121,6 +138,12 @@ struct Config {
     stale_hard_after: Duration,
     sweep_every: Duration,
     poke_cooldown: Duration,
+    /// The HEARTBEAT nudge's own, longer cooldown. Separate from
+    /// `poke_cooldown` on purpose: a dispatch nudge is urgent, a heartbeat one
+    /// is not, and sharing one window would make one of the two wrong.
+    heartbeat_cooldown: Duration,
+    /// Where each seat's heartbeat document lives.
+    tasks_dir: String,
     agent_procs: Vec<String>,
 }
 
@@ -142,6 +165,12 @@ impl Config {
             ),
             sweep_every: secs_from_env("SEATLOOM_SWEEP_SECS", DEFAULT_SWEEP_EVERY),
             poke_cooldown: secs_from_env("SEATLOOM_POKE_COOLDOWN_SECS", DEFAULT_POKE_COOLDOWN),
+            heartbeat_cooldown: secs_from_env(
+                "SEATLOOM_HEARTBEAT_COOLDOWN_SECS",
+                DEFAULT_HEARTBEAT_COOLDOWN,
+            ),
+            tasks_dir: std::env::var("SEATLOOM_TASKS_DIR")
+                .unwrap_or_else(|_| DEFAULT_TASKS_DIR.to_string()),
             agent_procs: std::env::var("SEATLOOM_AGENT_PROCS")
                 .unwrap_or_else(|_| DEFAULT_AGENT_PROCS.to_string())
                 .split(',')
@@ -581,6 +610,11 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
     // so an unmapped NOTIFY and the sweep see the same state.
     let mut map = SeatMap::load(&cfg.map_path);
     let mut poker = Poker::new(cfg.poke_cooldown);
+    // The heartbeat nudge has its OWN cooldown, on its own Poker: a dispatch
+    // nudge is urgent (work is waiting) and a heartbeat one is not, so sharing a
+    // window would make one of the two wrong. They are separate knobs on separate
+    // state, and tuning one never moves the other.
+    let mut heartbeat_poker = Poker::new(cfg.heartbeat_cooldown);
     // Per-seat pane hashes from the previous sweep: the progress signal.
     let mut pane_hashes: HashMap<String, u64> = HashMap::new();
     let mut ticker = tokio::time::interval(cfg.sweep_every);
@@ -590,7 +624,7 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
     // while the previous connection was down has no pending notification to
     // receive. Re-derive the missed wakeups from the DB before trusting the
     // stream again.
-    if let Err(e) = catch_up(&client, &mut map, &mut poker).await {
+    if let Err(e) = catch_up(&client, &mut map, &mut poker, &cfg.tasks_dir).await {
         return format!("catch-up scan failed: {}", describe(e));
     }
 
@@ -600,7 +634,9 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
                 match msg {
                     Some(ConnMsg::Notify(n)) => {
                         let seat_id = n.payload().to_string();
-                        if let Err(e) = handle_ready(&client, &mut map, &mut poker, &seat_id).await {
+                        if let Err(e) =
+                            handle_ready(&client, &mut map, &mut poker, &cfg.tasks_dir, &seat_id).await
+                        {
                             // The busy-check query failed — the connection is suspect.
                             // Fail safe: never nudge a seat we could not prove idle.
                             // Reconnect; the catch-up scan re-derives this seat's state.
@@ -613,7 +649,9 @@ async fn serve_once(cfg: &Config, backoff: &mut Backoff) -> String {
             }
             _ = ticker.tick() => {
                 // Periodic catch-up + stale-claim detection (fixes 2 and 1).
-                if let Err(e) = sweep(&client, &mut map, cfg, &mut poker, &mut pane_hashes).await {
+                if let Err(e) =
+                    sweep(&client, &mut map, cfg, &mut poker, &mut heartbeat_poker, &mut pane_hashes).await
+                {
                     return format!("sweep failed: {}", describe(e));
                 }
             }
@@ -631,24 +669,26 @@ async fn handle_ready(
     client: &Client,
     map: &mut SeatMap,
     poker: &mut Poker,
+    tasks_dir: &str,
     seat_id: &str,
 ) -> Result<(), tokio_postgres::Error> {
     if map.get(seat_id).is_none() {
         // Unmapped: re-read the file ONCE — a seat added while the daemon runs
         // must not need a restart — and only then give up.
         if map.reload(false) && map.get(seat_id).is_some() {
-            return handle_ready_mapped(client, map, poker, seat_id).await;
+            return handle_ready_mapped(client, map, poker, tasks_dir, seat_id).await;
         }
         eprintln!("seatloom-waker: NOTIFY for unmapped seat {seat_id} — ignoring");
         return Ok(());
     }
-    handle_ready_mapped(client, map, poker, seat_id).await
+    handle_ready_mapped(client, map, poker, tasks_dir, seat_id).await
 }
 
 async fn handle_ready_mapped(
     client: &Client,
     map: &SeatMap,
     poker: &mut Poker,
+    tasks_dir: &str,
     seat_id: &str,
 ) -> Result<(), tokio_postgres::Error> {
     let Some(session) = map.get(seat_id) else {
@@ -664,7 +704,7 @@ async fn handle_ready_mapped(
         return Ok(());
     }
     eprintln!("seatloom-waker: waking idle seat {seat_id} -> {session}");
-    nudge(session);
+    nudge(session, NudgeKind::Dispatch, seat_id, tasks_dir);
     Ok(())
 }
 
@@ -761,6 +801,7 @@ async fn sweep(
     map: &mut SeatMap,
     cfg: &Config,
     poker: &mut Poker,
+    heartbeat_poker: &mut Poker,
     pane_hashes: &mut HashMap<String, u64>,
 ) -> Result<(), tokio_postgres::Error> {
     map.reload(false);
@@ -793,7 +834,7 @@ async fn sweep(
                     eprintln!(
                         "seatloom-waker: sweep: idle seat {seat_id} has {n} ready dispatch(es) -> {session}"
                     );
-                    nudge(&session);
+                    nudge(&session, NudgeKind::Dispatch, &seat_id, &cfg.tasks_dir);
                 }
             }
             // Busy: is the claim stale, and is the pane actually advancing?
@@ -812,7 +853,7 @@ async fn sweep(
                              ({}) — poking anyway; a pane that merely looks busy is not evidence of progress",
                             progress.describe()
                         );
-                        nudge(&session);
+                        nudge(&session, NudgeKind::Dispatch, &seat_id, &cfg.tasks_dir);
                     }
                 }
                 Some(age) if age >= cfg.stale_after => {
@@ -830,7 +871,7 @@ async fn sweep(
                             live.describe(),
                             progress.describe()
                         );
-                        nudge(&session);
+                        nudge(&session, NudgeKind::Dispatch, &seat_id, &cfg.tasks_dir);
                     }
                 }
                 Some(age) => {
@@ -843,7 +884,29 @@ async fn sweep(
                     );
                 }
             },
-            // Idle with nothing ready: nothing to do.
+            // Idle with nothing ready: NOTHING TO DO — unless the seat has
+            // standing duties of its own.
+            //
+            // THE DEFECT THIS CLOSES. This arm used to be `{}`, so a seat with no
+            // ready dispatch was never called at all — and the only instruction
+            // any seat ever received was "drain your dispatches and stop", whose
+            // entire field of view is the queue. A seat whose job includes
+            // designing, finding what is broken, and owning the delivery was
+            // therefore a pure contractor: present when dispatched, absent
+            // otherwise. Mr Zhang named it exactly that on 2026-10-16.
+            //
+            // So an idle seat with a heartbeat document is called to that
+            // document, on its own longer cooldown. A seat WITHOUT one is left
+            // alone — calling it would earn "nothing to do", which is noise.
+            (None, 0) => {
+                if has_heartbeat_doc(&cfg.tasks_dir, &seat_id) && heartbeat_poker.allow(&seat_id) {
+                    eprintln!(
+                        "seatloom-waker: sweep: idle seat {seat_id} has no ready dispatch and a                          standing-duty document -> {session}"
+                    );
+                    nudge(&session, NudgeKind::Heartbeat, &seat_id, &cfg.tasks_dir);
+                }
+            }
+            // Idle with nothing ready and no standing duties: genuinely nothing.
             (None, _) => {}
         }
     }
@@ -861,6 +924,7 @@ async fn catch_up(
     client: &Client,
     map: &mut SeatMap,
     poker: &mut Poker,
+    tasks_dir: &str,
 ) -> Result<(), tokio_postgres::Error> {
     map.reload(true);
     let mut woken = 0usize;
@@ -872,7 +936,7 @@ async fn catch_up(
         let state = seat_state(client, &seat_id).await?;
         if state.in_flight_id.is_none() && state.ready_n > 0 && poker.allow(&seat_id) {
             eprintln!("seatloom-waker: catch-up: waking idle seat {seat_id} -> {session}");
-            nudge(&session);
+            nudge(&session, NudgeKind::Dispatch, &seat_id, tasks_dir);
             woken += 1;
         }
     }
@@ -880,15 +944,77 @@ async fn catch_up(
     Ok(())
 }
 
-/// Nudge an idle seat's tmux pane to run its dispatch drain loop.
-fn nudge(session: &str) {
-    let msg = "📥 new governed dispatch available — run your dispatch loop now: \
-               call get_next_dispatch repeatedly (do each payload, then complete_dispatch) \
-               until it returns \"nothing ready\", then stop.";
+/// The two things a seat can be called to do. They are different instructions
+/// with different urgency, so they are two variants of one function rather than
+/// two functions that could drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NudgeKind {
+    /// Drain the dispatch queue. Urgent: work is waiting.
+    Dispatch,
+    /// Go and do your standing duties. Not urgent: nothing is waiting.
+    Heartbeat,
+}
+
+impl NudgeKind {
+    /// The message typed into the seat's pane.
+    ///
+    /// **The dispatch message is byte-identical to what it always was.** The
+    /// acceptance criterion for this change is that a seat with work receives
+    /// exactly the old instruction, so it is a literal, not a rewrite.
+    fn message(self, seat_id: &str, tasks_dir: &str) -> String {
+        match self {
+            NudgeKind::Dispatch => {
+                "📥 new governed dispatch available — run your dispatch loop now: \
+                 call get_next_dispatch repeatedly (do each payload, then complete_dispatch) \
+                 until it returns \"nothing ready\", then stop."
+                    .to_string()
+            }
+            NudgeKind::Heartbeat => {
+                let doc = heartbeat_doc_path(tasks_dir, seat_id);
+                format!(
+                    "📋 no dispatch waiting — this is your standing duty, not idle time. \
+                     Read {doc} and do what it says. A seat that only exists when \
+                     dispatched is not doing its job."
+                )
+            }
+        }
+    }
+}
+
+/// Where a seat's heartbeat document lives, under the established convention
+/// `<tasks_dir>/<seat>/<SEAT>-HEARTBEAT.md`.
+///
+/// `seat-lyra-001` → `docs/coordination/tasks/lyra/LYRA-HEARTBEAT.md`. The seat
+/// id's `seat-` prefix and `-NNN` suffix are the registry's, not the document
+/// directory's, so they are stripped rather than kept.
+fn heartbeat_doc_path(tasks_dir: &str, seat_id: &str) -> String {
+    let short = seat_id
+        .strip_prefix("seat-")
+        .unwrap_or(seat_id)
+        .split('-')
+        .next()
+        .unwrap_or(seat_id);
+    format!("{tasks_dir}/{short}/{}-HEARTBEAT.md", short.to_uppercase())
+}
+
+/// Does this seat HAVE a heartbeat document?
+///
+/// Only a seat with one is called with [`NudgeKind::Heartbeat`]. Calling a seat
+/// that has no standing duties would produce "nothing to do" — noise, and the
+/// dispatch names that as a reject. Checked per sweep rather than cached, so
+/// writing a document connects a seat with no code change and no restart, which
+/// is the whole point of the convention.
+fn has_heartbeat_doc(tasks_dir: &str, seat_id: &str) -> bool {
+    Path::new(&heartbeat_doc_path(tasks_dir, seat_id)).is_file()
+}
+
+/// Nudge an idle seat's tmux pane.
+fn nudge(session: &str, kind: NudgeKind, seat_id: &str, tasks_dir: &str) {
+    let msg = kind.message(seat_id, tasks_dir);
     // Type the message, then submit with Enter (sent separately so the pane's
     // line editor registers a real submit).
     let _ = Command::new("tmux")
-        .args(["send-keys", "-t", session, msg])
+        .args(["send-keys", "-t", session, &msg])
         .status();
     let _ = Command::new("tmux")
         .args(["send-keys", "-t", session, "Enter"])
@@ -1116,5 +1242,179 @@ mod tests {
             claim_age_secs: Some(2400.0),
         };
         assert_eq!(old.claim_age(), Some(Duration::from_secs(2400)));
+    }
+
+    // =========================================================================
+    // The heartbeat call — a seat that only exists when dispatched is not doing
+    // its job (dispatch disp-Krsp8j-EDOpWDIiWjuHo_, 2026-10-16).
+    // =========================================================================
+
+    /// The dispatch message is BYTE-IDENTICAL to what it always was. This is an
+    /// acceptance criterion: a seat with work must receive exactly the old
+    /// instruction, so the string is pinned here rather than merely re-used.
+    #[test]
+    fn the_dispatch_message_is_byte_identical_to_what_it_always_was() {
+        let msg = NudgeKind::Dispatch.message("seat-lyra-001", "docs/coordination/tasks");
+        assert_eq!(
+            msg,
+            "📥 new governed dispatch available — run your dispatch loop now: \
+             call get_next_dispatch repeatedly (do each payload, then complete_dispatch) \
+             until it returns \"nothing ready\", then stop."
+        );
+        // And it does not mention a heartbeat document: the two instructions are
+        // separate, and neither leaks into the other.
+        assert!(!msg.contains("HEARTBEAT"), "{msg}");
+        assert!(!msg.contains("standing"), "{msg}");
+    }
+
+    /// The heartbeat message points at the seat's OWN document and says what to
+    /// do — it is not the drain instruction with different wording.
+    #[test]
+    fn the_heartbeat_message_points_at_the_seats_own_document() {
+        let msg = NudgeKind::Heartbeat.message("seat-lyra-001", "docs/coordination/tasks");
+        assert!(
+            msg.contains("docs/coordination/tasks/lyra/LYRA-HEARTBEAT.md"),
+            "{msg}"
+        );
+        assert!(msg.contains("standing"), "{msg}");
+        // And it does NOT tell the seat to drain dispatches: with none waiting,
+        // that instruction would be a lie.
+        assert!(!msg.contains("get_next_dispatch"), "{msg}");
+        assert!(!msg.contains("nothing ready"), "{msg}");
+    }
+
+    /// The path convention: the registry's `seat-` prefix and `-NNN` suffix are
+    /// the registry's, not the document directory's.
+    #[test]
+    fn the_heartbeat_doc_path_strips_the_registrys_affixes() {
+        assert_eq!(
+            heartbeat_doc_path("docs/coordination/tasks", "seat-lyra-001"),
+            "docs/coordination/tasks/lyra/LYRA-HEARTBEAT.md"
+        );
+        assert_eq!(
+            heartbeat_doc_path("docs/coordination/tasks", "seat-onyx-001"),
+            "docs/coordination/tasks/onyx/ONYX-HEARTBEAT.md"
+        );
+        // A bare seat id still resolves rather than panicking on the strip.
+        assert_eq!(
+            heartbeat_doc_path("docs/coordination/tasks", "lyra"),
+            "docs/coordination/tasks/lyra/LYRA-HEARTBEAT.md"
+        );
+    }
+
+    /// ONLY a seat that HAS a heartbeat document is called this way. A seat
+    /// without one would answer "nothing to do" — noise, and the dispatch names
+    /// that as a reject. Measured against a real temp directory, so the check is
+    /// the filesystem and not a string comparison.
+    #[test]
+    fn only_a_seat_with_a_heartbeat_document_is_called_this_way() {
+        let dir = std::env::temp_dir().join(format!("seatloom-hb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // One seat with the document, one without.
+        std::fs::create_dir_all(dir.join("lyra")).unwrap();
+        std::fs::write(dir.join("lyra/LYRA-HEARTBEAT.md"), "# duties\n").unwrap();
+        std::fs::create_dir_all(dir.join("mira")).unwrap();
+
+        assert!(
+            has_heartbeat_doc(dir.to_str().unwrap(), "seat-lyra-001"),
+            "a seat with the document is callable"
+        );
+        assert!(
+            !has_heartbeat_doc(dir.to_str().unwrap(), "seat-mira-001"),
+            "a seat without it is not"
+        );
+        // The directory existing is not enough — the FILE must.
+        assert!(!has_heartbeat_doc(dir.to_str().unwrap(), "seat-nimbus-001"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two cooldowns are SEPARATE, and the heartbeat one is the longer. A
+    /// dispatch nudge is urgent (work is waiting); a heartbeat one is not. Sharing
+    /// a window would make one of the two wrong.
+    #[test]
+    fn the_two_cooldowns_are_separate_and_the_heartbeat_one_is_longer() {
+        assert!(
+            DEFAULT_HEARTBEAT_COOLDOWN > DEFAULT_POKE_COOLDOWN,
+            "the heartbeat nudge is the less urgent one and must be rarer"
+        );
+        assert_eq!(DEFAULT_HEARTBEAT_COOLDOWN, Duration::from_secs(30 * 60));
+        assert_eq!(DEFAULT_POKE_COOLDOWN, Duration::from_secs(120));
+        // And they are two Pokers over two windows, so one seat can be
+        // dispatch-nudged twice while being heartbeat-nudged once.
+        let mut dispatch = Poker::new(DEFAULT_POKE_COOLDOWN);
+        let mut heartbeat = Poker::new(DEFAULT_HEARTBEAT_COOLDOWN);
+        assert!(dispatch.allow("seat-lyra-001"));
+        assert!(heartbeat.allow("seat-lyra-001"));
+        assert!(!dispatch.allow("seat-lyra-001"), "still cooling down");
+        assert!(
+            !heartbeat.allow("seat-lyra-001"),
+            "and the heartbeat one cools down over a longer window"
+        );
+    }
+
+    /// A seat with a heartbeat document gets the heartbeat nudge repeatedly
+    /// across periods — and a seat WITHOUT one never does, however long it sits
+    /// idle. That is the whole acceptance criterion in one test.
+    #[test]
+    fn an_idle_seat_with_a_document_is_called_and_one_without_is_not() {
+        let dir = std::env::temp_dir().join(format!("seatloom-hb2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lyra")).unwrap();
+        std::fs::write(dir.join("lyra/LYRA-HEARTBEAT.md"), "# duties\n").unwrap();
+        let tasks = dir.to_str().unwrap().to_string();
+
+        let mut heartbeat = Poker::new(Duration::from_millis(1));
+        for period in 0..3 {
+            // A seat with the document is called, and the message is the
+            // standing-duty one.
+            let with =
+                has_heartbeat_doc(&tasks, "seat-lyra-001") && heartbeat.allow("seat-lyra-001");
+            assert!(
+                with,
+                "period {period}: a seat with a document must be called"
+            );
+            assert!(
+                NudgeKind::Heartbeat
+                    .message("seat-lyra-001", &tasks)
+                    .contains("LYRA-HEARTBEAT.md"),
+                "the message names the seat's own document"
+            );
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        // A seat without one is never called, across the same periods.
+        let mut heartbeat2 = Poker::new(Duration::from_millis(1));
+        for period in 0..3 {
+            let without =
+                has_heartbeat_doc(&tasks, "seat-mira-001") && heartbeat2.allow("seat-mira-001");
+            assert!(
+                !without,
+                "period {period}: a seat without a document must not be called"
+            );
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cooldown holds across periods: the same seat is not called to
+    /// spam. Measured with a real clock over a real window.
+    #[test]
+    fn the_heartbeat_cooldown_prevents_spam_across_periods() {
+        let mut heartbeat = Poker::new(Duration::from_millis(40));
+        assert!(
+            heartbeat.allow("seat-lyra-001"),
+            "the first call is allowed"
+        );
+        for _ in 0..5 {
+            assert!(
+                !heartbeat.allow("seat-lyra-001"),
+                "within the window the seat is not called again"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            heartbeat.allow("seat-lyra-001"),
+            "after the window it is called again"
+        );
     }
 }
