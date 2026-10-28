@@ -206,6 +206,16 @@ export const api = {
     invoke('cmd_read_history_context_slice', { contextPath, lineStart, lineEnd }),
   openLocalPath: (path: string): Promise<void> => invoke('cmd_open_local_path', { path }),
 
+  // --- Open an http(s) URL in the operator's default browser ────────────────
+  // WHY NOT window.open: xterm's WebLinksAddon, loaded without a handler, falls
+  // back to window.open(), and Tauri's webview blocks that by design — so a URL
+  // in the live-seats pane was recognised and clicked but never opened. The Rust
+  // side shells out to the platform opener, the same mechanism openLocalPath
+  // already uses. Only http(s) passes the gate there; other schemes come back as
+  // an error naming the scheme, which is what callers surface.
+  openExternalUrl: (url: string): Promise<void> =>
+    invoke('cmd_open_external_url', { url }),
+
   // --- D2 acceptance loop (a delivered milestone, decided in the UI) ---
   // Nimbus's lane. The three commands below are NOT registered on `track` yet,
   // which is why `ACCEPTANCE_CMDS_REGISTERED` gates them: until it is true the

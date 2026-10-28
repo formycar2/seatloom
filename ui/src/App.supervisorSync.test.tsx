@@ -53,6 +53,18 @@ const state = vi.hoisted(() => ({
   deferredResolve: null as ((fn: () => void) => void) | null,
   /** Set while the startup query is being held, so the test can fail it later. */
   pendingQueryReject: null as ((e: unknown) => void) | null,
+  /**
+   * Hold the `supervisor:reembedded` SUBSCRIPTION's promise so the STARTUP QUERY
+   * can be failed first and this subscription failed afterwards.
+   *
+   * This is the ordering that exposes the `prev?.kind` guard. It exists because
+   * the app invokes the query before the two subscriptions, so in production the
+   * query's rejection always lands first and the guard never fires — see the long
+   * note at the guard in App.tsx. Holding the subscription is the only way to
+   * make the worse failure arrive SECOND, which is exactly what F2 was.
+   */
+  holdReembedListen: false,
+  pendingReembedReject: null as ((e: unknown) => void) | null,
 }));
 
 vi.mock('./lib/api', () => ({
@@ -100,6 +112,13 @@ vi.mock('./lib/api', () => ({
     if (state.rejectListenFor.includes('supervisor:reembedded')) {
       return Promise.reject(new Error('event bus refused supervisor:reembedded'));
     }
+    if (state.holdReembedListen) {
+      // Held until the test releases it: the mechanism that lets a subscription
+      // fail AFTER the startup query has already failed.
+      return new Promise((_resolve, reject) => {
+        state.pendingReembedReject = reject;
+      });
+    }
     return Promise.resolve(() => {
       state.unlistenCalls.push('supervisor:reembedded');
     });
@@ -141,6 +160,8 @@ beforeEach(() => {
   state.statusCalls = 0;
   state.deferDetached = false;
   state.deferredResolve = null;
+  state.holdReembedListen = false;
+  state.pendingReembedReject = null;
   useDataStore.setState({ activeProjectId: null, backendHydrated: false });
 });
 
@@ -556,6 +577,48 @@ describe('the worse failure wins regardless of arrival order', () => {
     // Both reasons still present, and the retry is offered.
     const text = screen.getByTestId(STRIP).textContent ?? '';
     expect(text).toContain('event bus refused supervisor:detached');
+    expect(screen.queryByRole('button', { name: /再问一次/ })).not.toBeNull();
+  });
+
+  it('a subscription failing AFTER the query does not demote the shape', async () => {
+    // The mirror of the test above, and the ONLY thing that exercises the
+    // `prev?.kind` half of the guard.
+    //
+    // Why this ordering does not happen in production: the app invokes
+    // askSupervisorWindowStatus() BEFORE it registers the two subscriptions, so
+    // the query's rejection always lands first. To make the worse failure arrive
+    // SECOND — which is precisely what F2 was — the subscription has to be held
+    // back, which is what `holdReembedListen` does. Without that switch this
+    // guard is unreachable and no test in this suite touches it.
+    //
+    // What this pins: when the query has already said never-answered, a later
+    // subscription failure must ADD its reason without DEMOTING the shape to
+    // stale. The `prev?.kind === 'never-answered'` disjunct is what does that;
+    // `failure.kind` alone would read 'stale' and overwrite.
+    state.rejectStatus = true;
+    state.holdReembedListen = true;
+
+    await mountApp();
+
+    // The query failed first: the red never-answered shape, retry offered.
+    await waitFor(() =>
+      expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('never-answered'),
+    );
+
+    // Now the held subscription rejects. It must not demote the shape.
+    expect(state.pendingReembedReject).not.toBeNull();
+    await act(async () => {
+      state.pendingReembedReject!(new Error('event bus refused supervisor:reembedded'));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId(STRIP).getAttribute('data-kind')).toBe('never-answered'),
+    );
+    // The subscription's reason is still recorded — the guard keeps the severity,
+    // it does not throw the evidence away.
+    const text = screen.getByTestId(STRIP).textContent ?? '';
+    expect(text).toContain('event bus refused supervisor:reembedded');
     expect(screen.queryByRole('button', { name: /再问一次/ })).not.toBeNull();
   });
 });
