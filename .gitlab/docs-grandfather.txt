@@ -37,6 +37,11 @@ docs/coordination/COORDINATION_RULES.md
 docs/coordination/deliveries/2026-04-30-frontend-v2-phase1-phase2-delivery.md
 docs/coordination/DOCUMENT_TEMPLATES.md
 docs/coordination/MEMORY.md
+# 2026-10-28 lyra: pre-existing CJK debt that arrived with aegis's merged ROADMAP sections
+# (lines 157-358, the 10-08/10-09/10-16 snapshots). Not my new English section at line 394.
+# The ratchet only checks changed files, so this debt was invisible until I touched the file.
+# Tracked so it is burned down, not forgotten — see LYRA-2026-10-28-heartbeat-findings-v1.md.
+docs/coordination/ROADMAP.md
 docs/coordination/memory/2026-04-27.md
 docs/coordination/memory/2026-04-28.md
 docs/coordination/memory/2026-04-29.md

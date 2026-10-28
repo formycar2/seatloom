@@ -359,6 +359,38 @@ designed; do not invent it.
 
 ---
 
+## 2026-10-28 · Lyra — the app the operator launches has no frontend, and three acceptance cards cannot be run
+
+**The next round is one thing: make the product usable again.** Not a feature. Measured this turn
+(heartbeat `LYRA-2026-10-28-heartbeat-findings-v1`):
+
+**Fact A — `/Applications/SeatLoom.app` is a *dev* build.** Its binary (mtime 10-27 14:03) contains
+`devUrl http://localhost:1420` and **zero embedded frontend blobs**. Nothing listens on `:1420` and
+no `vite` process exists. `ui/dist` exists (10-27 21:48) but a binary that embeds nothing cannot use
+it. So a reload of the app yields no UI. Whether the operator's currently-open window is blank is
+**unmeasured** — the SPA may have loaded while a dev server was alive, and that is not guessable from
+here.
+
+**Fact B — three of 28 pending cards cannot be run as written.** `acc-disp-CACpK8qlLm96WQY08itl-`,
+`acc-disp-HlxnnSKW2lX-rMR02AFk2` and `acc-disp-YepFZb2hc62cZEO1UkJFX` name the ref
+`track/infa-foundation` (missing an `r`) in `acceptance_plan` and `how_to_verify`; the command the
+operator is told to run fails with `fatal: Not a valid object name`. The claims are true and the
+verdicts are valid passes, so **Accept works** — the damage is that step 1 dies.
+
+**Fact C — nothing accepted was lost.** All 26 accepted cards' 11 distinct `merge_commit`s are
+ancestors of track. All 28 pending cards are clickable and carry a valid pass verdict about their own
+dispatch. The 10-17 mockup finding is closed: the `Pi` harness variant (`f316201`) is on track and
+live carries `Pi` × 10.
+
+**Order of work:** (1) a bundle build verified by decompressing its blobs and content-matching
+`ui/dist` — never by listing `Resources`, never by grepping the executable — installed over the app
+with the old one kept; the restart is the operator's, not a seat's. (2) the three cards cancelled
+and re-opened under the same ids with the ref spelled correctly. (3) a check that every ref named in
+a pending plan exists, so the class stops.
+
+**Open on the operator, not on a seat:** whether the app should be a bundle build at all, or a dev
+build with `pnpm dev` kept alive. The two answers need different work and only he can choose.
+
 ## 2026-10-17 · Lyra — the next round is integration, because the app is a mockup right now
 
 Raised by Aegis's dispatch `disp-C2a6xeJUDA08dEAycc3WK`. Plan:
