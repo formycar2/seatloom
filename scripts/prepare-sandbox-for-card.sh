@@ -43,6 +43,7 @@ q(){ podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -X -U seatloom -d
 #    卡号是 acc-xxx。一条「用错了号」被报成「账本里没有」,等于说谎:
 #    账本里明明有那个派单,只是它不是卡。
 #    改成:两种号都收,并且按号前缀走各自的路;不猜、不混报。
+APPLY=0
 DISPID_ARG=""; CARD=""
 for a in "$@"; do
   case "$a" in
