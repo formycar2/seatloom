@@ -482,3 +482,81 @@ the provenance one-liner, and the two re-emissions nobody has done.
 
 No new surface, partition or interaction is proposed — he forbade it on 10-16 and nothing has
 lifted that.
+
+---
+
+## 2026-10-29 · Lyra — what is actually true now, and the one thing that should be next
+
+This section replaces nothing. It retires what is fixed, restates what is not, and adds what was
+measured this week. Every claim below was re-measured on 2026-10-29 against the code and the live
+database, not carried forward from the 10-16 snapshot. Where I could not measure something I say so
+rather than guessing.
+
+### Retired since 10-16 — measured fixed, do not re-dispatch these
+
+| 10-16 claim | Measured now | Where |
+|---|---|---|
+| The app has no icon; the config is an empty array | **Fixed.** `tauri.conf.json` lists five icon paths, and `icons/` holds real 128×128 and `.icns` files | `src-tauri/tauri.conf.json:28-35` |
+| Clicking a timeline event does nothing — there is no `Event` type | **Fixed.** `'Event'` is in `SelectedObjectType` and `case 'Event':` returns the event itself | `ui/src/App.tsx:58, 515, 606-610` |
+| The supervision panel's goals and phases sections are permanently empty, reading fake data | **Retired — the sections are gone.** `SupervisorPanel.tsx` contains no goals/phases code at all, and `SupervisionDashboard` reads `useDataStore` with no mock or stub | `ui/src/app-v2/panel/SupervisorPanel.tsx`, `ui/src/components/SupervisionDashboard.tsx:13, 38-41` |
+| The timeline is labelled "example data, not yet from live capture" | **Retired.** No `示例数据` marker remains anywhere in `ui/src`. The one surviving occurrence is `LiveSeatsView.tsx:447`, which says the opposite — that the view never fills itself with sample data | `grep -rn "示例数据" ui/src` |
+| Four forms say they wrote the data and lose it on refresh | **Fixed as honesty, not as a write command.** `CannotStoreNotice` is rendered by all four forms (`WorkItemForm`, `HandoffForm`, `AddSeatDialog`, `DelegationOverlay` — 2 references each) and says in plain words that this build cannot store it and closing discards the input, naming the exact missing command | `ui/src/components/CannotStoreNotice.tsx` |
+
+**On the last one, the judgement call.** I checked whether a write command *could* be wired: a
+workitem is created by appending a `WorkItemCreated` event, which `write_api.rs:639` turns into the
+row. `emit_event` is an MCP tool for seats. **So the form has no honest write path today, and
+"Cannot store this" is the correct behaviour rather than a workaround.** Whether the UI should be
+able to append ledger events at all is an architecture decision, not a UI one, and it is listed below
+as an operator question.
+
+### Still open — measured today, still true
+
+| Defect | Evidence | Owner |
+|---|---|---|
+| **The reconcile notification can never appear.** `showReconcileSummary` is declared at `App.tsx:385` and `setShowReconcileSummary(true)` occurs nowhere in the file. The only writes are two `false` ones inside its own close handlers, so the guard at line 884 has a permanently false first conjunct. The count it would show is also the wrong quantity — `App.tsx:387` counts workitems with `status === 'Blocked'` under a reconcile-shaped name. Live has 7 workitems, all `done`, zero `Blocked`, so it would render `count={0}` anyway. | `grep -n "setShowReconcileSummary(true)" ui/src/App.tsx` → no match | Mira |
+| **The document surface is built, tested and unreachable.** `DocumentsWorkspace.tsx` has a `reconcileResult` state and is imported by nothing except its own test. `App.tsx` has no documents nav entry. `list_documents` (`repositories.rs:2445`) has no caller. Meanwhile `run_reconcile` **is** wired — `src-cli/src/main.rs:69` and `src-tauri/src/commands/reconcile_cmds.rs:16` — so the engine runs and nothing shows its output. | grep for imports and callers | **operator decision first, then a seat** |
+| **A fresh database cannot be built.** `apply-db.sh` lists 021 before 011 in `POST_SEED_SCHEMA`, but 021 does `ALTER TABLE archived_sessions` (line 147) and 011 creates that table (line 18). `ON_ERROR_STOP` kills the run there; 022's failure is a cascade, not a second defect. **Verified twice independently** — by me and by Aegis on his own scratch database. Fix verified: moving 021 after 011 gives zero failures and 32 tables matching live exactly. | `lyra_freshproof`, `aegis_seedproof` (both dropped) | Onyx |
+| **The seed does not describe live.** Rebuild gives 6 seats all `Stepcode` / `claude-opus-5[1m]`; live has 10 all `Pi` / `stepplan-wash-anthropic/step-5-preview`. `documents` is 14 in a rebuild and **0** in live, and no migration deletes documents — the only `DELETE FROM documents` in the workspace is test teardown at `dispatch.rs:3485`, and all 14 files the seed names exist on disk today. | scratch rebuild vs live | Onyx (005 is written; needs merging) |
+| **The seat drift above is not user-visible, which is why nobody noticed.** `defaultHarness` is declared in `ui/src/lib/types-dto.ts:29` and crosses the wire, but nothing renders it. The `live-seats` tab reads `cmd_list_tmux_sessions`, not the `seats` table. So this is schema truth, not product truth. | grep `defaultHarness` outside `types-dto` → tests only | — |
+| **The five standing-duty documents are still not on track.** `on_track=0` for all five, so the waker — which reads a *relative* `docs/coordination/tasks` against the primary checkout on `track/infra-foundation` — still sees only Lyra. Ten nudges for Lyra, zero for the other five, measured live. | `waker.rs:112`, `lsof -p <waker>` | **operator merge** |
+
+### The decision for this round — and it is not a UI fix
+
+**Next: make the document corpus real, or say plainly that it is not.**
+
+Everything else on the list is either assigned or is a one-line reorder. This one is different,
+because it is the only item where the honest answer might be "delete the feature", and that is not a
+call a seat should make quietly.
+
+The facts: `run_reconcile` is wired into both the CLI and a registered Tauri command. It reads
+`documents` — and live has **zero** rows there while a rebuild produces 14 that all point at files
+which exist on disk right now. The view that would display them (`DocumentsWorkspace`) exists, has
+tests, and has no route. The one control that mentions reconcile is dead.
+
+So the project has a document-ingestion engine that runs, a corpus that is absent from live, and a
+display surface that is unreachable. Three of the four possible states of that system are defects.
+The fourth — documents are not part of the product — is a legitimate position, and if it is the
+position then the honest action is to remove the dead code and the unrouted view, not to leave them
+as a feature that looks half-built.
+
+**Why this one and not the reconcile badge:** the badge is one dead control on one tab, and it is
+Mira's to fix with the standing-duty check I already handed her. The document question decides
+whether a whole subsystem ships, and it has been sitting unanswered since 2026-04-29, when the seed
+that would have populated it was written.
+
+**What I am explicitly not doing next:** not merging my own branch into track, not reordering
+`apply-db.sh` (Onyx's file), not editing `App.tsx` (Mira's surface), not opening a card for anything
+that has not been measured, and not writing `roles/VELA.md` on Vela's behalf — that is his first job
+when he next has a turn and I have said so in his heartbeat.
+
+### Operator decisions needed — these are yours, not a seat's
+
+1. **Documents: ship it or remove it?** If ship: `DocumentsWorkspace` needs a route,
+   `list_documents` needs a caller, and live's zero rows become a visible hole that must be filled.
+   If remove: delete the unrouted view and say so in the roadmap, so nobody re-discovers it.
+2. **Should the UI be able to write to the ledger?** Today a workitem can only be created by a seat
+   calling `emit_event` with a `WorkItemCreated` payload. That is why all four forms are read-only
+   and why the honest notice is the right answer. A UI that appends events is an architecture change
+   with consequences for the append-only ledger, not a missing button.
+3. **Merge `packet/lyra/milestone-summary` into track.** This is what makes the five standing duties
+   real. Until it happens the fleet has one seat with standing duties and I have been reporting six.
