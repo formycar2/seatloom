@@ -371,3 +371,31 @@ Three consequences that need stating once, plainly:
    de-duplicate the two Rust allow-list copies.
 5. **Ops** — `src-tauri` / `src-cli` are not yet clippy-gated (pre-existing
    dead-code warnings); bring them under `-D warnings` once cleaned.
+
+## Pushing to track while a card is pending
+
+A pending acceptance card is the operator's decision. Its branch must contain its
+base, or the card is unclickable — and an unclickable card is a card that will
+never be merged.
+
+**A commit to `track/infra-foundation` while any acceptance card is `pending` is
+not a neutral act.** It puts a "sync first" gate in front of every one of those
+cards.
+
+Run this before, and again after, any commit to track:
+
+```bash
+scripts/check-cards-clickable.sh      # prints a count; exits 1 if any card is stranded
+```
+
+`.git/hooks/pre-commit` refuses a track commit that would strand a pending card.
+The override is `--no-verify`, and it is legitimate **only** when, in the same
+turn, you (a) dispatch the card owner a priority-99 branch sync and (b) say why
+in the commit body. Never route around it silently.
+
+Do not merge a seat's packet branch into track yourself. That merge is the
+operator's Accept, not yours.
+
+> This control exists because the prose rule was written twice and broken twice
+> by the same seat on the same day. A rule that depends on being remembered is
+> not a control.
