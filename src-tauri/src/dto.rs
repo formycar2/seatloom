@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
     AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow, CheckpointRow,
     DispatchDependencyRow, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, PipelineRunRow, ProjectRoleBindingRow,
-    ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow,
-    SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, OperatorDecisionRow, PipelineRunRow,
+    ProjectRoleBindingRow, ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,9 @@ pub struct ProjectDto {
     pub created_at: String,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, or null. Sent so the UI shows the real path; the
+    /// frontend used to synthesise `'~/' + name` because it was not given one.
+    pub home_path: Option<String>,
 }
 
 impl From<ProjectRow> for ProjectDto {
@@ -38,6 +41,7 @@ impl From<ProjectRow> for ProjectDto {
             created_at: iso(r.created_at),
             worker_budget_tokens: r.worker_budget_tokens,
             supervisor_budget_tokens: r.supervisor_budget_tokens,
+            home_path: r.home_path,
         }
     }
 }
@@ -648,6 +652,129 @@ impl From<seatloom_core::db::lineage::AcceptanceLineageDependency>
     }
 }
 
+// =============================================================================
+// Knowledge read model (overnight step 4) — the DTO contract Mira codes against.
+// ADDITIVE ONLY: no existing struct in this file is touched.
+// =============================================================================
+
+/// One node of the knowledge topic tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicNodeDto {
+    pub topic_id: String,
+    pub title: String,
+    /// 'open' | 'closed' | 'merged'.
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+    /// ACTIVE and not-superseded memories — the count a recall would return.
+    pub memory_count: i64,
+}
+
+impl From<seatloom_core::db::models::KnowledgeTopicNode> for KnowledgeTopicNodeDto {
+    fn from(n: seatloom_core::db::models::KnowledgeTopicNode) -> Self {
+        Self {
+            topic_id: n.topic_id,
+            title: n.title,
+            status: n.status,
+            parent_topic_id: n.parent_topic_id,
+            memory_count: n.memory_count,
+        }
+    }
+}
+
+/// The topic tree of one project (a flat list; the UI groups by parentTopicId).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicTreeDto {
+    pub project_id: String,
+    pub topics: Vec<KnowledgeTopicNodeDto>,
+}
+
+/// The L2 evidence pointer, returned only at depth l2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeL2PointerDto {
+    /// 'document' | 'file'.
+    pub ref_kind: String,
+    pub document_id: Option<String>,
+    pub file_path: Option<String>,
+    pub body_digest: Option<String>,
+    /// Present when the source is a slice of an archived session transcript.
+    pub line_start: Option<i32>,
+    pub line_end: Option<i32>,
+}
+
+/// One memory card, at the requested disclosure depth: `l1_overview` and `l2`
+/// are `None` below their depth.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeMemoryCardDto {
+    pub memory_id: String,
+    pub topic_id: String,
+    pub title: String,
+    /// 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred'.
+    pub confidence: String,
+    /// 'cold' | 'warm' | 'hot'.
+    pub tier: String,
+    /// 'active' | 'forgotten' | 'resolved'.
+    pub status: String,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2: Option<KnowledgeL2PointerDto>,
+    /// The memory that replaced this one, when it has been superseded.
+    pub superseded_by: Option<String>,
+    pub source_kind: String,
+    pub source_ref: String,
+}
+
+impl From<seatloom_core::db::models::KnowledgeMemoryCard> for KnowledgeMemoryCardDto {
+    fn from(c: seatloom_core::db::models::KnowledgeMemoryCard) -> Self {
+        Self {
+            memory_id: c.memory_id,
+            topic_id: c.topic_id,
+            title: c.title,
+            kind: c.kind,
+            confidence: c.confidence,
+            tier: c.tier,
+            status: c.status,
+            l0_summary: c.l0_summary,
+            l1_overview: c.l1_overview,
+            l2: c.l2.map(|p| KnowledgeL2PointerDto {
+                ref_kind: p.ref_kind,
+                document_id: p.document_id,
+                file_path: p.file_path,
+                body_digest: p.body_digest,
+                line_start: p.line_start,
+                line_end: p.line_end,
+            }),
+            superseded_by: c.superseded_by,
+            source_kind: c.source_kind,
+            source_ref: c.source_ref,
+        }
+    }
+}
+
+/// One entry of a topic's ancestor chain (ancestors first, the topic itself last).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicChainEntryDto {
+    pub topic_id: String,
+    pub title: String,
+}
+
+/// The memories of one topic, with the chain they belong to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicMemoriesDto {
+    pub topic_id: String,
+    /// The depth that was served: 'l0' | 'l1' | 'l2'.
+    pub depth: String,
+    pub topic_chain: Vec<KnowledgeTopicChainEntryDto>,
+    pub memories: Vec<KnowledgeMemoryCardDto>,
+}
+
 /// The outcome of an accept/reject command (D2 contract D, widened by the
 /// Flux HOLD fix). A refusal (merge conflict, missing operator config,
 /// not-pending, unverified) is an `Err` carrying the reason — `error` is the
@@ -669,6 +796,65 @@ pub struct AcceptanceResult {
     /// The auto-enqueued rework dispatch on a reject (lineage jump link).
     pub rework_dispatch_id: Option<String>,
     pub error: Option<String>,
+}
+
+/// One operator decision (020): the obligation awaiting the operator's ruling,
+/// or the recorded ruling.
+///
+/// This is NOT an acceptance card and must not be merged into one: an acceptance
+/// asks "do I take this delivered work?" and is about a dispatch; an operator
+/// decision asks "which way do I rule on this?" and may be about anything at
+/// all. The two are listed separately on purpose — a merged list would make the
+/// operator's count wrong, which is the defect 020 exists to fix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionCardDto {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<String>,
+}
+
+impl From<OperatorDecisionRow> for OperatorDecisionCardDto {
+    fn from(r: OperatorDecisionRow) -> Self {
+        Self {
+            id: r.id,
+            project_id: r.project_id,
+            target: r.target,
+            choices: r.choices,
+            decider: r.decider,
+            consequence: r.consequence,
+            evidence: r.evidence,
+            status: r.status,
+            created_by: r.created_by,
+            created_at: r.created_at.to_rfc3339(),
+            chosen: r.chosen,
+            resolved_by: r.resolved_by,
+            resolved_at: r.resolved_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// The result of the operator's ruling on an obligation (020).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionResolveResultDto {
+    pub decision_id: String,
+    pub status: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

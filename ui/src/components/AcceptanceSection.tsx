@@ -17,10 +17,13 @@
 // showing the operator a permanent error. House rule: no mock stands in for a
 // real backend value.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Ban,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ClipboardCheck,
   GitMerge,
   GitPullRequestArrow,
@@ -32,10 +35,12 @@ import {
   X,
 } from 'lucide-react';
 import { ACCEPTANCE_CMDS_REGISTERED, api } from '../lib/api';
+import { useDataStore } from '../stores/useDataStore';
 import type { AcceptanceCardDto } from '../lib/types-dto';
 import {
   acceptanceStatusStyle,
   fluxVerdictStyle,
+  isCancelled,
   isDecided,
   looksLikeMergeConflict,
   normaliseAcceptanceCard,
@@ -79,19 +84,32 @@ const AcceptanceSection: React.FC<{
   const [cardState, setCardState] = useState<Record<string, CardState>>({});
   const [feedback, setFeedback] = useState<Record<string, string>>({});
 
+  // Scoped to the selected project. The unscoped call used to hit the backend's
+  // default-project fallback, so this section showed seatloom's cards everywhere.
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const selected = useRef(activeProjectId);
+  selected.current = activeProjectId;
+  useEffect(() => { setCards([]); }, [activeProjectId]);
+
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError(null);
+    if (!activeProjectId) {
+      setError('no project selected');
+      if (!silent) setLoading(false);
+      return;
+    }
     try {
-      const rows = await api.listAcceptances();
+      const rows = await api.listAcceptances(activeProjectId);
+      if (selected.current !== activeProjectId) return;
       // Normalise at the boundary: the wire spelling is a cross-lane detail.
       setCards(rows.map(normaliseAcceptanceCard).filter((c): c is AcceptanceCardDto => c !== null));
     } catch (e) {
-      setError(String(e));
+      if (selected.current === activeProjectId) setError(String(e));
     } finally {
-      if (!silent) setLoading(false);
+      if (selected.current === activeProjectId && !silent) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     // Not registered, or the operator paused the page: no fetch is armed, so the
@@ -144,13 +162,24 @@ const AcceptanceSection: React.FC<{
     setCardState((s) => ({ ...s, [id]: { ...(s[id] ?? EMPTY_CARD_STATE), dismissed: true } }));
   }, []);
 
-  // Awaiting = the backend has not decided it AND the operator has not closed it.
+  // Awaiting = the backend has not settled it AND the operator has not closed it.
   // A card the user just decided stays put (with its result) until dismissed,
   // so the merge commit is readable rather than a flash.
+  //
+  // `isDecided` now knows about `cancelled`, so a voided card is no longer counted
+  // here. It used to be: the operator's 待验收 read 7 when 5 were actually waiting
+  // on him, and the extra two were cards that had been voided days earlier.
   const awaiting = useMemo(
     () => cards.filter((c) => !isDecided(c.status) && !cardState[c.id]?.dismissed),
     [cards, cardState],
   );
+
+  // Voided cards, kept but never counted. Collapsed by default: they are not work,
+  // they are the record of why something was withdrawn — and the operator has
+  // asked "where did that go" before, so hiding them entirely is not an option
+  // either. The reason travels in `feedback` (measured: both currently-voided
+  // cards carry one), so this needs no extra read.
+  const voided = useMemo(() => cards.filter((c) => isCancelled(c.status)), [cards]);
 
   if (!ACCEPTANCE_CMDS_REGISTERED) {
     return (
@@ -224,7 +253,79 @@ const AcceptanceSection: React.FC<{
           ))}
         </div>
       )}
+
+      {voided.length > 0 && <VoidedCards cards={voided} seatName={seatName} />}
     </section>
+  );
+};
+
+/**
+ * 已作废的卡:看得见、说得清为什么,但不占「几项待决策」那个数。
+ *
+ * 默认折叠。它们不是活,是「这个东西为什么撤了」的记录 —— 张先生问过「那张卡去哪了」,
+ * 所以不能干脆不显示;但每打开一次页面就摊在他眼前也不行,那不是他要决定的事。
+ */
+const VoidedCards: React.FC<{ cards: AcceptanceCardDto[]; seatName: (id: string) => string }> = ({
+  cards,
+  seatName,
+}) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-dashed border-border/50 bg-card/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-left"
+      >
+        {open ? (
+          <ChevronDown size={13} className="text-text-secondary" />
+        ) : (
+          <ChevronRight size={13} className="text-text-secondary" />
+        )}
+        <span className="text-[11px] font-black text-text-secondary uppercase tracking-widest">
+          已作废 {cards.length} 项
+        </span>
+        <span className="text-[10px] text-text-secondary opacity-70">
+          这些不算在待决策里 —— 点开看为什么撤
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2 px-4 pb-3">
+          {cards.map((card) => (
+            <div
+              key={card.id}
+              className="rounded-lg border border-border/40 bg-card p-3 space-y-1.5"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black border bg-secondary text-text-secondary border-border/40">
+                  已作废
+                </span>
+                <span className="text-xs font-bold text-text-primary flex-1 min-w-[160px]">
+                  {card.dispatchTitle || card.dispatchId}
+                </span>
+                <span className="text-[10px] text-text-secondary whitespace-nowrap">
+                  {seatName(card.seatId) || card.seatId} · 开卡于 {fmtTime(card.createdAt)}
+                </span>
+              </div>
+              {card.feedback ? (
+                <p className="text-[11px] text-text-secondary leading-5">「{card.feedback}」</p>
+              ) : (
+                <p className="text-[11px] text-text-secondary leading-5 opacity-70">
+                  这张卡没记作废理由。理由在账本的 AcceptanceCancelled 事件里,监督面板那一栏能看到。
+                </p>
+              )}
+              <p
+                className="text-[10px] font-mono text-text-muted break-all"
+                title={`dispatch ${card.dispatchId}`}
+              >
+                {card.dispatchId}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -399,10 +500,19 @@ const DecisionResult: React.FC<{
 }> = ({ card, onLocateDispatch, onDismiss }) => {
   const accepted = card.status === 'accepted' || Boolean(card.mergeCommit);
   const rejected = card.status === 'rejected' || Boolean(card.reworkDispatchId);
+  // The same four-states-not-two shape as isDecided: without this, a cancelled
+  // card falls through both branches and renders an empty result strip.
+  const cancelled = isCancelled(card.status);
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/30 text-[11px]">
-      {accepted ? (
+      {cancelled ? (
+        <>
+          <Ban size={13} className="text-text-secondary" />
+          <span className="font-bold text-text-secondary">已作废</span>
+          {card.feedback && <span className="text-text-secondary">「{card.feedback}」</span>}
+        </>
+      ) : accepted ? (
         <>
           <CheckCircle2 size={13} className="text-emerald-600" />
           <span className="font-bold text-emerald-600">已接受并合并</span>

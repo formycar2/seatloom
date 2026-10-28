@@ -150,7 +150,12 @@ export function projectFromDto(d: ProjectDto): Project {
   return {
     id: d.id,
     name: d.name,
-    path: '~/' + d.name, // backend has no path; synthesise a label
+    // The REAL path, or null. Never synthesised: `'~/' + d.name` used to live here
+    // and put a fake path in front of 张先生 for every project in the ledger
+    // (~/networkOrchestrator where the row said /Users/…/project_delivery/…).
+    // A row with no home_path is shown as having no path — which is true — rather
+    // than as having a plausible-looking one.
+    path: d.homePath ?? null,
     isPinned: true,
     last_accessed: d.createdAt,
   };

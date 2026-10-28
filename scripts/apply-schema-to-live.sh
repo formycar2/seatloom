@@ -39,11 +39,18 @@ printf "  项目 home_path 列    %s\n"         "$([ "$(query "select count(*) f
 echo
 
 # 按编号顺序逐个 apply。都是幂等的,已经有的会原地跳过。
-# 019/020 也在这里(它们在别的分支上落地,这个脚本按编号顺序补齐缺的)。
+# **不写死文件名** —— 从目录里取 015 及以后的全部迁移,按编号排序。
+# 理由:2026-10-11 写死 015-018 之后,019 落地时整条链又卡了一次,
+# 而卡住的表现是"建主题的事件写不进去"(库里的事件类型值域不认 TopicOpened),
+# 离根因很远、排查花了几跳。让脚本自己发现新迁移,就不会再有这一类卡。
 failed=0
-for f in 015_knowledge_layer.sql 016_acceptance_plan.sql 017_acceptance_cancel.sql 018_memory_hardening.sql 019_topic_opened.sql 020_gate_criterion.sql 021_history_sessions_corpus.sql 022_session_work_bridge_view.sql; do
+files="$(ls "$SCHEMA_DIR"/0*.sql 2>/dev/null | sed 's#.*/##' | awk -F_ '$1+0>=15' | sort)"
+if [ -z "$files" ]; then echo "❌ $SCHEMA_DIR 里找不到 015 及以后的迁移 —— 仓库是不是不在 track 分支?"; exit 1; fi
+echo "待 apply:$(printf '%s' "$files" | tr '\n' ' ')"
+echo
+for f in $files; do
   p="$SCHEMA_DIR/$f"
-  if [ ! -r "$p" ]; then echo "❌ 找不到 $f —— 仓库是不是不在 track 分支?"; failed=1; break; fi
+  if [ ! -r "$p" ]; then echo "❌ 读不到 $f"; failed=1; break; fi
   printf "apply %-28s " "$f"
   if apply_file "$p" >/tmp/apply-$f.log 2>&1; then echo "ok"
   else echo "失败 —— 详情: /tmp/apply-$f.log"; tail -5 "/tmp/apply-$f.log" | sed 's/^/    /'; failed=1; break; fi
@@ -57,18 +64,25 @@ printf "  memories 行级溯源列        %s\n" "$([ "$(query "select count(*) f
 printf "  项目层级列                 %s\n" "$([ "$(query "select count(*) from information_schema.columns where table_name='projects' and column_name='parent_project_id'")" = "1" ] && echo ✅有 || echo ❌缺)"
 printf "  验收方案列                 %s\n" "$([ "$(query "select count(*) from information_schema.columns where table_name='acceptances' and column_name='acceptance_plan'")" = "1" ] && echo ✅有 || echo ❌缺)"
 printf "  作废卡片状态               %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='acceptances_status_vocab'" | grep -q cancelled && echo ✅支持 || echo ❌不支持)"
-echo
-printf "  历史会话语料(021)已加载    %s\n" "$([ "$(query "select count(*) from archived_sessions where message_count is not null")" = "183" ] && echo ✅183 条 || echo ❌$(query "select count(*) from archived_sessions where message_count is not null") 条)"
-printf "  消息总数                   %s\n" "$(query "select coalesce(sum(message_count),0) from archived_sessions where message_count is not null")"
+# 019:建主题的事件类型。缺它 → open_topic 报 "event write rejected",
+# 主题建不了 → 记忆卡在 memories.topic_id 的外键上 → 整条写入链断。
+printf "  建主题的事件类型           %s\n" "$(query "select pg_get_constraintdef(oid) from pg_constraint where conname='canonical_events_event_type_vocab'" | grep -q TopicOpened && echo ✅认得 || echo '❌不认得(写入链会断在这里)')"
+# 这一项是整条链能不能通的终局判据:工具能不能真的建出一个主题
+printf "  主题/记忆现有行数           主题 %s 条,记忆 %s 条\n" "$(query "select count(*) from topics")" "$(query "select count(*) from memories")"
+# 021:历史会话语料。**这一项必须能报错。**
+# 2026-10-16 实测踩过:021 不在 track 上时,上面那段自动发现只会 apply 015-019,
+# 退出 0、上面每一项都打勾,而语料一个字都没进去 —— 一个全绿的假成功。
+# 所以这里按语料的**实际行数**判,不按"迁移跑过了"判。判据取契约里张先生会核的数。
+corpus_n="$(query "select count(*) from archived_sessions where message_count is not null")"
+printf "  历史会话语料(应为 183)     %s\n" "$([ "$corpus_n" = "183" ] && echo "✅183 条" || echo "❌只有 ${corpus_n:-0} 条 —— 021 没落上,别把这段当成语料已加载")"
+[ "$corpus_n" = "183" ] || failed=1
+printf "  消息总数(应为 36680)       %s\n" "$(query "select coalesce(sum(message_count),0) from archived_sessions where message_count is not null")"
 printf "  项目数(应为 38)            %s\n" "$(query "select count(*) from projects")"
-printf "  这 8 条仓库根会话未归类    %s\n" "$([ "$(query "select count(*) from archived_sessions where message_count is not null and project='(root)'")" = "8" ] && echo ✅8 条 || echo ❌条数不对)"
+root_n="$(query "select count(*) from archived_sessions where message_count is not null and project='(root)'")"
+printf "  仓库根会话(应为 8 条未归类) %s\n" "$([ "$root_n" = "8" ] && echo "✅8 条" || echo "❌${root_n:-0} 条")"
+[ "$root_n" = "8" ] || failed=1
 echo
-# 022 是一个只读视图,不插一行数据。它的验收不是"表在不在",而是那个承重数字问得出来。
-printf "  会话↔成果 连接视图(022)   %s\n" "$([ "$(query "select count(*) from pg_views where viewname='v_memory_session_join'")" = "1" ] && echo ✅建好了 || echo ❌没有)"
-printf "  视图行数(应为带会话溯源的记忆条数) %s\n" "$(query "select count(*) from v_memory_session_join")"
-printf "  ★ 溯源指向不存在会话的记忆 %s\n" "$([ "$(query "select count(*) from v_memory_session_join where not a2_resolves")" = "3" ] && echo ✅3 条(与 022 落地时实测一致) || echo ❌$(query "select count(*) from v_memory_session_join where not a2_resolves") 条 —— 与 022 交付说明记的不一致,先问 Aegis 再动)"
-echo
-printf "  现有数据没被动:派单 %s 条,验收卡 %s 张,会话 %s 条,席位 %s 个\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")" "$(query "select count(*) from sessions")" "$(query "select count(*) from seats")"
+printf "  现有数据没被动:派单 %s 条,验收卡 %s 张\n" "$(query "select count(*) from dispatches")" "$(query "select count(*) from acceptances")"
 echo
 [ "$failed" = "0" ] && echo "全部完成。把上面这段贴给 Aegis,他会解封等着的派单。" \
                     || echo "有步骤失败了 —— 把上面这段贴给 Aegis,不要自己重试。"

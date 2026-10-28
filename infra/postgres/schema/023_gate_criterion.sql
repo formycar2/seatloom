@@ -1,6 +1,15 @@
--- 020_gate_criterion.sql
+-- 023_gate_criterion.sql
 -- =============================================================================
 -- A delivery announcement is not a gate — the criterion at RELEASE time.
+--
+-- RENUMBERED 020 -> 023 on 2026-10-28 when this branch merged
+-- track/infra-foundation. Both branches had independently landed a migration
+-- numbered 020: track's 020_operator_decisions.sql (the structured
+-- "waiting on the human" object) and this one. Only one file can carry a
+-- number, so this one moves to the next free slot rather than colliding.
+-- The renumber touches ONLY the file name and this migration's own
+-- self-references; no SQL object is renamed and no dependency changes.
+-- See the merge note in scripts/apply-db.sh.
 --
 -- Authority: Aegis ruling 2026-10-11,
 -- docs/coordination/tasks/aegis/AEGIS-2026-10-11-gate-vs-announcement-ruling.md
@@ -11,11 +20,11 @@
 -- four questions; the answers and the evidence are in
 -- docs/coordination/tasks/onyx/ONYX-2026-10-12-gate-release-check-delivery-v1.md.
 --
--- Slot 020: next after 019 (006/007 stay reserved — do NOT renumber). POST-SEED:
--- the seed writes no dispatch_dependencies rows and none of the objects here
--- touch a seeded table's columns; the widened CHECKs and the function this
--- replaces exist only after 013 (POST-SEED) has created them, so 020 cannot
--- precede its prerequisite. See scripts/apply-db.sh.
+-- Slot 023: next free after 022 (006/007 stay reserved — do NOT renumber).
+-- POST-SEED: the seed writes no dispatch_dependencies rows and none of the
+-- objects here touch a seeded table's columns; the widened CHECKs and the
+-- function this replaces exist only after 013 (POST-SEED) has created them,
+-- so 023 cannot precede its prerequisite. See scripts/apply-db.sh.
 --
 -- Additive and idempotent, 013/015/017/019 house style: every object is guarded
 -- on the catalog, so a SECOND apply performs NO catalog write.
@@ -48,7 +57,7 @@
 --  WHERE conname = 'dispatch_dependencies_gate_edge_must_be_event';
 -- -- The held-by-a-non-qualified-gate set is queryable without trusting Rust:
 -- SELECT * FROM v_dispatch_gate_held;
--- -- Idempotency: a second `psql -f 020_gate_criterion.sql` performs NO catalog
+-- -- Idempotency: a second `psql -f 023_gate_criterion.sql` performs NO catalog
 -- -- write — all five DO-blocks guard-skip, including the view's and the
 -- -- comments' (an unconditional COMMENT ON is a pg_description write).
 -- =============================================================================
@@ -162,7 +171,7 @@ BEGIN
    WHERE p.proname = 'fn_dispatch_recompute_ready' AND n.nspname = current_schema();
 
   IF installed IS NOT NULL AND installed LIKE '%fn_gate_is_gate_id%' THEN
-    RAISE NOTICE '020: fn_dispatch_recompute_ready already carries the gate criterion — nothing to do';
+    RAISE NOTICE '023: fn_dispatch_recompute_ready already carries the gate criterion — nothing to do';
   ELSE
     CREATE OR REPLACE FUNCTION fn_dispatch_recompute_ready() RETURNS trigger
     LANGUAGE plpgsql AS $fn$
@@ -199,7 +208,7 @@ BEGIN
           INTO total, satisfied
           FROM (
             SELECT CASE
-                     -- GATE EDGE (020): the referent must exist AND be a
+                     -- GATE EDGE (023): the referent must exist AND be a
                      -- measured gate. This is the ruling's criterion — a
                      -- payload test, not an id test — and it is the same
                      -- predicate dep_satisfied() applies on the pull path. If
@@ -343,7 +352,7 @@ BEGIN
                                  END, false)
            );
   ELSE
-    RAISE NOTICE '020: v_dispatch_gate_held already carries the gate criterion — nothing to do';
+    RAISE NOTICE '023: v_dispatch_gate_held already carries the gate criterion — nothing to do';
   END IF;
 END $$;
 
@@ -358,22 +367,22 @@ END $$;
 DO $$
 DECLARE c TEXT;
 BEGIN
-  c := 'Gate/announcement criterion (020, Aegis ruling 2026-10-11): is this event id SHAPED like a gate id? Segment test (-live- or a trailing -live), matching gate.rs::is_gate_id byte-for-byte, because the first gate emitted under ruling 2 (ev-live-019-applied) does not end in -live. Shape only — it never asserts the row is a gate.';
+  c := 'Gate/announcement criterion (023, Aegis ruling 2026-10-11): is this event id SHAPED like a gate id? Segment test (-live- or a trailing -live), matching gate.rs::is_gate_id byte-for-byte, because the first gate emitted under ruling 2 (ev-live-019-applied) does not end in -live. Shape only — it never asserts the row is a gate.';
   IF obj_description('fn_gate_is_gate_id(TEXT)'::regprocedure, 'pg_proc') IS DISTINCT FROM c THEN
     EXECUTE format('COMMENT ON FUNCTION fn_gate_is_gate_id(TEXT) IS %L', c);
   END IF;
 
-  c := 'Gate/announcement criterion (020, Aegis ruling 2026-10-11): is this (event_type, id, payload) row a MEASURED gate? SupervisorMessage whose payload.gate names its own id and whose statement/verified/does_not_assert are all stated, whitespace trimmed over Rust char::is_whitespace (Unicode White_Space) enumerated exactly. Matches gate.rs::row_is_gate.';
+  c := 'Gate/announcement criterion (023, Aegis ruling 2026-10-11): is this (event_type, id, payload) row a MEASURED gate? SupervisorMessage whose payload.gate names its own id and whose statement/verified/does_not_assert are all stated, whitespace trimmed over Rust char::is_whitespace (Unicode White_Space) enumerated exactly. Matches gate.rs::row_is_gate.';
   IF obj_description('fn_gate_row_is_gate(TEXT, TEXT, JSONB)'::regprocedure, 'pg_proc') IS DISTINCT FROM c THEN
     EXECUTE format('COMMENT ON FUNCTION fn_gate_row_is_gate(TEXT, TEXT, JSONB) IS %L', c);
   END IF;
 
-  c := 'Governed-dispatch (G19, 013): on insert of an event/artifact/dispatch referent, flip any blocked dispatch whose dep set is now fully satisfied to ready (persisted) and pg_notify its seat on the dispatch_ready channel the waker already LISTENs on. 020 tightened the satisfaction test for GATE-SHAPED event deps: such a referent must exist AND be a measured gate (SupervisorMessage whose payload.gate names its own id, with statement/verified/does_not_assert stated), the same criterion gate.rs::row_is_gate applies on the pull path. Ordinary (existence) edges are unchanged.';
+  c := 'Governed-dispatch (G19, 013): on insert of an event/artifact/dispatch referent, flip any blocked dispatch whose dep set is now fully satisfied to ready (persisted) and pg_notify its seat on the dispatch_ready channel the waker already LISTENs on. 023 tightened the satisfaction test for GATE-SHAPED event deps: such a referent must exist AND be a measured gate (SupervisorMessage whose payload.gate names its own id, with statement/verified/does_not_assert stated), the same criterion gate.rs::row_is_gate applies on the pull path. Ordinary (existence) edges are unchanged.';
   IF obj_description('fn_dispatch_recompute_ready()'::regprocedure, 'pg_proc') IS DISTINCT FROM c THEN
     EXECUTE format('COMMENT ON FUNCTION fn_dispatch_recompute_ready() IS %L', c);
   END IF;
 
-  c := 'A gate is an EVENT row (020): the criterion reads event_type and payload, which only canonical_events carries, so a gate-shaped dep_value (fn_gate_is_gate_id) may only hang on dep_kind=''event''. The database-level twin of enqueue_dispatch''s GateEdgeUndeclared refusal, so a writer that bypasses the tool cannot create the shape either.';
+  c := 'A gate is an EVENT row (023): the criterion reads event_type and payload, which only canonical_events carries, so a gate-shaped dep_value (fn_gate_is_gate_id) may only hang on dep_kind=''event''. The database-level twin of enqueue_dispatch''s GateEdgeUndeclared refusal, so a writer that bypasses the tool cannot create the shape either.';
   IF obj_description((SELECT con.oid FROM pg_constraint con
                       WHERE con.conname = 'dispatch_dependencies_gate_edge_must_be_event'
                         AND con.conrelid = 'dispatch_dependencies'::regclass),
@@ -381,7 +390,7 @@ BEGIN
     EXECUTE format('COMMENT ON CONSTRAINT dispatch_dependencies_gate_edge_must_be_event ON dispatch_dependencies IS %L', c);
   END IF;
 
-  c := '020 (Aegis ruling 2026-10-11, question 3): dispatches that are stuck NOT because a referent is missing but because a gate-shaped dep landed as a delivery announcement instead of a measured gate. Exactly the predicate get_next_dispatch escalates on, expressed as a read so the condition is checkable without trusting the Rust pull path. Empty result = nothing is held this way.';
+  c := '023 (Aegis ruling 2026-10-11, question 3): dispatches that are stuck NOT because a referent is missing but because a gate-shaped dep landed as a delivery announcement instead of a measured gate. Exactly the predicate get_next_dispatch escalates on, expressed as a read so the condition is checkable without trusting the Rust pull path. Empty result = nothing is held this way.';
   IF obj_description('v_dispatch_gate_held'::regclass, 'pg_class') IS DISTINCT FROM c THEN
     EXECUTE format('COMMENT ON VIEW v_dispatch_gate_held IS %L', c);
   END IF;

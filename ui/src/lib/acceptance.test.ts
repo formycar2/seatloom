@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptanceStatusStyle,
   fluxVerdictStyle,
+  isCancelled,
   isDecided,
   looksLikeMergeConflict,
   normaliseAcceptanceCard,
@@ -194,10 +195,32 @@ describe('normaliseAcceptanceCards', () => {
 });
 
 describe('presentation helpers', () => {
-  it('treats only accepted/rejected as decided', () => {
+  // Four states, not two. `cancelled` is terminal — `cancel_acceptance` never
+  // reopens a card — so treating it as undecided counted voided cards as waiting
+  // on the operator. Mr. Zhang's 待验收 read 7 where 5 were real; the extra two
+  // were voided days earlier.
+  it('treats accepted, rejected AND cancelled as decided', () => {
     expect(isDecided('awaiting_acceptance')).toBe(false);
+    expect(isDecided('pending')).toBe(false);
     expect(isDecided('accepted')).toBe(true);
     expect(isDecided('rejected')).toBe(true);
+    expect(isDecided('cancelled')).toBe(true);
+    // An unknown status is NOT decided — it must surface, not be silently settled.
+    expect(isDecided('something-new')).toBe(false);
+  });
+
+  it('labels a voided card 已作废 rather than falling through to the raw status', () => {
+    expect(acceptanceStatusStyle('cancelled').label).toBe('已作废');
+    expect(acceptanceStatusStyle('cancelled').cls).not.toContain('emerald');
+    expect(acceptanceStatusStyle('cancelled').cls).not.toContain('rose');
+    expect(acceptanceStatusStyle('cancelled').cls).not.toContain('amber');
+  });
+
+  it('recognises a voided card without treating an unknown status as one', () => {
+    expect(isCancelled('cancelled')).toBe(true);
+    expect(isCancelled('accepted')).toBe(false);
+    expect(isCancelled('pending')).toBe(false);
+    expect(isCancelled('something-new')).toBe(false);
   });
 
   it('never paints an unknown Flux verdict green', () => {

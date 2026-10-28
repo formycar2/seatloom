@@ -153,16 +153,42 @@ export const SessionTerminal: React.FC<Props> = ({
     // stale attach-time snapshot (see below). Gated on `geometryArmed` so no
     // resize is pushed before the output listeners exist — see below.
     let geometryArmed = false;
+    /// Whether the last sync actually fitted the viewport.
+    ///
+    /// `FitAddon.fit()` is a SILENT NO-OP when xterm has no valid character
+    /// metrics yet — `proposeDimensions()` returns `undefined` as soon as
+    /// `dims.css.cell.width === 0` (FitAddon.ts), and `fit()` then returns
+    /// before touching `terminal.resize`. So a fit that did nothing is
+    /// indistinguishable from a fit that worked unless we ask first.
+    ///
+    /// This matters because the terminal is CONSTRUCTED with the pane's real
+    /// attach-time rows/cols as the seed (the geometry contract above), which
+    /// is normally taller than this container. If the fit is skipped, the
+    /// viewport stays at the seed height: taller than its slot, and when the
+    /// pane's content is not longer than the seed row count the scroll area
+    /// equals the viewport height — nothing to scroll. That is the operator's
+    /// "the page is there but it will not scroll", and it is intermittent
+    /// because whether the metrics are valid at fit time depends on timing.
+    let geometryFitted = false;
     const syncGeometry = () => {
       if (!geometryArmed) return;
       const fitAddon = fitRef.current;
       const terminal = termRef.current;
       if (!fitAddon || !terminal) return;
-      // An inactive attachment is display:none — no layout to fit. Fitting it
-      // would propose 0×0 and resize the pane to nothing; the ResizeObserver
-      // fires with real dimensions when the attachment becomes visible again.
+      // An inactive attachment is not laid out — no box to fit. (The view now
+      // hides inactive attachments with `visibility` rather than `display`
+      // precisely so they keep a real box; this guard is the second line.)
       if (!containerHasArea()) return;
+
+      // Ask before fitting: an unmeasurable cell means fit() would be a no-op,
+      // and a no-op leaves the viewport at its construction seed.
+      const proposed = fitAddon.proposeDimensions();
+      if (!proposed) {
+        geometryFitted = false;
+        return;
+      }
       fitAddon.fit();
+      geometryFitted = true;
       const { rows, cols } = terminal;
       if (!clearedStaleSnapshotRef.current) {
         clearedStaleSnapshotRef.current = true;
@@ -238,6 +264,21 @@ export const SessionTerminal: React.FC<Props> = ({
     // fit → cmd_pty_resize with the fitted geometry.
     const resizeObserver = new ResizeObserver(() => syncGeometry());
     resizeObserver.observe(containerRef.current);
+
+    // A fit that could not run yet (no valid character metrics) is retried when
+    // xterm says its geometry changed or when its own element's box changes.
+    // xterm re-measures on becoming visible (its IntersectionObserver) and on
+    // a device-pixel-ratio change; a metrics change re-renders at the CURRENT
+    // row count, which changes the element's box — so the element's box is the
+    // observable signal that a previously impossible fit is now possible.
+    // Without this the viewport would sit at the seed geometry until the next
+    // unrelated resize, which is exactly the intermittent symptom.
+    const retryIfUnfitted = () => {
+      if (!geometryFitted) syncGeometry();
+    };
+    const elementResizeObserver = term.element ? new ResizeObserver(retryIfUnfitted) : null;
+    if (term.element && elementResizeObserver) elementResizeObserver.observe(term.element);
+    const resizeSubscription = term.onResize(retryIfUnfitted);
     const onWindowResize = () => syncGeometry();
     window.addEventListener('resize', onWindowResize);
 
@@ -268,6 +309,8 @@ export const SessionTerminal: React.FC<Props> = ({
       fontsPending = false;
       window.removeEventListener('resize', onWindowResize);
       resizeObserver.disconnect();
+      elementResizeObserver?.disconnect();
+      resizeSubscription.dispose();
       dataDisposable.dispose();
       if (unlistenOutput) unlistenOutput();
       if (unlistenExit) unlistenExit();
