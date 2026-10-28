@@ -46,6 +46,7 @@ use serde_json::Value;
 
 use seatloom_core::db::event_domain::{EventType, RefRole, RefType};
 use seatloom_core::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
+use seatloom_core::db::SeatloomDb;
 
 use crate::scheduler::{
     classify_stall, detect_cycle, DepKind, Dependency, DispatchStatus, DispatchView, PullDecision,
@@ -271,6 +272,25 @@ pub enum DispatchRejection {
     UnknownFluxVerdict {
         flux_verdict_ref: String,
     },
+    /// `request_acceptance`: the verdict referent exists and is a
+    /// `ReviewVerdictIssued`, but its `payload->>'verdict'` is not `pass` — or it
+    /// states no value at all. Existence was being read as a verdict; a red one
+    /// is not a merge criterion.
+    VerdictNotGreen {
+        flux_verdict_ref: String,
+        /// The value it stated, verbatim. `None` when it stated none.
+        verdict: Option<String>,
+    },
+    /// `request_acceptance`: the verdict is green but is not about the dispatch
+    /// being handed over. Measured on live: three pending cards named a **fail**
+    /// verdict about a *different* dispatch. Another unit of work's verdict
+    /// cannot stand in for this one's.
+    VerdictNotAboutThisDispatch {
+        flux_verdict_ref: String,
+        dispatch_id: String,
+        /// The dispatch the verdict says it IS about, when it names one.
+        verdict_dispatch_id: Option<String>,
+    },
     /// `request_acceptance`: the dispatch already has a pending acceptance.
     AcceptancePending {
         dispatch_id: String,
@@ -350,7 +370,9 @@ pub enum DispatchRejection {
     /// `request_acceptance` (containment defence): the merge would DELETE files
     /// tracked on the base — the failure mode that let an Accept destroy
     /// already-merged work. The paths are listed so the caller knows exactly
-    /// what would be lost.
+    /// what would be lost. A deletion the operator ruled on
+    /// ([`DELETION_EXEMPTIONS`]) is not here: it is subtracted before the
+    /// decision, so this variant carries only what is still being defended.
     MergeWouldDelete {
         branch: String,
         base: String,
@@ -444,6 +466,40 @@ impl std::fmt::Display for DispatchRejection {
                 f,
                 "request_acceptance rejected: flux_verdict_ref {flux_verdict_ref:?} names no existing event or artifact — the Flux green verdict is the merge criterion's first half and must exist"
             ),
+            // The verdict exists but says something other than "pass".
+            DispatchRejection::VerdictNotGreen {
+                flux_verdict_ref,
+                verdict,
+            } => match verdict {
+                Some(v) => write!(
+                    f,
+                    "request_acceptance rejected: the verdict {flux_verdict_ref:?} says {v:?}, not \
+                     'pass' — a red verdict is not a merge criterion. Fix what Flux found and have it \
+                     re-verified, or hand the delivery over with a verdict that passes."
+                ),
+                None => write!(
+                    f,
+                    "request_acceptance rejected: the verdict {flux_verdict_ref:?} states no verdict \
+                     value — a verdict that does not say whether it passed is not a merge criterion."
+                ),
+            },
+            // The verdict is green but about somebody else's work.
+            DispatchRejection::VerdictNotAboutThisDispatch {
+                flux_verdict_ref,
+                dispatch_id,
+                verdict_dispatch_id,
+            } => {
+                let about = verdict_dispatch_id
+                    .as_deref()
+                    .map(|d| format!("it is about {d:?}"))
+                    .unwrap_or_else(|| "it names no dispatch at all".to_string());
+                write!(
+                    f,
+                    "request_acceptance rejected: the verdict {flux_verdict_ref:?} is not about \
+                     {dispatch_id:?} — {about}. Another unit of work's verdict cannot stand in for \
+                     this one's; ask Flux to verify THIS dispatch."
+                )
+            }
             DispatchRejection::AcceptancePending { dispatch_id } => write!(
                 f,
                 "request_acceptance rejected: {dispatch_id:?} already has a pending acceptance (one at a time; await the operator's decision)"
@@ -1599,6 +1655,76 @@ pub async fn cancel(pool: &Pool, args: CancelArgs) -> Result<String, DispatchRej
 }
 
 // =============================================================================
+// The deletion exemption list (containment allowlist, 2026-10-22)
+// =============================================================================
+
+/// One deletion the OPERATOR has explicitly ruled on.
+///
+/// `path` is the repository-relative path the merge would delete. `ruled_by`
+/// and `why` are mandatory: a bare path in a year reads as legacy cruft, and
+/// someone will route around it — so the ruling travels with the line.
+struct DeletionExemption {
+    path: &'static str,
+    ruled_by: &'static str,
+    why: &'static str,
+}
+
+/// Deletions the operator has ruled on. THE OPERATOR, not this process: the
+/// list is a compile-time constant, so the only way onto it is a code change
+/// that goes through review and leaves a git record. An env var or a runtime
+/// config file could open it without any of that, which would turn a defence
+/// into an option.
+///
+/// SCOPE. It is consumed ONLY by `MergeWouldDelete`. `BranchNotSynced` has no
+/// exemption at all: a branch that never saw the base is unsynced no matter
+/// what any operator said about any file. A deletion NOT on this list is
+/// refused exactly as before — subtracting the list from the previewed
+/// deletion set leaves the rest to be listed in the refusal.
+const DELETION_EXEMPTIONS: &[DeletionExemption] = &[DeletionExemption {
+    path: "ui/src/app-v2/AppV2.tsx",
+    ruled_by: "human:supervisor",
+    why: "dead code, deleted by dispatch disp-DFeH6Ut_aNfzIbuuR21V5 item 3b; \
+           zero importers, no route mounted, already unreachable on the base",
+}];
+
+/// The list is audited by the COMPILER, not only by a test someone may delete:
+/// an entry with no path, no ruling, or no reason fails the build. That is the
+/// point of making the audit fields part of the type — a bare path would pass
+/// every test and still be a hole in six months.
+const _: () = {
+    let mut i = 0;
+    while i < DELETION_EXEMPTIONS.len() {
+        let exemption = &DELETION_EXEMPTIONS[i];
+        assert!(
+            !exemption.path.is_empty(),
+            "an entry with no path exempts nothing and documents nothing"
+        );
+        assert!(
+            !exemption.ruled_by.is_empty(),
+            "no `ruled_by`: nobody can tell whose ruling this is"
+        );
+        assert!(
+            !exemption.why.is_empty(),
+            "no `why`: in a year this line reads as legacy cruft"
+        );
+        i += 1;
+    }
+};
+
+/// Is this previewed deletion exempt — i.e. did the operator rule on this exact
+/// path?
+///
+/// Matching is EXACT, never a prefix, a glob, or a substring: `ui/src` must not
+/// exempt `ui/src/app-v2/AppV2.tsx`, and `AppV2.tsx` must not exempt
+/// `ui/src/app-v2/other.tsx`. A fuzzy match would quietly widen the hole every
+/// time a path moved.
+fn is_deletion_exempt(path: &str) -> bool {
+    DELETION_EXEMPTIONS
+        .iter()
+        .any(|exemption| exemption.path == path)
+}
+
+// =============================================================================
 // Tool 5 — request_acceptance (seat side, 014 — the D2 acceptance gate)
 // =============================================================================
 
@@ -1699,17 +1825,70 @@ pub async fn request_acceptance(
             base: base.clone(),
             detail,
         })?;
-    if !would_delete.is_empty() {
+    // Subtract the operator-ruled exemptions BEFORE deciding to refuse. The
+    // remaining set is what the defence actually protects: an empty remainder
+    // means every deletion was ruled on, so there is nothing to defend.
+    let undeleted: Vec<String> = would_delete
+        .into_iter()
+        .filter(|path| !is_deletion_exempt(path))
+        .collect();
+    if !undeleted.is_empty() {
         return Err(DispatchRejection::MergeWouldDelete {
             branch: args.branch.clone(),
             base,
-            paths: would_delete,
+            paths: undeleted,
+        });
+    }
+
+    // Guard 2 — the Flux verdict referent exists, is a ReviewVerdictIssued, says
+    // 'pass', and is about THIS dispatch.
+    //
+    // THE DEFECT THIS CLOSES. This used to check existence only, so any existing
+    // ReviewVerdictIssued could stand in as the merge criterion — including one
+    // about a different dispatch and including a red one. Measured on live: three
+    // pending cards named `ev-verdict-history-sessions`, a **fail** verdict about
+    // `disp-history-sessions-verify`, for three dispatches Flux had never
+    // verified. Existence was being read as a verdict.
+    //
+    // The criterion is measured, not guessed. A verdict counts for a dispatch iff
+    // it NAMES that dispatch, and it names it in one of two ways Flux actually
+    // writes: `payload->>'dispatch_id'` (27 of the 30 ReviewVerdictIssued events
+    // on live; the 3 that do not are pre-012 seed rows and a scenario fixture) or
+    // an `event_object_refs` row with `ref_type='dispatch'` (5 of 30). Either
+    // channel counts. `lane` was rejected as a criterion because it is free text
+    // (measured: a whole sentence, not a key) — matching on it would be a
+    // heuristic. And green means exactly 'pass': the values in use on live are
+    // pass 27 / fail 2 / reject 1, so a `reject` is not green either.
+    let facts = SeatloomDb::new(pool.clone())
+        .flux_verdict_facts(&args.flux_verdict_ref, &args.dispatch_id)
+        .await
+        .map_err(|e| DispatchRejection::Db(e.to_string()))?;
+    if !facts.exists {
+        return Err(DispatchRejection::UnknownFluxVerdict {
+            flux_verdict_ref: args.flux_verdict_ref,
+        });
+    }
+    if facts.event_type.as_deref() != Some("ReviewVerdictIssued") {
+        return Err(DispatchRejection::UnknownFluxVerdict {
+            flux_verdict_ref: args.flux_verdict_ref,
+        });
+    }
+    if facts.verdict.as_deref() != Some("pass") {
+        return Err(DispatchRejection::VerdictNotGreen {
+            flux_verdict_ref: args.flux_verdict_ref,
+            verdict: facts.verdict,
+        });
+    }
+    if !facts.names_dispatch {
+        return Err(DispatchRejection::VerdictNotAboutThisDispatch {
+            flux_verdict_ref: args.flux_verdict_ref,
+            dispatch_id: args.dispatch_id,
+            verdict_dispatch_id: facts.payload_dispatch_id,
         });
     }
 
     let mut client = pool.get().await.map_err(db)?;
     let tx = client.transaction().await.map_err(db)?;
-
     // Guard 1 — the caller's own COMPLETED dispatch.
     let project_id: Option<String> = tx
         .query_opt(
@@ -1726,23 +1905,6 @@ pub async fn request_acceptance(
             seat: identity.seat_id,
         });
     };
-
-    // Guard 2 — the Flux verdict referent exists (event OR artifact; the ref is
-    // polymorphic TEXT with no FK, exactly like dispatch_dependencies.dep_value).
-    let verdict_exists: bool = tx
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) \
-                OR EXISTS (SELECT 1 FROM artifacts WHERE id = $1)",
-            &[&args.flux_verdict_ref],
-        )
-        .await
-        .map_err(db)?
-        .get(0);
-    if !verdict_exists {
-        return Err(DispatchRejection::UnknownFluxVerdict {
-            flux_verdict_ref: args.flux_verdict_ref,
-        });
-    }
 
     // Guard 3 — at most one pending acceptance per dispatch.
     let pending = tx
@@ -2547,6 +2709,203 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The deletion exemption list (Aegis dispatch
+    /// AEGIS-2026-10-22-containment-allowlist-v1): the operator's ruling on ONE
+    /// path opens exactly that path. The scratch repo carries three shapes that
+    /// between them pin the whole contract:
+    ///
+    ///   - exempt:  deletes only the ruled-on path        -> refused no longer
+    ///   - mixed:   deletes the ruled-on path AND another -> STILL refused, and
+    ///              the refusal names only what is left
+    ///   - unsynced: deletes only the ruled-on path, but never saw the base
+    ///              -> `BranchNotSynced`, which has no exemption at all
+    ///
+    /// The list is a compile-time constant, so nothing about the environment can
+    /// widen it; these assertions are what would fail if someone turned it into
+    /// a wildcard.
+    #[tokio::test]
+    async fn exempt_deletion_passes_while_the_rest_are_still_refused() {
+        let _guard = ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!("seatloom-allowlist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        // The two files the base tracks: one is the operator-ruled deletion, the
+        // other is a deletion nobody has ruled on.
+        std::fs::create_dir_all(root.join("ui/src/app-v2")).unwrap();
+        std::fs::write(root.join("keep.txt"), "base\n").unwrap();
+        std::fs::write(root.join("ui/src/app-v2/AppV2.tsx"), "dead\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        // The base moves on FIRST: every branch below is measured against the
+        // base as it stands at request time, not as it stood when forked.
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base moves on"]);
+        ok(&["checkout", "-b", "packet/seat/base"]);
+        // exempt: synced, deletes ONLY the ruled-on path.
+        ok(&["checkout", "-b", "packet/seat/exempt"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path only"]);
+        // mixed: synced, deletes the ruled-on path AND a file nobody ruled on.
+        ok(&["checkout", "-b", "packet/seat/mixed", "track"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        std::fs::remove_file(root.join("keep.txt")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path and another"]);
+        // unsynced: forked from before the base moved on, deletes only the
+        // ruled-on path. Being unsynced is not something any operator waived.
+        ok(&["checkout", "-b", "packet/seat/unsynced", "track~1"]);
+        std::fs::remove_file(root.join("ui/src/app-v2/AppV2.tsx")).unwrap();
+        ok(&["add", "-A"]);
+        ok(&["commit", "-m", "deletes the ruled-on path, never synced"]);
+        ok(&["checkout", "packet/seat/base"]);
+
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::set_var(INTEGRATION_BRANCH_ENV, "track");
+        std::env::set_var(ACTOR_REF_ENV, "seat:seat-nimbus-001");
+        let pool = dead_pool();
+        let args = |branch: &str| RequestAcceptanceArgs {
+            dispatch_id: "disp-allowlist".into(),
+            branch: branch.into(),
+            how_to_verify: "do A see B".into(),
+            flux_verdict_ref: "ev-verdict".into(),
+            base: Some("track".into()),
+            acceptance_plan: valid_plan(),
+            acceptance_id: None,
+        };
+
+        // 1. the ruled-on deletion is gone from the decision: the request gets
+        //    past the defence and reaches the database.
+        let err = request_acceptance(&pool, args("packet/seat/exempt"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchRejection::Db(_)),
+            "the ruled-on deletion must not block the card: {err}"
+        );
+
+        // 2. an UNRULED deletion is still refused — and the refusal lists only
+        //    what is actually being defended, not the exempted path.
+        let err = request_acceptance(&pool, args("packet/seat/mixed"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        match err {
+            DispatchRejection::MergeWouldDelete { paths, .. } => {
+                assert_eq!(
+                    paths,
+                    vec!["keep.txt".to_string()],
+                    "the exemption subtracts only its own path: {paths:?}"
+                );
+            }
+            other => panic!("expected MergeWouldDelete, got {other:?}"),
+        }
+        assert!(
+            msg.contains("keep.txt"),
+            "the refusal lists what would be lost: {msg}"
+        );
+        assert!(
+            !msg.contains("AppV2.tsx"),
+            "an exempted path is not reported as blocked: {msg}"
+        );
+
+        // 3. `BranchNotSynced` is untouched by the list: the ruled-on deletion
+        //    does not launder an unsynced branch through the gate.
+        let err = request_acceptance(&pool, args("packet/seat/unsynced"))
+            .await
+            .unwrap_err();
+        match err {
+            DispatchRejection::BranchNotSynced { branch, base } => {
+                assert_eq!(branch, "packet/seat/unsynced");
+                assert_eq!(base, "track");
+            }
+            other => panic!("expected BranchNotSynced, got {other:?}"),
+        }
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The list itself is audited by the code, not just by whoever added a line:
+    /// every entry carries a path, who ruled, and why; no entry is a glob; and
+    /// matching is exact, so no entry can be widened by a path that merely
+    /// contains it.
+    #[test]
+    fn deletion_exemptions_are_explicit_audited_and_exact() {
+        assert!(
+            !DELETION_EXEMPTIONS.is_empty(),
+            "an empty list is indistinguishable from a deleted defence — say so \
+             rather than shipping a hole that looks like a feature"
+        );
+        for exemption in DELETION_EXEMPTIONS {
+            assert!(
+                !exemption.path.is_empty(),
+                "an entry with no path exempts nothing and documents nothing"
+            );
+            assert!(
+                !exemption.ruled_by.is_empty(),
+                "{path:?}: no `ruled_by` — nobody can tell whose ruling this is",
+                path = exemption.path
+            );
+            assert!(
+                !exemption.why.is_empty(),
+                "{path:?}: no `why` — in a year this line reads as legacy cruft",
+                path = exemption.path
+            );
+            for glob in ['*', '?', '['] {
+                assert!(
+                    !exemption.path.contains(glob),
+                    "{path:?} contains {glob:?} — a glob widens the exemption to \
+                     every path it happens to match",
+                    path = exemption.path
+                );
+            }
+        }
+        // The concrete ruling that motivated the list (Aegis 2026-10-22).
+        assert!(
+            is_deletion_exempt("ui/src/app-v2/AppV2.tsx"),
+            "the ruled-on path must be exempt"
+        );
+        // Exact match only: a directory, a prefix, a suffix, a bare filename,
+        // or an empty string never inherits the exemption.
+        for near in [
+            "ui/src/app-v2",
+            "ui/src",
+            "ui/src/app-v2/",
+            "ui/src/app-v2/AppV2.tsx.bak",
+            "AppV2.tsx",
+            "app-v2/AppV2.tsx",
+            "",
+            "*",
+        ] {
+            assert!(
+                !is_deletion_exempt(near),
+                "{near:?} must not inherit the exemption for AppV2.tsx"
+            );
+        }
+    }
+
     /// Defect 1 (Aegis dispatch disp-E8BP2vKlOwMHLomm0eX8J): the merge base is
     /// NAMED and EXISTS before a card is recorded. The old code hardcoded
     /// `'track'` — not a branch in this repository — so the error only appeared
@@ -2626,7 +2985,6 @@ mod tests {
             matches!(err, DispatchRejection::Db(_)),
             "the configured integration branch must satisfy the guard: {err}"
         );
-
         match had_root {
             Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
             None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
@@ -2635,7 +2993,6 @@ mod tests {
             Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
             None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Defect 2: a void with no recorded why is an unexplained edit to the
@@ -3347,7 +3704,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-req\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3547,7 +3904,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-derive\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3585,7 +3942,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-reopen\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3664,7 +4021,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-held\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3675,14 +4032,23 @@ mod db_itests {
             .unwrap();
         let before = acceptance_row(&pool, "acc-disp-it-held").await;
 
-        // A second, DIFFERENT dispatch tries to occupy that live id.
+        // A second, DIFFERENT dispatch tries to occupy that live id. It needs its
+        // OWN verdict — the shared one is about disp-it-held, and a request
+        // refused for the verdict reason would never reach the id guard this
+        // test exists for.
         completed_dispatch(&pool, project, "disp-it-squatter").await;
-        let err = request_acceptance(
-            &pool,
-            request_args("disp-it-squatter", Some("acc-disp-it-held")),
-        )
-        .await
-        .unwrap_err();
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-squatter','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-squatter\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        let mut squatter_args = request_args("disp-it-squatter", Some("acc-disp-it-held"));
+        squatter_args.flux_verdict_ref = "ev-it-verdict-squatter".into();
+        let err = request_acceptance(&pool, squatter_args).await.unwrap_err();
         assert!(
             matches!(err, DispatchRejection::AcceptanceIdTaken { .. }),
             "{err}"
@@ -3719,7 +4085,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-flux\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3755,12 +4121,19 @@ mod db_itests {
         // the occupant AND its owner.
         as_seat();
         completed_dispatch(&pool, project, "disp-it-borrow").await;
-        let err = request_acceptance(
-            &pool,
-            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
-        )
-        .await
-        .unwrap_err();
+        // Its own verdict, so the request reaches the id guard this test is about.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-borrow','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-borrow\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        let mut borrow_args = request_args("disp-it-borrow", Some("acc-disp-it-flux"));
+        borrow_args.flux_verdict_ref = "ev-it-verdict-borrow".into();
+        let err = request_acceptance(&pool, borrow_args).await.unwrap_err();
         assert!(
             matches!(err, DispatchRejection::AcceptanceIdTaken { .. }),
             "{err}"
@@ -3783,12 +4156,9 @@ mod db_itests {
         .await
         .unwrap();
         as_seat();
-        let err = request_acceptance(
-            &pool,
-            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
-        )
-        .await
-        .unwrap_err();
+        let mut borrow_args2 = request_args("disp-it-borrow", Some("acc-disp-it-flux"));
+        borrow_args2.flux_verdict_ref = "ev-it-verdict-borrow".into();
+        let err = request_acceptance(&pool, borrow_args2).await.unwrap_err();
         assert!(
             matches!(err, DispatchRejection::AcceptanceIdNotYours { .. }),
             "{err}"
@@ -3810,12 +4180,9 @@ mod db_itests {
             .await
             .unwrap();
         }
-        let err = request_acceptance(
-            &pool,
-            request_args("disp-it-borrow", Some("acc-disp-it-flux")),
-        )
-        .await
-        .unwrap_err();
+        let mut borrow_args3 = request_args("disp-it-borrow", Some("acc-disp-it-flux"));
+        borrow_args3.flux_verdict_ref = "ev-it-verdict-borrow".into();
+        let err = request_acceptance(&pool, borrow_args3).await.unwrap_err();
         assert!(
             matches!(err, DispatchRejection::AcceptanceIdTerminal { .. }),
             "{err}"
@@ -3841,7 +4208,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-first\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -3862,13 +4229,20 @@ mod db_itests {
         .unwrap();
 
         // The cancelled id belongs to disp-it-first; asking for it under
-        // disp-it-second would silently re-point the lineage.
-        let err = request_acceptance(
-            &pool,
-            request_args("disp-it-second", Some("acc-disp-it-first")),
-        )
-        .await
-        .unwrap_err();
+        // disp-it-second would silently re-point the lineage. disp-it-second
+        // gets its own verdict so the request reaches the id guard.
+        {
+            let c = pool.get().await.unwrap();
+            c.execute(
+                "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
+                 VALUES ('ev-it-verdict-second','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-second\"}',$1,1)",
+                &[&project],
+            ).await.unwrap();
+        }
+        let mut second_args = request_args("disp-it-second", Some("acc-disp-it-first"));
+        second_args.flux_verdict_ref = "ev-it-verdict-second".into();
+        let err = request_acceptance(&pool, second_args).await.unwrap_err();
         assert!(
             matches!(err, DispatchRejection::AcceptanceIdWrongDispatch { .. }),
             "{err}"
@@ -3944,7 +4318,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict-plan','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict-plan','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-plan\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -5295,7 +5669,7 @@ mod db_itests {
             let c = pool.get().await.unwrap();
             c.execute(
                 "INSERT INTO canonical_events (id,event_type,occurred_at,actor_ref,payload,project_id,schema_version) \
-                 VALUES ('ev-it-verdict-c','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$1,1)",
+                 VALUES ('ev-it-verdict-c','ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\",\"dispatch_id\":\"disp-it-cancel\"}',$1,1)",
                 &[&project],
             ).await.unwrap();
         }
@@ -5722,5 +6096,381 @@ mod db_itests {
             !msg.contains("disp-reissue-v3"),
             "a blocked re-issue must not be pullable: {msg}"
         );
+    }
+
+    // =========================================================================
+    // The acceptance gate's verdict criterion — the two defects of 2026-10-16.
+    //
+    // Measured on live before these were written: three pending cards named
+    // `ev-verdict-history-sessions`, a **fail** verdict about
+    // `disp-history-sessions-verify`, for three dispatches Flux had never
+    // verified. Existence was being read as a verdict, so a red verdict about
+    // somebody else's work would have merged on the operator's click.
+    // =========================================================================
+
+    /// A scratch repo with a base branch and a delivery branch that CONTAINS it,
+    /// so the containment guards let a request reach the verdict guard. The
+    /// subject of the verdict tests is the verdict, so the git side is a
+    /// well-formed fixture.
+    fn scratch_repo_with_delivery() -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("seatloom-verdict-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| assert!(g(args).status.success(), "git {args:?} failed");
+        ok(&["init", "-b", "track/infra-foundation"]);
+        ok(&["config", "user.email", "test@seatloom.local"]);
+        ok(&["config", "user.name", "test"]);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-m", "base"]);
+        ok(&["branch", "packet/nimbus/vg", "track/infra-foundation"]);
+        root
+    }
+
+    /// Release the seat's in_flight slot before a test sets up its own.
+    ///
+    /// `get_next` returns the dispatch the seat ALREADY holds when it holds one —
+    /// that is the one-in-flight-per-seat rule — so a dispatch left in_flight by
+    /// another test's project would be handed back instead of this test's, and
+    /// the `complete` that follows would refuse with NotYourInFlight. Cleaning
+    /// only this test's project is not enough.
+    async fn release_in_flight(pool: &Pool, seat: &str) {
+        let c = pool.get().await.unwrap();
+        let rows = c
+            .query(
+                "SELECT id FROM dispatches WHERE target_seat_id = $1 AND status = 'in_flight'",
+                &[&seat],
+            )
+            .await
+            .unwrap();
+        for r in &rows {
+            let id: String = r.get(0);
+            complete(
+                pool,
+                CompleteArgs {
+                    dispatch_id: id,
+                    outcome: Some("done".into()),
+                    reason: None,
+                },
+            )
+            .await
+            .ok();
+        }
+    }
+
+    /// A verdict whose value is `fail` is not a merge criterion. This is the
+    /// dispatch's first required test.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn a_fail_verdict_cannot_be_the_merge_criterion() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_verdict_gate";
+        clean(&pool, project).await;
+        // Another test's project may have left the seat holding a dispatch.
+        clean(&pool, "seatloom_itest").await;
+        release_in_flight(&pool, SEAT_ID).await;
+        // The git side must be well-formed, or the request is refused for a
+        // branch reason and never reaches the verdict guard under test.
+        let root = scratch_repo_with_delivery();
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        as_seat();
+
+        // A done dispatch of the calling seat, with a RED verdict that IS about
+        // it — so the only thing wrong is the value.
+        enqueue(&pool, enqueue_args("disp-vg-red", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-vg-red".into(),
+                outcome: Some("done".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .execute(
+                "INSERT INTO canonical_events \
+                   (id, event_type, occurred_at, actor_ref, payload, project_id, schema_version) \
+                 VALUES ('ev-vg-red','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"fail\",\"dispatch_id\":\"disp-vg-red\", \
+                           \"evidence\":\"gates red\"}', $1, 1)",
+                &[&project],
+            )
+            .await
+            .unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .execute(
+                "INSERT INTO event_object_refs (event_id, ref_type, ref_id) \
+                 VALUES ('ev-vg-red','dispatch','disp-vg-red')",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-vg-red".into(),
+                branch: "packet/nimbus/vg".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-vg-red".into(),
+                base: Some("track/infra-foundation".into()),
+                acceptance_plan: valid_plan(),
+                acceptance_id: None,
+            },
+        )
+        .await
+        .expect_err("a fail verdict must not open a card");
+
+        match &err {
+            DispatchRejection::VerdictNotGreen {
+                flux_verdict_ref,
+                verdict,
+            } => {
+                assert_eq!(flux_verdict_ref, "ev-vg-red");
+                assert_eq!(
+                    verdict.as_deref(),
+                    Some("fail"),
+                    "the value is carried verbatim"
+                );
+            }
+            other => panic!("expected VerdictNotGreen, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("ev-vg-red"), "{msg}");
+        assert!(msg.contains("fail"), "{msg}");
+        assert!(msg.contains("not"), "{msg}");
+        // And nothing was written.
+        let n: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE dispatch_id = 'disp-vg-red'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "a refused request must leave no card");
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        clean(&pool, project).await;
+    }
+
+    /// A verdict about ANOTHER dispatch is not this one's merge criterion, even
+    /// when it passes. This is the dispatch's second required test.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn another_dispatches_verdict_cannot_be_the_merge_criterion() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_verdict_gate";
+        clean(&pool, project).await;
+        // Another test's project may have left the seat holding a dispatch.
+        clean(&pool, "seatloom_itest").await;
+        release_in_flight(&pool, SEAT_ID).await;
+        // The git side must be well-formed, or the request is refused for a
+        // branch reason and never reaches the verdict guard under test.
+        let root = scratch_repo_with_delivery();
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        as_seat();
+
+        enqueue(&pool, enqueue_args("disp-vg-mine", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-vg-mine".into(),
+                outcome: Some("done".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        // GREEN — the value is not the problem. The subject is.
+        pool.get()
+            .await
+            .unwrap()
+            .execute(
+                "INSERT INTO canonical_events \
+                   (id, event_type, occurred_at, actor_ref, payload, project_id, schema_version) \
+                 VALUES ('ev-vg-other','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"pass\",\"dispatch_id\":\"disp-somebody-else\"}', $1, 1)",
+                &[&project],
+            )
+            .await
+            .unwrap();
+
+        let err = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-vg-mine".into(),
+                branch: "packet/nimbus/vg".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-vg-other".into(),
+                base: Some("track/infra-foundation".into()),
+                acceptance_plan: valid_plan(),
+                acceptance_id: None,
+            },
+        )
+        .await
+        .expect_err("another dispatch's verdict must not open a card");
+
+        match &err {
+            DispatchRejection::VerdictNotAboutThisDispatch {
+                flux_verdict_ref,
+                dispatch_id,
+                verdict_dispatch_id,
+            } => {
+                assert_eq!(flux_verdict_ref, "ev-vg-other");
+                assert_eq!(dispatch_id, "disp-vg-mine");
+                assert_eq!(
+                    verdict_dispatch_id.as_deref(),
+                    Some("disp-somebody-else"),
+                    "the refusal names whose verdict it actually is"
+                );
+            }
+            other => panic!("expected VerdictNotAboutThisDispatch, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("disp-somebody-else"), "{msg}");
+        assert!(msg.contains("disp-vg-mine"), "{msg}");
+        let n: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT count(*) FROM acceptances WHERE dispatch_id = 'disp-vg-mine'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "a refused request must leave no card");
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        clean(&pool, project).await;
+    }
+
+    /// The normal path must not regress: a green verdict about THIS dispatch
+    /// still opens a card. Without this the two guards above could be satisfied
+    /// by refusing everything.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL 001-014 (scratch DB); run --test-threads=1"]
+    async fn a_green_verdict_about_this_dispatch_still_opens_a_card() {
+        let Some(pool) = scratch_pool().await else {
+            return;
+        };
+        let project = "seatloom_verdict_gate";
+        clean(&pool, project).await;
+        // Another test's project may have left the seat holding a dispatch.
+        clean(&pool, "seatloom_itest").await;
+        release_in_flight(&pool, SEAT_ID).await;
+        // The git side must be well-formed, or the request is refused for a
+        // branch reason and never reaches the verdict guard under test.
+        let root = scratch_repo_with_delivery();
+        let had_root = std::env::var_os(seatloom_core::git::ops::REPO_ROOT_ENV);
+        let had_base = std::env::var_os(INTEGRATION_BRANCH_ENV);
+        std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, &root);
+        std::env::remove_var(INTEGRATION_BRANCH_ENV);
+        as_seat();
+
+        enqueue(&pool, enqueue_args("disp-vg-ok", project, 0))
+            .await
+            .unwrap();
+        get_next(&pool, Some(project.into())).await.unwrap();
+        complete(
+            &pool,
+            CompleteArgs {
+                dispatch_id: "disp-vg-ok".into(),
+                outcome: Some("done".into()),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .execute(
+                "INSERT INTO canonical_events \
+                   (id, event_type, occurred_at, actor_ref, payload, project_id, schema_version) \
+                 VALUES ('ev-vg-ok','ReviewVerdictIssued',NOW(),'seat:seat-flux-001', \
+                         '{\"verdict\":\"pass\",\"dispatch_id\":\"disp-vg-ok\"}', $1, 1)",
+                &[&project],
+            )
+            .await
+            .unwrap();
+
+        let msg = request_acceptance(
+            &pool,
+            RequestAcceptanceArgs {
+                dispatch_id: "disp-vg-ok".into(),
+                branch: "packet/nimbus/vg".into(),
+                how_to_verify: "do A see B".into(),
+                flux_verdict_ref: "ev-vg-ok".into(),
+                base: Some("track/infra-foundation".into()),
+                acceptance_plan: valid_plan(),
+                acceptance_id: None,
+            },
+        )
+        .await
+        .expect("a green verdict about this dispatch must still open a card");
+        assert!(msg.contains("disp-vg-ok"), "{msg}");
+
+        match had_root {
+            Some(v) => std::env::set_var(seatloom_core::git::ops::REPO_ROOT_ENV, v),
+            None => std::env::remove_var(seatloom_core::git::ops::REPO_ROOT_ENV),
+        }
+        match had_base {
+            Some(v) => std::env::set_var(INTEGRATION_BRANCH_ENV, v),
+            None => std::env::remove_var(INTEGRATION_BRANCH_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        clean(&pool, project).await;
     }
 }

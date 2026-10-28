@@ -14,6 +14,16 @@
 #   scripts/seat-launch.sh --all              relaunch every *-seatloom seat
 #   scripts/seat-launch.sh --map              print the current seat→session map
 #
+#   scripts/seat-launch.sh --resume-uuid <uuid> <seat-session>
+#     Pin the session id to an EXISTING one instead of minting a fresh uuid.
+#     Use this right after saih/transfer-session.sh: the transferred transcript
+#     carries the OLD pi session's uuid, and a fresh --session-id would start an
+#     empty session — so "migrate the memory" would silently do nothing.
+#     Pinning keeps both: exact seat→transcript mapping AND history continuity.
+#
+#     Extract the uuid from the transferred file name, which is
+#     <timestamp>_<uuid>.jsonl — the part after the underscore.
+#
 # Refuses to relaunch a seat that is mid-turn unless --force is given: killing a
 # working agent loses the turn. Never touches non-seatloom tmux sessions.
 
@@ -24,7 +34,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 写死一个值给所有席位,会在重启时静默把席位降级。2026-10-11 实测踩过:
 # 洗数据席位登记的是 stepplan-wash-anthropic(无限额,存在的意义就是不必为省 token 降低质量),
 # 重启后被换成普通额度的 stepplan-anthropic,而且面板上不会有任何告警。
-MODEL="${SEATLOOM_MODEL:-stepplan-anthropic/step-5-preview}"
+MODEL="${SEATLOOM_MODEL:-modelproxy-anthropic/step-5-preview-sys}"
 PI="${SEATLOOM_PI_BIN:-$HOME/.local/bin/pi}"
 WORKTREES="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
 MAP="$REPO/.seatloom/seat-sessions.tsv"
@@ -67,6 +77,15 @@ is_busy() {
 
 launch_seat() {
   local seat="$1" uuid
+  # 2026-10-17: --resume-uuid lets the caller pin the session id instead of
+  # minting a fresh one. Without it a transferred session is orphaned: the
+  # transcript lands under the OLD pi session's uuid, and a fresh --session-id
+  # starts an empty one, so "migrate the memory" silently does nothing.
+  # Pinning keeps BOTH properties the comment above claims — exact seat→transcript
+  # mapping (the map records the same id) AND continuity with the transferred history.
+  if [ -n "${RESUME_UUID:-}" ]; then uuid="$RESUME_UUID"; else
+  uuid=$(python3 -c 'import uuid;print(uuid.uuid4())')
+  fi
   if ! tmux has-session -t "$seat" 2>/dev/null; then
     echo "  $seat: no such tmux session — skipped"; return 1
   fi
@@ -78,7 +97,7 @@ launch_seat() {
     echo "  $seat: mid-turn, refusing (use --force to override)"; return 1
   fi
 
-  uuid=$(python3 -c 'import uuid;print(uuid.uuid4())')
+  # (the uuid was decided above: pinned by --resume-uuid, or minted fresh)
 
   # Each seat runs from ITS OWN worktree, because that is where its .pi/mcp.json
   # lives — pi picks up the project-level MCP config from the cwd. Launching from
@@ -151,6 +170,12 @@ case "${1:---help}" in
     ;;
   -h|--help)
     sed -n '2,18p' "$0"
+    ;;
+  --resume-uuid)
+    shift; RESUME_UUID="${1:?--resume-uuid needs a uuid}"
+    shift
+    if [ "${1:-}" = "--force" ]; then FORCE=1; shift; fi
+    launch_seat "${1:?usage: seat-launch.sh --resume-uuid <uuid> <seat-session>}"
     ;;
   *)
     [ "${2:-}" = "--force" ] && FORCE=1

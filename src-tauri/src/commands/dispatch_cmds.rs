@@ -8,14 +8,23 @@ use tauri::State;
 
 /// List a project's dispatches (seat inboxes) with their dependency edges
 /// embedded. Ordered for an inbox view: by seat, then in_flight → ready →
-/// blocked → done. Defaults to the app's default project.
+/// blocked → done.
+///
+/// **This command is the one that hid the defect.** It used to take
+/// `project_id: Option<String>` and fall back to `state.default_project_id` when
+/// it was absent, with a doc comment that said "Defaults to the app's default
+/// project" as though that were a feature. The UI never passed the id, so the
+/// dispatch list under `ql_delivery` was `seatloom`'s dispatches — a populated,
+/// plausible, **wrong** list. A fallback that silently substitutes another
+/// project's rows is worse than an error: the error says something is missing,
+/// while the fallback says nothing at all.
 #[tauri::command]
 pub async fn cmd_list_dispatches(
     state: State<'_, AppState>,
     project_id: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<DispatchDto>, String> {
-    let project = project_id.unwrap_or_else(|| state.default_project_id.clone());
+    let project = crate::commands::require_project_id("cmd_list_dispatches", project_id)?;
 
     let rows = state
         .db

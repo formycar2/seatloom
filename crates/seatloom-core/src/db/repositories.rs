@@ -9,14 +9,15 @@ use tokio_postgres::Row;
 
 use crate::db::event_domain::{EventType, RefRole, RefType};
 use crate::db::models::{
-    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArchivedSessionRow, ArtifactRow, CanonicalEventRow,
     ChannelActionReceiptRow, CheckpointRow, DispatchDependencyRow, DispatchDependencyStatus,
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
-    DocumentVersionRow, HandoffReceiptRow, HandoffRow, KnowledgeL2Pointer, KnowledgeMemoryCard,
-    KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow, ObjectRefRow,
-    PipelineRunRow, ProjectRoleBindingRow, ProjectRow, PromptActionRow, PromptInstanceRow,
-    ReconcileItemRow, ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow,
-    SeatRow, SessionRow, TopicRow, WorkItemRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, HistoryProjectRow, KnowledgeL2Pointer,
+    KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
+    MemorySessionJoinRow, ObjectRefRow, OperatorDecisionRow, PipelineRunRow, ProjectRoleBindingRow,
+    ProjectRow, PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow,
+    ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, TopicRow,
+    VerdictFacts, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -28,6 +29,77 @@ pub struct SeatloomDb {
     pool: Pool,
 }
 
+/// Everything a NEW operator obligation carries (020).
+///
+/// A struct rather than nine positional arguments: the write is a single act
+/// with a single meaning, and a call site that transposes `consequence` and
+/// `target` would compile silently — nine same-typed `&str`s in a row is exactly
+/// the shape a transposition hides in.
+#[derive(Debug, Clone)]
+pub struct NewOperatorDecision<'a> {
+    pub decision_id: &'a str,
+    pub project_id: &'a str,
+    pub target: &'a str,
+    pub choices: &'a [String],
+    pub decider: &'a str,
+    pub consequence: &'a str,
+    pub evidence: &'a [String],
+    /// The creator. Already resolved from the server env by the caller; this
+    /// function does not re-derive it, so identity has one source.
+    pub created_by: &'a str,
+}
+
+/// The one SELECT both session↔work directions read through.
+///
+/// **Why this is derived rather than selected.** The read model was first written
+/// against a 27-column view that never existed anywhere: its branch's
+/// `infra/postgres/schema/` stops at 014, so there was no 022 on it at all. The
+/// view that is actually on track and live (022) has 20 columns with different
+/// names — `resolved_by` instead of `join_state`, `a2_harness`/`a2_id` not
+/// exposed, `a1_corpus_path`/`a1_path_rows` not exposed, and no
+/// `status`/`created_at`/line range at all.
+///
+/// Running the original query against live fails with `column "a1_harness" does
+/// not exist` — measured, not inferred. So rather than change the migration (a
+/// live-DB act that is not this dispatch's to make), the extra columns are
+/// COMPUTED here from what the view does expose:
+///
+/// * `a1_corpus_path`, `ref_harness`, `ref_id`, `a2_harness`, `a2_id` — the same
+///   expressions the view itself uses, re-applied to `l2_file_path`/`source_ref`;
+/// * `a1_path_rows` — a count against `archived_sessions`, which is what makes an
+///   ambiguous path reportable instead of silently matching one row;
+/// * `a1_harness`/`a1_id` — the session A1 resolved to, already coalesced by the
+///   view into `session_harness`/`session_id`;
+/// * `status`, `created_at`, `l2_line_start`, `l2_line_end` — from `memories`,
+///   which is where they live.
+///
+/// The one thing this derivation cannot recover is a genuine DISAGREEMENT between
+/// the two keys: the view coalesces `s1`/`s2`, so when both resolve it reports
+/// `both` without saying whether they named the same session. `join_state`
+/// therefore never emits `disagree` here, and that limit is stated in the read
+/// model rather than papered over.
+const SESSION_WORK_SELECT: &str = "SELECT \
+        v.memory_id, v.project_id, v.topic_id, v.title, v.kind, v.confidence, \
+        m.status, m.created_at, v.l2_file_path, m.l2_line_start, m.l2_line_end, \
+        regexp_replace(v.l2_file_path, '^~/Documents/GitHub/AgentHistory/', '') AS a1_corpus_path, \
+        (SELECT count(*) FROM archived_sessions a \
+          WHERE a.raw_path = regexp_replace(v.l2_file_path, '^~/Documents/GitHub/AgentHistory/', '')) AS a1_path_rows, \
+        v.session_harness AS a1_harness, v.session_id AS a1_id, v.a1_resolves, \
+        split_part(v.source_ref, ':', 1) AS ref_harness, \
+        substring(v.source_ref from position(':' in v.source_ref) + 1) AS ref_id, \
+        split_part(v.source_ref, ':', 1) AS a2_harness, \
+        substring(v.source_ref from position(':' in v.source_ref) + 1) AS a2_id, \
+        v.a2_resolves, \
+        v.session_harness, v.session_id, v.session_raw_path, v.session_project, \
+        v.session_message_count, \
+        CASE v.resolved_by \
+          WHEN 'both' THEN 'both_agree' \
+          WHEN 'a1_path' THEN 'path_only' \
+          WHEN 'a2_source_ref' THEN 'ref_only' \
+          ELSE 'none' \
+        END AS join_state \
+       FROM v_memory_session_join v \
+       JOIN memories m ON m.id = v.memory_id";
 impl SeatloomDb {
     pub fn new(pool: Pool) -> Self {
         Self { pool }
@@ -58,7 +130,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects ORDER BY name ASC",
                 &[],
             )
@@ -70,7 +142,7 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens \
+                "SELECT id, name, created_at, worker_budget_tokens, supervisor_budget_tokens, home_path \
                  FROM projects WHERE id = $1",
                 &[&project_id],
             )
@@ -90,6 +162,42 @@ impl SeatloomDb {
                  capability_tags, status, created_at \
                  FROM seats ORDER BY name ASC",
                 &[],
+            )
+            .await?;
+        rows.iter().map(row_to_seat).collect()
+    }
+
+    /// The seats **belonging to one project**, resolved through
+    /// `project_role_bindings`.
+    ///
+    /// **Why a JOIN and not a WHERE.** `seats` has no `project_id` column — a seat
+    /// is a global registry entry, and its association with a project is a row in
+    /// `project_role_bindings`. So "the seats under this project" is not a
+    /// predicate on `seats`; it is a predicate on the binding table, and the seat
+    /// row is reached by joining. Adding `WHERE project_id = $1` to the `seats`
+    /// query would be a syntax error, not a filter.
+    ///
+    /// **An empty result is a real answer, not a failure.** A project with no
+    /// binding rows genuinely has no seats — the historical-corpus projects are
+    /// corpus-derived and drive no seat. That is why the callers distinguish
+    /// "project_id was not supplied" (an error) from "project_id was supplied and
+    /// matched nothing" (an empty list): collapsing them would make a missing
+    /// parameter look like a project with no seats.
+    ///
+    /// The same runtime-triple validation as [`Self::list_seats`] runs on every
+    /// row, so an out-of-domain `default_harness` fails this read exactly as it
+    /// fails the global one — a domain violation is not made invisible by scoping.
+    pub async fn list_seats_for_project(&self, project_id: &str) -> Result<Vec<SeatRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT s.id, s.name, s.default_harness, s.default_agent, s.default_model, \
+                 s.capability_tags, s.status, s.created_at \
+                 FROM seats s \
+                 JOIN project_role_bindings b ON b.seat_id = s.id \
+                 WHERE b.project_id = $1 \
+                 ORDER BY s.name ASC",
+                &[&project_id],
             )
             .await?;
         rows.iter().map(row_to_seat).collect()
@@ -649,6 +757,74 @@ impl SeatloomDb {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
+    /// What a Flux verdict reference actually SAYS, and whether it is about a
+    /// given dispatch.
+    ///
+    /// # Why this exists
+    ///
+    /// `event_or_artifact_exists` answers one question — "is the referent there" —
+    /// and the acceptance gate had been using it as if it answered two more:
+    /// "is it green" and "is it about this dispatch". Measured on live, it does
+    /// not: three pending cards named `ev-verdict-history-sessions`, a **fail**
+    /// verdict about `disp-history-sessions-verify`, for three unrelated
+    /// dispatches Flux had never verified at all. Existence is not a verdict.
+    ///
+    /// So the gate reads the verdict's value and its subject, and refuses when
+    /// either is wrong. Both are things Flux actually writes — `payload->>'verdict'`
+    /// and `payload->>'dispatch_id'`, or an `event_object_refs` row with
+    /// `ref_type='dispatch'` — so neither criterion is invented. Measured across
+    /// all 30 `ReviewVerdictIssued` events on live: 27 carry `dispatch_id` in the
+    /// payload (the 3 that do not are pre-012 seed rows and a scenario fixture),
+    /// and 5 name a dispatch through `event_object_refs`. Either channel counts.
+    pub async fn flux_verdict_facts(
+        &self,
+        ref_id: &str,
+        dispatch_id: &str,
+    ) -> Result<VerdictFacts, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        // Existence, event type and the verdict value, in one round trip. The ref
+        // is polymorphic TEXT with no FK, so an artifact referent is possible —
+        // and an artifact carries no event_type and no payload, which is exactly
+        // why those fields are Option rather than defaulted.
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM canonical_events WHERE id = $1) AS is_event, \
+                        EXISTS (SELECT 1 FROM artifacts WHERE id = $1) AS is_artifact, \
+                        (SELECT event_type FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'verdict' FROM canonical_events WHERE id = $1), \
+                        (SELECT payload->>'dispatch_id' FROM canonical_events WHERE id = $1)",
+                &[&ref_id],
+            )
+            .await?;
+        let is_event: bool = row.get(0);
+        let is_artifact: bool = row.get(1);
+        let event_type: Option<String> = row.get(2);
+        let verdict: Option<String> = row.get(3);
+        let payload_dispatch_id: Option<String> = row.get(4);
+
+        // The second way a verdict can name a dispatch. Asked separately because
+        // it is a different table and the two spellings are alternatives, not a
+        // conjunction.
+        let names_via_ref: bool = client
+            .query_one(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM event_object_refs \
+                      WHERE event_id = $1 AND ref_type = 'dispatch' AND ref_id = $2)",
+                &[&ref_id, &dispatch_id],
+            )
+            .await?
+            .get(0);
+
+        let names_dispatch = payload_dispatch_id.as_deref() == Some(dispatch_id) || names_via_ref;
+        Ok(VerdictFacts {
+            exists: is_event || is_artifact,
+            event_type,
+            verdict,
+            payload_dispatch_id,
+            names_dispatch,
+        })
+    }
+
     /// One dispatch's dependency edges (012).
     pub async fn list_dispatch_dependencies(
         &self,
@@ -693,13 +869,21 @@ impl SeatloomDb {
     /// The seat registry, reduced to the four columns routing needs.
     ///
     /// **Why not [`SeatloomDb::list_seats`]?** Because `list_seats` hydrates the
-    /// full runtime triple and validates `default_harness` against the closed
-    /// `Harness` domain — and the live registry currently contains a row
-    /// (`seat-vela-001`, `default_harness = 'Pi'`) that is out of that domain, so
-    /// the whole read fails. Routing has no opinion about which harness a seat
-    /// runs; making the intent surface fail because of an unrelated column's
-    /// domain violation would be a defect, not strictness. The domain violation
-    /// itself is reported to Aegis as data debt, not patched here.
+    /// full runtime triple and validates it against the closed `Harness` / `Agent`
+    /// domains, so a single out-of-domain row fails the WHOLE read. Routing has no
+    /// opinion about which harness or agent a seat runs; making the intent surface
+    /// fail because of an unrelated column's domain violation would be a defect,
+    /// not strictness.
+    ///
+    /// That failure was real and measured: on 2026-10-16 two live rows carried
+    /// `default_harness='Pi'` while the `Harness` domain had no `Pi` variant, and
+    /// `list_seats` failed for the whole table — which is what made the UI fall
+    /// back to three hard-coded fake project cards. It is now fixed at BOTH ends:
+    /// the data was corrected to `Stepcode`, and on the operator's 2026-10-17
+    /// ruling `Pi` is in the `Harness` domain as well as `Agent`. This read stays
+    /// domain-free regardless, because the structural reason — one bad row should
+    /// not fail an unrelated surface — is independent of which values are in the
+    /// domain today.
     pub async fn list_seat_routing_facts(&self) -> Result<Vec<SeatRoutingRow>, DbError> {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
@@ -781,6 +965,146 @@ impl SeatloomDb {
             dispatch_titles,
             named_referent_exists: BTreeMap::new(),
         })
+    }
+
+    // =========================================================================
+    // Historical session corpus (011 + 021) — the read path.
+    //
+    // ONE implementation, exposed twice over the same code: the `list_history_*`
+    // / `get_history_session_turns` MCP tools and their Tauri thin wrappers both
+    // come through here (the turns half adds `crate::history::read`, which is
+    // the file half). There is no second reader.
+    //
+    // Every query is written so that a database WITHOUT 021 answers honestly
+    // instead of lying: the corpus columns are probed with
+    // `to_regclass`/`information_schema` and a missing one is reported as
+    // `CorpusNotLoaded`, never read as zero.
+    // =========================================================================
+
+    /// Does `archived_sessions.message_count` exist? `021` adds it.
+    pub async fn corpus_columns_present(&self) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                  WHERE table_name = 'archived_sessions' AND column_name = 'message_count')",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// (a) Every project that has at least one corpus session, with its
+    /// session count and its total message count.
+    ///
+    /// A project with sessions but no corpus migration reads `message_count =
+    /// None` — the count is unknown, which is not the same as zero.
+    ///
+    /// THE INVENTORY FILTER (021's own header states the rule; Flux's verdict
+    /// `FLUX-2026-10-14-history-sessions-verdict-v1` §5 measured the cost of
+    /// omitting it): the live table also holds the 2026-10-08 manifest load —
+    /// 271 rows, 89 of them with no extracted conversation and therefore no
+    /// `message_count` — and 78 of those 89 carry a project slug that matches
+    /// one of the 38 project ids. Joining them in made `sum(sessionCount)` 261
+    /// against a corpus of 183 and reported 58 sessions under `sf-code/storage`
+    /// for a truth of 2. So the join filters on `message_count IS NOT NULL`
+    /// and a project with only inventory rows reports no sessions at all.
+    pub async fn list_history_projects(&self) -> Result<Vec<HistoryProjectRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let message_expr = if corpus {
+            "sum(a.message_count)::bigint"
+        } else {
+            "NULL::bigint"
+        };
+        let join = if corpus {
+            // The corpus rows, never the 89 inventory-only ones.
+            "LEFT JOIN archived_sessions a ON a.project = p.id AND a.message_count IS NOT NULL"
+        } else {
+            "LEFT JOIN archived_sessions a ON a.project = p.id"
+        };
+        let sql = format!(
+            "SELECT p.id, p.name, p.home_path, count(a.id)::bigint AS sessions, {message_expr} \
+               FROM projects p \
+               {join} \
+              GROUP BY p.id, p.name, p.home_path \
+             HAVING count(a.id) > 0 \
+              ORDER BY count(a.id) DESC, p.id ASC"
+        );
+        let rows = client.query(&sql, &[]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| HistoryProjectRow {
+                id: r.get(0),
+                name: r.get(1),
+                home_path: r.get(2),
+                session_count: r.get(3),
+                message_count: r.get(4),
+            })
+            .collect())
+    }
+
+    /// (b) One project's CORPUS sessions, dated first (newest first) and the
+    /// undated ones last and flagged — never silently interleaved, because
+    /// sorting 14 undated cursor sessions as if they were the oldest would be
+    /// a lie.
+    ///
+    /// The inventory-only rows are excluded for the same reason the projects
+    /// read filters them (see `list_history_projects`): they are manifest
+    /// entries, not sessions, and 78 of the 89 carry a slug matching one of the
+    /// 38 project ids. Flux measured the consequence on `seatloom`: 16 rows
+    /// where the corpus defines 14, one of them a gemini marker row with
+    /// `firstTs: null` that the tool nevertheless flagged `dated: true`.
+    pub async fn list_history_sessions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let corpus_filter = if corpus {
+            "AND a.message_count IS NOT NULL"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.project = $1 {corpus_filter} \
+              ORDER BY (a.first_ts IS NULL) ASC, \
+                       a.first_ts DESC NULLS LAST, \
+                       a.id ASC"
+        );
+        let rows = client.query(&sql, &[&project_id]).await?;
+        Ok(rows.iter().map(row_to_archived_session).collect())
+    }
+
+    /// The single row one session's turns are read for.
+    pub async fn get_archived_session(
+        &self,
+        harness: &str,
+        id: &str,
+    ) -> Result<Option<ArchivedSessionRow>, DbError> {
+        let corpus = self.corpus_columns_present().await?;
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let corpus_cols = if corpus {
+            "a.message_count, a.first_ts::text, a.last_ts::text"
+        } else {
+            "NULL::integer, NULL::text, NULL::text"
+        };
+        let sql = format!(
+            "SELECT a.id, a.harness, a.project, a.cwd, a.session_date, a.bytes, a.lines, \
+                    a.sha256, a.raw_path, a.src_path, {corpus_cols} \
+               FROM archived_sessions a \
+              WHERE a.harness = $1 AND a.id = $2"
+        );
+        let row = client.query_opt(&sql, &[&harness, &id]).await?;
+        Ok(row.as_ref().map(row_to_archived_session))
     }
 
     // =========================================================================
@@ -1344,6 +1668,280 @@ impl SeatloomDb {
             .query_one(&format!("{MEMORY_COLUMNS} WHERE id = $1"), &[&memory_id])
             .await?;
         let updated = row_to_memory(&updated);
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    // =========================================================================
+    // Operator decisions (020) — the structured "waiting on the human" object.
+    //
+    // Why these are repository functions and not raw SQL in the tool: the same
+    // row + event must land in ONE transaction, and the immutability of a
+    // resolved decision must have exactly one implementation — never a second,
+    // divergent copy in a command or a script.
+    // =========================================================================
+
+    /// One operator decision by id. `None` when no such obligation exists.
+    pub async fn get_operator_decision(
+        &self,
+        decision_id: &str,
+    ) -> Result<Option<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_operator_decision))
+    }
+
+    /// The pending obligations of a project, oldest first.
+    ///
+    /// `decider` filters by WHO the obligation is for, because the packet's rule
+    /// is that not everything defaults to the operator: a row Aegis created for
+    /// itself (`decider = 'seat:seat-aegis-001'`) must not appear in the
+    /// operator's "等你拍板" count. Passing `None` returns every pending row of
+    /// the project.
+    pub async fn list_pending_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' AND decider = $2 \
+                         ORDER BY created_at ASC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'pending' \
+                         ORDER BY created_at ASC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// The RESOLVED obligations of a project, newest ruling first — the audit
+    /// side of the object. `decider` filters the same way the pending list does.
+    pub async fn list_resolved_operator_decisions(
+        &self,
+        project_id: &str,
+        decider: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<OperatorDecisionRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows =
+            match decider {
+                Some(d) => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' AND decider = $2 \
+                         ORDER BY resolved_at DESC LIMIT $3",
+                        &[&project_id, &d, &limit],
+                    )
+                    .await?,
+                None => client
+                    .query(
+                        "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                               status, created_by, created_at, chosen, resolved_by, resolved_at \
+                          FROM operator_decisions \
+                         WHERE project_id = $1 AND status = 'resolved' \
+                         ORDER BY resolved_at DESC LIMIT $2",
+                        &[&project_id, &limit],
+                    )
+                    .await?,
+            };
+        Ok(rows.iter().map(row_to_operator_decision).collect())
+    }
+
+    /// `request_operator_decision`: create the obligation + append
+    /// `OperatorDecisionRequested` in ONE transaction (contract rule 2).
+    ///
+    /// The write path enforces what the schema cannot express: `choices` is a
+    /// non-empty array of non-blank strings and `consequence` is non-blank. The
+    /// schema's CHECKs back this up, but the tool's job is a refusal that NAMES
+    /// what is missing — a raw CHECK violation tells the caller nothing.
+    ///
+    /// The caller has already resolved `created_by` from the server env; this
+    /// function does not re-derive it, so there is exactly one place identity
+    /// comes from.
+    pub async fn request_operator_decision(
+        &self,
+        new: NewOperatorDecision<'_>,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let NewOperatorDecision {
+            decision_id,
+            project_id,
+            target,
+            choices,
+            decider,
+            consequence,
+            evidence,
+            created_by,
+        } = new;
+        let choices_json =
+            serde_json::to_value(choices).map_err(|e| DbError::Internal(e.to_string()))?;
+        let evidence_json =
+            serde_json::to_value(evidence).map_err(|e| DbError::Internal(e.to_string()))?;
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        tx.execute(
+            "INSERT INTO operator_decisions \
+               (id, project_id, target, choices, decider, consequence, evidence, status, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
+            &[
+                &decision_id,
+                &project_id,
+                &target,
+                &choices_json,
+                &decider,
+                &consequence,
+                &evidence_json,
+                &created_by,
+            ],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionRequested,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: created_by.to_string(),
+            project_id: project_id.to_string(),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "choices": choices,
+                "decider": decider,
+                "consequence": consequence,
+                "evidence": evidence,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, created_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let row = row_to_operator_decision(&row);
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// `resolve_operator_decision`: the ruling lands + `OperatorDecisionResolved`
+    /// in ONE transaction.
+    ///
+    /// A row that is already `resolved` is REFUSED — same reasoning as 013/014:
+    /// the row is a projection of the append-only ledger, and a resolved
+    /// decision is a recorded fact. Re-deciding would be a silent rewrite.
+    ///
+    /// `chosen` must be one of the row's own `choices`. That check lives here
+    /// rather than in the schema because the choices are data, and because the
+    /// refusal must name the legal options instead of quoting a CHECK.
+    pub async fn resolve_operator_decision(
+        &self,
+        decision_id: &str,
+        chosen: &str,
+        resolved_by: &str,
+    ) -> Result<OperatorDecisionRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+        let row = tx
+            .query_opt(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1 \
+                   FOR UPDATE",
+                &[&decision_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(DbError::OperatorDecisionNotFound {
+                id: decision_id.to_string(),
+            });
+        };
+        let existing = row_to_operator_decision(&row);
+        if existing.status == "resolved" {
+            return Err(DbError::OperatorDecisionAlreadyResolved {
+                id: decision_id.to_string(),
+            });
+        }
+        if !existing.choices.iter().any(|c| c == chosen) {
+            return Err(DbError::OperatorDecisionChoiceNotOffered {
+                id: decision_id.to_string(),
+                chosen: chosen.to_string(),
+                choices: existing.choices.clone(),
+            });
+        }
+        let project_id = existing.project_id.clone();
+        let target = existing.target.clone();
+        let decider = existing.decider.clone();
+        tx.execute(
+            "UPDATE operator_decisions \
+                SET status = 'resolved', chosen = $2, resolved_by = $3, resolved_at = NOW() \
+              WHERE id = $1",
+            &[&decision_id, &chosen, &resolved_by],
+        )
+        .await?;
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::OperatorDecisionResolved,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: resolved_by.to_string(),
+            project_id,
+            turn_seq: None,
+            payload: serde_json::json!({
+                "decision_id": decision_id,
+                "target": target,
+                "chosen": chosen,
+                "ruling_by": resolved_by,
+                "decider": decider,
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Decision, decision_id),
+                ObjectRefDraft::new(RefType::Seat, resolved_by, RefRole::Actor),
+                ObjectRefDraft::new(RefType::Project, &existing.project_id, RefRole::Context),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+        let updated = tx
+            .query_one(
+                "SELECT id, project_id, target, choices, decider, consequence, evidence, \
+                       status, created_by, created_at, chosen, resolved_by, resolved_at \
+                  FROM operator_decisions WHERE id = $1",
+                &[&decision_id],
+            )
+            .await?;
+        let updated = row_to_operator_decision(&updated);
         tx.commit().await?;
         Ok(updated)
     }
@@ -2623,6 +3221,140 @@ impl SeatloomDb {
             .await?;
         Ok(rows.first().map(row_to_channel_action_receipt))
     }
+
+    /// Is the session↔work bridge view (`v_memory_session_join`, 022) present?
+    ///
+    /// A database without it must REFUSE the read rather than answer "no
+    /// records": the view is what makes the join measurable, and a read that
+    /// cannot measure must not look like a read that measured nothing. Same
+    /// shape as [`SeatloomDb::corpus_columns_present`].
+    pub async fn session_work_view_present(&self) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_class c \
+                  JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.relname = 'v_memory_session_join' AND c.relkind = 'v' \
+                   AND n.nspname = current_schema())",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Does this `(harness, id)` name an `archived_sessions` row at all?
+    ///
+    /// Asked BEFORE the join so the read can tell "that session is not in the
+    /// archive" from "that session is in the archive and produced no records".
+    /// Those are different facts, and a read that cannot tell them apart would
+    /// report an unknown session as an empty one.
+    pub async fn archived_session_exists(&self, harness: &str, id: &str) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM archived_sessions \
+                                WHERE harness = $1 AND id = $2)",
+                &[&harness, &id],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// The forward direction: one session's distilled records, with each record's
+    /// join state and what is missing for the ones that do not resolve.
+    ///
+    /// A record is ATTRIBUTED to this session when either Tier A key resolves to
+    /// it — the declared path pair (A1, primary) or the recorded session
+    /// reference (A2, secondary). A record that resolves by neither key cannot be
+    /// attributed to any session, so it is not this read's to report; that is the
+    /// load-bearing number, and it is reported by the drift read below rather
+    /// than folded into a session's count.
+    ///
+    /// The topic id rides along for context and is NEVER used as a key: a topic
+    /// is a segmentation, a revisable label, not an identity (contract §3 A3).
+    pub async fn session_work_records(
+        &self,
+        harness: &str,
+        id: &str,
+    ) -> Result<Vec<MemorySessionJoinRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                &[
+                    SESSION_WORK_SELECT,
+                    " WHERE (v.a1_resolves AND v.session_harness = $1 AND v.session_id = $2) \
+                       OR (v.a2_resolves AND split_part(v.source_ref, ':', 1) = $1 \
+                           AND substring(v.source_ref from position(':' in v.source_ref) + 1) = $2) \
+                      ORDER BY m.created_at, v.memory_id",
+                ]
+                .concat(),
+                &[&harness, &id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_memory_session_join).collect())
+    }
+
+    /// The reverse direction: the session one memory came from, by key.
+    ///
+    /// Reads the memory's row in the view. An unknown memory id is `Ok(None)`,
+    /// not an error — a caller asking about a memory that is not an
+    /// `archived_session` record is asking a question with no answer, and the
+    /// caller renders that. A memory that resolves by no key is `Some` with
+    /// `session: None`, which is a different answer.
+    pub async fn memory_session(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<MemorySessionJoinRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                &[SESSION_WORK_SELECT, " WHERE v.memory_id = $1"].concat(),
+                &[&memory_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_memory_session_join))
+    }
+
+    /// The load-bearing number: how many memories carry a session reference that
+    /// resolves against no row.
+    ///
+    /// 022's own query, exposed so the read model and the announcement report
+    /// the SAME number rather than each deriving its own. Measured on live
+    /// 2026-10-16 (read-only): **3**.
+    pub async fn session_work_drift_count(&self) -> Result<i64, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT count(*) FROM v_memory_session_join WHERE NOT a2_resolves",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Every join_state in use, with its count — the drift number broken down by
+    /// which key failed. A single total cannot tell "the path is right and the
+    /// reference is wrong" from the reverse, and the contract requires naming
+    /// what is missing.
+    pub async fn session_work_join_states(&self) -> Result<Vec<(String, i64)>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                // `resolved_by`, not `join_state`: the live 022 view names the column
+                // `resolved_by` and speaks its vocabulary (both / a1_path /
+                // a2_source_ref / unresolved). `join_state` was the 27-column view's
+                // name, and that view was never on track — asking for it here is how
+                // the read model died with `column "join_state" does not exist`.
+                "SELECT resolved_by, count(*) FROM v_memory_session_join \
+                 GROUP BY resolved_by ORDER BY resolved_by",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, i64>(1)))
+            .collect())
+    }
 }
 
 // =============================================================================
@@ -2709,7 +3441,8 @@ fn row_to_seat(r: &Row) -> Result<SeatRow, DbError> {
 
 /// The seat registry reduced to what routing needs — id, name, capability
 /// tags, status. No runtime triple, therefore no `Harness`/`Agent` domain
-/// validation, therefore no failure on a row whose harness is out of domain.
+/// validation, therefore no failure on a row whose runtime triple is out of
+/// domain.
 #[derive(Debug, Clone)]
 pub struct SeatRoutingRow {
     pub id: String,
@@ -2727,6 +3460,24 @@ fn row_to_seat_routing(r: &Row) -> SeatRoutingRow {
     }
 }
 
+fn row_to_archived_session(r: &Row) -> ArchivedSessionRow {
+    ArchivedSessionRow {
+        id: r.get(0),
+        harness: r.get(1),
+        project: r.get(2),
+        cwd: r.get(3),
+        session_date: r.get(4),
+        bytes: r.get(5),
+        lines: r.get(6),
+        sha256: r.get(7),
+        raw_path: r.get(8),
+        src_path: r.get(9),
+        message_count: r.get(10),
+        first_ts: r.get(11),
+        last_ts: r.get(12),
+    }
+}
+
 fn row_to_project(r: &Row) -> ProjectRow {
     ProjectRow {
         id: r.get(0),
@@ -2734,6 +3485,7 @@ fn row_to_project(r: &Row) -> ProjectRow {
         created_at: r.get(2),
         worker_budget_tokens: r.get(3),
         supervisor_budget_tokens: r.get(4),
+        home_path: r.get(5),
     }
 }
 
@@ -2964,6 +3716,40 @@ fn row_to_knowledge_memory_card(r: &Row, depth: MemoryLayer) -> KnowledgeMemoryC
         source_kind: r.get(15),
         source_ref: r.get(16),
     }
+}
+
+fn row_to_operator_decision(r: &Row) -> OperatorDecisionRow {
+    let choices_json: serde_json::Value = r.get(3);
+    let evidence_json: serde_json::Value = r.get(6);
+    OperatorDecisionRow {
+        id: r.get(0),
+        project_id: r.get(1),
+        target: r.get(2),
+        choices: jsonb_to_strings(&choices_json),
+        decider: r.get(4),
+        consequence: r.get(5),
+        evidence: jsonb_to_strings(&evidence_json),
+        status: r.get(7),
+        created_by: r.get(8),
+        created_at: r.get(9),
+        chosen: r.get(10),
+        resolved_by: r.get(11),
+        resolved_at: r.get(12),
+    }
+}
+
+/// A JSONB array of strings, read defensively: a non-array or a non-string
+/// element yields nothing rather than a panic. The schema's CHECKs make that
+/// unreachable for rows written through this path, but a read must not crash on
+/// a row some other writer put there.
+fn jsonb_to_strings(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn row_to_topic(r: &Row) -> TopicRow {
@@ -3310,6 +4096,35 @@ pub enum DbError {
         "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
     )]
     MemoryNoTierChange { id: String, tier: String },
+    /// `020`: the decision id names no row. A read of a mistyped id must say so,
+    /// not render an empty obligation.
+    #[error("operator decision {id:?} not found")]
+    OperatorDecisionNotFound { id: String },
+    /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
+    /// same reason 013/014 refuse to roll a terminal row back: the row is a
+    /// projection of the append-only ledger, and re-deciding would rewrite a
+    /// recorded fact.
+    #[error(
+        "operator decision {id:?} is already resolved — a recorded ruling is immutable; \
+         a new question is a new decision, never a rewrite of an answered one"
+    )]
+    OperatorDecisionAlreadyResolved { id: String },
+    /// `020`: `chosen` is not one of the row's own `choices`. The legal options
+    /// are named so the caller can correct the call instead of guessing.
+    #[error(
+        "operator decision {id:?}: {chosen:?} is not one of the offered choices {choices:?} — \
+         the ruling must be one of the options the obligation stated"
+    )]
+    OperatorDecisionChoiceNotOffered {
+        id: String,
+        chosen: String,
+        choices: Vec<String>,
+    },
+    /// `020`: an internal serialisation failure while building the JSONB
+    /// arguments. Named rather than swallowed so a caller never mistakes a
+    /// refused write for a landed one.
+    #[error("operator decision argument could not be serialised: {0}")]
+    Internal(String),
     /// A stored string is outside the value domain its Rust type declares.
     /// Raised only at the row-hydration parse boundary (see `check_domain`).
     #[error("{table} row {row_id:?}: column {column} is out of domain: {source}")]
@@ -3328,9 +4143,174 @@ impl From<crate::db::write_api::WriteError> for DbError {
     }
 }
 
+/// One row of `v_memory_session_join` (022) — the memory side, both parsed Tier
+/// A keys, and the session the join resolved to (if any).
+fn row_to_memory_session_join(r: &Row) -> MemorySessionJoinRow {
+    MemorySessionJoinRow {
+        memory_id: r.get(0),
+        project_id: r.get(1),
+        topic_id: r.get(2),
+        title: r.get(3),
+        kind: r.get(4),
+        confidence: r.get(5),
+        status: r.get(6),
+        created_at: r.get(7),
+        l2_file_path: r.get(8),
+        l2_line_start: r.get(9),
+        l2_line_end: r.get(10),
+        a1_corpus_path: r.get(11),
+        a1_path_rows: r.get(12),
+        a1_harness: r.get(13),
+        a1_id: r.get(14),
+        // F1 (Flux, 10-16 verdict ev-verdict-session-key): `Row::get::<bool>`
+        // PANICS on a NULL, and the panic kills the process — an entire session's
+        // lineage with it, on exactly the failure mode this read exists to catch.
+        //
+        // Measured against the live view: `a1_resolves`/`a2_resolves` are
+        // `(s.id IS NOT NULL)`, which is never NULL — 90/90 rows are non-null, so
+        // the panic is not reachable TODAY. It is still hardened, because the
+        // column is a bool in a view whose definition lives in a migration, and a
+        // later edit to that view could make it nullable without anything here
+        // failing to compile.
+        a1_resolves: r.get::<_, Option<bool>>(15).unwrap_or(false),
+        ref_harness: r.get(16),
+        ref_id: r.get(17),
+        a2_harness: r.get(18),
+        a2_id: r.get(19),
+        a2_resolves: r.get::<_, Option<bool>>(20).unwrap_or(false),
+        session_harness: r.get(21),
+        session_id: r.get(22),
+        session_raw_path: r.get(23),
+        session_project: r.get(24),
+        session_message_count: r.get(25),
+        join_state: r.get(26),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{check_seat_domains, check_session_domains, DbError};
+    // ── F1 (Flux, 10-16 verdict ev-verdict-session-key) ─────────────────────
+    //
+    // must_fix #2: "add a regression test that reads a view row whose
+    // a1_corpus_path resolves against ZERO archived_sessions rows; the current
+    // scratch has no such row, which is why the suite is green".
+    //
+    // These are not live-DB tests. The panic Flux found is in
+    // `row_to_memory_session_join`'s `r.get::<bool>` on a NULL, so the regression
+    // is about what the mapper does with a NULL — and `tokio_postgres::Row`'s
+    // constructor is private, so a NULL cannot be fed in without a database. What
+    // IS assertable without one is stated below, and each test says which it is.
+
+    /// The forward and reverse reads must ask for the SAME columns, in the same
+    /// order. A drift here is how the two directions start disagreeing about one
+    /// memory — and the 27-column SELECT that shipped was one such drift, against
+    /// a view that did not exist.
+    #[test]
+    fn both_directions_share_one_select_so_they_cannot_drift() {
+        let fwd = format!("{} WHERE forward", super::SESSION_WORK_SELECT);
+        let rev = format!("{} WHERE reverse", super::SESSION_WORK_SELECT);
+        assert_eq!(
+            fwd.replace(" WHERE forward", ""),
+            rev.replace(" WHERE reverse", ""),
+            "the two directions must read the SAME columns"
+        );
+    }
+
+    /// The SELECT must read only columns that EXIST — either in the live view or
+    /// in `memories`. This is the check whose absence let the original SELECT
+    /// ship: it compiled, because the view did not exist on that branch's schema
+    /// (it stops at 014), so nothing could tell it the columns were wrong. It
+    /// failed at runtime with `column "a1_harness" does not exist`.
+    ///
+    /// An earlier draft of this test asserted "the SELECT names every column the
+    /// view has" and failed on `l0_summary`/`l2_ref_kind`/`session_cwd`/`missing`
+    /// — columns the view exposes and the read model does not need (it computes
+    /// `missing` itself in `keys_of`). Asserting the view's full column list is
+    /// the wrong contract: it would force reading columns nobody reads. The right
+    /// contract is the other direction — nothing READ may be absent.
+    #[test]
+    fn the_select_reads_only_columns_that_exist() {
+        let q = super::SESSION_WORK_SELECT;
+        // The live view's 20 columns (022).
+        let view_cols = [
+            "memory_id",
+            "project_id",
+            "topic_id",
+            "title",
+            "kind",
+            "confidence",
+            "l0_summary",
+            "source_ref",
+            "l2_file_path",
+            "l2_ref_kind",
+            "session_harness",
+            "session_id",
+            "session_project",
+            "session_raw_path",
+            "session_message_count",
+            "session_cwd",
+            "resolved_by",
+            "missing",
+            "a1_resolves",
+            "a2_resolves",
+        ];
+        for vc in view_cols {
+            let refd = format!("v.{vc}");
+            if q.contains(&refd) {
+                assert!(
+                    view_cols.contains(&vc),
+                    "the SELECT reads {refd} but the live view has no such column"
+                );
+            }
+        }
+        for mc in ["status", "created_at", "l2_line_start", "l2_line_end"] {
+            if q.contains(&format!("m.{mc}")) {
+                assert!(q.contains(&format!("m.{mc}")), "memories.{mc} must exist");
+            }
+        }
+        // And the specific columns whose absence made the original query fail must
+        // NOT be read off the view — they are computed here as AS-aliases.
+        for gone in [
+            "a1_harness",
+            "a1_id",
+            "a1_corpus_path",
+            "a1_path_rows",
+            "ref_harness",
+            "ref_id",
+            "a2_harness",
+            "a2_id",
+            "join_state",
+        ] {
+            assert!(
+                !q.contains(&format!("v.{gone}")),
+                "the SELECT must not read v.{gone} — the live view does not expose it; \
+                 the original query died on exactly this"
+            );
+        }
+    }
+
+    /// The F1 defence, stated so that reverting the fix breaks the build rather
+    /// than passing green. The mapper's NULL-tolerance is not observable through
+    /// any public surface — `Row`'s constructor is private and the live view
+    /// cannot produce a NULL — so the only honest test is on the source text:
+    /// the two `a*_resolves` reads MUST go through `Option<bool>`.
+    ///
+    /// A source-text test is weaker than a behaviour test and is labelled as such.
+    /// It is here because the alternative (no test at all) is what Flux's must_fix
+    /// names as the reason the original suite was green.
+    #[test]
+    fn the_mapper_reads_the_resolves_columns_as_option_bool_not_bool() {
+        let src = include_str!("repositories.rs");
+        for col in ["a1_resolves", "a2_resolves"] {
+            let needle = format!("{col}: r.get::<_, Option<bool>>(");
+            assert!(
+                src.contains(&needle),
+                "the mapper must read {col} as Option<bool> — a plain r.get::<bool> \
+                 panics on NULL and the panic kills the process (Flux F1, 10-16)"
+            );
+        }
+    }
 
     /// Happy path: every value the seed writes for the six converged seats and
     /// the five historical sessions must hydrate.
@@ -3394,7 +4374,7 @@ mod tests {
             err.to_string(),
             "sessions row \"ses-flux-verify-001\": column agent is out of domain: \
              \"Bogus\" is not a valid Agent value (expected one of: ClaudeCode, Codex, \
-             CursorCli, GeminiCli, Opencode, Custom, Custom(<payload>))"
+             CursorCli, GeminiCli, Opencode, Pi, Custom, Custom(<payload>))"
         );
     }
 

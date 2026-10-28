@@ -24,7 +24,12 @@ SRC="$REPO/scripts/aegis-self-wake.sh"
 DEST="$HOME/.local/bin/aegis-self-wake.sh"
 LOG="/tmp/seatloom_aegis_waker.log"
 MARK="# seatloom — Aegis 自醒 waker"
-CRON_LINE="11,41 * * * * $DEST >> $LOG 2>&1"
+# 每小时一次,分钟固定在 :00。张先生 2026-10-20 的要求:从每 30 分钟一次改成
+# 每小时一次 —— 频率减半,单次唤醒间隔拉长,他不必每半小时被一件事打断一次。
+# 键仍然只有两处:crontab(这里)和 fleet-status.sh 的判死阈值。只改一处会让
+# 健康检查按旧间隔判死、误报「自醒死了」,所以两处必须同时改。
+CRON_MINUTE=0
+CRON_LINE="$CRON_MINUTE * * * * $DEST >> $LOG 2>&1"
 
 say(){ printf '%s\n' "$*"; }
 line(){ say "────────────────────────────────────────────────────────────"; }
@@ -75,6 +80,20 @@ mkdir -p "$HOME/.local/bin"
 if cp "$SRC" "$DEST" && chmod +x "$DEST"; then
   cmp -s "$SRC" "$DEST" && say "  ✅ 已拷贝且内容一致" || { say "  ❌ 拷完了但内容不一致 —— 停"; exit 1; }
 else say "  ❌ 拷贝失败 —— 停"; exit 1; fi
+say ""
+
+# ── 一之二:装「通知张先生」的脚本 ──────────────────────────────────
+# 同一个 TCC 理由:自醒脚本在 cron 里跑,读不到 ~/Documents,所以通知逻辑
+# 也要有一份在 ~/.local/bin/。仓库存的是 scripts/notify-operator.sh(原本,
+# 给人审),这里装的是 cron 能跑的那份。
+line; say "一之二 — 装通知脚本"; line
+NOTIFY_SRC="$REPO/scripts/notify-operator.sh"
+NOTIFY_DEST="$HOME/.local/bin/seatloom-notify-operator.sh"
+if [ ! -r "$NOTIFY_SRC" ]; then
+  say "  ⚠️  原本不在:$NOTIFY_SRC —— 跳过(自醒仍可用,只是不会主动通知)"
+elif cp "$NOTIFY_SRC" "$NOTIFY_DEST" && chmod +x "$NOTIFY_DEST"; then
+  cmp -s "$NOTIFY_SRC" "$NOTIFY_DEST" && say "  ✅ 已装:$NOTIFY_DEST" || say "  ⚠️  拷完但内容不一致"
+else say "  ⚠️  拷贝失败 —— 跳过通知(自醒仍可用)"; fi
 say ""
 
 # ── 二:装 crontab(幂等) ────────────────────────────────────────────

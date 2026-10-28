@@ -115,6 +115,19 @@ pub fn tools_list_result() -> Value {
             get_knowledge_tree_tool(),
             get_topic_memories_tool(),
             crate::intent::plan_intent_tool(),
+            // --- Historical session corpus (LYRA contract slice 2) ---
+            crate::history::list_history_projects_tool(),
+            crate::history::list_history_sessions_tool(),
+            crate::history::get_history_session_turns_tool(),
+            // --- Operator decisions (020): the structured "waiting on the human" ---
+            request_operator_decision_tool(),
+            resolve_operator_decision_tool(),
+            list_operator_decisions_tool(),
+            // --- The session↔work bridge (LYRA contract §11.2 slice 2) ---
+            // Two read-only tools over `v_memory_session_join`, one in each
+            // direction. Without these the view is data nothing can read.
+            crate::session_work::session_work_tool(),
+            crate::session_work::memory_session_tool(),
         ]
     })
 }
@@ -130,7 +143,7 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 28 PascalCase values.",
+                    "description": "Event type. One of the 30 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
@@ -141,7 +154,9 @@ fn emit_event_tool() -> Value {
                         "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
                         "AcceptanceCancelled",
                         "MemoryCreated", "MemoryRecalled", "MemoryPromoted",
-                        "MemoryForgotten", "MemoryResolved", "TopicOpened"
+                        "MemoryForgotten", "MemoryResolved",
+                        "OperatorDecisionRequested", "OperatorDecisionResolved",
+                        "TopicOpened"
                     ]
                 },
                 "payload": {
@@ -161,7 +176,7 @@ fn emit_event_tool() -> Value {
                                 "enum": [
                                     "workitem", "session", "handoff", "artifact", "document",
                                     "seat", "topic", "project", "delegation", "dispatch",
-                                    "acceptance"
+                                    "acceptance", "memory", "decision"
                                 ]
                             },
                             "ref_id": { "type": "string", "minLength": 1 },
@@ -325,8 +340,11 @@ fn request_acceptance_tool() -> Value {
             else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
             hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
             calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
-            or artifact; the dispatch must have no pending acceptance; a valid acceptance_plan (shape v1) \
-            is REQUIRED — a missing or malformed plan is a typed rejection before any DB contact. \
+            or artifact AND is a ReviewVerdictIssued whose payload->>'verdict' is 'pass' AND which is about \
+            THIS dispatch (payload->>'dispatch_id' = <dispatch_id>, or an event_object_refs row with \
+            ref_type='dispatch'); the dispatch must have no pending acceptance; a valid \
+            acceptance_plan (shape v1) is REQUIRED — a missing or malformed plan is a typed rejection \
+            before any DB contact. \
             Identity from SEATLOOM_ACTOR_REF (never a parameter). \
             \n\
             OPTIONAL `acceptance_id`: omit it and the id is derived deterministically as \
@@ -345,7 +363,7 @@ fn request_acceptance_tool() -> Value {
                 "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
                 "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
                 "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
-                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux green verdict: a ReviewVerdictIssued event or artifact id. Must exist." },
+                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux GREEN verdict for THIS dispatch: a ReviewVerdictIssued event id whose payload->>'verdict' is 'pass' and which names this dispatch. Must exist, must be a ReviewVerdictIssued, must pass, and must be about this dispatch — a verdict about another unit of work, or a red one, is a typed refusal. Measured on live: three pending cards had named a FAIL verdict about a different dispatch." },
                 "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." },
                 "acceptance_plan": {
                     "type": "object",
@@ -655,6 +673,109 @@ fn get_topic_memories_tool() -> Value {
     })
 }
 
+/// `request_operator_decision` — put a decision only the operator can rule on
+/// into the one structured place that answers "what is waiting on the human?"
+/// (020). NOT a message table: a message does not constitute a decision
+/// obligation. Only the operator (`human:*`) and Aegis (`seat:seat-aegis-001`)
+/// may create one; a seat is refused, because a seat that could create an
+/// obligation could push its own work onto the operator's plate.
+///
+/// `choices` and `consequence` are REQUIRED: one option is not a choice, and a
+/// choice offered without its consequence is the operator clicking in the dark.
+fn request_operator_decision_tool() -> Value {
+    json!({
+        "name": "request_operator_decision",
+        "description": "Put a decision only the operator can rule on into the one structured place \
+            that answers 'how many things are waiting on the human right now, and about what?' \
+            (020). This is NOT a message table — a message does not constitute a decision \
+            obligation; blocked dispatches, failed reads and rework belong to a seat or to Aegis. \
+            CREATORS: only the operator (human:*) and seat:seat-aegis-001. Any other seat is \
+            REFUSED (not discouraged): a seat that could create an obligation could push its own \
+            work onto the operator's plate. REQUIRED: target (the concrete thing to decide, not a \
+            paragraph), choices (a NON-EMPTY array of DISTINCT options — one option is not a \
+            choice), consequence (what happens once it is decided). OPTIONAL: evidence (dispatch \
+            ids, verdict refs, ruling refs — the support chain), decider (default \
+            'human:supervisor'; set a seat decider when Aegis is creating an obligation for ITSELF, \
+            which then does NOT count in the operator's pending total). On success the row and one \
+            OperatorDecisionRequested event land in ONE transaction.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision_id", "target", "choices", "consequence"],
+            "properties": {
+                "decision_id": { "type": "string", "minLength": 1, "description": "The obligation id, e.g. 'dec-containment-exemption'. Stable: it is referenced forever." },
+                "target": { "type": "string", "minLength": 1, "description": "The CONCRETE thing to decide — not a paragraph. This is the whole point of the object." },
+                "choices": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "The legal options. A single option is not a choice; an empty array is not a decision. Distinct strings only — the ruling records ONE string."
+                },
+                "consequence": { "type": "string", "minLength": 1, "description": "What happens once it is decided. REQUIRED: a choice offered without its consequence is the operator clicking in the dark." },
+                "evidence": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "The support chain: dispatch ids, verdict refs, ruling refs — so the claim can be checked rather than trusted. Optional; a blank entry is a refusal."
+                },
+                "decider": { "type": "string", "minLength": 1, "description": "Who is entitled to rule. Omit for the operator (the default). Must be human:* or seat:* — a fabricated decider is an obligation nobody owes." },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `resolve_operator_decision` — the ruling. The only rule: the caller IS the
+/// decider. A second ruling on a resolved obligation is refused (terminal and
+/// immutable, exactly like a decided acceptance).
+fn resolve_operator_decision_tool() -> Value {
+    json!({
+        "name": "resolve_operator_decision",
+        "description": "Land the ruling on an operator decision (020): which of the row's OWN \
+            choices was taken. The caller must BE the decider — a ruling from anyone else is not \
+            a ruling. A row that is already resolved is REFUSED: resolved is terminal and \
+            immutable, the same rule that keeps a decided acceptance from being rolled back, \
+            because the row is a projection of an append-only ledger. A new question is a new \
+            decision, never a rewrite of an answered one. The operator's path is the desktop app \
+            acting as the user's agent; Aegis resolves the rows it created for itself.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision_id", "chosen"],
+            "properties": {
+                "decision_id": { "type": "string", "minLength": 1 },
+                "chosen": { "type": "string", "minLength": 1, "description": "Which of the row's OWN choices was taken. Anything else is a typed refusal naming the legal options." }
+            }
+        }
+    })
+}
+
+/// `list_operator_decisions` — the pure read that answers the count question.
+/// PURE READ: no write, no event.
+///
+/// The decider defaults to the CALLER, not to the operator: a seat asking is
+/// answered about itself and cannot enumerate what is waiting on the operator.
+/// That is the same scoping discipline every other read follows.
+fn list_operator_decisions_tool() -> Value {
+    json!({
+        "name": "list_operator_decisions",
+        "description": "The operator decisions of a project, rendered for a human (020). PURE READ \
+            — writes nothing, appends no event. THE DECIDER DEFAULTS TO THE CALLER: a seat asking \
+            is answered about itself and cannot enumerate what is waiting on the operator. \
+            status 'pending' (default) is the question the object exists for; 'resolved' is the \
+            audit of what has been ruled. An empty answer is an empty answer, not an error.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "status": { "type": "string", "enum": ["pending", "resolved"], "description": "Which obligations to list. Default 'pending'. An unknown status is a typed refusal." },
+                "decider": { "type": "string", "minLength": 1, "description": "Whose obligations. Defaults to the calling actor. Must be human:* or seat:*." },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `get_dispatch` — one dispatch's read model. Pure read, no identity.
 fn get_dispatch_tool() -> Value {
     json!({
         "name": "get_dispatch",
@@ -761,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_nineteen_tools() {
+    fn tools_list_advertises_the_twenty_seven_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -787,6 +908,16 @@ mod tests {
                 "get_knowledge_tree",
                 "get_topic_memories",
                 "plan_intent",
+                "list_history_projects",
+                "list_history_sessions",
+                "get_history_session_turns",
+                "request_operator_decision",
+                "resolve_operator_decision",
+                "list_operator_decisions",
+                // The session↔work bridge read (022 + 703c863). Both directions
+                // are advertised: session → records, and record → sessions.
+                "session_work",
+                "memory_session",
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
@@ -860,19 +991,24 @@ mod tests {
     }
 
     #[test]
-    fn tool_schema_enumerates_all_28_event_types_and_11_ref_types() {
+    fn tool_schema_enumerates_all_30_event_types_and_13_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 28);
+        assert_eq!(types.len(), 30);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(ref_types.len(), 11);
+        // 12 before 020, +decision. `memory` is here too: it has been a valid
+        // RefType since 015 but the advertised enum had never caught up, so a
+        // caller reading the schema would have refused itself a legal call.
+        assert_eq!(ref_types.len(), 13);
         assert!(ref_types.iter().any(|v| v == "delegation"));
         assert!(ref_types.iter().any(|v| v == "acceptance"));
+        assert!(ref_types.iter().any(|v| v == "memory"));
+        assert!(ref_types.iter().any(|v| v == "decision"));
         // ArtifactProduced must NOT appear.
         assert!(!types.iter().any(|v| v == "ArtifactProduced"));
     }

@@ -25,16 +25,25 @@ use commands::{
         cmd_list_document_versions, cmd_list_documents,
     },
     handoff_cmds::{cmd_list_handoff_receipts, cmd_list_handoffs, cmd_list_handoffs_for_project},
+    history_cmds::{
+        cmd_get_history_session_turns, cmd_list_history_projects, cmd_list_history_sessions,
+        cmd_open_local_path, cmd_read_history_context_slice,
+    },
     inbox_cmds::cmd_get_inbox,
     knowledge_cmds::{cmd_get_knowledge_tree, cmd_get_topic_memories},
+    operator_decision_cmds::{
+        cmd_count_pending_operator_decisions, cmd_list_operator_decisions,
+        cmd_resolve_operator_decision,
+    },
     project_cmds::{cmd_get_project, cmd_list_projects},
     prompt_cmds::{cmd_list_active_prompts, cmd_list_prompt_actions, cmd_list_prompts_for_session},
     reconcile_cmds::{
         cmd_get_reconcile_run, cmd_list_reconcile_items, cmd_list_reconcile_runs, cmd_reconcile,
     },
+    runtime_cmds::cmd_get_runtime_identity,
     seat_cmds::{
-        cmd_get_delegation, cmd_get_seat, cmd_list_delegations, cmd_list_role_bindings,
-        cmd_list_seats,
+        cmd_get_delegation, cmd_get_seat, cmd_list_all_seats, cmd_list_delegations,
+        cmd_list_role_bindings, cmd_list_seats,
     },
     session_cmds::{
         cmd_attach_tmux_session, cmd_kill_session, cmd_launch_session, cmd_list_checkpoints,
@@ -42,6 +51,7 @@ use commands::{
         cmd_list_sessions_for_project, cmd_list_sessions_for_seat, cmd_list_tmux_sessions,
         cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
+    session_work_cmds::{cmd_memory_session, cmd_session_work},
     supervisor_cmds::{
         cmd_append_supervisor_message, cmd_close_supervisor_window, cmd_list_supervisor_messages,
         cmd_open_supervisor_window, cmd_supervisor_window_status,
@@ -79,6 +89,22 @@ fn repo_root() -> PathBuf {
     if cwd.join("docs").is_dir() {
         return cwd;
     }
+    // 🔴     // 2026-10-14 复发,而且是我自己造成的:10-13 集成意图入口时取了界面分支的
+    // main.rs(它的基线更早),把我 10-12 加的这段兜底整个删掉了(diff 4 增 62 删)。
+    // 症状:应用从 /Applications 启动时 cwd 是 /,repo_root 解析成根,
+    // spawn /target/debug/seatloom-mcp-emit: No such file or directory。
+    // 教训:路径限定取文件会覆盖同文件里已有的修复,集成时必须核对 diff 的删除部分。
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for cand in [
+            home.join("Documents/GitHub/seatloom"),
+            home.join("Documents/GitHub/seatloom/seatloom"),
+        ] {
+            if cand.join("Cargo.toml").is_file() && cand.join("docs").is_dir() {
+                return cand;
+            }
+        }
+    }
     // Fallback to the current directory; reconcile will fail loudly if this is wrong.
     cwd
 }
@@ -103,6 +129,7 @@ fn main() {
             cmd_list_projects,
             cmd_get_project,
             // seats
+            cmd_list_all_seats,
             cmd_list_seats,
             cmd_get_seat,
             cmd_list_role_bindings,
@@ -134,6 +161,8 @@ fn main() {
             cmd_pty_resize,
             cmd_kill_session,
             cmd_list_live_sessions,
+            // runtime identity (sandbox banner)
+            cmd_get_runtime_identity,
             // documents
             cmd_list_documents,
             cmd_get_document,
@@ -160,10 +189,33 @@ fn main() {
             cmd_accept_delivery,
             cmd_reject_delivery,
             cmd_get_acceptance_lineage,
+            // operator decisions (020) — the operator's read + resolve path for
+            // "what only he can decide". NOT an acceptance: different object,
+            // different question, listed separately on purpose.
+            cmd_list_operator_decisions,
+            cmd_count_pending_operator_decisions,
+            cmd_resolve_operator_decision,
             // knowledge read model (overnight step 4) — the topic tree + the
             // memories-by-topic card list, progressive disclosure
             cmd_get_knowledge_tree,
             cmd_get_topic_memories,
+            // Historical session corpus (LYRA-2026-10-14 contract §8.2 slice 2) —
+            // reads over the SAME MCP tools; pointers, never transcript bodies
+            cmd_list_history_projects,
+            cmd_list_history_sessions,
+            cmd_get_history_session_turns,
+            // Dereference the turn pointers on the operator's own disk (Mira, slice 3):
+            // read the pointed-at slice, and open the source file. No body is stored
+            // in the database and none crosses MCP (011's rule stands).
+            cmd_read_history_context_slice,
+            cmd_open_local_path,
+            // The session↔work bridge (LYRA-2026-10-16 contract §11.2 slice 2) —
+            // one read-only function in each direction over
+            // `v_memory_session_join`. The migration (022) is on track and the view
+            // is live with 90 rows; these two commands are what let anything READ
+            // it. Without them the view is data nothing can reach.
+            cmd_session_work,
+            cmd_memory_session,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

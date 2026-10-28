@@ -16,10 +16,19 @@
 // the scheduler) is out of scope for a view test.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
+// The seats the backend's join returns for the project the store opens. `seats` is
+// the GLOBAL registry (what `listAllSeats` returns); this is the project-scoped
+// subset (what `listSeats(projectId)` returns). The component renders the latter.
+const boundSeatIds = new Set(['seat-mira-001', 'seat-nimbus-001']);
+
 const state = vi.hoisted(() => ({
+  // Newest-first ledger rows the dependency column resolves against. Empty by
+  // default: a dep whose referent is outside the window must render honestly.
+  events: [] as unknown[],
+  listCalls: [] as string[],
   seats: [
     {
       id: 'seat-mira-001',
@@ -57,16 +66,39 @@ vi.mock('../lib/api', () => ({
     return state.registered;
   },
   api: {
-    listSeats: async () => state.seats,
-    listDispatches: async () => state.rows,
+    // Scoped to a project, as the backend now is. The mock honours the argument so
+    // a test that forgets it cannot silently pass on an unscoped read.
+    listSeats: async (projectId?: string) =>
+      projectId ? state.seats.filter((s: { id: string }) => boundSeatIds.has(s.id)) : [],
+    listAllSeats: async () => state.seats,
+    // Records what the view passed, so a test can assert the project reached the
+    // backend rather than falling back to its default. Track's strict mock returns
+    // [] unscoped, which proves the fallback is wrong but not that it was avoided.
+    listDispatches: async (projectId?: string) => {
+      state.listCalls.push(projectId ?? '<none>');
+      return projectId ? state.rows : [];
+    },
     enqueueDispatch: (...args: unknown[]) => state.enqueue(...(args as [])),
-    listAcceptances: async () => [],
+    listAcceptances: async (projectId?: string) => (projectId ? [] : []),
     acceptDelivery: vi.fn(async () => ({})),
     rejectDelivery: vi.fn(async () => ({})),
+    // The dependency column resolves `event:<id>` referents through this read. A
+    // missing entry here used to make the whole view throw; now it is part of the
+    // seam so a test can decide what the window contains.
+    //
+    // 2026-10-17: the signature is (projectId, limit) — it used to be (limit), and
+    // a mock left at the old shape silently received the project id as the limit,
+    // sliced to [] and made every dependency read as unresolved.
+    listEvents: async (projectId?: string, limit?: number) =>
+      projectId ? state.events.slice(0, limit ?? 200) : [],
   },
 }));
 
 import DispatchInboxView from './DispatchInboxView';
+import { useDataStore } from '../stores/useDataStore';
+// Every test starts from a resolved, hydrated project. Track added this guard; my
+// version left it to each test, which let a forgotten state look like an empty inbox.
+beforeEach(() => useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true }));
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -94,6 +126,15 @@ const INSTR_INPUT = '把席位需要的全部上下文写在这里(自足:别依
 describe('DispatchInboxView', () => {
   beforeEach(() => {
     cleanup();
+    // 2026-10-17: the inbox now passes the active project to the backend and refuses
+    // to render rows when no project is resolved. These tests exercise the inbox
+    // itself, so they satisfy that precondition — which is the point of the guard,
+    // not an obstacle to it. The guard's own behaviour is pinned separately below.
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      backendHydrateError: null,
+    });
     state.enqueue.mockClear();
     state.rows = [
       dispatch({ id: 'd1', title: 'Alpha', status: 'in_flight', startedAt: iso(120_000) }),
@@ -236,5 +277,148 @@ describe('DispatchInboxView', () => {
     render(<DispatchInboxView />);
     expect(await screen.findByText('无待处理的派单')).toBeTruthy();
     expect(screen.getByRole('button', { name: /显示已完成/ })).toBeTruthy();
+  });
+  // ── The dependency column: machine code -> a sentence ───────────────────────
+  //
+  // It used to render `dep_kind: dep_value` verbatim, so the operator could see
+  // THAT a row was blocked but not what on. Three things are pinned: a resolved
+  // referent reads as a sentence; a referent outside the window says so instead of
+  // claiming it does not exist; and nothing claims "satisfied" without measuring it.
+
+  const gate = (id: string) => ({
+    id,
+    eventType: 'SupervisorMessage',
+    occurredAt: '2026-10-16T06:55:11Z',
+    actorRef: 'seat:seat-nimbus-001',
+    payload: { gate: id, statement: '历史会话语料的读取真的能在 live 数据库上跑通' },
+    createdAt: '2026-10-16T06:55:11Z',
+    projectId: 'seatloom',
+  });
+
+  it('reads a resolved dependency as a sentence, not as `dep_kind: dep_value`', async () => {
+    state.events = [gate('ev-lineage-readmodel-live')];
+    state.rows = [
+      dispatch({
+        id: 'blocked-1',
+        title: '来龙去脉面板',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-lineage-readmodel-live' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/读模型|lineage|live|数据库/);
+    expect(badge.getAttribute('title')).not.toMatch(/event:\s*ev-lineage-readmodel-live/);
+    expect(badge.getAttribute('title')).toContain('数据库');
+  });
+
+  it('a referent outside the window is NOT reported as non-existent', async () => {
+    // Empty window: the read is bounded, so absence is NOT proof of absence. The
+    // two cases must be distinguishable AND neither may claim what it cannot measure.
+    state.events = [];
+    state.rows = [
+      dispatch({
+        id: 'blocked-2',
+        title: '老单',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-ancient' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/最近/);
+    const title = badge.getAttribute('title') ?? '';
+    expect(title).toContain('最近 500 条');
+    // It says it cannot tell, and it says so in BOTH directions — a reader must not
+    // be able to take "not found" as "does not exist".
+    expect(title).toContain('这不是说它不存在');
+    expect(title).toContain('别把「没查到」当成「没有」');
+    expect(title).not.toContain('已满足');
+    expect(title).not.toContain('已存在');
+  });
+
+  it('a referent that IS in the ledger reads differently from one that is not', async () => {
+    // The whole point of the dispatch: waiting-on-something-that-has-not-happened
+    // must look different from waiting-on-something-that-landed.
+    state.events = [gate('ev-landed')];
+    state.rows = [
+      dispatch({
+        id: 'b-landed',
+        title: '已落地的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-landed' }],
+      }),
+      dispatch({
+        id: 'b-ancient',
+        title: '读不到的',
+        status: 'blocked',
+        deps: [{ depKind: 'event', depValue: 'ev-ancient' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const landed = (await screen.findByTitle(/已经在账本里了/)).getAttribute('title') ?? '';
+    const ancient = (await screen.findByTitle(/最近 500 条/)).getAttribute('title') ?? '';
+    // Different text, and only the landed one asserts existence.
+    expect(landed).not.toBe(ancient);
+    expect(landed).toContain('已经在账本里了');
+    expect(ancient).toContain('这不是说它不存在');
+  });
+
+  it('names a dispatch-kind dependency as another dispatch, not as a raw pair', async () => {
+    state.events = [];
+    state.rows = [
+      dispatch({
+        id: 'blocked-3',
+        title: '等别人的单',
+        status: 'blocked',
+        deps: [{ depKind: 'dispatch', depValue: 'disp-other' }],
+      }),
+    ];
+    render(<DispatchInboxView />);
+    const badge = await screen.findByTitle(/等另一张派单/);
+    expect(badge.getAttribute('title')).toContain('disp-other');
+    expect(badge.getAttribute('title')).not.toMatch(/dispatch:\s*disp-other/);
+  });
+});
+
+describe("the inbox does not show another project's rows", () => {
+  beforeEach(() => {
+    cleanup();
+    state.rows = [dispatch({ id: 'd1', title: 'Alpha' })];
+  });
+
+  // Synced 2026-10-21. These two are mine — they pin the defect the operator actually
+  // reported. Track's merge added an earlier `role="status"` guard that renders
+  // "请选择一个项目；项目数据未读就绪时不显示其他项目的派单。" for both cases, so the
+  // matched text changed while the pinned behaviour did not: nothing is silently shown,
+  // and the reason is on screen. Asserted through the role, not the copy, so a future
+  // reword does not fail the suite for no behavioural reason.
+  it('with no project resolved it says so instead of rendering the backend default', async () => {
+    useDataStore.setState({ activeProjectId: null, backendHydrated: true });
+    render(<DispatchInboxView />);
+    expect(await screen.findByRole('status')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/请选择|no project/),
+    );
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('with the hydration read failed it says so too', async () => {
+    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: false });
+    render(<DispatchInboxView />);
+    // The guard treats an unfinished hydration exactly like no project: no rows, one
+    // message. Reading the message is the point — a silent empty list was the defect.
+    expect(await screen.findByRole('status')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/请选择|no project/),
+    );
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('it passes the active project to the backend read', async () => {
+    useDataStore.setState({ activeProjectId: 'ql_delivery', backendHydrated: true });
+    render(<DispatchInboxView />);
+    await screen.findByText('Alpha');
+    // The wrapper forwards projectId; the view must supply it, not let the backend
+    // fall back to its own default project.
+    expect(state.listCalls).toContain('ql_delivery');
   });
 });

@@ -20,6 +20,7 @@ import { MessageBubble } from '../components/MessageBubble';
 import { ChatInput } from '../components/ChatInput';
 import { ProjectDashboard } from '../dashboard/ProjectDashboard';
 import { GlobalDashboard } from '../dashboard/GlobalDashboard';
+import { SupervisorIntent } from './SupervisorIntent';
 import { SupervisorContextMode, SupervisorViewMode, ChatMessage } from '../types';
 import { useDataStore } from '../../stores/useDataStore';
 import { useLiveSessionsStore } from '../../stores/useLiveSessionsStore';
@@ -492,6 +493,18 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, minWidth: 0 }}>
                 {renderBreadcrumb()}
               </div>
+              {/* 2026-10-14:viewMode 一旦是 chat,浮窗里原本没有任何入口回 dashboard —— */}
+              {/* 知识面板(KnowledgeSection,挂在 ProjectDashboard 上)就被锁死,用户点不到。 */}
+              {/* 张先生实测:⌘K 浮窗只有对话和派活框,没有仪表盘/dashboard 任何入口。 */}
+              {viewMode === 'chat' && (
+                <button onClick={() => setViewMode('dashboard')} title="回到项目仪表盘(知识面板在里面)"
+                  style={{
+                    marginRight: 8, padding: '3px 10px', borderRadius: 'var(--sl-radius-sm)',
+                    border: '1px solid var(--sl-divider)', background: 'var(--sl-surface)',
+                    color: 'var(--sl-text-secondary)', cursor: 'pointer', fontSize: 12, flexShrink: 0,
+                  }}
+                >仪表盘</button>
+              )}
               <button onClick={onClose} style={{
                 width: 24, height: 24, borderRadius: 'var(--sl-radius-sm)', border: 'none',
                 background: 'transparent', color: 'var(--sl-text-tertiary)', cursor: 'pointer',
@@ -529,6 +542,8 @@ export const SupervisorPanel: React.FC<{ onClose: () => void }> = ({ onClose }) 
                     </div>
                   </div>
                 </div>
+
+                <SupervisorIntent onRawSend={handleSend} />
 
                 {/* Messages */}
                 <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>

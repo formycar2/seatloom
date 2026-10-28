@@ -7,15 +7,18 @@
 //! `cancel_dispatch`, `request_acceptance`. See
 //! NIMBUS-2026-10-08-p0-step4-mcp-emit-v1.
 
+mod decisions;
 mod dispatch;
 mod emit;
 mod gate;
+mod history;
 mod intent;
 mod knowledge;
 mod memory;
 mod protocol;
 mod read;
 mod scheduler;
+mod session_work;
 mod topics;
 
 use deadpool_postgres::Pool;
@@ -48,7 +51,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -106,9 +109,10 @@ async fn handle_request(
 /// (`recall`/`remember`/`promote`/`forget`/`resolve`), the two pure READS
 /// (`get_dispatch`/`query_ledger`), `open_topic` (the governed creation of a
 /// recall scope) and the two knowledge READS (`get_knowledge_tree` /
-/// `get_topic_memories`). Any other name is a tool error. A rejection is a tool
-/// error with `isError: true`, carrying the typed message verbatim — never a
-/// transport error, and never a partial write.
+/// `get_topic_memories`), the three operator-decision tools (020 — the
+/// structured "waiting on the human" object). Any other name is a tool error.
+/// A rejection is a tool error with `isError: true`, carrying the typed message
+/// verbatim — never a transport error, and never a partial write.
 async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Value) -> Value {
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -120,8 +124,7 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "cancel_dispatch" => call_cancel(pool, id, arguments).await,
         "request_acceptance" => call_request_acceptance(pool, id, arguments).await,
         "cancel_acceptance" => call_cancel_acceptance(pool, id, arguments).await,
-        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,
-        // --- D5 knowledge layer (Lane B): memory management, explicit tools ---
+        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,        // --- D5 knowledge layer (Lane B): memory management, explicit tools ---
         "recall" => match memory_args::<memory::RecallArgs>(&id, arguments) {
             Ok(a) => render_memory(id, memory::recall(db, a).await),
             Err(resp) => resp,
@@ -172,10 +175,63 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
             Ok(a) => render_intent(id, intent::plan_intent(db, pool, a).await),
             Err(resp) => resp,
         },
+        // --- Historical session corpus (LYRA contract slice 2): reads, never bodies ---
+        "list_history_projects" => {
+            match read_args::<history::ListHistoryProjectsArgs>(&id, arguments) {
+                Ok(a) => render_history(id, history::list_history_projects(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "list_history_sessions" => {
+            match read_args::<history::ListHistorySessionsArgs>(&id, arguments) {
+                Ok(a) => render_history(id, history::list_history_sessions(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "get_history_session_turns" => {
+            match read_args::<history::GetHistorySessionTurnsArgs>(&id, arguments) {
+                Ok(a) => {
+                    render_history(id, history::get_history_session_turns(db, pool, a).await)
+                }
+                Err(resp) => resp,
+            }
+        }
+        // --- Operator decisions (020): the structured "waiting on the human" ---
+        "request_operator_decision" => {
+            match decision_args::<decisions::RequestOperatorDecisionArgs>(&id, arguments) {
+                Ok(a) => render_decision(id, decisions::request_operator_decision(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "resolve_operator_decision" => {
+            match decision_args::<decisions::ResolveOperatorDecisionArgs>(&id, arguments) {
+                Ok(a) => render_decision(id, decisions::resolve_operator_decision(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "list_operator_decisions" => {
+            match read_args::<decisions::ListOperatorDecisionsArgs>(&id, arguments) {
+                Ok(a) => render_decision(id, decisions::list_operator_decisions(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        // --- The session↔work bridge: two read-only directions over the view ---
+        "session_work" => {
+            match read_args::<session_work::SessionWorkArgs>(&id, arguments) {
+                Ok(a) => render_session_work(id, session_work::session_work(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "memory_session" => {
+            match read_args::<session_work::MemorySessionArgs>(&id, arguments) {
+                Ok(a) => render_session_work(id, session_work::memory_session(db, a).await),
+                Err(resp) => resp,
+            }
+        }
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)"),
                 true,
             ),
         ),
@@ -346,6 +402,14 @@ fn intent_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> 
     }
 }
 
+/// Render a history read's outcome: the typed rejection verbatim on failure.
+fn render_history(id: Value, outcome: Result<String, history::HistoryRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
 /// Render `plan_intent`'s outcome: the typed rejection verbatim on failure.
 fn render_intent(id: Value, outcome: Result<String, intent::IntentRejection>) -> Value {
     match outcome {
@@ -355,6 +419,19 @@ fn render_intent(id: Value, outcome: Result<String, intent::IntentRejection>) ->
 }
 
 /// Render a memory tool's outcome: the typed rejection verbatim on failure.
+/// A typed rejection rendered verbatim, and a `null` answer as a SUCCESS carrying
+/// `null` — never an error and never an empty object that could be mistaken for a
+/// resolved one.
+fn render_session_work(
+    id: Value,
+    outcome: Result<String, session_work::SessionWorkRejection>,
+) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
 fn render_memory(id: Value, outcome: Result<String, memory::MemoryRejection>) -> Value {
     match outcome {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
@@ -391,6 +468,29 @@ fn render_knowledge(id: Value, outcome: Result<String, knowledge::KnowledgeRejec
 /// The same rendering for the topic tool's own rejection type — a typed message
 /// rendered verbatim, exactly like every other tool.
 fn render_topic(id: Value, outcome: Result<String, topics::TopicRejection>) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
+/// Argument parsing for the operator-decision tools, with the tool's own name in
+/// the refusal so a caller knows which call was malformed.
+fn decision_args<A: serde::de::DeserializeOwned>(id: &Value, arguments: Value) -> Result<A, Value> {
+    match serde_json::from_value::<A>(arguments) {
+        Ok(a) => Ok(a),
+        Err(e) => Err(success(
+            id.clone(),
+            tool_call_result(
+                &format!("operator decision rejected: bad arguments: {e}"),
+                true,
+            ),
+        )),
+    }
+}
+
+/// Render an operator-decision tool's outcome: the typed rejection verbatim.
+fn render_decision(id: Value, outcome: Result<String, decisions::DecisionRejection>) -> Value {
     match outcome {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
         Err(e) => success(id, tool_call_result(&e.to_string(), true)),

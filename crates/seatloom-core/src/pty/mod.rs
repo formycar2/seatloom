@@ -77,6 +77,37 @@ impl std::fmt::Debug for PtySession {
     }
 }
 
+/// How many lines of pane scrollback to backfill into the mirror at attach time.
+///
+/// **The default is derived, not guessed.** The terminal component caps its own
+/// scrollback at 10 000 lines (`ui/src/app-v2/panel/SessionTerminal.tsx`,
+/// `scrollback: 10000`). Backfilling all 10 000 would leave the operator zero room
+/// for the output that arrives *after* they attach — the history would push the
+/// live tail straight out of the buffer. So the default splits the scrollback in
+/// half: 5 000 lines of history, 5 000 left for live output.
+///
+/// The effective number is bounded by tmux's `history-limit` (see
+/// [`DESIRED_HISTORY_LIMIT`]): a pane retains at most that much, so asking for more
+/// silently returns less. That is why the two constants are 10x apart rather than
+/// equal.
+pub const DEFAULT_BACKFILL_LINES: usize = 5_000;
+
+/// The tmux `history-limit` this app asks for, so a pane retains enough scrollback
+/// for the backfill above to have something to find.
+///
+/// Measured before choosing it: a pane with `history-limit` 2 000, 50 000 and
+/// 100 000 has **identical RSS at rest** (3 232 / 3 232 / 3 248 KB) — tmux
+/// allocates the history grid lazily, so a higher limit costs nothing until a pane
+/// actually produces that much output, which is exactly when the operator wants
+/// it. 50 000 is 10x the backfill default, so the backfill is never silently
+/// truncated, and it is the order of magnitude the 2026-10-16 dispatch asked for.
+///
+/// **This only affects panes created after it is set.** tmux reads the option when
+/// a pane is created; an already-running pane keeps the limit it was born with.
+/// Measured: setting it on a live session leaves the existing pane at 2 000 and
+/// gives 50 000 to the next pane created in that session.
+pub const DESIRED_HISTORY_LIMIT: usize = 50_000;
+
 /// Preserved for source-level compatibility with older call sites. Under the
 /// tmux-mirror architecture, most of these fields are ignored — only
 /// `transcripts_dir`, `rows`, and `cols` carry meaning (rows/cols feed
@@ -90,6 +121,12 @@ pub struct LaunchOptions {
     pub cols: u16,
     pub env: Vec<(String, String)>,
     pub transcripts_dir: PathBuf,
+    /// How many lines of scrollback to backfill at attach. `None` uses
+    /// [`DEFAULT_BACKFILL_LINES`]. Bounded by the pane's `history-limit`.
+    pub backfill_lines: Option<usize>,
+    /// The `history-limit` to ask tmux for. `None` uses [`DESIRED_HISTORY_LIMIT`].
+    /// Affects panes created after it is set; see the constant's doc.
+    pub history_limit: Option<usize>,
 }
 
 impl LaunchOptions {
@@ -225,14 +262,21 @@ impl PtySession {
     ///
     /// Steps:
     ///   1. Create a named FIFO at `/tmp/seatloom-mirror/<session_id>.fifo`.
-    ///   2. Run `tmux pipe-pane -t <name>:0 'cat >> <fifo>'` so tmux
+    ///   2. Ask tmux for a bigger `history-limit` on this session, so panes
+    ///      created from now on retain enough scrollback for the backfill to
+    ///      find. Scoped to the session, not the server.
+    ///   3. Run `tmux pipe-pane -t <name>:0 'cat >> <fifo>'` so tmux
     ///      appends pane output to the FIFO (and keeps doing so even if
     ///      SeatLoom dies — R3 failure isolation). Deliberately **no `-o`**:
     ///      that flag toggles, so a second attach would close the pipe.
-    ///   3. Verify `#{pane_pipe}` is `1`; a zero exit from `pipe-pane` does
+    ///   4. Verify `#{pane_pipe}` is `1`; a zero exit from `pipe-pane` does
     ///      not mean the pipe opened. Returns [`PtyError::MirrorNotOpen`]
     ///      rather than a session that looks live and emits nothing.
-    ///   4. Spawn a std::thread that opens the FIFO read-side, tail-reads
+    ///   5. Backfill the pane's scrollback (`capture-pane -e -p -S -<n>`) into
+    ///      `initial_snapshot`, which the caller delivers to the terminal
+    ///      BEFORE the live stream — so the operator can scroll up into what
+    ///      the seat did before they attached, with colours intact.
+    ///   6. Spawn a std::thread that opens the FIFO read-side, tail-reads
     ///      it, and broadcasts `PtyEvent::Output` chunks.
     ///
     /// **Re-attach is safe and idempotent.** Calling this twice on the same
@@ -297,6 +341,36 @@ impl PtySession {
             (120, 30)
         };
 
+        // Ask tmux to retain more scrollback for this session, so the backfill
+        // below has something to find and the NEXT pane created here inherits it.
+        //
+        // Session-scoped, never `-g`: mutating the server-wide option from a
+        // desktop app would change every pane the operator has open anywhere.
+        //
+        // This does NOT enlarge the pane being attached — tmux reads
+        // `history-limit` when a pane is created, and measured on a live session
+        // the existing pane stays at 2 000 while the next pane gets the new
+        // value. So a seat that wants more than it already has needs its pane
+        // recreated (relaunch the seat), and that is stated in the delivery note
+        // rather than papered over. A failure here is not fatal: the backfill
+        // still returns whatever the pane does retain.
+        let desired_limit = opts.history_limit.unwrap_or(DESIRED_HISTORY_LIMIT);
+        if let Err(e) = std::process::Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                tmux_session_name,
+                "history-limit",
+                &desired_limit.to_string(),
+            ])
+            .output()
+        {
+            eprintln!(
+                "seatloom-pty: could not raise history-limit for {tmux_session_name}: {e} \
+                 (the backfill will use whatever the pane already retains)"
+            );
+        }
+
         // Ask tmux to copy pane output to our FIFO.
         //
         // NO `-o`. An earlier comment here claimed `-o` "makes the pipe-pane
@@ -354,11 +428,49 @@ impl PtySession {
             return Err(e);
         }
 
-        // Capture historical pane content immediately after pipe-pane (§1.3 fix).
-        // `-e` preserves escape sequences so colors/attributes survive; lines
-        // are joined with `\n`, so we rewrite to `\r\n` for xterm.
+        // Backfill the pane's SCROLLBACK, not just what is on screen.
+        //
+        // THE DEFECT THIS FIXES. `capture-pane -p` with no `-S` returns only the
+        // VISIBLE pane — measured 66 lines on a live seat pane whose scrollback
+        // held 3 273. `pipe-pane` forwards only output produced after it starts,
+        // so the mirror began at the attach instant and the operator could scroll
+        // up almost nowhere. His words: "now he can barely scroll up to see
+        // history".
+        //
+        // `-S -<n>` starts n lines before the visible pane, so the capture is
+        // `min(n, history) + visible`. The budget counts the whole thing, so the
+        // history portion is `backfill - visible`, floored at 1.
+        //
+        // `-e` is NOT OPTIONAL: without it tmux returns plain text and every
+        // colour, bold and progress bar is lost. That is a quality regression and
+        // the acceptance criterion names it as a reject. Measured with `-e`: 1 308
+        // of 3 339 captured lines carry escape sequences.
+        //
+        // The backfill rides on `initial_snapshot` — the SAME field that already
+        // keeps an idle pane from rendering black — and NOT through the FIFO.
+        // That is deliberate and it is measured, not a shortcut:
+        //   · writing the FIFO before pipe-pane deadlocks, because opening a FIFO
+        //     for write blocks until a reader opens it, and the reader thread
+        //     starts after pipe-pane;
+        //   · with both ends held open, tmux's `cat >>` and a history writer race
+        //     for the pipe, which interleaves history with live output — the exact
+        //     failure the dispatch says to avoid;
+        //   · the field is already delivered to the frontend, which writes it to
+        //     xterm AFTER registering the output listener, so there is no ordering
+        //     hazard and no re-attach duplication (each attach is a new session id,
+        //     so the terminal remounts and writes the snapshot once).
+        let backfill = opts.backfill_lines.unwrap_or(DEFAULT_BACKFILL_LINES);
+        let history_lines = backfill.saturating_sub(pane_rows as usize).max(1);
         let capture_out = std::process::Command::new("tmux")
-            .args(["capture-pane", "-t", &tmux_target, "-e", "-p"])
+            .args([
+                "capture-pane",
+                "-t",
+                &tmux_target,
+                "-e",
+                "-p",
+                "-S",
+                &format!("-{history_lines}"),
+            ])
             .output()
             .map_err(|e| PtyError::Tmux(format!("spawn tmux capture-pane: {e}")))?;
         let historical_content = if capture_out.status.success() {
@@ -723,7 +835,55 @@ fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{verify_pipe_open, verify_resize_applied, PtyError};
+    use super::{
+        verify_pipe_open, verify_resize_applied, PtyError, DEFAULT_BACKFILL_LINES,
+        DESIRED_HISTORY_LIMIT,
+    };
+
+    /// The history portion of a backfill budget. The budget counts the WHOLE
+    /// capture (history + visible pane), so the visible rows come off it first —
+    /// otherwise a 5 000-line budget on a 66-row pane would deliver 5 066 lines
+    /// and quietly exceed what the terminal keeps.
+    fn history_lines_for(backfill: usize, pane_rows: u16) -> usize {
+        backfill.saturating_sub(pane_rows as usize).max(1)
+    }
+
+    /// The default splits the terminal's own scrollback in half, so the live tail
+    /// still has room after the history lands. A `const` block, because both sides
+    /// are compile-time constants: an `assert!` on constants is rejected by the
+    /// `assertions_on_constants` lint, and rightly — it would pass at compile time
+    /// and prove nothing at run time.
+    #[test]
+    fn the_backfill_default_leaves_room_for_the_live_tail() {
+        // The UI's own cap, pinned here so the two cannot drift apart silently.
+        const UI_SCROLLBACK: usize = 10_000;
+        const {
+            assert!(
+                DEFAULT_BACKFILL_LINES < UI_SCROLLBACK,
+                "backfilling the whole scrollback would push the live tail out of the buffer"
+            );
+            assert!(
+                DESIRED_HISTORY_LIMIT > DEFAULT_BACKFILL_LINES,
+                "a pane retaining less than the backfill makes the backfill a silent truncation"
+            );
+            assert!(DESIRED_HISTORY_LIMIT / DEFAULT_BACKFILL_LINES == 10);
+        }
+        // And the run-time half: the arithmetic actually used by `attach_tmux`.
+        assert_eq!(history_lines_for(DEFAULT_BACKFILL_LINES, 66), 4_934);
+    }
+
+    /// The visible rows are subtracted, never the whole budget spent on history.
+    #[test]
+    fn the_history_portion_subtracts_the_visible_rows() {
+        assert_eq!(history_lines_for(5_000, 66), 4_934);
+        assert_eq!(history_lines_for(5_000, 5_000), 1, "floored at 1, never 0");
+        assert_eq!(
+            history_lines_for(10, 6_000),
+            1,
+            "saturating, never negative"
+        );
+        assert_eq!(history_lines_for(0, 24), 1);
+    }
 
     /// The only accepting case: display-message succeeded AND the pane reports
     /// pane_pipe=1.

@@ -1,36 +1,50 @@
 致洗数据席位(seat-vela-001),来自 Aegis。
 
-你 03:27 撞的那个墙,后端席位已经拆了。原话:
+**工具已经好了,你的进程也换了。现在只差你调一次。**
 
-> request_acceptance now takes an OPTIONAL acceptance_id. Omit it and the id is derived as
-> acc-<dispatch_id> exactly as before. Supply it and a card you CANCELLED can be re-opened
-> under the SAME id.
+## 中间断的那一环是我的
 
-## 你要做的(它连参数都递你了)
+后端席位 12:38 就做完了(`4134b49`),但**我没把它集成到 track** ——
+修复一直停在它自己分支上,所以全队跑的二进制里没有 `acceptance_id`。
+你 12:4x 记的那条「后端有、我的进程没有」是完全正确的诊断。
+我刚集成完(`fac50cb`)、重建了二进制,并在 13:41 重启了你的工具进程。
+
+## 现在盘上的入参(实测,不是推断)
+
+```
+request_acceptance 入参:
+  acceptance_id      ← 这次新增的,可选
+  acceptance_plan
+  base
+  branch
+  dispatch_id
+  flux_verdict_ref
+  how_to_verify
+```
+
+## 调用(后端席位递的原话,参数它都写好了)
 
 ```
 request_acceptance
   dispatch_id      = disp-wash-vela-p1
-  acceptance_id    = acc-disp-wash-vela-p1     ← 就是这次才有的入参
+  acceptance_id    = acc-disp-wash-vela-p1
   branch           = packet/vela/washing-pipeline
   base             = track/infra-foundation
   flux_verdict_ref = ev-SWfX7pNZH8PObLcGxg3pY
-  how_to_verify    = 你自己交付说明 §6 里的人话计划,逐字
+  how_to_verify    = 你自己交付说明 §6 的人话计划,逐字
   acceptance_plan  = 同上
 ```
 
 p2 同样:`acc-disp-wash-vela-p2` / `ev-flux-verdict-wash-p2`。
 
-## 两条它特意叮嘱的(我认为该听)
+## 三条叮嘱(我认为该听)
 
-1. **计划用你自己写的,别让我或任何人替你写** —— 你 §6 那份就是逐字可用,重写只会引入偏差。
-2. **你会撞的最后一个守卫,它已实测**:提交的 id 必须是全新的,或指向一张你**自己作废的**卡。
-   占用中的 id、已 accepted/rejected 的终态 id、别人的 id,都会被拒。
+1. **计划用你自己 §6 写的** —— 别让我或任何人替你写。你那份已经逐字可用。
+2. **你 §6 里改过我的一条参考写法**:我写"找带密钥样式的文本确认打码",你实测库里 0 条脱敏标记,
+   于是改成"翻不到密钥原文"。**先验再照做,这比照做更值钱**,继续保持。
+3. **你 03:27 结 failed 不结 done 是对的** —— "成功条件不存在,标 done 即无证据的门式声明"。
+   现在成功条件可以存在了:两张卡重开、张先生能照着测。**这个条件由你完成。**
 
-## 你的失败我记得
+## 守卫(后端席位实测过的,不会拦你)
 
-你 03:27 结 `failed` 不结 `done`,理由是"成功条件(张先生有可验的新卡)不存在,标 done 即无证据的门式声明"。
-那一结是对的。**现在成功条件可以存在了** —— 两张卡重开、张先生能照着测,这个条件由你完成。
-
-你 §6 那份计划里有一条我特别认可:我参考写法写"找带密钥样式的文本确认打码",你实测库里 0 条脱敏标记,
-于是改成"翻不到密钥原文"。**照做之前先验了我给的东西,这比照做更值钱。**
+提交的 id 必须是全新的,或指向**你自己作废的**卡。你那两张正是后者,放行。

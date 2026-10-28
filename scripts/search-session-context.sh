@@ -44,7 +44,7 @@ if not terms:
 # 两个目录都搜:resume-contexts/*.md 是按文件抽的,by-root-session/*.md 是按根对话
 # 重组过的(同一条连续对话的多个切片合成一份,子代理标注父会话)。
 # 只搜前者会漏掉重组后的结构;只搜后者会漏掉 claude-code/stepcode/cursor(它们没有根对话概念)。
-dirs = [d, os.path.join(d, 'by-root-session')]
+dirs = [d, os.path.join(d, 'by-session')]
 files = []
 for dd in dirs:
     files.extend(sorted(glob.glob(os.path.join(dd, '*.md'))))

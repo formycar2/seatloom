@@ -28,10 +28,14 @@ use tauri::{AppHandle, Emitter, State};
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn cmd_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionDto>, String> {
+pub async fn cmd_list_sessions(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<SessionDto>, String> {
+    let pid = crate::commands::require_project_id("cmd_list_sessions", project_id)?;
     state
         .db
-        .list_sessions()
+        .list_sessions_for_project(&pid)
         .await
         .map(|rows| rows.into_iter().map(SessionDto::from).collect())
         .map_err(|e| e.to_string())
@@ -106,6 +110,16 @@ pub struct AttachTmuxRequest {
     /// Initial pane size (used by `tmux resize-pane`).
     pub rows: Option<u16>,
     pub cols: Option<u16>,
+    /// How many lines of pane scrollback to backfill into the mirror at attach
+    /// time. `None` uses `seatloom_core::pty::DEFAULT_BACKFILL_LINES`. Bounded by
+    /// the pane's tmux `history-limit`, so asking for more silently returns less.
+    #[serde(default)]
+    pub backfill_lines: Option<usize>,
+    /// The tmux `history-limit` to ask for. `None` uses
+    /// `seatloom_core::pty::DESIRED_HISTORY_LIMIT`. Affects panes created after
+    /// it is set — an already-running pane keeps the limit it was born with.
+    #[serde(default)]
+    pub history_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +166,30 @@ struct OutputEventPayload {
     data: String, // base64-encoded raw bytes — preserves ANSI/UTF-8 fidelity
 }
 
+/// One event on the turn-aware channel. A SECOND VIEW of the same bytes, not a
+/// second capture: `session:output` stays exactly as it is and xterm keeps reading
+/// it. This is the shape a "conversation window" needs (turn boundaries), and it
+/// deliberately carries no claim about what the model DID — see
+/// `seatloom_core::turn_stream`'s module header on why a boundary is a heuristic.
+///
+/// `chunk` is the same base64 payload `session:output` carries, byte-for-byte.
+/// `frame` marks a synchronized-output redraw boundary, so a UI can batch without
+/// having to re-derive it from escape sequences.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum TurnStreamPayload {
+    /// A turn began (the harness's working indicator appeared).
+    TurnStarted { session_id: String },
+    /// Bytes belonging to the turn in progress.
+    Chunk {
+        session_id: String,
+        data: String,
+        frame: bool,
+    },
+    /// The turn ended (the working indicator was replaced by the status line).
+    TurnEnded { session_id: String },
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExitEventPayload {
@@ -190,6 +228,11 @@ pub async fn cmd_attach_tmux_session(
         cols: request.cols.unwrap_or(120),
         env: LaunchOptions::default_env(),
         transcripts_dir,
+        // Forwarded verbatim; `None` means "use the documented default", which
+        // `attach_tmux` resolves. An omitted field is never rewritten to a number
+        // here, so the default has exactly one home.
+        backfill_lines: request.backfill_lines,
+        history_limit: request.history_limit,
     };
 
     let session = PtySession::attach_tmux(&id, &request.tmux_session_name, opts)
@@ -201,15 +244,41 @@ pub async fn cmd_attach_tmux_session(
     let id_for_events = id.clone();
     let sessions_for_exit = state.sessions.clone();
     tokio::spawn(async move {
+        // The turn detector is a SECOND CONSUMER of the same bytes, not a second
+        // capture path. `session:output` below is unchanged and xterm keeps reading
+        // it; this only adds a shape on top. If the detector is wrong about a
+        // boundary, the terminal is still right — which is why it is additive and
+        // why nothing here can block or drop the raw stream.
+        let mut turn = seatloom_core::turn_stream::TurnDetector::new();
         loop {
             match rx.recv().await {
                 Ok(PtyEvent::Output(bytes)) => {
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     let payload = OutputEventPayload {
                         session_id: id_for_events.clone(),
-                        data: encoded,
+                        data: encoded.clone(),
                     };
                     let _ = app_for_events.emit("session:output", payload);
+
+                    // Turn-aware view. Emitted on its own event name so a consumer
+                    // that only wants the terminal is not forced to filter these.
+                    for event in turn.feed(&bytes) {
+                        use seatloom_core::turn_stream::TurnEvent;
+                        let turn_payload = match event {
+                            TurnEvent::TurnStarted => TurnStreamPayload::TurnStarted {
+                                session_id: id_for_events.clone(),
+                            },
+                            TurnEvent::Chunk { bytes, frame } => TurnStreamPayload::Chunk {
+                                session_id: id_for_events.clone(),
+                                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                                frame,
+                            },
+                            TurnEvent::TurnEnded => TurnStreamPayload::TurnEnded {
+                                session_id: id_for_events.clone(),
+                            },
+                        };
+                        let _ = app_for_events.emit("session:turn", turn_payload);
+                    }
                 }
                 Ok(PtyEvent::Exited { exit_code, signal }) => {
                     let payload = ExitEventPayload {
@@ -288,6 +357,10 @@ pub async fn cmd_launch_session(
         session_id: None,
         rows: request.rows,
         cols: request.cols,
+        // The legacy shim carries no backfill preference, so the documented
+        // default applies — never a number invented here.
+        backfill_lines: None,
+        history_limit: None,
     };
     cmd_attach_tmux_session(state, app, attach).await
 }

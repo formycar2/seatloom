@@ -22,6 +22,9 @@ pub mod lineage;
 pub mod models;
 pub mod reconcile;
 pub mod repositories;
+/// The session↔work read model — one read-only function in each direction,
+/// three separated numbers, and the topic id never used as a key.
+pub mod session_work;
 /// P0 step 2 write primitive: `append(event) -> projections`.
 pub mod write_api;
 
