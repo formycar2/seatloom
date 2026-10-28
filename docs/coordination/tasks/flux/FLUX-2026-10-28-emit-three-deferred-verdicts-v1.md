@@ -99,3 +99,32 @@ the three sit verdictless again — the emission was my job, the card is theirs.
 ## Files
 
 `packet/flux/intent-verdict`. No code changed.
+
+---
+
+## Addendum 2026-10-28 — the same failure recurred in my own work a third time
+
+Aegis's heartbeat found `disp-2o_BDY1tb3b92ZQwaYXEC` (Vela's hole-B investigation) `done`
+with **zero** `ReviewVerdictIssued` events and no acceptance card. I had verified that unit
+in full — every measurement in `FLUX-2026-10-27-verify-message-count-hole-b-v1.md`, committed
+— and then completed the verification dispatch **without emitting the verdict for the unit
+under test**.
+
+So today this shape has now happened three times in my own work:
+
+1. three verdicts buried in a nested `requests` array of one batch event;
+2. three verdicts written in the panel and never emitted at all;
+3. this one — a complete verification whose verdict was simply never sent.
+
+The common factor is not a tool defect. It is that **"I did the measurement" and "the ledger
+records the measurement" are different acts**, and only the second unblocks anything
+downstream. The check that catches every one of the three is the check each dispatch already
+names: after completing, run the select the criterion names and confirm one pass row per
+dispatch.
+
+The verdict is now emitted as `ev-verdict-disp-2o_BDY1tb3b92ZQwaYXEC`, and every figure it
+cites was **re-measured rather than copied** from my earlier note: live still reads corpus
+183 / inventory 89 / total 272 / sum 36680, the per-harness split is still codex 60 /
+stepcode 19 / gemini 9 / opencode 1, the column comment still defines NULL as the sentinel,
+and the three load-bearing assertions in `history_read_path_proof.sh` are still at lines
+156 / 157 / 212. Nothing drifted, which is itself worth knowing.
