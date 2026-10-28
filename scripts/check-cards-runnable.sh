@@ -17,7 +17,7 @@
 # wild-pointer verdict (a dispatch_id with letter-o instead of digit-zero). A
 # token that names the wrong thing is believed because it looks right.
 #
-# What it checks, per pending card:
+# What it checks, per card:
 #   * every `track/...`, `packet/...`, and `scripts/....sh` token named in
 #     how_to_verify or acceptance_plan exists as a local branch, or on a remote
 #   * a warning (not a failure) for a ref that exists only remotely
@@ -32,14 +32,29 @@
 # Exit 0 = every named ref resolves. Exit 1 = at least one card cannot be run
 # as written, and the card is named with the exact offending string.
 #
-# Usage: scripts/check-cards-runnable.sh [--quiet]
-
+# Usage: scripts/check-cards-runnable.sh [--quiet] [--include-accepted]
+#
+# --include-accepted REPORTS on decided cards and never re-decides them. It exists
+# because the default (pending-only) view certifies a history it has not read:
+# three accepted cards were found on 2026-10-28 whose evidence was fine but whose
+# instructions were unrunnable. Reporting is the point; a checker that only looks
+# forward is a checker whose "OK" is a statement about the future.
 set -u
 
 cd "$(dirname "$0")/.." || exit 2
 
 QUIET=0
-[ "${1:-}" = "--quiet" ] && QUIET=1
+INCLUDE_ACCEPTED=0
+for a in "$@"; do
+  case "$a" in
+    --quiet) QUIET=1;;
+    --include-accepted) INCLUDE_ACCEPTED=1;;
+    *) printf 'usage: %s [--quiet] [--include-accepted]\n' "$0" >&2; exit 2;;
+  esac
+done
+
+STATUS_FILTER="'pending'"
+[ "$INCLUDE_ACCEPTED" = "1" ] && STATUS_FILTER="'pending', 'accepted'"
 
 db() {
   podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -c "$1" 2>/dev/null
@@ -71,7 +86,7 @@ while IFS= read -r cid; do
   [ -n "$cid" ] || continue
   total=$((total + 1))
 
-  body=$(db "select replace(replace(coalesce(how_to_verify,'') || ' | ' || coalesce(acceptance_plan::text,''), chr(10), ' '), chr(13), ' ') from acceptances where id='$cid' and status='pending';")
+  body=$(db "select replace(replace(coalesce(how_to_verify,'') || ' | ' || coalesce(acceptance_plan::text,''), chr(10), ' '), chr(13), ' ') from acceptances where id='$cid' and status in ($STATUS_FILTER);")
 
   # Split on the range separator FIRST. A body like
   # `a..track/infa-foundation` is one grep match when `.` is in the character
@@ -103,11 +118,11 @@ while IFS= read -r cid; do
         ;;
     esac
   done
-done < <(db "select id from acceptances where status='pending' order by id;")
+done < <(db "select id from acceptances where status in ($STATUS_FILTER) order by status, id;")
 
 if [ "$bad" -gt 0 ]; then
   echo
-  echo "FAIL: $bad named ref(s) in $total pending card(s) cannot be resolved."
+  echo "FAIL: $bad named ref(s) in $total card(s) cannot be resolved (scope: $STATUS_FILTER)."
   echo "The operator following those cards literally fails. The card's claim may be"
   echo "true and its verdict a valid pass — the INSTRUCTIONS are still unrunnable."
   echo "Fix: cancel_acceptance + request_acceptance under the SAME id with the string"
@@ -119,6 +134,6 @@ if [ "$QUIET" = "1" ]; then
   exit 0
 fi
 
-echo "OK: every git ref and script path named by $total pending card(s) resolves."
+echo "OK: every git ref and script path named by $total card(s) resolves (scope: $STATUS_FILTER)."
 [ "$remote_only" -gt 0 ] && echo "note: $remote_only ref(s) exist only on a remote — run git fetch first"
 exit 0
