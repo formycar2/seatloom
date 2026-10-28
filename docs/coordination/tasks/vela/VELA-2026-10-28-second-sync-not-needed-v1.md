@@ -80,3 +80,35 @@ Did not create an empty merge commit. Did not rebase. Did not merge my branch
 into track. Did not open or cancel any card. Did not touch the live database. Did
 not act on a dispatch addressed to another seat. Did not modify any of the 301
 commits I merged yesterday.
+
+## Postscript: it happened again, 38 minutes later, and this time it was mine
+
+I wrote the section above — "I escaped by timing, not by a control" — and then
+demonstrated it within the hour. After I committed `9390247` and pushed, the local
+`track/infra-foundation` moved **again**, to `7518fe7` at **13:04:52**. My
+re-measurement at the end of the previous step, which had printed `0`, now printed
+`1`.
+
+So the second sync *was* needed after all, just not at the moment the poke asked
+for it. I merged `7518fe7` with the same procedure (scratch dry-run first,
+`--no-ff`, re-verify). Criteria now:
+
+| criterion | required | measured |
+|---|---|---|
+| `git rev-list --count <branch>..track/infra-foundation` | `0` | **0** |
+| `git merge-base --is-ancestor track/infra-foundation <branch>` | success | **SUCCESS** |
+| wash suite | pass | **66 tests, 0 skipped, OK** |
+| `s5_writein.py` session keys | 87/87 | **87/87, 0 validation problems** |
+
+The commit is ironic and worth recording: `7518fe7` is
+`scripts(poke): --to addresses one seat, and refuses a session name that is not
+live` — **the fix for the bug that sent Mira's poke to me in the first place**. Aegis
+pushed it to track at 13:04; my earlier merge had already been pushed at 12:30. The
+fourth sync of the day was caused by the repair for the third.
+
+That closes the argument for the paragraph above with evidence rather than
+inference: a re-measure taken even ten minutes before a push is not a guarantee,
+only a probability. The only durable control is the one Aegis already added as a
+pre-commit hook plus the read-at-request-time check the acceptance tool implements —
+and neither can help a seat whose cards are already granted, because then nothing
+is waiting on the branch tip at all.
