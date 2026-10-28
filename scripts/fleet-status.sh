@@ -149,7 +149,15 @@ echo
 echo "── 真的需要人介入 ──"
 need=0
 if [ "$alive" != "$total" ]; then echo "  • 有席位掉线(见上)—— 修:bash scripts/seat-launch.sh --all --force"; need=1; fi
-tmux has-session -t seatloom-waker 2>/dev/null || { echo "  • 唤醒服务停了,新活不会被派下去"; need=1; }
+# waker 是一个 Rust 常驻守护进程(src/bin/waker.rs),不是一个 tmux 会话。
+# 原来这里查 `tmux has-session -t seatloom-waker`,而那个会话在 2026-10-28 16:00
+# 之前从未存在过 —— 二进制也没编译、没跑、没有日志。会话检查会为一个
+# 恰好同名的空 tmux 会话报"在跑",而那正是发生过的事:我建了会话,
+# 这一行立刻变绿,而守护进程依然没跑。查进程,不查会话名。
+if ! pgrep -f 'seatloom-waker' >/dev/null 2>&1; then
+  echo "  • 唤醒服务停了,新活不会被派下去 —— 起法:bash scripts/start-waker.sh"
+  need=1
+fi
 [ "$need" = "0" ] && echo "  (没有需要你动手的事)"
 # 失败的单单独说明,它不算「需要你动手」——所以放在结论之后,不影响上面那句
 f=$(PSQL "select count(*) from dispatches where status='failed'")
@@ -167,7 +175,26 @@ if [ "$(PSQL "select count(*) from pg_tables where tablename='memories'")" = "1"
 else
   printf "  记忆功能             ❌ 未上线(memories 表还没建到数据库里)\n"
 fi
-printf "  唤醒服务             %s\n" "$(tmux has-session -t seatloom-waker 2>/dev/null && echo 在跑 || echo '❌ 停了')"
+# 同上:查进程。pgrep -f 的模式是 'seatloom-waker',会同时匹配到
+# target/*/seatloom-waker 和包名 crate seatloom-mcp-emit 的路径,所以还要再确认
+# 它真的是那个二进制的进程,而不是一条命令里提到了这个名字。
+# 只认 waker 二进制本身的进程。pgrep -f 'seatloom-waker' 会抓到三类:
+#   外层 zsh -c ...target/debug/seatloom-waker(是壳,不是守护进程)
+#   target/debug/seatloom-waker          (这才是)
+#   任何命令行里提到这个名字的进程(包括查它的那条命令自己)
+# 所以用 ps 抓全表,再筛 command 以 target/ 下的可执行路径开头的那条。
+waker_pid=""
+for p in $(pgrep -f 'seatloom-waker' 2>/dev/null); do
+  c=$(ps -p "$p" -o command= 2>/dev/null)
+  case "$c" in
+    target/*seatloom-waker|*/target/*seatloom-waker) waker_pid="$p"; break ;;
+  esac
+done
+if [ -n "$waker_pid" ]; then
+  printf "  唤醒服务             在跑(pid %s)\n" "$waker_pid"
+else
+  printf "  唤醒服务             ❌ 停了\n"
+fi
 # Aegis 的自醒必须由自醒之外的东西来查。心跳协议里那句"看日志验证自醒活着"
 # 只有心跳跑得起来才执行 —— 自醒死了就不会有心跳,那是循环依赖。
 # 所以这项检查放在任何人都会跑的这个脚本里(张先生随时会跑)。
