@@ -64,6 +64,19 @@
      - 要确认某个 pid 的父进程,用 `ps -o pid=,ppid= -ax | awk '$2==<pid>'`
      - 我的 `scripts/fleet-process-census.sh` 在 pgrep 返回空时报 ❌ 而不是静默跳过,
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
+   - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
+     它查每张 pending 卡的分支是否还包含它的 base。
+     `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
+     "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
+     **卡开出来了不等于卡点得动。**
+   - **verdict ref 的有效性**:`bash scripts/check-verdict-refs.sh`
+     它把每张 pending 卡的 `flux_verdict_ref` join 回 `dispatches`,
+     确认那条 verdict 事件真存在、且点名的就是这张卡的派单。
+     2026-10-28 实测发现一条 verdict 的 `dispatch_id` 是
+     `disp-B4Y5oAhMQwtXm5Vva1fw`(数字 0),而真 id 是
+     `disp-B4Y5oAohMQwtXm5Vva1fw`(字母 o)—— 一个字符,而 nanoid 字符集里两者都在。
+     它看起来完全是绿的第三方 verdict,指向 0 行。
+     **verdict 事件存在不等于它是关于这张卡的。**
 
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
