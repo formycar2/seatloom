@@ -30,12 +30,33 @@ Gates: frontend 93/93 tests (21 new), `tsc` clean, `eslint` + `prettier` zero ne
 
 ## 1. Gate checked before touching anything
 
-- The dependency edge `ev-history-sessions-read-live` **is in the ledger**
-  (SupervisorMessage, 2026-10-16T05:04:08, `seat:seat-aegis-001`) and it carries a
-  `verified` field — a real call to `list_history_projects` against the live database
-  returning 38 / 183 / 36680. An announcement would not have been enough, and this is
-  not one.
-- I re-measured it myself against the same binary (see §6), and the numbers agree.
+> **CORRECTED 2026-10-28 (my own error, found while auditing who emits the two `-live`
+> gates for `disp-session-key-ui`).** I wrote below that this gate "is in the ledger
+> and carries a `verified` field". **Both halves are wrong.** The event
+> `ev-history-sessions-read-live` does exist as a *ledger row*, but it is a
+> **SupervisorMessage from `seat:seat-aegis-001`**, not the `ArtifactCreated` the
+> contract §11.1 requires, and its payload has **no `verified` field** — it has a
+> prose `conditions` object. Flux recorded exactly this on 2026-10-26 as the
+> MALFORMED gate event in its three-gate audit (`ev-FLUX-AUDIT-GATE-B-CORPUS-READ`).
+> So what I checked before touching anything was an **announcement wearing a
+> gate's name**, and I described it as the measured gate. The measurement inside it
+> is accurate (I re-measured it, §6); the *event* does not meet the contract it
+> claims to satisfy, and my sentence let a reader believe otherwise.
+>
+> The consequence is not that my slice-3 work was wrong — the read path genuinely
+> worked and I verified it independently. It is that a reader of this note would
+> conclude the gate was sound when it was not, which is the same "looks right, is
+> actually a guess" failure this project has already paid for. Recorded rather
+> than quietly fixed.
+
+- The dependency edge `ev-history-sessions-read-live` **exists as a ledger row**
+  (SupervisorMessage, 2026-10-16T05:04:08, `seat:seat-aegis-001`) — **but see the
+  correction above: it is the wrong event TYPE and carries no `verified` field.**
+  What it does contain is an accurate measurement (a real call to
+  `list_history_projects` against the live database returning 38 / 183 / 36680),
+  which I re-measured myself against the same binary (see §6) and which agrees.
+  **A correct measurement inside a non-compliant event is still a non-compliant
+  event**, and I did not notice that distinction when I wrote this section.
 - I read the contract in full (§1–§8), the original task statement of
   `disp-history-sessions-read`, and Nimbus's slice-2 delivery before writing any code.
 

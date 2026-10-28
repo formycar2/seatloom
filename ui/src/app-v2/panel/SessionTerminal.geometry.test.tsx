@@ -80,9 +80,34 @@ const fake = vi.hoisted(() => {
       this.element.classList.add('xterm');
       parent.appendChild(this.element);
     }
-    write(_data: Uint8Array | string) {}
-    clear() {}
-    reset() {}
+    // Recorded, not stubbed to nothing: the P0 fix (disp-OwOSLvL4EbqoB6YhlBQHi)
+    // is precisely about WHICH of these the component calls. clear() and reset()
+    // both destroy the scrollback (measured against the real xterm in
+    // SessionTerminal.scrollback.test.tsx), so a future re-introduction of either
+    // on the geometry path has to fail a test rather than reach the operator.
+    writes: string[] = [];
+    clearCalls = 0;
+    resetCalls = 0;
+    write(data: Uint8Array | string) {
+      this.writes.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+    }
+    clear() {
+      this.clearCalls += 1;
+    }
+    reset() {
+      this.resetCalls += 1;
+    }
+    /**
+     * Transcribed from xterm.d.ts:1195 — "Scrolls the display of the terminal
+     * to the bottom". Recorded, not stubbed to nothing, because the P0 fix
+     * (disp-OwOSLvL4EbqoB6YhlBQHi) replaced `clear()+reset()` with a viewport
+     * clear followed by exactly this call: dropping it would make the fix's
+     * "the operator lands on the repaint, not mid-history" half unfalsifiable.
+     */
+    scrollToBottomCalls = 0;
+    scrollToBottom() {
+      this.scrollToBottomCalls += 1;
+    }
     dispose() {
       this.disposed = true;
     }
@@ -471,5 +496,94 @@ describe('when the metrics are valid', () => {
 
     expect(mounted.disposed).toBe(true);
     expect(mounted.resizeListeners).toEqual([]);
+  });
+});
+
+// ── P0 (2026-10-27): the scrollback must survive the first geometry sync ──────
+//
+// The defect: when the fitted geometry differed from the pane seed, this
+// component called `terminal.clear(); terminal.reset();`. Both destroy the
+// scrollback — measured against the real xterm in
+// SessionTerminal.scrollback.test.tsx, which left 40 lines of a 300-line history
+// (== the row count) with the oldest line empty. Every seat whose fitted geometry
+// differed from its seed therefore had NO history to scroll, which is the
+// operator's "除了 ql 这个 seat 实时席位可以上下翻,其他所有 seat 都不能".
+//
+// These assertions live HERE rather than there because they are about the
+// component's DECISION, and reaching that decision requires fit() to produce
+// dimensions — which needs real character-cell metrics jsdom cannot produce. The
+// transcription is the tool that can drive this branch; the real xterm is the tool
+// that shows what survived it. Both halves are one defect and both are needed.
+describe('the stale-snapshot clear must not destroy the scrollback (P0)', () => {
+  it('a differing fitted geometry clears the VIEWPORT and parks at the bottom — never clear()/reset()', async () => {
+    const mounted = await mountTerminal(54, 219);
+    mounted.proposed = measurable(30, 140);
+
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+
+    // The two buffer-destroying calls must be gone from this path.
+    expect(mounted.clearCalls).toBe(0);
+    expect(mounted.resetCalls).toBe(0);
+
+    // In their place: a viewport clear (ESC[2J ESC[H) that leaves the scrollback
+    // alone, then scrollToBottom so the operator lands on the repaint rather than
+    // somewhere in the middle of the history.
+    expect(mounted.writes.some((w) => w.includes('\x1b[2J'))).toBe(true);
+    expect(mounted.scrollToBottomCalls).toBe(1);
+
+    // And the geometry still reaches the pane — the fix must not have cost the
+    // operator the bidirectional sync that the whole geometry contract is for.
+    expect(ptyResizeCalls).toEqual([{ sessionId: 'sl-live-QL', rows: 30, cols: 140 }]);
+  });
+
+  it('an exact geometry match clears nothing at all — why the active seat always worked', async () => {
+    // The difference between seats was never about the seats: for the one the
+    // operator was looking at, the fitted geometry equalled the seed, so the clear
+    // branch never ran. Asserted so nobody "simplifies" the branch away and starts
+    // clearing on every mount, which would take the history off the active seat too.
+    const mounted = await mountTerminal(30, 140);
+    mounted.proposed = measurable(30, 140);
+
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+
+    expect(mounted.clearCalls).toBe(0);
+    expect(mounted.resetCalls).toBe(0);
+    expect(mounted.writes.some((w) => w.includes('\x1b[2J'))).toBe(false);
+    expect(mounted.scrollToBottomCalls).toBe(0);
+    // The geometry IS still pushed to the pane — but once, not because anything
+    // changed: `lastPushedRef` starts empty, so the first sync always reports the
+    // seed so the backend has it. That is pre-existing behaviour and is unrelated
+    // to the clear; what matters here is that the SCROLLBACK is untouched.
+    expect(ptyResizeCalls).toEqual([{ sessionId: 'sl-live-QL', rows: 30, cols: 140 }]);
+  });
+
+  it('the clear runs at most once, however many geometry syncs follow', async () => {
+    // It guards the attach-time snapshot, which is written once. Re-running it on
+    // every later resize would wipe the live output the operator is reading.
+    const mounted = await mountTerminal(54, 219);
+    mounted.proposed = measurable(30, 140);
+
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    const writesAfterFirst = mounted.writes.length;
+
+    // A later, different geometry — the operator resizing the panel, say.
+    mounted.proposed = measurable(28, 120);
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+
+    expect(mounted.clearCalls).toBe(0);
+    expect(mounted.resetCalls).toBe(0);
+    expect(mounted.writes.some((w) => w.includes('\x1b[2J'))).toBe(true);
+    // Still exactly the one viewport clear from the first sync.
+    expect(mounted.writes.filter((w) => w.includes('\x1b[2J')).length).toBe(1);
+    expect(mounted.scrollToBottomCalls).toBe(1);
+    expect(writesAfterFirst).toBeGreaterThan(0);
   });
 });

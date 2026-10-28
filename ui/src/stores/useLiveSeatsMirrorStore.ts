@@ -44,6 +44,20 @@ interface LiveSeatsMirrorState {
   activity: Record<string, Activity>;
   activeName: string | null;
   /**
+   * Seats whose mirror the backend could no longer prove, keyed by seat name.
+   *
+   * This is the whole point of the 2026-10-27 fix. The incident was not "the app
+   * showed an empty slot" — it was "the app showed one seat's output in another
+   * seat's slot for three hours and said nothing". A mirror that cannot be
+   * proven has to be VISIBLE as broken, and the failure has to be attributable to
+   * a seat so the operator knows which one to reconnect.
+   *
+   * Deliberately separate from `attachments` rather than a flag on it: a broken
+   * attachment is REMOVED from `attachments` (that is what stops the terminal
+   * from rendering), and this map is what remains to say why.
+   */
+  mirrorLost: Record<string, MirrorLostState>;
+  /**
    * Whether the first-seat auto-attach has already fired in this app session.
    *
    * This is the deliberate design that must NOT regress: on a genuinely first
@@ -63,13 +77,42 @@ interface LiveSeatsMirrorState {
   addBytes: (sessionId: string, bytes: number, chunks: number, lastAt: number) => void;
   /** Drop attachments whose session id is not in `alive`. Returns how many. */
   pruneDead: (alive: Set<string>) => number;
+  /**
+   * Record that a seat's mirror is no longer provably ours, and drop its
+   * attachment so the terminal stops rendering bytes we cannot vouch for.
+   *
+   * Both halves matter: the attachment removal is what makes the UI stop showing
+   * foreign content, and the record is what makes the breakage visible and
+   * attributable instead of looking like an ordinary disconnect.
+   */
+  markMirrorLost: (
+    seatName: string,
+    sessionId: string,
+    reason: string,
+    detail: string,
+  ) => void;
+  /** Clear a seat's mirror-lost state (operator reconnected). */
+  clearMirrorLost: (seatName: string) => void;
   markAutoAttached: () => void;
+}
+
+/// Why a mirror stopped being shown, and what the operator should do.
+///
+/// `reason` is the backend's `MirrorVerdict::as_str()` — `lost`, `cross_wired`
+/// or `probe_failed` — passed through verbatim rather than mapped to a friendlier
+/// enum here, because a renamed reason is a reason nobody can grep the logs for.
+export interface MirrorLostState {
+  sessionId: string;
+  reason: string;
+  detail: string;
+  at: number;
 }
 
 export const useLiveSeatsMirrorStore = create<LiveSeatsMirrorState>((set, get) => ({
   attachments: [],
   activity: {},
   activeName: null,
+  mirrorLost: {},
   autoAttached: false,
 
   addAttachment: (attachment) =>
@@ -123,6 +166,37 @@ export const useLiveSeatsMirrorStore = create<LiveSeatsMirrorState>((set, get) =
     for (const a of dead) get().removeAttachment(a.dto.id);
     return dead.length;
   },
+
+  markMirrorLost: (seatName, sessionId, reason, detail) => {
+    const { attachments, activeName } = get();
+    const wasActive = attachments.some(
+      (a) => a.seat.sessionName === seatName && a.seat.sessionName === activeName,
+    );
+    // Remove first: this is what unmounts the terminal and stops the bytes.
+    get().removeAttachment(sessionId);
+    set((state) => ({
+      mirrorLost: {
+        ...state.mirrorLost,
+        [seatName]: { sessionId, reason, detail, at: Date.now() },
+      },
+      // If the seat on screen just lost its mirror, fall back to another
+      // attachment rather than leaving a blank terminal area — the banner above
+      // the terminal is where the operator learns what happened.
+      activeName: wasActive
+        ? (get().attachments.length
+            ? get().attachments[get().attachments.length - 1].seat.sessionName
+            : null)
+        : state.activeName,
+    }));
+  },
+
+  clearMirrorLost: (seatName) =>
+    set((state) => {
+      if (!(seatName in state.mirrorLost)) return state;
+      const mirrorLost = { ...state.mirrorLost };
+      delete mirrorLost[seatName];
+      return { mirrorLost };
+    }),
 
   markAutoAttached: () => {
     if (!get().autoAttached) set({ autoAttached: true });

@@ -1,5 +1,6 @@
 import React from 'react';
 import { FolderSync, Github, Languages, RefreshCw, Terminal, HelpCircle } from 'lucide-react';
+import { api } from '../lib/api';
 
 interface StatusBarProps {
   onInitProject: () => void;
@@ -8,11 +9,46 @@ interface StatusBarProps {
   onShowHelp: () => void;
 }
 
+const REPO_URL = 'https://github.com/seatloom';
+
+/**
+ * Open the repo link in the operator's default browser.
+ *
+ * This used to be `window.open(REPO_URL)`, which does nothing in Tauri's webview
+ * (it blocks window.open by design) — the same defect that made live-seats URLs
+ * unclickable. It goes through the same Rust command as the terminal links now,
+ * so there is one mechanism and one error path.
+ *
+ * Errors are reported rather than swallowed: a link that silently does nothing is
+ * exactly the bug being fixed, and "I clicked it and nothing happened" with no
+ * console line is the hardest version of that to diagnose.
+ */
+const openRepo = () => {
+  api.openExternalUrl(REPO_URL).catch((err) => {
+    console.error('[StatusBar] openExternalUrl failed:', REPO_URL, err);
+  });
+};
+
 const StatusBar: React.FC<StatusBarProps> = ({ onInitProject, isTerminalOpen, onTerminalToggle, onShowHelp }) => {
   return (
     <div className="h-6 bg-background border-t border-border flex items-center justify-between px-3 text-[10px] text-muted-foreground font-bold uppercase tracking-wider shadow-[0_-1px_3px_rgba(0,0,0,0.01)]">
       <div className="flex items-center gap-4 min-w-0">
-        <div className="flex items-center gap-1.5 hover:text-primary cursor-pointer transition-colors min-w-0" tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && window.open('https://github.com/seatloom')}>
+        {/* A div rather than a button because the shell's status bar is not a
+            control strip; the keyboard path is spelled out so it is reachable
+            without a pointer, which the mouse-only version never was. */}
+        <div
+          className="flex items-center gap-1.5 hover:text-primary cursor-pointer transition-colors min-w-0"
+          role="link"
+          tabIndex={0}
+          title={REPO_URL}
+          onClick={openRepo}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openRepo();
+            }
+          }}
+        >
           <Github size={10} />
           <span className="truncate opacity-80">~/Documents/GitHub/seatloom</span>
         </div>
