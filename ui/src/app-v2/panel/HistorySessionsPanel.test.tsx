@@ -119,6 +119,21 @@ function loaderFromFixture(overrides: Partial<HistoryLoader> = {}): HistoryLoade
   };
 }
 
+/**
+ * Open the seatloom session that all screen-3 fixtures describe. Deliberately at
+ * file scope rather than inside one describe: the distilled-records section lives
+ * on the same screen and needs the same navigation, and a copy of it inside a
+ * second describe is two things that drift.
+ */
+async function openSeatloomSession(loader: HistoryLoader = loaderFromFixture()) {
+  render(<HistorySessionsPanel loader={loader} />);
+  await waitFor(() => expect(screen.getByText(/38 个项目/)).toBeTruthy());
+  fireEvent.click(screen.getByTitle('/Users/jyxc-dz-0100609/Documents/GitHub/seatloom'));
+  await waitFor(() => expect(screen.getByText('14 个会话')).toBeTruthy());
+  fireEvent.click(screen.getByTitle('621ae382-d6c1-4f0c-b3fa-7c1155a5ecb8'));
+  await waitFor(() => expect(screen.getAllByTitle('这一条出自原始文件的第几行').length).toBe(75));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. The six numbers the operator checks
 // ─────────────────────────────────────────────────────────────────────────────
@@ -255,15 +270,6 @@ describe("screen 2 — one project's sessions", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('screen 3 — the conversation', () => {
-  async function openSeatloomSession(loader: HistoryLoader = loaderFromFixture()) {
-    render(<HistorySessionsPanel loader={loader} />);
-    await waitFor(() => expect(screen.getByText(/38 个项目/)).toBeTruthy());
-    fireEvent.click(screen.getByTitle('/Users/jyxc-dz-0100609/Documents/GitHub/seatloom'));
-    await waitFor(() => expect(screen.getByText('14 个会话')).toBeTruthy());
-    fireEvent.click(screen.getByTitle('621ae382-d6c1-4f0c-b3fa-7c1155a5ecb8'));
-    await waitFor(() => expect(screen.getAllByTitle('这一条出自原始文件的第几行').length).toBe(75));
-  }
-
   it('renders the turns in source order, each with its ORIGINAL line number and its text', async () => {
     await openSeatloomSession();
 
@@ -446,5 +452,264 @@ describe('wiring honesty', () => {
     // And the panel really goes through the api layer rather than invoke().
     expect(src).toContain('api.listHistoryProjects()');
     expect(src).not.toContain("invoke('cmd_list_history_projects')");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What this session distilled — the session<->work bridge, read side
+//
+// Fixtures below are the MEASURED payloads, not invented ones. Each state was
+// produced by a real call against the live database (and, for state (b), by
+// repointing one record's l2_file_path at a path that does not exist in
+// archived_sessions). Field names and note text are copied verbatim so that a
+// drift in the read model shows up as a test failure rather than as a silently
+// empty section.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Measured: claude-code / b0100cff…, 30 records, all resolved, 3 drift refs. */
+const workAllResolved = {
+  ref: { harness: 'claude-code', id: 'b0100cff-2426-4786-b165-45827c9e2713' },
+  session: {
+    harness: 'claude-code',
+    id: 'b0100cff-2426-4786-b165-45827c9e2713',
+    rawPath: 'raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl',
+    project: 'seatloom',
+    messageCount: 751,
+    corpusSession: true,
+  },
+  records: [
+    {
+      memoryId: 'mem-aaaa1111',
+      title: '领单年龄用数据库自己的时钟算',
+      kind: 'failure',
+      confidence: 'quoted',
+      status: 'active',
+      sourcePath: 'raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl',
+      lineStart: 12,
+      lineEnd: 40,
+      joinState: 'both_agree',
+      resolvedBy: ['a1_session_ref', 'a2_corpus_session'],
+      missing: [],
+      topicId: 'topic-1',
+    },
+    {
+      memoryId: 'mem-bbbb2222',
+      title: '查席位存活要查 pane 子进程',
+      kind: 'preference',
+      confidence: 'inferred',
+      status: 'active',
+      sourcePath: 'raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl',
+      lineStart: 88,
+      lineEnd: 120,
+      joinState: 'both_agree',
+      resolvedBy: ['a1_session_ref', 'a2_corpus_session'],
+      missing: [],
+      topicId: 'topic-1',
+    },
+  ],
+  numbers: { total: 30, resolved: 30, unresolved: 0 },
+  driftUnresolvedRefs: 3,
+  notes: ['30 条记录全部对得上原文。'],
+  contract: 'LYRA-2026-10-16-session-work-bridge-contract-v1',
+};
+
+/** Measured: codex / 019cb3ff…, total 0, notes[0] carries the two separated reasons. */
+const workNoRecords = {
+  ref: { harness: 'codex', id: '019cb3ff-9525-73f0-8f2c-0712ba95103b' },
+  session: null,
+  records: [],
+  numbers: { total: 0, resolved: 0, unresolved: 0 },
+  driftUnresolvedRefs: 0,
+  notes: [
+    'no distilled records for this session. Two different reasons produce this state and they are not merged: (1) the session produced nothing that was distilled; (2) the session is not in the archive at all. Nothing here guesses which.',
+  ],
+  contract: 'LYRA-2026-10-16-session-work-bridge-contract-v1',
+};
+
+/** Measured: probe_mira_p0 with one record's l2_file_path repointed at a missing path. */
+const workUnresolved = {
+  ref: { harness: 'claude-code', id: 'b0100cff-2426-4786-b165-45827c9e2713' },
+  session: {
+    harness: 'claude-code',
+    id: 'b0100cff-2426-4786-b165-45827c9e2713',
+    rawPath: 'raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl',
+    project: 'seatloom',
+    messageCount: 751,
+    corpusSession: true,
+  },
+  records: [
+    {
+      memoryId: 'mem-VLaeSW9S50aK7v7wCvNF6',
+      title: '门的条件是 live 可用,不是代码合并',
+      kind: 'unresolved',
+      confidence: 'quoted',
+      status: 'active',
+      sourcePath: 'raw/claude-code/does-not-exist-9999.jsonl',
+      lineStart: 5,
+      lineEnd: 19,
+      joinState: 'ref_only',
+      resolvedBy: ['a2_session_ref'],
+      missing: [
+        'the corpus path "raw/claude-code/does-not-exist-9999.jsonl" resolves against no archived_sessions row',
+      ],
+      topicId: null,
+    },
+  ],
+  numbers: { total: 30, resolved: 29, unresolved: 1 },
+  driftUnresolvedRefs: 0,
+  notes: ['1 of 30 records does not resolve. This is deliberately distinct from "no records".'],
+  contract: 'LYRA-2026-10-16-session-work-bridge-contract-v1',
+};
+
+/** A loader that answers the session_work read with a fixed payload. */
+function loaderWithWork(payload: unknown): HistoryLoader {
+  return loaderFromFixture({
+    sessionWork: async () => JSON.stringify(payload),
+  });
+}
+
+describe('what this session distilled — the three states must not look alike', () => {
+  it("state (a) total 0: shows the read model's two separated reasons and picks neither", async () => {
+    const loader = loaderWithWork(workNoRecords);
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('这个会话提炼出了什么')).toBeTruthy());
+
+    // Both halves of the reason are present, unmerged.
+    expect(
+      screen.getByText(/Two different reasons produce this state and they are not merged/),
+    ).toBeTruthy();
+    expect(screen.getByText(/the session is not in the archive at all/)).toBeTruthy();
+
+    // And it must NOT be dressed as a failure — an empty session is not an error.
+    const heading = screen.getByText('这个会话没有提炼出任何记录');
+    expect(heading).toBeTruthy();
+    // The health line still reports the zero, so the operator can see evidence.
+    expect(screen.getByText(/0 条记录 · 0 条对得上原文 · 0 条对不上/)).toBeTruthy();
+    expect(screen.getByText(/语料里没有这条会话/)).toBeTruthy();
+  });
+
+  it('state (b) unresolved > 0: red, counts the misses, and names what each is missing', async () => {
+    const loader = loaderWithWork(workUnresolved);
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('这个会话提炼出了什么')).toBeTruthy());
+
+    // The count is stated, not left to be inferred from a list.
+    expect(screen.getByText('1 / 30 条记录对不上原文')).toBeTruthy();
+    // The per-record reason is the read model's own text, verbatim.
+    expect(screen.getByText(/resolves against no archived_sessions row/)).toBeTruthy();
+    // And the health line agrees with the detail.
+    expect(screen.getByText(/30 条记录 · 29 条对得上原文 · 1 条对不上/)).toBeTruthy();
+  });
+
+  it('state (c) all resolved: lists kind / confidence / line range, and the source opens', async () => {
+    const openCalls: string[] = [];
+    const loader = loaderFromFixture({
+      sessionWork: async () => JSON.stringify(workAllResolved),
+      openPath: async (p) => {
+        openCalls.push(p);
+      },
+    });
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('这个会话提炼出了什么')).toBeTruthy());
+
+    expect(screen.getByText('领单年龄用数据库自己的时钟算')).toBeTruthy();
+    // kind is translated, confidence is shown raw.
+    expect(screen.getByText(/失败 · quoted/)).toBeTruthy();
+    expect(screen.getByText(/偏好 · inferred/)).toBeTruthy();
+    // line range
+    expect(screen.getByText(/第 12–40 行/)).toBeTruthy();
+    // drift is reported rather than dropped
+    expect(screen.getByText(/另有 3 处 drift 引用未消解/)).toBeTruthy();
+
+    // Both records share a sourcePath in this fixture (as they do in the real
+    // payload), so the click targets are not unique by text. Click them all and
+    // require the loader to have been called with the right path — the assertion
+    // that matters is that clicking goes through the loader at all.
+    const buttons = screen.getAllByTitle('打开这条记录的来源文件');
+    expect(buttons.length).toBe(2);
+    fireEvent.click(buttons[0]);
+    expect(openCalls).toContain('raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl');
+  });
+
+  it('the three states are visually distinguished: (a) is not red, (b) is red', async () => {
+    // openSeatloomSession renders with the loader it is given, so there is
+    // exactly one tree per half — a second render() here would stack two panels
+    // in the same document and every title would match twice.
+    const a = render(<div />);
+    a.unmount();
+    await openSeatloomSession(loaderWithWork(workNoRecords));
+    await waitFor(() => expect(screen.getByText('这个会话没有提炼出任何记录')).toBeTruthy());
+    // State (a)'s container is NOT red: an empty session is not a defect.
+    // jsdom does NOT resolve var(--sl-red) and drops the shorthand entirely, so
+    // comparing `style.border` measures jsdom, not the product. What is asserted
+    // instead is the property the two states actually differ by, read off the
+    // inline style the component wrote.
+    const aBox = screen.getByText('这个会话没有提炼出任何记录').closest('div') as HTMLElement;
+    const aStyle = aBox.getAttribute('style') ?? '';
+    expect(aStyle).not.toContain('sl-red');
+    cleanup();
+
+    await openSeatloomSession(loaderWithWork(workUnresolved));
+    await waitFor(() => expect(screen.getByText('1 / 30 条记录对不上原文')).toBeTruthy());
+    // The heading is a child of the red container, so walk up until the style
+    // actually carries the colour — closest() alone stops at the inner div.
+    let node: HTMLElement | null = screen
+      .getByText('1 / 30 条记录对不上原文')
+      .closest('div') as HTMLElement | null;
+    let bStyle = '';
+    for (let i = 0; i < 4 && node; i += 1) {
+      const st = node.getAttribute('style') ?? '';
+      if (st.includes('sl-red')) {
+        bStyle = st;
+        break;
+      }
+      node = node.parentElement;
+    }
+    expect(bStyle).toContain('sl-red');
+  });
+
+  it('a read failure is named verbatim and never becomes an empty section', async () => {
+    const loader = loaderFromFixture({
+      sessionWork: async () => {
+        throw new Error('ViewMissing: v_memory_session_join does not exist in the live database');
+      },
+    });
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('读不到这个会话的提炼记录')).toBeTruthy());
+    expect(screen.getByText(/ViewMissing: v_memory_session_join does not exist/)).toBeTruthy();
+    // It must not fall through to "no records" — that would be a lie about the bridge.
+    expect(screen.queryByText('这个会话没有提炼出任何记录')).toBeNull();
+  });
+
+  it('a payload missing numbers is reported, not coerced into an empty answer', async () => {
+    const loader = loaderWithWork({
+      sessionWork: async () =>
+        JSON.stringify({ ref: { harness: 'claude-code', id: 'x' }, records: [] }),
+    });
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('读不到这个会话的提炼记录')).toBeTruthy());
+    expect(screen.getByText(/没有返回 numbers.total/)).toBeTruthy();
+  });
+
+  it('total > 0 but records empty: the read model disagreeing with itself is shown, not smoothed', async () => {
+    const loader = loaderWithWork({
+      ...workAllResolved,
+      records: [],
+      numbers: { total: 30, resolved: 30, unresolved: 0 },
+    });
+    await openSeatloomSession(loader);
+    await waitFor(() => expect(screen.getByText('这个会话提炼出了什么')).toBeTruthy());
+    expect(screen.getByText(/读模型自己说一共 30 条/)).toBeTruthy();
+    // And it must NOT be dressed as the plain empty state. Asserting only the
+    // body text left a hole: a mutation that swapped the heading to "这个会话
+    // 没有提炼出任何记录" stayed green, because the body still said 30. The
+    // heading is what tells the operator this is a disagreement, not a session
+    // that distilled nothing — so it is asserted directly.
+    //
+    // Queried by exact text. The heading is now one template string, so it is a
+    // single text node — an earlier version wrote it as a JSX attribute with an
+    // interpolation, which renders as several nodes and cannot be matched whole.
+    expect(screen.getByText('记录数是 30,但一条也没返回')).toBeTruthy();
+    expect(screen.queryByText('这个会话没有提炼出任何记录')).toBeNull();
   });
 });

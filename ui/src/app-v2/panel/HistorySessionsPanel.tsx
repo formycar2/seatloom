@@ -39,6 +39,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Brain,
   ChevronRight,
   Clock,
   FileText,
@@ -757,6 +758,284 @@ const HistorySessionDetailView: React.FC<{
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* What this session distilled. Sits AFTER the conversation and OUTSIDE
+          its empty-state branch on purpose: a session that distilled nothing is
+          a real answer about this session, and it must be reachable whether or
+          not the conversation itself could be read. */}
+      <SessionWorkSection harness={detail.harness} id={detail.id} loader={loader} />
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What this session distilled — the session<->work bridge, read side
+//
+// Three states, and they must not look alike. The whole point of the bridge's
+// read model is that it separates "nothing here" from "something here that does
+// not line up", and a UI that renders both as an empty list destroys the only
+// information the read model actually carries.
+//
+//   (a) total === 0  -> neutral. The read model hands back two DIFFERENT reasons
+//                       for the same empty count and refuses to merge them; this
+//                       section shows both and picks neither.
+//   (b) unresolved > 0 -> red. There ARE records, but N of them do not resolve.
+//                       Each one names what is missing.
+//   (c) all resolved  -> the list, plus a health line.
+//
+// The read is `invoke('cmd_session_work')` and it returns the read model's own
+// JSON text. It is parsed here, never reshaped: a second, summarised shape would
+// be a place for the two models to drift apart, and this screen exists precisely
+// to show where they do NOT line up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The shape as the read model actually emits it. Field names copied, not invented. */
+type SessionWorkRecord = {
+  memoryId: string;
+  title: string;
+  kind: string;
+  confidence: string;
+  status: string;
+  sourcePath: string;
+  lineStart: number;
+  lineEnd: number;
+  joinState: string;
+  resolvedBy: string[];
+  missing: string[];
+  topicId: string | null;
+};
+
+type SessionWorkPayload = {
+  ref: { harness: string; id: string };
+  session: {
+    harness: string;
+    id: string;
+    rawPath: string;
+    project: string | null;
+    messageCount: number | null;
+    corpusSession: boolean;
+  } | null;
+  records: SessionWorkRecord[];
+  numbers: { total: number; resolved: number; unresolved: number };
+  driftUnresolvedRefs: number;
+  notes: string[];
+  contract: string;
+};
+
+/** Parse the read model's own text. A parse failure is surfaced, never swallowed. */
+function parseSessionWork(text: string): SessionWorkPayload {
+  const parsed = JSON.parse(text) as SessionWorkPayload;
+  // The three numbers are the whole contract. If the read model stops sending
+  // them, this screen must say so rather than compute look-alikes from the array.
+  if (!parsed.numbers || typeof parsed.numbers.total !== 'number') {
+    throw new Error(
+      `session_work 没有返回 numbers.total —— 读模型形状变了,不猜。原文: ${text.slice(0, 200)}`,
+    );
+  }
+  return parsed;
+}
+
+const kindLabel: Record<string, string> = {
+  decision: '决定',
+  failure: '失败',
+  unresolved: '未决',
+  preference: '偏好',
+  fact: '事实',
+};
+
+const SessionWorkSection: React.FC<{
+  harness: string;
+  id: string;
+  loader: HistoryLoader;
+}> = ({ harness, id, loader }) => {
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'error'; error: string }
+    | { kind: 'ready'; payload: SessionWorkPayload }
+  >({ kind: 'loading' });
+
+  useEffect(() => {
+    let alive = true;
+    setState({ kind: 'loading' });
+    loader
+      .sessionWork(harness, id)
+      .then((text) => {
+        if (!alive) return;
+        try {
+          setState({ kind: 'ready', payload: parseSessionWork(text) });
+        } catch (e) {
+          // A malformed payload is a defect in the bridge, not an empty answer.
+          setState({ kind: 'error', error: String(e) });
+        }
+      })
+      .catch((e) => {
+        if (alive) setState({ kind: 'error', error: String(e) });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [harness, id, loader]);
+
+  if (state.kind === 'loading') {
+    return (
+      <div style={{ ...note, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Loader2 size={13} className="animate-spin" /> 正在读这个会话提炼出的记录……
+      </div>
+    );
+  }
+
+  if (state.kind === 'error') {
+    // The read failed. Named, verbatim — this is a refusal from the read model,
+    // and every one of its refusals says what is missing.
+    return <MeasuredError what="读不到这个会话的提炼记录" error={state.error} />;
+  }
+
+  const { numbers, records, notes, session } = state.payload;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+      <div style={columnHead}>
+        <Brain size={13} /> 这个会话提炼出了什么
+      </div>
+
+      {/* Health line — always present, in every state. The three numbers are
+          what the operator checks first; hiding them in state (a) would mean
+          the one state where "nothing distilled" is a real answer shows no
+          evidence at all. */}
+      <div style={{ ...note, ...mono, fontSize: 11 }}>
+        {numbers.total} 条记录 · {numbers.resolved} 条对得上原文 · {numbers.unresolved} 条对不上
+        {session ? ` · 原文 ${session.messageCount ?? '未记录'} 条消息` : ' · 语料里没有这条会话'}
+        {state.payload.driftUnresolvedRefs > 0
+          ? ` · 另有 ${state.payload.driftUnresolvedRefs} 处 drift 引用未消解`
+          : ''}
+      </div>
+
+      {/* ── (a) no records at all ─────────────────────────────────────────── */}
+      {numbers.total === 0 ? (
+        <Explanation title="这个会话没有提炼出任何记录">
+          {/* The read model hands back two different reasons for the same empty
+              count and explicitly refuses to merge them. Showing both, and not
+              picking one, is the whole content of this state. */}
+          <p style={{ margin: 0 }}>{notes[0] ?? '读模型没有给出原因。'}</p>
+          {notes[1] && <p style={{ marginTop: 6, marginBottom: 0 }}>{notes[1]}</p>}
+        </Explanation>
+      ) : /* ── (b) records exist but some do not resolve ─────────────────── */
+      numbers.unresolved > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {/* Deliberately red, and deliberately NOT the same component as (a):
+              "there is nothing here" and "there is something here that does not
+              line up" must never look alike. */}
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: 'var(--sl-radius-md)',
+              border: '1px solid var(--sl-red)',
+              background: 'var(--sl-red-subtle)',
+              fontSize: 12,
+              lineHeight: 1.6,
+              color: 'var(--sl-red)',
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>
+              {numbers.unresolved} / {numbers.total} 条记录对不上原文
+            </div>
+            <div>记录是有的,但这个数对不上。对不上的每一条下面说了它缺什么。</div>
+          </div>
+
+          {records
+            .filter((r) => r.missing.length > 0)
+            .map((r) => (
+              <div
+                key={r.memoryId}
+                style={{
+                  padding: '8px 10px',
+                  borderRadius: 'var(--sl-radius-md)',
+                  border: '1px solid var(--sl-red)',
+                  background: 'var(--sl-red-subtle)',
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ fontWeight: 600, color: 'var(--sl-red)' }}>
+                  {r.title} · {kindLabel[r.kind] ?? r.kind}
+                </div>
+                <div style={{ ...note, ...mono, fontSize: 10, color: 'var(--sl-red)' }}>
+                  {r.memoryId} · 第 {r.lineStart}–{r.lineEnd} 行 · join={r.joinState}
+                </div>
+                <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                  {r.missing.map((m) => (
+                    <li key={m} style={{ ...note, color: 'var(--sl-red)' }}>
+                      {m}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+        </div>
+      ) : /* ── (c) everything resolves ────────────────────────────────────── */
+      records.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ ...note }}>{notes[0] ?? ''}</div>
+          {records.map((r) => (
+            <div
+              key={r.memoryId}
+              style={{
+                padding: '8px 10px',
+                borderRadius: 'var(--sl-radius-md)',
+                border: '1px solid var(--sl-border-light)',
+                background: 'var(--sl-bg)',
+                fontSize: 12,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600 }}>{r.title}</span>
+                <span style={{ ...note, fontSize: 10, ...mono }}>
+                  {kindLabel[r.kind] ?? r.kind} · {r.confidence}
+                </span>
+              </div>
+              <div style={{ ...note, ...mono, fontSize: 10 }}>
+                第 {r.lineStart}–{r.lineEnd} 行 · {r.joinState} · {r.resolvedBy.join(' + ') || '无'}
+              </div>
+              {r.sourcePath && (
+                <button
+                  type="button"
+                  onClick={() => loader.openPath(r.sourcePath)}
+                  title="打开这条记录的来源文件"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    color: 'var(--sl-brand)',
+                    cursor: 'pointer',
+                    font: 'inherit',
+                    fontSize: 11,
+                    textAlign: 'left',
+                    ...mono,
+                  }}
+                >
+                  {r.sourcePath} ↗
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* total > 0 but the array is empty. That is a disagreement between the
+           read model's two own numbers, not an empty session. */
+        <Explanation title={`记录数是 ${numbers.total},但一条也没返回`}>
+          <p style={{ margin: 0 }}>
+            读模型自己说一共 {numbers.total} 条、{numbers.resolved} 条对得上,但 records
+            数组是空的。这两个说法对不上,这里把它们都摆出来,不挑一个顺眼的。
+          </p>
+        </Explanation>
+      )}
+
+      {notes.length > 1 && numbers.total > 0 && numbers.unresolved === 0 && (
+        <div style={{ ...note, fontSize: 10 }}>
+          {notes.slice(1).map((n) => (
+            <div key={n}>{n}</div>
+          ))}
         </div>
       )}
     </div>
