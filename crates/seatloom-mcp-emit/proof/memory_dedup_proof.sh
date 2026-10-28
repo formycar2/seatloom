@@ -214,4 +214,30 @@ echo "  total rows in the scratch: $N6"
 echo "ONLY THE REPEATS WERE REFUSED"
 
 echo
+echo "########## POINT 6 — the SQL layer is proven, not masked by the index ##########"
+# WHY THIS POINT EXISTS. Flux mutated the guard's NULL-safe comparison to plain
+# `=` and BOTH the proof and the Rust test stayed green. The cause is the
+# two-layer defence: the unique index is written with COALESCE and is NULL-safe,
+# so it keeps refusing while the SQL layer is broken. That is good design, and it
+# means a single-layer mutation cannot prove the SQL layer works — to test one
+# layer you have to account for the other, which is Flux's own note on method.
+#
+# So: drop the index, re-run the NULL-line case, and require it to STILL be
+# refused. With the index gone, only the guard's SQL stands between a retry and a
+# second row.
+podman exec -i seatloom-postgres psql -U seatloom -d "$SCRATCH" -q -c "DROP INDEX IF EXISTS memories_dedup_key;" \
+  || { echo "FAIL: could not drop the index to isolate the SQL layer"; exit 1; }
+echo "  index dropped — only the guard's SQL is left"
+call remember "$(args 'sql-layer only first' "$NL")" >/dev/null
+sql_only="$(call remember "$(args 'sql-layer only second' "$NL")")"
+echo "$sql_only" | python3 -c '
+import sys,json
+r=json.load(sys.stdin)["result"]
+assert r.get("isError"), "with the index dropped, the SQL layer let the NULL-line repeat through"
+print("  NULL-line repeat with no index: REFUSED by the SQL alone")'
+N7="$(q "select count(*) from memories where l2_file_path='docs/x.md' and l2_line_start is null and l2_line_end is null;")"
+[ "$N7" = "1" ] || { echo "FAIL: SQL-only layer created $N7 rows"; exit 1; }
+echo "THE SQL LAYER IS LOAD-BEARING ON ITS OWN"
+
+echo
 echo "ALL POINTS PASS"

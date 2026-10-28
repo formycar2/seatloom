@@ -100,6 +100,35 @@ const SESSION_WORK_SELECT: &str = "SELECT \
         END AS join_state \
        FROM v_memory_session_join v \
        JOIN memories m ON m.id = v.memory_id";
+/// `023`: the dedup predicate, as ONE named constant the guard and its
+/// regression test both read.
+///
+/// WHY A CONSTANT AND NOT AN INLINE STRING. The first version of the guard had
+/// this SQL inline and the test asserted `src.contains("<the same predicate>")`.
+/// That test was vacuous: the literal it searched for was written INSIDE the
+/// test, so `contains` matched the test's own copy and was satisfied whatever
+/// the guard did. Flux measured it — mutating `IS NOT DISTINCT FROM` to `=` broke
+/// NULL safety and BOTH the proof and the Rust test still passed.
+///
+/// With the predicate named here, the guard can only use it by referring to it,
+/// and the test refers to the same name. A rename is a COMPILE error; a
+/// corruption of the text is a TEST failure. Neither is silent.
+///
+/// The four columns, and why each is compared the way it is:
+///   * `l2_file_path` through COALESCE — it is NULL for a document-kind pointer;
+///   * the two line ranges through `IS NOT DISTINCT FROM` — three of the four
+///     live duplicate groups carry NO line range, and `= NULL` matches nothing,
+///     so a plain-equality predicate would miss exactly the groups that need
+///     catching. THIS IS THE ONE THE OLD TEST COULD NOT SEE;
+///   * `l0_summary` through plain equality — it is NOT NULL.
+///
+/// `title` is deliberately absent: it changes, and a key that moves with a
+/// rename lets the same memory back in. Vela's 2026-10-11 probe proved it.
+const DEDUP_KEY_PREDICATE: &str = "coalesce(l2_file_path, '') = coalesce($1, '') \
+                    AND l2_line_start IS NOT DISTINCT FROM $2 \
+                    AND l2_line_end IS NOT DISTINCT FROM $3 \
+                    AND l0_summary = $4";
+
 impl SeatloomDb {
     pub fn new(pool: Pool) -> Self {
         Self { pool }
@@ -1288,12 +1317,12 @@ impl SeatloomDb {
                 // needs it for a human message, and `Row::get::<String>` on a
                 // timestamptz PANICS — which this guard did on its first real run,
                 // turning a clean refusal into a process abort.
-                "SELECT id, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') FROM memories \
-                  WHERE coalesce(l2_file_path, '') = coalesce($1, '') \
-                    AND l2_line_start IS NOT DISTINCT FROM $2 \
-                    AND l2_line_end IS NOT DISTINCT FROM $3 \
-                    AND l0_summary = $4 \
-                  LIMIT 1",
+                &[
+                    "SELECT id, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') FROM memories WHERE ",
+                    DEDUP_KEY_PREDICATE,
+                    " LIMIT 1",
+                ]
+                .concat(),
                 &[&l2_file_path, &l2_line_start, &l2_line_end, &l0_summary],
             )
             .await?;
@@ -4503,50 +4532,88 @@ mod tests {
     // It is here because the alternative is nothing, and "nothing" is what let
     // the write path ship with no dedup at all for twelve days.
 
-    /// The key is the pointer PLUS the substance, and the title is NOT in it.
+    /// The dedup key is asserted against `DEDUP_KEY_PREDICATE` — the SAME named
+    /// constant the guard reads — not against a copy of its text.
     ///
-    /// The title's absence is the load-bearing half: Vela's 2026-10-11 probe
-    /// changed only the title and got a second row, which is the exact shape a
-    /// key containing the title would still allow.
+    /// THIS IS THE FIX FOR A VACUOUS TEST. The previous version did
+    /// `src.contains("l2_line_start IS NOT DISTINCT FROM $2")`, and that literal
+    /// was written inside the test itself, so `contains` matched the test's own
+    /// copy and passed whatever the guard did. Flux measured it: mutating the
+    /// guard's NULL-safe comparison to plain `=` broke the SQL layer and BOTH the
+    /// proof and this test stayed green. A check that cannot fail on the thing it
+    /// claims to check is worse than no check.
+    ///
+    /// Method chosen: **named constants** (option 1 in the dispatch), not a
+    /// per-predicate reverse check in the proof script. Reasons: a rename becomes
+    /// a compile error rather than a silent pass; there is exactly one copy of
+    /// the predicate to corrupt, so one mutation proves all four predicates at
+    /// once; and the proof script keeps its behavioural role, which the index
+    /// layer makes awkward to isolate (Flux's own note: to test one layer you
+    /// have to account for the other).
+    ///
+    /// What this still does NOT do: prove the predicate is CORRECT SQL, or that
+    /// the index agrees with it. That is the proof script's job, and it is a
+    /// separate job.
     #[test]
     fn the_dedup_key_is_the_pointer_plus_the_substance_and_not_the_title() {
-        let src = include_str!("repositories.rs");
-        // Each of the four key columns must appear in the guard's predicate.
-        // `l2_file_path` goes through COALESCE, the other two through
-        // IS NOT DISTINCT FROM, and l0_summary through plain equality (it is
-        // NOT NULL, so a NULL-safe comparison there would be noise).
+        // The four predicates, read from the constant the GUARD uses.
+        let key = super::DEDUP_KEY_PREDICATE;
         for predicate in [
             "coalesce(l2_file_path, '') = coalesce($1, '')",
             "l2_line_start IS NOT DISTINCT FROM $2",
             "l2_line_end IS NOT DISTINCT FROM $3",
-            "AND l0_summary = $4",
+            "l0_summary = $4",
         ] {
             assert!(
-                src.contains(predicate),
+                key.contains(predicate),
                 "the dedup key must contain: {predicate}"
             );
         }
-        // The title must NOT appear in the WHERE clause. This is the assertion
-        // that catches a key written with `AND title = $5` — a key that moves
-        // with a rename lets the same memory back in.
-        // Extract the WHERE clause by its delimiters, not by searching the whole
-        // guard: the surrounding comment explains WHY the title is excluded, so a
-        // substring search for "title" matches the explanation and fails on
-        // correct code. A check that cannot tell the key from the comment about
-        // the key is the defect this codebase keeps recording.
+
+        // The title must NOT be in the key. This is the assertion that catches a
+        // key written with `AND title = $5` — a key that moves with a rename lets
+        // the same memory back in.
+        //
+        // Checked against the CONSTANT, not against the source file: searching
+        // the file matches the comments that explain why the title is excluded,
+        // and a check that cannot tell the key from the comment about the key
+        // fails on correct code.
+        for column in ["title", "tags", "l2_body_digest", "kind", "confidence"] {
+            assert!(
+                !key.contains(column),
+                "{column} must NOT be in the dedup key — a key that moves with a rename or a retag lets the same memory back in"
+            );
+        }
+
+        // And the guard must actually USE the constant. Without this, the constant
+        // could be correct while the guard keeps its own inline copy — the exact
+        // shape of the original bug, one level up.
+        let src = include_str!("repositories.rs");
         let guard = src
             .split("refuse a repeat write BEFORE inserting")
             .nth(1)
             .expect("the guard must exist");
-        let where_start = guard.find("WHERE").expect("the guard has a WHERE");
-        let where_end = guard.find("LIMIT 1").expect("the guard has a LIMIT");
-        let where_clause = &guard[where_start..where_end];
-        for column in ["title", "tags", "l2_body_digest", "kind", "confidence"] {
-            assert!(
-                !where_clause.contains(column),
-                "{column} must NOT be in the dedup key — a key that moves with a rename or a retag lets the same memory back in"
-            );
-        }
+        assert!(
+            guard.contains("DEDUP_KEY_PREDICATE"),
+            "the guard must read DEDUP_KEY_PREDICATE, not its own inline copy of the predicate"
+        );
+        // Exactly ONE copy of the predicate may exist OUTSIDE the test module:
+        // the constant's own definition. A second one is the bug returning.
+        //
+        // The count is taken on the code BEFORE `#[cfg(test)]`, because this
+        // test's own assertions necessarily contain the string it checks for —
+        // counting the whole file counts the checker and fails on correct code.
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("there is code before the test module");
+        let prod_copies = prod.matches("l2_line_start IS NOT DISTINCT FROM").count();
+        assert_eq!(
+            prod_copies, 1,
+            "the NULL-safe comparison must appear exactly once in production code \
+             (in the constant). {prod_copies} copies means someone re-inlined it — \
+             that is how the vacuous test came back the first time."
+        );
     }
 
     /// The line-range comparison must be NULL-safe, because three of the four
