@@ -107,12 +107,25 @@ if [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)";
     base=$(PSQL "select coalesce(base,'?') from acceptances where id='$id'")
     how=$(PSQL "select coalesce(how_to_verify,'(没写验法)') from acceptances where id='$id'")
     # base 必须是真实存在的分支,否则这张卡点了只会报错 —— 必须明说
-    if git -C "$REPO" rev-parse --verify "refs/heads/$base" >/dev/null 2>&1; then
-      echo "  ✅ 可以点:$br"
-      echo "     怎么验:$how"
-    else
+    #
+    # 🔴 2026-10-28 13:00 补第二个条件,它才是真正会卡住 Accept 的那个:
+    #    base 存在**不代表**卡的分支包含 base。track 往前走一个提交,
+    #    分支就落后一个提交,验收门会拒绝未同步的分支 —— 张先生点任何一张
+    #    都收到拒绝,而他不知道为什么。这个检查原来只查 base 存在,
+    #    于是 23 张全点不动的卡被打成 23 个 "✅ 可以点"。
+    #    那天早上我正好在犯这个错(开卡后往 track 提了 8 次),
+    #    而唯一该提醒他的脚本在说反话。
+    if ! git -C "$REPO" rev-parse --verify "refs/heads/$base" >/dev/null 2>&1; then
       echo "  ⚠️ 这张点不了(坏卡,不用管):$br"
       echo "     原因:要合进的分支「${base}」不存在,点了只会报错,不会损坏任何东西"
+    elif ! git -C "$REPO" merge-base --is-ancestor "$base" "$br" 2>/dev/null; then
+      behind=$(git -C "$REPO" rev-list --count "$br".."$base" 2>/dev/null)
+      echo "  ⛔ 这张点了会被拒:$br"
+      echo "     原因:分支落后「${base}」${behind} 个提交,验收门拒绝未同步的分支。"
+      echo "     已派该席位的 owner 合并 track 进它的 packet 分支;同步完这张就能点。"
+    else
+      echo "  ✅ 可以点:$br"
+      echo "     怎么验:$how"
     fi
     echo "     卡号 $id"
     echo "     类型:验收(交付做完了,要不要收)"

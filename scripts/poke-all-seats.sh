@@ -111,14 +111,33 @@ if [ "${1:-}" = "--scope" ]; then
 fi
 
 ALL=0
-[ "${1:-}" = "--all-seats" ] && { ALL=1; shift; }
+TARGET=""
+case "${1:-}" in
+  --scope|--list) echo "$sessions"; exit 0 ;;
+  --all-seats) ALL=1; shift ;;
+  --to)
+    # Address ONE seat. A seat-specific instruction broadcast to everyone is
+    # noise for five seats and, when the content is false for them, a lie.
+    TARGET="${2:-}"
+    shift 2 || true
+    ;;
+esac
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
   echo "usage: $0 --scope | \"<message>\" | --all-seats \"<message>\"" >&2
   exit 2
 fi
 
-if [ "$ALL" = "1" ]; then
+if [ -n "$TARGET" ]; then
+  # Exact session name, no guessing. If it is not live, say so rather than
+  # silently poking nobody - that is the failure this script was written for.
+  if ! printf '%s\n' "$sessions" | grep -qxF "$TARGET"; then
+    echo "FAIL: session '$TARGET' is not live. Live sessions:" >&2
+    echo "$sessions" >&2
+    exit 2
+  fi
+  targets="$TARGET"
+elif [ "$ALL" = "1" ]; then
   targets="$sessions"
   echo "WARNING: broadcasting to SeatLoom seats AND adopted external projects." >&2
 else
