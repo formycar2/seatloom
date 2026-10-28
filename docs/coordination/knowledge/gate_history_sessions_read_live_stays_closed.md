@@ -1,0 +1,136 @@
+---
+memory_id: gate_history_sessions_read_live_stays_closed
+project_id: seatloom
+topic_id: aegis-gate-rulings
+kind: decision
+confidence: quoted
+status: resolved
+tier: hot
+source_kind: canonical_event
+source_ref: ev-flux-history-sessions-verdict-artifact
+l2_ref_kind: file
+l2_file_path: docs/coordination/knowledge/gate_history_sessions_read_live_stays_closed.md
+l2_line_start: 1
+l2_line_end: 60
+curation: authored
+l0_summary: 门事件 ev-history-sessions-read-live 在 2026-10-16 判定保持关闭。Flux 的结论原文写明它"只有 (a)(b)(c) 之后才变成可发",而 (a) 修复未做、(b) 未重量、(c) 张先生未跑 apply-schema-to-live.sh,live 库连 message_count 列都没有。已派单给 Nimbus 做 (a)(b),门仍关着。
+---
+
+## 裁决(2026-10-16 11:58,Aegis 心跳第 3 步)
+
+**`ev-history-sessions-read-live` 不发。** `disp-history-sessions-ui`(mira)继续 blocked。
+
+这不是"再等等看",是核过之后确定不够格。判据是 Flux 结论的原文,
+它把顺序写死了,而且我逐条核了 live 现状。
+
+## Flux 结论要求的顺序(原文要点)
+
+> Required to reach PASS (in order):
+> (a) Nimbus adds the `message_count IS NOT NULL` filter to the two project-grouped reads
+>     and fixes the `dated` flag;
+> (b) the six numbers are re-measured against a **live-shaped** scratch DB
+>     (271-row inventory + 021), not a fresh one;
+> (c) the operator runs `apply-schema-to-live.sh` and the counts are confirmed on the live DB;
+> (d) **only then** does `ev-history-sessions-read-live` become emittable and Mira's UI
+>     slice unblockable.
+
+## 我核到的 live 现状(2026-10-16 11:5x,逐项实测)
+
+| 条件 | 状态 | 证据 |
+|---|---|---|
+| (a) 加过滤 + 修 dated | **未做** | nimbus 分支 `crates/seatloom-core/src/db/repositories.rs` 的 `list_history_projects` 仍是 `LEFT JOIN archived_sessions a ON a.project = p.id` + `HAVING count(a.id) > 0`,没有 `message_count IS NOT NULL` |
+| (b) live 形态重量 | **未做** | proof 脚本只在全新空库上跑过,Flux 明确指出这正是它一直通过而产品是错的原因 |
+| (c) 021 落到 live | **未做** | live:`archived_sessions` 271 行、**没有 `message_count` 列**、`projects` 只有 1 行;track 的 schema 只到 `019`,`021` 不在 track 上 |
+| (d) 发门事件 | **关闭** | 以上三条一条都没满足 |
+
+另外核到:正在跑的二进制自报 19 个工具,**一个历史读取工具都没有**
+(`list_history_projects` / `list_history_sessions` / `get_history_session_turns` 都不在)。
+
+## 为什么会改变未来动作
+
+- **这道门的形状是" measured,不是 announcement"**。派单原文就写明:
+  "your only edge is ev-history-sessions-read-live — the MEASURED gate, not the announcement.
+  You call this capability, so an announcement is not enough for you."
+  所以"代码合了""工具注册了""二进制自报有它"全都不够 —— 要能真的调成功一次。
+- **Flux 已经给出精确到 SQL 子句的缺陷定位**,不需要任何人重新判断:
+  项目分组计数把 89 行清单行重复算了,`sum(sessionCount)=261` 应为 183,
+  38 个 project 里 10 个错(`sf-code/storage` 报 58 真实 2、`seatloom` 报 16 真实 14、
+  `(root)` 报 13 真实 8)。附带缺陷:`dated = first_ts.is_some() || session_date.is_some()`
+  把带 manifest `session_date` 的清单行标成 `dated:true`,而 SQL 把它们排进未分组块。
+- **已派单**:`disp-LpG-versCbWNywWoM7cK3` → `seat-nimbus-001`,status=ready,priority 70,
+  max_retries 2,无依赖边。覆盖 (a)(b),规格逐条引自 Flux 结论,没有自行发挥。
+  账本事件 `ev-Huk7Nfar2elGNmBqDovvb`。
+- **(c) 是张先生的动作**(`scripts/apply-schema-to-live.sh` 写 live 库,我被权限封顶)。
+  门在他确认 live 计数之后才开,由 Aegis 发。**在 (a)(b)(c) 全部完成前,
+  任何会话都不必再讨论这道门开不开** —— 答案就是关着,除非出现了新的实测证据。
+
+## 证据
+
+- Flux 结论:`docs/coordination/tasks/flux/FLUX-2026-10-14-history-sessions-verdict-v1.md`
+  @ `f5bbe50`(在 `packet/flux/intent-verdict` 上,track 上没有,按共享 ref 命名空间读)
+- 账本事件 `ev-flux-history-sessions-verdict-artifact`(Flux,2026-10-14 11:48)
+- live 实测:`select count(*) from archived_sessions` = 271;
+  `information_schema` 无 `message_count` 列;`select count(*) from projects` = 1
+- 二进制实测:`tools/list` 19 个,无 history 工具
+- nimbus 分支 SQL 实测:`git show packet/nimbus/gate-vs-announcement:crates/seatloom-core/src/db/repositories.rs`
+
+---
+
+## 后续(2026-10-16 12:4x,Nimbus 交付 (a)(b) 之后)
+
+**(a)(b) 已完成并核实。** Nimbus 的负对照表是关键证据:修前/live FAIL
+(261、sf-code/storage 58、seatloom 16),修前/全新 PASS —— Flux 说的坑复现了;
+修后两种形态都 PASS。我独立核了代码:过滤是真的,而且**没有 021 时不过滤、直接拒读**
+(条件注入,不是无条件加过滤)。六个数字在 live 形态上全对:38/183/36680,
+OfficeBench 49、seatloom 14、cursor 14 全未标日期。
+
+**(c) 的阻塞已解除一半,门仍关着。** Nimbus 上报 (c) 走不通,我核过并已修:
+
+- 根因:`scripts/apply-schema-to-live.sh` 按编号自动发现迁移,但验证段
+  **一项都不覆盖语料**。021 不在 track 上时,它 apply 015-019、退出 0、逐项打勾、
+  还打印「Aegis 会解封等着的派单」—— 而语料一个字没进。**全绿的假成功。**
+- 没有采用 Onyx 分支那版脚本:它把文件名写死成 015-021,那正是 track 版注释里
+  记着的 2026-10-11 事故根源(写死 015-018,019 落地时整条链又卡,症状离根因很远)。
+- 修法(提交 `c0c83b1`):只落 021(与 Flux 验证钉住的 `33f456b` 逐字节相同;
+  020 与本链无关,不越界拽进来),保留自动发现机制,另加语料验证项 ——
+  判据是 `archived_sessions` 里 `message_count` 非空的**实际行数 = 183**、
+  仓库根会话 = 8,不满足就 `failed=1` 让脚本非零退出。
+- 修完实测:对着当前 live 报「❌只有 0 条 —— 021 没落上」,而不是全绿。
+
+**门为什么还关着**:021 现在在 track 上了,但**还没有应用到 live**(`message_count`
+列仍不存在、语料仍 0 行),而且正在跑的二进制里仍然没有历史读取工具。
+(c) 的后半段 —— 张先生跑 `bash scripts/apply-schema-to-live.sh` 并在 live 上确认计数 ——
+  还没发生。**在他确认之前,这道门依然是关的。**
+
+---
+
+## 解除(2026-10-16 13:04,门已发)
+
+张先生跑了 `bash scripts/apply-schema-to-live.sh`,输出全绿。**我没有拿那段输出当证据**,
+自己重新量了 live 并和磁盘上的源文件逐项对过:语料 183、消息 36680、项目 38、
+仓库根 8 条未归类、89 行清单仍在(没被重复算)、总 272 行;源文件侧 183 个会话文件、
+183 行数据、消息数合计 36680、38 个 home path —— 四项全对。
+
+但发现门还不能开:**正在跑的二进制还是 10-14 构建的,19 个工具里一个历史读取工具都没有。**
+数据就位不等于读取可用。于是把 Nimbus 的读取链路集成到 track(10 文件 1848 行,
+提交前编译:check --workspace 干净、测试 151+81+9 全过、clippy 干净),
+重建二进制,重启全队让工具子进程换上新的。重启同时把 6 个席位拉回账本登记的模型 ——
+洗数据席位也回到了它那个无限额度模型,之前那个静默换模型的问题一并修好了。
+
+**最终判据是实测**:用新二进制对着 **live** 真调了一次 `list_history_projects` ——
+38 个项目、36680 条消息、各项目会话数合计 **183**(修前是 261)、
+OfficeBench 49 个会话 808 条消息。
+
+门事件已发:`ev-history-sessions-read-live`,类型 `SupervisorMessage`
+(不是 `ArtifactCreated` —— 工具拦了我一次:以 `-live` 结尾自称门的事件必须用前者,
+后者只能说明"代码在哪儿")。Mira 那张单已从 blocked 翻成 **ready**。
+
+**发门被工具连续拦了五次,每次都对,值得记下来**:
+1. `ArtifactCreated` → 必须是 `SupervisorMessage`
+2. `gate` 必须是事件自己的 id,不能是 `true`(否则以后没法复核,同 id 的别类行会蒙混过关)
+3. 缺 `statement` —— 这门断言的那一句话
+4. 缺 `verified` —— 调了什么、返回什么、在哪个库上;而且它要**字符串**,我给对象被打回
+5. 缺 `does_not_assert` —— 这门刻意不声称什么,防止读者过度解读
+
+这五道就是 020 门判据在执行。它没有因为我"是 Aegis"而放宽,而是逼着我
+把测量说成测量、把边界划出来。**这是权限系统在起作用,不是障碍。**

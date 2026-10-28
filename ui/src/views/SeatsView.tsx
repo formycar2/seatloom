@@ -38,7 +38,7 @@ const SeatsView: React.FC<SeatsViewProps> = ({ onSelectSeat, onSelectSession, se
     );
   }
 
-  const { seats, sessions } = currentData;
+  const { seats, sessions, unboundSeats } = currentData;
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -48,6 +48,31 @@ const SeatsView: React.FC<SeatsViewProps> = ({ onSelectSeat, onSelectSession, se
           席位 ({seats.length})
         </span>
       </div>
+
+      {/* 2026-10-16: an empty seat list used to render as a bare `席位 (0)`, which
+          reads as "this is broken". It is not broken — it is unbound. Since seats are
+          now attributed by role binding rather than to every project, a project with no
+          bindings legitimately has no seats, and this says so instead of leaving the
+          operator to guess. */}
+      {seats.length === 0 && (
+        <div className="px-4 py-6 space-y-2">
+          <p className="text-[13px] font-semibold text-[var(--sl-ink)]">
+            这个项目下没有绑定任何席位。
+          </p>
+          <p className="text-[11.5px] leading-relaxed text-[var(--sl-ink-muted)]">
+            席位是按「角色绑定」归到项目下的,不是所有席位都挂在所有项目下。 这个项目在{' '}
+            <code className="font-mono">project_role_bindings</code> 里一条绑定都没有,
+            所以这里空着是对的 —— 不是加载失败,也不是这个项目没人干活。
+          </p>
+          {unboundSeats && unboundSeats.length > 0 && (
+            <p className="text-[11.5px] leading-relaxed text-[var(--sl-ink-muted)]">
+              系统里确实有 {unboundSeats.length} 个席位没绑到这个项目:
+              {unboundSeats.map((s) => s.name).join('、')}。 他们不是不干活,是没被绑到这个项目下 ——
+              要让他们出现在这里,得先给他们加绑定。
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="divide-y divide-[var(--sl-border-subtle)]">
         {seats.map((seat) => {
@@ -70,7 +95,9 @@ const SeatsView: React.FC<SeatsViewProps> = ({ onSelectSeat, onSelectSession, se
                     <span className="text-sm font-semibold text-[var(--sl-ink)] truncate">
                       {seat.name.charAt(0).toUpperCase() + seat.name.slice(1)}
                     </span>
-                    <div className={`w-2 h-2 rounded-full ${statusColors[seat.status] || 'bg-[var(--sl-done)]'}`} />
+                    <div
+                      className={`w-2 h-2 rounded-full ${statusColors[seat.status] || 'bg-[var(--sl-done)]'}`}
+                    />
                   </div>
                   <span className="text-xs text-[var(--sl-ink-secondary)]">
                     {getSeatRoleLabel(seat.role)}
@@ -90,9 +117,18 @@ const SeatsView: React.FC<SeatsViewProps> = ({ onSelectSeat, onSelectSession, se
                         ${selectedId === session.id ? 'bg-primary/5' : 'hover:bg-[var(--sl-panel)]'}
                       `}
                     >
-                      <Cpu size={12} className={sessionStatusColors[session.status] || 'text-[var(--sl-ink-muted)]'} />
-                      <span className="text-xs text-[var(--sl-ink)] truncate flex-1">{session.id}</span>
-                      <span className={`text-[10px] font-medium ${sessionStatusColors[session.status] || 'text-[var(--sl-ink-muted)]'}`}>
+                      <Cpu
+                        size={12}
+                        className={
+                          sessionStatusColors[session.status] || 'text-[var(--sl-ink-muted)]'
+                        }
+                      />
+                      <span className="text-xs text-[var(--sl-ink)] truncate flex-1">
+                        {session.id}
+                      </span>
+                      <span
+                        className={`text-[10px] font-medium ${sessionStatusColors[session.status] || 'text-[var(--sl-ink-muted)]'}`}
+                      >
                         {getSessionStatusLabel(session.status)}
                       </span>
                     </button>

@@ -1,0 +1,21 @@
+{"id": "ak-01", "type": "ak_api_key", "text": "apiKey = \"ak-39pa6bj25stc8jdngfyd3se1eta0jkvq\"", "must_redact": "ak-39pa6bj25stc8jdngfyd3se1eta0jkvq"}
+{"id": "sk-01", "type": "sk_api_key", "text": "export OPENAI_API_KEY=sk-z35BobdPx9QaKFHyqpw41wAKgmEGrnBeROwbI6YviHBgTbLSHitth", "must_redact": "sk-z35BobdPx9QaKFHyqpw41wAKgmEGrnBeROwbI6YviHBgTbLSHitth"}
+{"id": "sk-02", "type": "sk_api_key", "text": "sk-ant-api03-Xk7pQ2mZ9vB4nR8wY3jL6tH5dF1gS0aC7eK9oP2qW4rT6yU8i", "must_redact": "sk-ant-api03-Xk7pQ2mZ9vB4nR8wY3jL6tH5dF1gS0aC7eK9oP2qW4rT6yU8i"}
+{"id": "ghp-01", "type": "github_token", "text": "git remote set-url origin https://ghp_aB3dE6gH9jK2mN5pQ8sT1uV4wX7yZ0aB3cD@github.com/formycar2/seatloom.git", "must_redact": "ghp_aB3dE6gH9jK2mN5pQ8sT1uV4wX7yZ0aB3cD"}
+{"id": "ghp-02", "type": "github_token", "text": "github_pat_11ABCDEFG0abcdefghijkl_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab", "must_redact": "github_pat_11ABCDEFG0abcdefghijkl_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"}
+{"id": "akia-01", "type": "aws_access_key_id", "text": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "must_redact": "AKIAIOSFODNN7EXAMPLE"}
+{"id": "jwt-01", "type": "jwt", "text": "Authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", "must_redact": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"}
+{"id": "pem-01", "type": "pem_private_key", "text": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi92Ry0F3O6E2gYW9p0TLTvLZKH\n-----END RSA PRIVATE KEY-----", "must_redact": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi92Ry0F3O6E2gYW9p0TLTvLZKH\n-----END RSA PRIVATE KEY-----"}
+{"id": "bearer-01", "type": "bearer_token", "text": "curl -H \"Authorization: Bearer abc123DEF456ghi789JKL012mno345PQR\" https://api.example.com", "must_redact": "abc123DEF456ghi789JKL012mno345PQR"}
+{"id": "basic-01", "type": "basic_auth", "text": "Proxy-Authorization: Basic YWRtaW46c3VwZXJzZWNyZXRwYXNzd29yZA==", "must_redact": "YWRtaW46c3VwZXJzZWNyZXRwYXNzd29yZA=="}
+{"id": "stepplan-01", "type": "stepplan_key", "text": "STEPPLAN_API_KEY=AssG2oCDHCJ7v0OB5oe4JDqmPENScqhkHV2iZR0hiSwxKPxNo73OozCEdSjWbX3vq", "must_redact": "AssG2oCDHCJ7v0OB5oe4JDqmPENScqhkHV2iZR0hiSwxKPxNo73OozCEdSjWbX3vq"}
+{"id": "stepplan-02", "type": "stepplan_key", "text": "key: 9uW4ralVBeq94Jal0ZkKZIBBiHWAVVuoptJwmxKMT3PYatQersDY2k31iifrWTBLT", "must_redact": "9uW4ralVBeq94Jal0ZkKZIBBiHWAVVuoptJwmxKMT3PYatQersDY2k31iifrWTBLT"}
+{"id": "cookie-01", "type": "cookie_value", "text": "Set-Cookie: sessionid=abc123def456ghi789; Path=/; HttpOnly", "must_redact": "sessionid=abc123def456ghi789"}
+{"id": "cookie-02", "type": "cookie_value", "text": "Cookie: monitor=ZXhhbXBsZWNvb2tpZXZhbHVlMTIzNDU2Nzg5", "must_redact": "monitor=ZXhhbXBsZWNvb2tpZXZhbHVlMTIzNDU2Nzg5"}
+{"id": "session-01", "type": "session_token", "text": "https://example.com/app?sessionid=9f2f6a35d4c6403182de0482", "must_redact": "9f2f6a35d4c6403182de0482"}
+{"id": "intranet-01", "type": "intranet_domain", "text": "git remote add origin https://gitlab.basemind.com/zhangxiaolong/seatloom.git", "must_redact": "gitlab.basemind.com"}
+{"id": "intranet-02", "type": "intranet_domain", "text": "pull from hub.i.basemind.com and artifactory.stepfun-inc.com and models-proxy.stepfun-inc.com", "must_redact": "hub.i.basemind.com"}
+{"id": "intranet-03", "type": "intranet_domain", "text": "ssh buildthoughtonly.zhangxiaolong.shai-core.ws@platform.shaipower.com", "must_redact": "buildthoughtonly.zhangxiaolong.shai-core.ws"}
+{"id": "entropy-01", "type": "high_entropy", "text": "token: gAAAAABp7xyTKIfgdy2NVg-TZvkRNFh3f2mrSkoTzQ1pdpoLjzlHg0JDUbXprugamH1wfWjM1Q7k0mvqGirsQJsQoJzxCix7wA", "must_redact": "gAAAAABp7xyTKIfgdy2NVg-TZvkRNFh3f2mrSkoTzQ1pdpoLjzlHg0JDUbXprugamH1wfWjM1Q7k0mvqGirsQJsQoJzxCix7wA"}
+{"id": "entropy-02", "type": "high_entropy", "text": "blob: 1K2avVkFtZ36o7tcFXCX436NnYSBaA9qRs8Lm4Wp7Xz2", "must_redact": "1K2avVkFtZ36o7tcFXCX436NnYSBaA9qRs8Lm4Wp7Xz2"}
+{"id": "jwtfrag-01", "type": "jwt_fragment", "text": "匿名 token 拿到(前20字符): eyJhbGciOiJSUzI1NiIs... → 说明 project 可能是 public", "must_redact": "eyJhbGciOiJSUzI1NiIs"}

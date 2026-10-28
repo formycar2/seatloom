@@ -21,7 +21,14 @@
 // The two discovery states exist so the live mirror cannot claim LIVE when
 // there is provably nothing live behind it (UM0 HOLD-3).
 
-export type Provenance = 'live' | 'seed' | 'fixture' | 'no-live' | 'discovery-failed';
+export type Provenance =
+  | 'live'
+  /** The canonical ledger, read for real — not a tmux mirror, and not a fixture. */
+  | 'ledger'
+  | 'seed'
+  | 'fixture'
+  | 'no-live'
+  | 'discovery-failed';
 
 /**
  * Live seat discovery status, published by LiveSeatsView while it polls
@@ -39,8 +46,40 @@ export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
  */
 export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions', 'dispatches']);
 
-/** The live-mirror tab: the one surface whose LIVE claim depends on discovery. */
+/**
+ * Tabs whose rows come from the canonical ledger, read for real.
+ *
+ * 2026-10-16: the timeline was NOT in this set and NOT in LIVE_TABS, so
+ * `provenanceForTab('timeline', …)` returned 'seed' or 'fixture' and the badge read
+ * "SAMPLE DATA — not yet from live capture". That is false in the unsafe direction:
+ * `useDataStore.refreshEvents()` calls `api.listEvents(400)` and `App.tsx` polls it
+ * every 8s, so those rows ARE captured events from the ledger — including the ones
+ * other processes emit through MCP. Measured before changing anything: the read is
+ * real, the cadence is real, and the only way the surface is not live is the backend
+ * being unreachable, which `backendHydrated` already reports.
+ */
+export const LEDGER_TABS: ReadonlySet<string> = new Set(['timeline']);
+
+/** The live-mirror tab: the one surface whose LIVE claim depends on tmux discovery. */
 export const LIVE_MIRROR_TAB = 'live-seats';
+
+/**
+ * What backs each `LIVE_TABS` entry, measured rather than assumed.
+ *
+ * `live-seats` is the odd one out: `cmd_list_tmux_sessions` takes no Tauri `State`
+ * and shells out to tmux, so it is NOT database-backed and its liveness is
+ * `discovery` (handled by the `LIVE_MIRROR_TAB` branch above).
+ *
+ * `sessions` and `dispatches` both reach Postgres — `cmd_list_history_projects`
+ * takes `State` and drives the history read tools, and `DispatchInboxView` polls
+ * `cmd_list_dispatches` directly. So for those two a failed hydration means their
+ * rows are not live either, and `backendHydrated` is the fact that says so.
+ */
+export const LIVE_TAB_BACKING: Readonly<Record<string, 'tmux' | 'database'>> = {
+  'live-seats': 'tmux',
+  sessions: 'database',
+  dispatches: 'database',
+};
 
 /**
  * Provenance of a tab. `backendHydrated` comes from useDataStore and tells us
@@ -51,6 +90,16 @@ export const LIVE_MIRROR_TAB = 'live-seats';
  * actually returned seats. An empty or failed discovery renders an explicit
  * no-live / discovery-failed state instead — a green LIVE bar sitting above an
  * error message is exactly the false-live read UM0 exists to kill.
+ *
+ * 2026-10-17: every branch that can return `'live'` now requires the read backing
+ * it to have succeeded. It used to be `if (LIVE_TABS.has(tab)) return 'live'`,
+ * which returned BEFORE `backendHydrated` was ever consulted — so a surface whose
+ * data came from a failed read still wore a green LIVE badge. The badge's
+ * correctness depended on nothing, which is the defect. `live-seats` is exempt for
+ * a measured reason, not by accident: its read is tmux (`cmd_list_tmux_sessions`
+ * takes no `State`), and its liveness is already gated on `discovery` by the
+ * `LIVE_MIRROR_TAB` branch below. The other two are database-backed, so a failed
+ * hydration means they are not live either.
  */
 export function provenanceForTab(
   tab: string,
@@ -62,7 +111,15 @@ export function provenanceForTab(
     if (discovery === 'failed') return 'discovery-failed';
     return 'live';
   }
+  if (LIVE_TAB_BACKING[tab] === 'database') {
+    // The read backing this tab is Postgres, so a failed hydration means its rows
+    // are not live either. This line used to be
+    // `if (LIVE_TABS.has(tab)) return 'live'` — a tab-name list, consulted before
+    // `backendHydrated`, so a failed read still wore a green LIVE badge.
+    return backendHydrated ? 'live' : 'fixture';
+  }
   if (LIVE_TABS.has(tab)) return 'live';
+  if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
   return backendHydrated ? 'seed' : 'fixture';
 }
 
@@ -84,6 +141,19 @@ export interface ProvenanceMeta {
 const SAMPLE_HEADLINE = 'SAMPLE DATA — not yet from live capture';
 
 export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
+  ledger: {
+    badge: 'LIVE',
+    headline: 'LIVE — read from the canonical ledger',
+    detail:
+      'These rows are real captured events, read from PostgreSQL through ' +
+      'cmd_list_events and re-polled every 8 seconds — including events other processes ' +
+      'append through MCP. Not a fixture, and not a tmux mirror. It stops being live only ' +
+      'if the backend becomes unreachable, and then the badge says so instead of showing ' +
+      'an empty list.',
+    fg: 'var(--sl-green)',
+    bg: 'var(--sl-green-subtle)',
+    border: 'var(--sl-green)',
+  },
   live: {
     badge: 'LIVE',
     headline: 'LIVE — mirrored from tmux as it happens',

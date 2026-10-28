@@ -4,6 +4,7 @@ import { useLocaleStore } from '../stores/useLocaleStore';
 import { useDataStore } from '../stores/useDataStore';
 import { WorkItem } from '../types';
 import { getPriorityLabel, getWorkItemStatusLabel } from '../utils/display';
+import CannotStoreNotice from './CannotStoreNotice';
 
 interface WorkItemFormProps {
   onClose: () => void;
@@ -42,7 +43,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
     if (!title.trim()) return;
 
     const newItem: WorkItem = {
-      id: `wi-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
+      id: `wi-${Math.floor(Math.random() * 1000)
+        .toString()
+        .padStart(3, '0')}`,
       title: title.trim(),
       goal: goal.trim(),
       priority,
@@ -76,7 +79,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
         <div className="rounded-xl border border-border bg-secondary/40 p-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
           <div>
             <div className="text-muted-foreground mb-1">当前状态预览</div>
-            <div className="font-semibold text-foreground">{getWorkItemStatusLabel(draftStatus)}</div>
+            <div className="font-semibold text-foreground">
+              {getWorkItemStatusLabel(draftStatus)}
+            </div>
           </div>
           <div>
             <div className="text-muted-foreground mb-1">已填写验收标准</div>
@@ -84,7 +89,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
           </div>
           <div>
             <div className="text-muted-foreground mb-1">当前指派</div>
-            <div className="font-semibold text-foreground">{owner ? seats.find((seat) => seat.id === owner)?.name || owner : '暂未指派'}</div>
+            <div className="font-semibold text-foreground">
+              {owner ? seats.find((seat) => seat.id === owner)?.name || owner : '暂未指派'}
+            </div>
           </div>
         </div>
 
@@ -106,7 +113,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.goal}</label>
+          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+            {t.forms.goal}
+          </label>
           <textarea
             rows={4}
             value={goal}
@@ -118,7 +127,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.priority}</label>
+            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+              {t.forms.priority}
+            </label>
             <select
               value={priority}
               onChange={(e) => setPriority(e.target.value as WorkItem['priority'])}
@@ -132,7 +143,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.assignee}</label>
+            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+              {t.forms.assignee}
+            </label>
             <select
               value={owner}
               onChange={(e) => setOwner(e.target.value)}
@@ -150,8 +163,12 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
 
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-3">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{t.forms.acceptanceCriteria}</label>
-            <span className="text-[11px] text-muted-foreground">至少写出能被别人复核的完成条件</span>
+            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+              {t.forms.acceptanceCriteria}
+            </label>
+            <span className="text-[11px] text-muted-foreground">
+              至少写出能被别人复核的完成条件
+            </span>
           </div>
           {criteria.map((criterion, index) => (
             <div key={index} className="flex gap-2">
@@ -164,7 +181,9 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
               />
               {criteria.length > 1 && (
                 <button
-                  onClick={() => setCriteria(criteria.filter((_, itemIndex) => itemIndex !== index))}
+                  onClick={() =>
+                    setCriteria(criteria.filter((_, itemIndex) => itemIndex !== index))
+                  }
                   className="text-muted-foreground hover:text-status-error px-1"
                 >
                   <X size={16} />
@@ -182,7 +201,11 @@ const WorkItemForm: React.FC<WorkItemFormProps> = ({ onClose }) => {
       </div>
 
       <div className="p-4 border-t border-border bg-card flex justify-end gap-3">
-        <button onClick={onClose} className="px-4 py-2 text-xs font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors">
+        <CannotStoreNotice kind="workitem" />
+        <button
+          onClick={onClose}
+          className="px-4 py-2 text-xs font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors"
+        >
           {t.common.cancel}
         </button>
         <button

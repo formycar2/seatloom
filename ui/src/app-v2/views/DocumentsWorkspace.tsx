@@ -11,17 +11,18 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../../lib/sanitizeHtml';
 import { api, isTauri } from '../../lib/api';
 import { useDataStore } from '../../stores/useDataStore';
 import type { DocumentAssociationDto, DocumentDto, ReconcileResultDto } from '../../lib/types-dto';
 
 const TEMPLATES: { key: string; label: string; tone: string }[] = [
-  { key: 'T1AuthorityDoc',  label: 'T1 Authority',  tone: 'var(--sl-purple)' },
-  { key: 'T2RoleProfile',   label: 'T2 Role',       tone: 'var(--sl-blue)' },
-  { key: 'T3TaskPacket',    label: 'T3 Task',       tone: 'var(--sl-amber)' },
-  { key: 'T4Review',        label: 'T4 Review',     tone: 'var(--sl-teal)' },
-  { key: 'T5Acceptance',    label: 'T5 Acceptance', tone: 'var(--sl-green)' },
-  { key: 'T6DailyMemory',   label: 'T6 Memory',     tone: 'var(--sl-text-secondary)' },
+  { key: 'T1AuthorityDoc', label: 'T1 Authority', tone: 'var(--sl-purple)' },
+  { key: 'T2RoleProfile', label: 'T2 Role', tone: 'var(--sl-blue)' },
+  { key: 'T3TaskPacket', label: 'T3 Task', tone: 'var(--sl-amber)' },
+  { key: 'T4Review', label: 'T4 Review', tone: 'var(--sl-teal)' },
+  { key: 'T5Acceptance', label: 'T5 Acceptance', tone: 'var(--sl-green)' },
+  { key: 'T6DailyMemory', label: 'T6 Memory', tone: 'var(--sl-text-secondary)' },
   { key: 'T7GovernanceDoc', label: 'T7 Governance', tone: 'var(--sl-red)' },
 ];
 
@@ -47,11 +48,20 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
     setReconciling(true);
     setReconcileResult(null);
     try {
-      const result = await api.reconcile();
+      const project = useDataStore.getState().activeProjectId;
+      if (!project) throw new Error('no project selected');
+      const result = await api.reconcile(project);
       setReconcileResult(result);
       await useDataStore.getState().hydrateFromBackend();
-      // Refresh local list to pick up any changes
-      const rows = await api.listDocuments({ template: template ?? undefined });
+      // Refresh local list to pick up any changes. Scoped to the selected project:
+      // the unscoped call used to hit the backend's default-project fallback, so
+      // this workspace showed seatloom's documents under every project.
+      const pid = useDataStore.getState().activeProjectId;
+      if (!pid) {
+        setError('no project selected');
+        return;
+      }
+      const rows = await api.listDocuments({ projectId: pid, template: template ?? undefined });
       setDocs(rows);
     } catch (e) {
       setError(`reconcile: ${String(e)}`);
@@ -60,20 +70,37 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
     }
   };
 
-  // Initial load (or when template changes).
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  // Initial load and project switches.
   useEffect(() => {
     if (!isTauri()) {
       setError('Tauri backend not available — run `pnpm tauri dev`.');
       setLoading(false);
       return;
     }
+    // Scoped to the selected project — see the note in handleReconcile.
+    const pid = useDataStore.getState().activeProjectId;
+    if (!pid) {
+      setError('no project selected');
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    setDocs([]);
     setLoading(true);
     setError(null);
-    api.listDocuments({ template: template ?? undefined })
-      .then((rows) => setDocs(rows))
-      .catch((e) => setError(`list documents: ${String(e)}`))
-      .finally(() => setLoading(false));
-  }, [template]);
+    api
+      .listDocuments({ projectId: pid, template: template ?? undefined })
+      .then((rows) => {
+        if (alive) setDocs(rows);
+      })
+      .catch((e) => {
+        if (alive) setError(`list documents: ${String(e)}`);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+  }, [template, activeProjectId]);
 
   // Filtered view by search. Search matches title, file_path, tags, body (if loaded).
   const filtered = useMemo(() => {
@@ -91,30 +118,47 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
 
   // Load full detail (including bodyText if missing) on selection.
   useEffect(() => {
-    if (!selectedId) { setSelected(null); setAssociations([]); return; }
+    if (!selectedId) {
+      setSelected(null);
+      setAssociations([]);
+      return;
+    }
     if (!isTauri()) return;
     let cancelled = false;
-    Promise.all([
-      api.getDocument(selectedId),
-      api.listDocumentAssociations(selectedId),
-    ]).then(([doc, assocs]) => {
-      if (cancelled) return;
-      setSelected(doc);
-      setAssociations(assocs);
-    }).catch((e) => setError(`get document: ${String(e)}`));
-    return () => { cancelled = true; };
+    Promise.all([api.getDocument(selectedId), api.listDocumentAssociations(selectedId)])
+      .then(([doc, assocs]) => {
+        if (cancelled) return;
+        setSelected(doc);
+        setAssociations(assocs);
+      })
+      .catch((e) => setError(`get document: ${String(e)}`));
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId]);
 
   return (
-    <div style={{
-      display: 'flex', flex: 1, overflow: 'hidden', background: 'var(--sl-bg)',
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        flex: 1,
+        overflow: 'hidden',
+        background: 'var(--sl-bg)',
+      }}
+    >
       {/* ═══ Filter rail ═══ */}
-      <aside style={{
-        width: 240, borderRight: '1px solid var(--sl-border)', padding: 16,
-        display: 'flex', flexDirection: 'column', gap: 16,
-        background: 'var(--sl-surface)', overflow: 'auto',
-      }}>
+      <aside
+        style={{
+          width: 240,
+          borderRight: '1px solid var(--sl-border)',
+          padding: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          background: 'var(--sl-surface)',
+          overflow: 'auto',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-text-primary)' }}>
             Coordination Docs
@@ -123,11 +167,17 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
             onClick={onClose}
             title="Close"
             style={{
-              padding: '2px 8px', fontSize: 12, background: 'transparent',
-              border: '1px solid var(--sl-border)', borderRadius: 4,
-              color: 'var(--sl-text-secondary)', cursor: 'pointer',
+              padding: '2px 8px',
+              fontSize: 12,
+              background: 'transparent',
+              border: '1px solid var(--sl-border)',
+              borderRadius: 4,
+              color: 'var(--sl-text-secondary)',
+              cursor: 'pointer',
             }}
-          >×</button>
+          >
+            ×
+          </button>
         </div>
 
         <input
@@ -135,9 +185,13 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter by title, path, tag…"
           style={{
-            padding: '6px 10px', fontSize: 13, borderRadius: 4,
-            border: '1px solid var(--sl-border)', background: 'var(--sl-bg)',
-            color: 'var(--sl-text-primary)', outline: 'none',
+            padding: '6px 10px',
+            fontSize: 13,
+            borderRadius: 4,
+            border: '1px solid var(--sl-border)',
+            background: 'var(--sl-bg)',
+            color: 'var(--sl-text-primary)',
+            outline: 'none',
           }}
         />
 
@@ -145,52 +199,92 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
           onClick={handleReconcile}
           disabled={reconciling}
           style={{
-            padding: '6px 10px', fontSize: 13, borderRadius: 4,
-            border: '1px solid var(--sl-border)', background: 'var(--sl-bg)',
-            color: 'var(--sl-text-primary)', cursor: reconciling ? 'not-allowed' : 'pointer',
+            padding: '6px 10px',
+            fontSize: 13,
+            borderRadius: 4,
+            border: '1px solid var(--sl-border)',
+            background: 'var(--sl-bg)',
+            color: 'var(--sl-text-primary)',
+            cursor: reconciling ? 'not-allowed' : 'pointer',
             opacity: reconciling ? 0.6 : 1,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
           }}
         >
           {reconciling ? '正在同步…' : '🔄 同步文档'}
         </button>
 
         {reconcileResult && (
-          <div style={{
-            fontSize: 11, padding: '8px 10px', borderRadius: 4,
-            border: `1px solid ${reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'var(--sl-red)' : 'var(--sl-border-light)'}`,
-            color: reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'var(--sl-red)' : 'var(--sl-text-secondary)',
-            background: reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'rgba(255,123,114,0.05)' : 'transparent',
-            lineHeight: 1.5,
-          }}>
-            已扫描 {reconcileResult.scanned} · 新增 {reconcileResult.inserted} · 更新 {reconcileResult.updated} · 未变 {reconcileResult.unchanged} · 失败 {reconcileResult.failed} · 冲突 {reconcileResult.conflicted}
+          <div
+            style={{
+              fontSize: 11,
+              padding: '8px 10px',
+              borderRadius: 4,
+              border: `1px solid ${reconcileResult.failed > 0 || reconcileResult.conflicted > 0 ? 'var(--sl-red)' : 'var(--sl-border-light)'}`,
+              color:
+                reconcileResult.failed > 0 || reconcileResult.conflicted > 0
+                  ? 'var(--sl-red)'
+                  : 'var(--sl-text-secondary)',
+              background:
+                reconcileResult.failed > 0 || reconcileResult.conflicted > 0
+                  ? 'rgba(255,123,114,0.05)'
+                  : 'transparent',
+              lineHeight: 1.5,
+            }}
+          >
+            已扫描 {reconcileResult.scanned} · 新增 {reconcileResult.inserted} · 更新{' '}
+            {reconcileResult.updated} · 未变 {reconcileResult.unchanged} · 失败{' '}
+            {reconcileResult.failed} · 冲突 {reconcileResult.conflicted}
           </div>
         )}
 
         <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)', marginBottom: 8 }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              color: 'var(--sl-text-tertiary)',
+              marginBottom: 8,
+            }}
+          >
             Template
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <button
               onClick={() => setTemplate(null)}
               style={{
-                textAlign: 'left', padding: '6px 10px', fontSize: 13,
+                textAlign: 'left',
+                padding: '6px 10px',
+                fontSize: 13,
                 background: template === null ? 'var(--sl-surface-hover)' : 'var(--sl-bg)',
-                border: '1px solid var(--sl-border-light)', borderRadius: 4,
-                color: 'var(--sl-text-primary)', cursor: 'pointer',
+                border: '1px solid var(--sl-border-light)',
+                borderRadius: 4,
+                color: 'var(--sl-text-primary)',
+                cursor: 'pointer',
               }}
-            >All templates</button>
+            >
+              All templates
+            </button>
             {TEMPLATES.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setTemplate(t.key)}
                 style={{
-                  textAlign: 'left', padding: '6px 10px', fontSize: 13,
+                  textAlign: 'left',
+                  padding: '6px 10px',
+                  fontSize: 13,
                   background: template === t.key ? 'var(--sl-surface-hover)' : 'var(--sl-bg)',
-                  border: '1px solid var(--sl-border-light)', borderRadius: 4,
-                  color: 'var(--sl-text-primary)', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 8,
+                  border: '1px solid var(--sl-border-light)',
+                  borderRadius: 4,
+                  color: 'var(--sl-text-primary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
                 }}
               >
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.tone }} />
@@ -204,17 +298,31 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
           {loading ? 'Loading…' : `${filtered.length} / ${docs.length} docs`}
         </div>
         {error && (
-          <div style={{ padding: 8, fontSize: 12, color: 'var(--sl-red)', background: 'rgba(255,123,114,0.08)', border: '1px solid var(--sl-red)', borderRadius: 4 }}>
+          <div
+            style={{
+              padding: 8,
+              fontSize: 12,
+              color: 'var(--sl-red)',
+              background: 'rgba(255,123,114,0.08)',
+              border: '1px solid var(--sl-red)',
+              borderRadius: 4,
+            }}
+          >
             {error}
           </div>
         )}
       </aside>
 
       {/* ═══ List ═══ */}
-      <div style={{
-        width: 340, borderRight: '1px solid var(--sl-border)',
-        overflow: 'auto', display: 'flex', flexDirection: 'column',
-      }}>
+      <div
+        style={{
+          width: 340,
+          borderRight: '1px solid var(--sl-border)',
+          overflow: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         {filtered.length === 0 && !loading && (
           <div style={{ padding: 24, fontSize: 13, color: 'var(--sl-text-tertiary)' }}>
             No matching documents.
@@ -225,28 +333,55 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
             key={d.id}
             onClick={() => setSelectedId(d.id)}
             style={{
-              padding: '10px 14px', borderBottom: '1px solid var(--sl-border-light)',
+              padding: '10px 14px',
+              borderBottom: '1px solid var(--sl-border-light)',
               cursor: 'pointer',
               background: d.id === selectedId ? 'var(--sl-surface-hover)' : 'transparent',
-              display: 'flex', flexDirection: 'column', gap: 4,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%', background: toneForTemplate(d.template),
-                flexShrink: 0,
-              }} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: toneForTemplate(d.template),
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--sl-text-primary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
                 {d.title}
               </span>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', display: 'flex', gap: 8 }}>
+            <div
+              style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', display: 'flex', gap: 8 }}
+            >
               <span>{d.template ?? '—'}</span>
               {d.subtype && <span>· {d.subtype}</span>}
               {d.author && <span>· {d.author}</span>}
               {d.docDate && <span>· {d.docDate}</span>}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--sl-text-tertiary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
               {d.filePath}
             </div>
           </div>
@@ -256,16 +391,25 @@ export const DocumentsWorkspace: React.FC<{ onClose: () => void }> = ({ onClose 
       {/* ═══ Detail ═══ */}
       <main style={{ flex: 1, overflow: 'auto', padding: 24 }}>
         {!selected && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--sl-text-tertiary)', gap: 10, textAlign: 'center' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              color: 'var(--sl-text-tertiary)',
+              gap: 10,
+              textAlign: 'center',
+            }}
+          >
             <div style={{ fontSize: 40, opacity: 0.15 }}>📄</div>
             <div style={{ fontSize: 14, color: 'var(--sl-text-secondary)' }}>
               Select a document to view its full body and associations.
             </div>
           </div>
         )}
-        {selected && (
-          <DocumentDetail doc={selected} associations={associations} />
-        )}
+        {selected && <DocumentDetail doc={selected} associations={associations} />}
       </main>
     </div>
   );
@@ -278,37 +422,104 @@ const DocumentDetail: React.FC<{
   const body = doc.bodyText ?? '';
   const rendered = useMemo(() => {
     // marked returns HTML; cast to string (async mode disabled).
-    return marked.parse(body, { async: false }) as string;
+    const html = marked.parse(body, { async: false }) as string;
+    // 2026-10-21 (AEGIS-2026-10-21-sanitize-document-render-v1): `marked` passes
+    // <script>, onerror= and javascript: through verbatim (measured), and this string
+    // goes straight into `dangerouslySetInnerHTML` below — so rendering a document
+    // and executing it were the same action. `csp` is null, so there is no second
+    // line of defence. The sanitiser keeps the typography and drops the execution
+    // capability; see src/lib/sanitizeHtml.ts for the allow-list and its reasoning.
+    return sanitizeHtml(html);
   }, [body]);
 
   return (
-    <article style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <article
+      style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}
+    >
       {/* Metadata card */}
-      <header style={{
-        padding: 16, border: '1px solid var(--sl-border)', borderRadius: 8,
-        background: 'var(--sl-surface)', display: 'flex', flexDirection: 'column', gap: 8,
-      }}>
+      <header
+        style={{
+          padding: 16,
+          border: '1px solid var(--sl-border)',
+          borderRadius: 8,
+          background: 'var(--sl-surface)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: toneForTemplate(doc.template) }} />
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: toneForTemplate(doc.template),
+            }}
+          />
           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--sl-text-tertiary)' }}>
-            {doc.template ?? 'NO TEMPLATE'}{doc.subtype ? ` · ${doc.subtype}` : ''}
+            {doc.template ?? 'NO TEMPLATE'}
+            {doc.subtype ? ` · ${doc.subtype}` : ''}
           </span>
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--sl-text-tertiary)' }}>rev {doc.revision}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--sl-text-tertiary)' }}>
+            rev {doc.revision}
+          </span>
         </div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--sl-text-primary)', margin: 0 }}>{doc.title}</h1>
-        <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          {doc.author && <span><strong>Author:</strong> {doc.author}</span>}
-          {doc.status && <span><strong>Status:</strong> {doc.status}</span>}
-          {doc.docDate && <span><strong>Date:</strong> {doc.docDate}</span>}
-          {doc.version && <span><strong>Version:</strong> {doc.version}</span>}
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--sl-text-primary)', margin: 0 }}>
+          {doc.title}
+        </h1>
+        <div
+          style={{
+            fontSize: 12,
+            color: 'var(--sl-text-secondary)',
+            display: 'flex',
+            gap: 14,
+            flexWrap: 'wrap',
+          }}
+        >
+          {doc.author && (
+            <span>
+              <strong>Author:</strong> {doc.author}
+            </span>
+          )}
+          {doc.status && (
+            <span>
+              <strong>Status:</strong> {doc.status}
+            </span>
+          )}
+          {doc.docDate && (
+            <span>
+              <strong>Date:</strong> {doc.docDate}
+            </span>
+          )}
+          {doc.version && (
+            <span>
+              <strong>Version:</strong> {doc.version}
+            </span>
+          )}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--sl-text-tertiary)', fontFamily: 'ui-monospace, monospace' }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: 'var(--sl-text-tertiary)',
+            fontFamily: 'ui-monospace, monospace',
+          }}
+        >
           {doc.filePath}
         </div>
         {doc.tags.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {doc.tags.map((t) => (
-              <span key={t} style={{ fontSize: 11, padding: '2px 8px', background: 'var(--sl-surface-hover)', borderRadius: 4, color: 'var(--sl-text-secondary)' }}>
+              <span
+                key={t}
+                style={{
+                  fontSize: 11,
+                  padding: '2px 8px',
+                  background: 'var(--sl-surface-hover)',
+                  borderRadius: 4,
+                  color: 'var(--sl-text-secondary)',
+                }}
+              >
                 {t}
               </span>
             ))}
@@ -319,12 +530,29 @@ const DocumentDetail: React.FC<{
       {/* Associations */}
       {associations.length > 0 && (
         <section style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--sl-text-tertiary)' }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              color: 'var(--sl-text-tertiary)',
+            }}
+          >
             Linked objects
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {associations.map((a) => (
-              <span key={a.id} style={{ fontSize: 12, padding: '3px 10px', background: 'var(--sl-surface)', border: '1px solid var(--sl-border-light)', borderRadius: 4 }}>
+              <span
+                key={a.id}
+                style={{
+                  fontSize: 12,
+                  padding: '3px 10px',
+                  background: 'var(--sl-surface)',
+                  border: '1px solid var(--sl-border-light)',
+                  borderRadius: 4,
+                }}
+              >
                 {a.assocType} · {a.assocId}
               </span>
             ))}

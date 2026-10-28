@@ -68,10 +68,19 @@ mod d2 {
              VALUES ($1,'ReviewVerdictIssued',NOW(),'seat:seat-flux-001','{\"verdict\":\"pass\"}',$2,1)",
             &[&verdict, &project],
         ).await.expect("verdict");
+        // 016: a NEW row must carry a non-empty acceptance_plan
+        // (acceptances_plan_required, NOT VALID so the one legacy row is exempt
+        // — a test fixture is a new row, so it needs a real plan).
+        let plan = serde_json::json!({
+            "plan_version": 1,
+            "scenario": "operator verifies the delivered slice",
+            "steps": [{ "action": "run the check" }],
+            "expected": [{ "output": "green", "expect": "seeing it pass" }]
+        });
         c.execute(
-            "INSERT INTO acceptances (id,dispatch_id,project_id,branch,base,how_to_verify,flux_verdict_ref,status) \
-             VALUES ($1,$2,$3,'packet/nimbus/x','track','do A see B',$4,'pending')",
-            &[&acceptance, &dispatch, &project, &verdict],
+            "INSERT INTO acceptances (id,dispatch_id,project_id,branch,base,how_to_verify,flux_verdict_ref,status,acceptance_plan) \
+             VALUES ($1,$2,$3,'packet/nimbus/x','track','do A see B',$4,'pending',$5)",
+            &[&acceptance, &dispatch, &project, &verdict, &plan],
         ).await.expect("acceptance");
     }
 
@@ -229,10 +238,15 @@ mod d2 {
         );
         seed(&pool, project, dispatch, acc, verdict).await;
         let c = pool.get().await.expect("client");
+        // Carries a plan so the row reaches the UNIQUE index rather than being
+        // stopped earlier by 016's plan CHECK — this test is about the
+        // one-pending-per-dispatch index, not about the plan.
         let dup = c
             .execute(
-                "INSERT INTO acceptances (id,dispatch_id,project_id,branch,how_to_verify,flux_verdict_ref,status) \
-                 VALUES ('acc-itest-uniq-2',$1,$2,'b','h',$3,'pending')",
+                "INSERT INTO acceptances (id,dispatch_id,project_id,branch,how_to_verify,flux_verdict_ref,status,acceptance_plan) \
+                 VALUES ('acc-itest-uniq-2',$1,$2,'b','h',$3,'pending', \
+                         '{\"plan_version\":1,\"scenario\":\"s\",\"steps\":[{\"action\":\"a\"}],\
+                           \"expected\":[{\"output\":\"o\",\"expect\":\"e\"}]}')",
                 &[&dispatch, &project, &verdict],
             )
             .await;

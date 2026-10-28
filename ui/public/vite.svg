@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- SeatLoom's mark: the same brand blue the product uses (#2F6FEB), three white
+       arms sweeping in from the left and merging into one thicker vertical bar.
+       The arms are the working seats; the bar they merge into is the one place
+       their records come together. Drawn to match the app icon's geometry so the
+       browser tab and the Dock say the same thing. -->
+  <rect width="32" height="32" rx="7" fill="#2F6FEB" />
+  <g fill="#FFFFFF">
+    <rect x="6" y="8" width="6" height="3.4" rx="1.7" />
+    <rect x="6" y="14.3" width="6" height="3.4" rx="1.7" />
+    <rect x="6" y="20.6" width="6" height="3.4" rx="1.7" />
+    <rect x="15" y="5" width="6.6" height="22" rx="2.4" />
+  </g>
+</svg>
