@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { useDataStore } from '../stores/useDataStore';
 import { useLocaleStore } from '../stores/useLocaleStore';
+import CannotStoreNotice from './CannotStoreNotice';
 
 interface HandoffFormProps {
   onClose: () => void;
@@ -11,10 +12,10 @@ interface HandoffFormProps {
 const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialWorkItemId }) => {
   const { t } = useLocaleStore();
   const { activeProjectId, projectData } = useDataStore();
-  
+
   const currentData = activeProjectId ? projectData[activeProjectId] : null;
   const seats = currentData?.seats || [];
-  const workItems = (currentData?.workItems || []).filter(wi => wi.status !== 'Done');
+  const workItems = (currentData?.workItems || []).filter((wi) => wi.status !== 'Done');
 
   const [toSeatId, setToSeatId] = useState('');
   const [workItemId, setWorkItemId] = useState(initialWorkItemId || '');
@@ -30,9 +31,14 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
           <div className="p-2 bg-primary/10 text-primary rounded-xl border border-primary/20">
             <Plus size={20} />
           </div>
-          <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">发起交接 (NEW HANDOFF)</h2>
+          <h2 className="text-xl font-black tracking-tight text-text-primary uppercase">
+            发起交接 (NEW HANDOFF)
+          </h2>
         </div>
-        <button onClick={onClose} className="p-1 hover:bg-accent text-text-secondary rounded-lg transition-colors">
+        <button
+          onClick={onClose}
+          className="p-1 hover:bg-accent text-text-secondary rounded-lg transition-colors"
+        >
           <X size={20} />
         </button>
       </div>
@@ -40,7 +46,9 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
       <div className="flex-1 overflow-y-auto p-8 space-y-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">接收席位</label>
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+              接收席位
+            </label>
             <select
               value={toSeatId}
               onChange={(e) => setToSeatId(e.target.value)}
@@ -48,12 +56,16 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
             >
               <option value="">请选择接收方...</option>
               {seats.map((seat) => (
-                <option key={seat.id} value={seat.id}>{seat.name}</option>
+                <option key={seat.id} value={seat.id}>
+                  {seat.name}
+                </option>
               ))}
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">关联工作项</label>
+            <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+              关联工作项
+            </label>
             <select
               value={workItemId}
               onChange={(e) => setWorkItemId(e.target.value)}
@@ -61,14 +73,18 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
             >
               <option value="">请选择工作项...</option>
               {workItems.map((wi) => (
-                <option key={wi.id} value={wi.id}>{wi.id.toUpperCase()} - {wi.title}</option>
+                <option key={wi.id} value={wi.id}>
+                  {wi.id.toUpperCase()} - {wi.title}
+                </option>
               ))}
             </select>
           </div>
         </div>
 
         <div className="space-y-2">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">交接目的</label>
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+            交接目的
+          </label>
           <textarea
             value={purpose}
             onChange={(e) => setPurpose(e.target.value)}
@@ -78,7 +94,9 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
         </div>
 
         <div className="space-y-2">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">预期交付产物</label>
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+            预期交付产物
+          </label>
           <textarea
             value={expectedOutcome}
             onChange={(e) => setExpectedOutcome(e.target.value)}
@@ -88,17 +106,25 @@ const HandoffForm: React.FC<HandoffFormProps> = ({ onClose, workItemId: initialW
         </div>
 
         <div className="space-y-3">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">附加证据</label>
+          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest ml-1">
+            附加证据
+          </label>
           <div className="border-2 border-dashed border-border/60 rounded-2xl p-6 flex flex-col items-center justify-center gap-2 hover:border-primary/40 hover:bg-accent cursor-pointer transition-all group shadow-inner">
             <div className="p-3 bg-secondary rounded-full text-text-secondary group-hover:bg-card group-hover:text-primary transition-colors">
               <Plus size={24} />
             </div>
-            <div className="text-[10px] font-black text-text-secondary uppercase tracking-widest group-hover:text-primary transition-colors">附加文档证据 (ATTACH EVIDENCE)</div>
+            <div className="text-[10px] font-black text-text-secondary uppercase tracking-widest group-hover:text-primary transition-colors">
+              附加文档证据 (ATTACH EVIDENCE)
+            </div>
           </div>
         </div>
 
+        <CannotStoreNotice kind="handoff" />
         <div className="bg-secondary/30 px-8 py-6 border-t border-border/40 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-text-secondary hover:text-text-primary transition-colors"
+          >
             取消 (CANCEL)
           </button>
           <button

@@ -46,6 +46,8 @@ fn opts() -> LaunchOptions {
         rows: 30,
         cols: 120,
         env: LaunchOptions::default_env(),
+        backfill_lines: None,
+        history_limit: None,
     }
 }
 
