@@ -170,8 +170,15 @@ while IFS= read -r s; do
   # at t=0 and present at t=3s, because the agent's TUI owns the pane and redraws
   # on its own schedule. A check that fails exactly when it matters is not a
   # check.
+  #
+  # Window is 15s, not 6. On 2026-10-28 19:0x a poke to a Working seat reported
+  # UNVERIFIED while the marker was provably in the pane the whole time - and a
+  # re-poke one call later succeeded. Measured separately: markers become visible
+  # 0-2s after send, but the distribution has a tail, and a false UNVERIFIED is
+  # worse than a slow OK because it makes the caller re-send and the seat gets
+  # the message twice.
   seen=0
-  for _ in 1 2 3 4 5 6; do
+  for _ in $(seq 1 15); do
     if "$TMUX_BIN" capture-pane -p -t "$s:0" -S -15 2>/dev/null | grep -q "$MARKER"; then
       seen=1
       break
@@ -183,7 +190,7 @@ while IFS= read -r s; do
     printf '  OK   %s\n' "$s"
     poked=$((poked + 1))
   else
-    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane after 6s\n' "$s"
+    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane after 15s\n' "$s"
     failed=$((failed + 1))
   fi
 done <<< "$(printf '%b' "$targets")"
