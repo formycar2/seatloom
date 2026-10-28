@@ -11,6 +11,15 @@ export interface ProjectDto {
   createdAt: string;
   workerBudgetTokens: number;
   supervisorBudgetTokens: number;
+  /**
+   * The project's home path from the ledger, or null when none was recorded.
+   *
+   * It exists because the frontend used to SYNTHESISE a path — `'~/' + name` —
+   * which is why 张先生 saw `~/networkOrchestrator` in the project switcher while
+   * the ledger held `/Users/…/project_delivery/networkOrchestrator`. A fabricated
+   * path is worse than an absent one: it looks like data.
+   */
+  homePath: string | null;
 }
 
 export interface SeatDto {
@@ -193,6 +202,338 @@ export interface AcceptanceCardDto {
  */
 export type AcceptanceDecisionDto = AcceptanceCardDto;
 
+// ---------------------------------------------------------------------------
+// Operator decisions (020) — "what only the operator can rule on"
+// ---------------------------------------------------------------------------
+// Mirrors src-tauri/src/dto.rs's OperatorDecisionCardDto field for field.
+//
+// NOT an acceptance card and deliberately not merged into that type: an
+// acceptance is about a dispatch and asks whether to take delivered work; an
+// operator decision is about anything at all and asks which way to rule.
+// `choices` is the non-empty list of legal options (one option is not a
+// choice), `consequence` is what happens once it is decided — the field that
+// makes a decision possible rather than a coin flip in the dark.
+
+export interface OperatorDecisionCardDto {
+  id: string;
+  projectId: string;
+  /** The concrete thing to decide — not a paragraph. */
+  target: string;
+  choices: string[];
+  /** Who is entitled to rule. */
+  decider: string;
+  /** What happens once it is decided. */
+  consequence: string;
+  /** The support chain: dispatch ids, verdict refs, ruling refs. */
+  evidence: string[];
+  /** 'pending' | 'resolved' (terminal). */
+  status: string;
+  createdBy: string;
+  createdAt: string;
+  /** The ruling — set IFF resolved. */
+  chosen?: string | null;
+  resolvedBy?: string | null;
+  resolvedAt?: string | null;
+}
+
+export interface OperatorDecisionResolveResultDto {
+  decisionId: string;
+  status: string;
+  chosen?: string | null;
+  resolvedBy?: string | null;
+  target: string;
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance card lineage (acceptance-lineage milestone, Lane B)
+// ---------------------------------------------------------------------------
+// Mirrors src-tauri/src/dto.rs's AcceptanceLineageDto ONE field at a time: the
+// seven blocks of the value-domain contract §3, in the operator's reading
+// order. The Rust DTO is the authority; this file is the wire shape the UI
+// consumes (Mira's card UI builds on it).
+
+/** The structured acceptance plan (016, shape v1). */
+export interface AcceptancePlanV1Dto {
+  planVersion: number;
+  scenario: string;
+  steps: { action: string; input?: string }[];
+  expected: { output: string; expect: string }[];
+  preconditions?: string[];
+}
+
+export interface AcceptanceLineageCardDto {
+  id: string;
+  dispatchId: string;
+  projectId: string;
+  branch: string;
+  base: string;
+  howToVerify: string;
+  /** null = the legacy row has no plan yet (Aegis backfill pending). */
+  acceptancePlan: AcceptancePlanV1Dto | null;
+  fluxVerdictRef: string;
+  /** 'pending' | 'accepted' | 'rejected' | 'cancelled'. */
+  status: string;
+  feedback: string | null;
+  reworkDispatchId: string | null;
+  mergeCommit: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface AcceptanceLineageDispatchDto {
+  id: string;
+  title: string;
+  issuedBy: string;
+  targetSeatId: string;
+  priority: number;
+  status: string;
+  issuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The ORIGINAL task statement (packet path / instructions), verbatim. */
+  payload: unknown | null;
+}
+
+export interface AcceptanceLineageEventDto {
+  id: string;
+  eventType: string;
+  occurredAt: string;
+  actorRef: string;
+  payload: unknown | null;
+}
+
+export interface AcceptanceLineageVerdictDto {
+  refId: string;
+  verdict: string | null;
+  evidence: string | null;
+  evidenceDetail: string | null;
+  targetBranch: string | null;
+  lane: string | null;
+  occurredAt: string | null;
+}
+
+export interface AcceptanceLineageProductDto {
+  refType: string; // 'artifact' | 'document'
+  refId: string;
+  /** null when the referent could not be joined (the id is still carried). */
+  title: string | null;
+  path: string | null;
+  /** false = the referent is not in the database. */
+  resolved: boolean;
+}
+
+export interface AcceptanceLineageDependencyDto {
+  depKind: string; // 'event' | 'artifact' | 'dispatch'
+  depValue: string;
+  /** The referent's live existence (012: readiness is an existence query). */
+  exists: boolean;
+}
+
+export interface AcceptanceLineageDto {
+  acceptance: AcceptanceLineageCardDto;
+  dispatch: AcceptanceLineageDispatchDto;
+  events: AcceptanceLineageEventDto[];
+  fluxVerdict: AcceptanceLineageVerdictDto | null;
+  products: AcceptanceLineageProductDto[];
+  dependencies: AcceptanceLineageDependencyDto[];
+  rework: AcceptanceLineageDispatchDto | null;
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge read model (overnight step 4) — the DTO contract Mira codes against.
+// ADDITIVE ONLY: no existing interface in this file is touched.
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeTopicNode {
+  topicId: string;
+  title: string;
+  /** 'open' | 'closed' | 'merged'. */
+  status: string;
+  parentTopicId: string | null;
+  /** ACTIVE and not-superseded memories — the count a recall would return. */
+  memoryCount: number;
+}
+
+export interface KnowledgeTopicTree {
+  projectId: string;
+  /** A flat list; the UI groups by parentTopicId. */
+  topics: KnowledgeTopicNode[];
+}
+
+export interface KnowledgeL2Pointer {
+  /** 'document' | 'file'. */
+  refKind: string;
+  documentId?: string | null;
+  filePath?: string | null;
+  bodyDigest?: string | null;
+  /** Present when the source is a slice of an archived session transcript. */
+  lineStart?: number | null;
+  lineEnd?: number | null;
+}
+
+export interface KnowledgeMemoryCard {
+  memoryId: string;
+  topicId: string;
+  title: string;
+  /** 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'. */
+  kind: string;
+  /** 'quoted' | 'inferred'. */
+  confidence: string;
+  /** 'cold' | 'warm' | 'hot'. */
+  tier: string;
+  /** 'active' | 'forgotten' | 'resolved'. */
+  status: string;
+  l0Summary: string;
+  /** Present only at depth l1/l2. */
+  l1Overview?: string | null;
+  /** Present only at depth l2. */
+  l2?: KnowledgeL2Pointer | null;
+  /** The memory that replaced this one, when it has been superseded. */
+  supersededBy?: string | null;
+  sourceKind: string;
+  sourceRef: string;
+}
+
+export interface KnowledgeTopicChainEntry {
+  topicId: string;
+  title: string;
+}
+
+export interface KnowledgeTopicMemories {
+  topicId: string;
+  /** The depth that was served: 'l0' | 'l1' | 'l2'. */
+  depth: string;
+  /** Ancestors first, the topic itself last. */
+  topicChain: KnowledgeTopicChainEntry[];
+  memories: KnowledgeMemoryCard[];
+}
+
+// ---------------------------------------------------------------------------
+// Historical session corpus (LYRA-2026-10-14 contract §8.2 slices 1-3).
+// ADDITIVE ONLY: no existing interface in this file is touched.
+//
+// Mirrors `crates/seatloom-core/src/history/schema.rs` field for field. The
+// nullable fields are nullable there on purpose and are mirrored as nullable
+// here: `messageCount` is NULL when the corpus migration is not applied (never
+// a fabricated zero), and `sessionDate`/`firstTs`/`lastTs` are NULL for the
+// harnesses that record no timestamps (all 14 cursor sessions).
+// ---------------------------------------------------------------------------
+
+export interface HistoryProject {
+  /** The home path with `/Users/jyxc-dz-0100609/Documents/GitHub/` stripped. */
+  id: string;
+  /** Display name. Equals `id` for every row but `seatloom`, which the
+   *  projects table carries as `SeatLoom`. */
+  name: string;
+  /** The absolute home path, so nothing is lost. */
+  homePath: string | null;
+  sessionCount: number;
+  /** Sum of the sessions' message counts. NULL when the corpus is not loaded. */
+  messageCount: number | null;
+  /** The repository-root group: unmapped and labelled (015's R5), never given
+   *  a guessed parent. Its id is literally `(root)`. */
+  unclassified: boolean;
+}
+
+export interface HistorySession {
+  id: string;
+  /** 'codex' | 'claude-code' | 'stepcode' | 'cursor' | 'gemini' | 'opencode'. */
+  harness: string;
+  /** The stripped-path project slug. */
+  project: string;
+  cwd: string | null;
+  sessionDate: string | null;
+  firstTs: string | null;
+  lastTs: string | null;
+  messageCount: number | null;
+  lines: number | null;
+  bytes: number | null;
+  /** Relative to the archive root (`raw/<harness>/<file>`). */
+  rawPath: string;
+  srcPath: string | null;
+  sha256: string | null;
+  /** false exactly when the harness recorded no timestamps at all. The UI must
+   *  render 时间未记录 for these, never a date. */
+  dated: boolean;
+}
+
+export type HistoryTurnLabel = 'system' | 'user' | 'assistant' | 'other';
+
+export interface HistoryTurn {
+  /** 1-based line number in the ORIGINAL file on disk. */
+  line: number;
+  label: HistoryTurnLabel;
+  /** The heading text verbatim when it is not one of the three known labels. */
+  labelRaw: string | null;
+  /** The turn's length in characters, so a list can show scale without text. */
+  chars: number;
+  contextPath: string;
+  contextLineStart: number;
+  contextLineEnd: number;
+}
+
+export interface HistorySessionDetail {
+  id: string;
+  harness: string;
+  /** Absolute path of the original transcript file. */
+  sourcePath: string;
+  /** Whether that file is on disk right now. */
+  sourcePresent: boolean;
+  /** The line count the database records for it. */
+  sourceLineCount: number | null;
+  contextPath: string | null;
+  /** The message count the extracted context file declares in its header. */
+  declaredMessageCount: number | null;
+  /** The message count the database holds for the same session. */
+  storedMessageCount: number | null;
+  /** Whether the two agree, when both are known. `false` is a defect to report.
+   *  `null` means one side is absent — an absence, not a disagreement. */
+  countsAgree: boolean | null;
+  /** In source order. */
+  turns: HistoryTurn[];
+  /** Why there are no turns, when there are none. Never an empty list with no
+   *  explanation. */
+  emptyReason: string | null;
+}
+
+/** The tool's envelope for `list_history_projects`. */
+export interface HistoryProjectsPayload {
+  contract: string;
+  corpusLoaded: boolean;
+  projectCount: number;
+  sessionTotal: number;
+  messageTotal: number | null;
+  projects: HistoryProject[];
+}
+
+/** The tool's envelope for `list_history_sessions`. */
+export interface HistorySessionsPayload {
+  contract: string;
+  corpusLoaded: boolean;
+  projectId: string;
+  sessionCount: number;
+  undatedCount: number;
+  sessions: HistorySession[];
+}
+
+/** The tool's envelope for `get_history_session_turns`. */
+export interface HistoryTurnsPayload {
+  contract: string;
+  bodiesReturned: boolean;
+  note: string;
+  session: HistorySessionDetail;
+}
+
+/** A slice of a local context file, read from the operator's own disk. */
+export interface HistoryContextSlice {
+  path: string;
+  lineStart: number;
+  lineEnd: number;
+  lines: string[];
+  totalLines: number;
+}
+
 export interface DocumentDto {
   id: string;
   projectId: string;
@@ -324,12 +665,67 @@ export interface LiveSessionDto {
   /// to xterm before subscribing to session:output events so idle panes don't
   /// render as a black screen.
   initialSnapshotB64?: string;
+  /// tmux `#{pane_pid}` — the pid of the process running in the pane.
+  ///
+  /// Not decoration. During the 2026-10-27 cross-wiring incident (AEGIS packet
+  /// AEGIS-2026-10-27-live-seat-mirror-cross-wiring-v1) the UI showed one seat's
+  /// slot full of another seat's output for three hours and nothing on screen
+  /// could tell the operator which pane the bytes actually came from. Two panes
+  /// with different `pane_tty`/`pane_pid` side by side is the cheapest thing that
+  /// makes the mismatch visible by eye at the moment it happens.
+  panePid?: number;
+  /// tmux `#{pane_tty}` — the pane's controlling terminal, e.g. `/dev/ttys005`.
+  paneTty?: string;
+}
+
+/**
+ * Emitted when a live mirror proves its pipe no longer belongs to it.
+ *
+ * The three ways this happens, all measured on tmux 3.x:
+ *   `lost`         no process writes our FIFO any more (someone ran the bare
+ *                  `tmux pipe-pane`, which STOPS rather than queries, or a
+ *                  thief replaced our writer and killed it)
+ *   `cross_wired`  more than one pane writes our FIFO, so the bytes we are
+ *                  about to show are not all ours
+ *   `probe_failed` the check itself could not run — reported rather than
+ *                  silently passing, because a check that cannot fail is worse
+ *                  than no check
+ *
+ * The UI must stop showing content on receipt. A log line is not a fix.
+ */
+export interface SessionMirrorLostEvent {
+  sessionId: string;
+  seatId?: string;
+  tmuxSessionName: string;
+  /// `"lost"` | `"cross_wired"` | `"probe_failed"`.
+  reason: string;
+  /// Number of foreign writers found (cross_wired only; 0 otherwise).
+  writers: number;
+  /// Human-readable line for the operator.
+  detail: string;
 }
 
 export interface SessionOutputEvent {
   sessionId: string;
   data: string; // base64-encoded bytes
 }
+
+/**
+ * One event on the turn-aware channel (`session:turn`).
+ *
+ * A SECOND VIEW of the bytes `session:output` already delivers — not a second
+ * capture, and not a claim about what the model did. The boundary comes from
+ * `seatloom_core::turn_stream`, which INFERS it from the shape of the terminal
+ * output (the harness's working indicator appearing, then being replaced by the
+ * status line). Treat a boundary as a hint: if the harness changes how it draws,
+ * the hint goes stale while the bytes stay correct.
+ *
+ * `chunk.data` is byte-identical to the matching `session:output` payload.
+ */
+export type SessionTurnEvent =
+  | { kind: 'turnStarted'; sessionId: string }
+  | { kind: 'chunk'; sessionId: string; data: string; frame: boolean }
+  | { kind: 'turnEnded'; sessionId: string };
 
 export interface SessionExitEvent {
   sessionId: string;

@@ -1,14 +1,19 @@
 // Handoff commands.
 
+use crate::commands::require_project_id;
 use crate::dto::{HandoffDto, HandoffReceiptDto};
 use crate::state::AppState;
 use tauri::State;
 
 #[tauri::command]
-pub async fn cmd_list_handoffs(state: State<'_, AppState>) -> Result<Vec<HandoffDto>, String> {
+pub async fn cmd_list_handoffs(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<HandoffDto>, String> {
+    let pid = require_project_id("cmd_list_handoffs", project_id)?;
     state
         .db
-        .list_handoffs()
+        .list_handoffs_for_project(&pid)
         .await
         .map(|rows| rows.into_iter().map(HandoffDto::from).collect())
         .map_err(|e| e.to_string())

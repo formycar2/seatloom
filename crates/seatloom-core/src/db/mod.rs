@@ -15,9 +15,16 @@ pub mod connection;
 pub mod document_parser;
 /// Closed value domains for the P0 event ledger (schema 010).
 pub mod event_domain;
+/// Lineage read model (acceptance-lineage milestone, Lane B) — the pure-read
+/// assembler: an object plus its context chain, progressively disclosed. First
+/// instance = acceptance lineage; D5's recall chain plugs in as a second.
+pub mod lineage;
 pub mod models;
 pub mod reconcile;
 pub mod repositories;
+/// The session↔work read model — one read-only function in each direction,
+/// three separated numbers, and the topic id never used as a key.
+pub mod session_work;
 /// P0 step 2 write primitive: `append(event) -> projections`.
 pub mod write_api;
 

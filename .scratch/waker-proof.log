@@ -1,0 +1,43 @@
+seatloom-waker: seat map loaded from /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/.scratch/waker-proof-seats.tsv (0 seat(s))
+seatloom-waker: 0 seat(s) mapped from /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/.scratch/waker-proof-seats.tsv; LISTEN dispatch_ready on localhost:5432/seatloom_waker_proof; stale-after 20s, hard-floor 80s, sweep every 2s, poke cooldown 2s
+seatloom-waker: armed.
+seatloom-waker: seat map loaded from /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/.scratch/waker-proof-seats.tsv (0 seat(s))
+seatloom-waker: seat map loaded from /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/.scratch/waker-proof-seats.tsv (0 seat(s))
+seatloom-waker: catch-up scan done (0 seat(s) nudged)
+seatloom-waker: seat map loaded from /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/.scratch/waker-proof-seats.tsv (2 seat(s))
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+seatloom-waker: sweep: idle seat seat-waker-proof-001 has 1 ready dispatch(es) -> waker-proof-seat
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 in_flight disp-ready for 31.710957s (pane running node, pane output advancing) — an agent is working; not poking
+seatloom-waker: seat-waker-proof-001 in_flight disp-ready for 33.680931s (pane running node, pane output advancing) — an agent is working; not poking
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 in_flight disp-ready for 35.711237s (pane running node, pane output advancing) — an agent is working; not poking
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 in_flight disp-ready for 37.717738s (pane running node, pane output advancing) — an agent is working; not poking
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 in_flight disp-ready for 39.725895s (pane running node, pane output advancing) — an agent is working; not poking
+seatloom-waker: seat-waker-proof-001 STALE claim past the hard floor: in_flight disp-ready for 2401.2927s (pane output advancing) — poking anyway; a pane that merely looks busy is not evidence of progress
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 STALE claim past the hard floor: in_flight disp-ready for 2403.312945s (pane output advancing) — poking anyway; a pane that merely looks busy is not evidence of progress
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 STALE claim past the hard floor: in_flight disp-ready for 2405.316894s (pane output advancing) — poking anyway; a pane that merely looks busy is not evidence of progress
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 STALE claim past the hard floor: in_flight disp-ready for 2409.310171s (pane output unchanged) — poking anyway; a pane that merely looks busy is not evidence of progress
+seatloom-waker: sweep: idle seat seat-waker-proof-002 has 1 ready dispatch(es) -> waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+can't find pane: waker-proof-seat-2
+seatloom-waker: seat-waker-proof-001 STALE claim past the hard floor: in_flight disp-ready for 2411.31411s (pane output advancing) — poking anyway; a pane that merely looks busy is not evidence of progress

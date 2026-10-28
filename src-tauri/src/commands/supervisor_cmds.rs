@@ -47,9 +47,8 @@ pub async fn cmd_append_supervisor_message(
     let actor_ref = request
         .actor_ref
         .unwrap_or_else(|| "human:user".to_string());
-    let project_id = request
-        .project_id
-        .unwrap_or_else(|| state.default_project_id.clone());
+    let project_id =
+        crate::commands::require_project_id("cmd_append_supervisor_message", request.project_id)?;
     let id = new_event_id();
 
     let row = state

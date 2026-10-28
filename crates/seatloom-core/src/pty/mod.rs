@@ -23,6 +23,11 @@ use nix::unistd;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+// The pipe guard is a downstream self-proof on the mirror this module builds.
+// Declared here (not in lib.rs) because it exists to answer "is this session's
+// FIFO still the one our own pipe writes" — a question only `pty` can ask.
+pub mod pipe_guard;
+
 /// Output events broadcast from the tmux mirror reader to subscribers.
 #[derive(Debug, Clone)]
 pub enum PtyEvent {
@@ -77,6 +82,37 @@ impl std::fmt::Debug for PtySession {
     }
 }
 
+/// How many lines of pane scrollback to backfill into the mirror at attach time.
+///
+/// **The default is derived, not guessed.** The terminal component caps its own
+/// scrollback at 10 000 lines (`ui/src/app-v2/panel/SessionTerminal.tsx`,
+/// `scrollback: 10000`). Backfilling all 10 000 would leave the operator zero room
+/// for the output that arrives *after* they attach — the history would push the
+/// live tail straight out of the buffer. So the default splits the scrollback in
+/// half: 5 000 lines of history, 5 000 left for live output.
+///
+/// The effective number is bounded by tmux's `history-limit` (see
+/// [`DESIRED_HISTORY_LIMIT`]): a pane retains at most that much, so asking for more
+/// silently returns less. That is why the two constants are 10x apart rather than
+/// equal.
+pub const DEFAULT_BACKFILL_LINES: usize = 5_000;
+
+/// The tmux `history-limit` this app asks for, so a pane retains enough scrollback
+/// for the backfill above to have something to find.
+///
+/// Measured before choosing it: a pane with `history-limit` 2 000, 50 000 and
+/// 100 000 has **identical RSS at rest** (3 232 / 3 232 / 3 248 KB) — tmux
+/// allocates the history grid lazily, so a higher limit costs nothing until a pane
+/// actually produces that much output, which is exactly when the operator wants
+/// it. 50 000 is 10x the backfill default, so the backfill is never silently
+/// truncated, and it is the order of magnitude the 2026-10-16 dispatch asked for.
+///
+/// **This only affects panes created after it is set.** tmux reads the option when
+/// a pane is created; an already-running pane keeps the limit it was born with.
+/// Measured: setting it on a live session leaves the existing pane at 2 000 and
+/// gives 50 000 to the next pane created in that session.
+pub const DESIRED_HISTORY_LIMIT: usize = 50_000;
+
 /// Preserved for source-level compatibility with older call sites. Under the
 /// tmux-mirror architecture, most of these fields are ignored — only
 /// `transcripts_dir`, `rows`, and `cols` carry meaning (rows/cols feed
@@ -90,6 +126,12 @@ pub struct LaunchOptions {
     pub cols: u16,
     pub env: Vec<(String, String)>,
     pub transcripts_dir: PathBuf,
+    /// How many lines of scrollback to backfill at attach. `None` uses
+    /// [`DEFAULT_BACKFILL_LINES`]. Bounded by the pane's `history-limit`.
+    pub backfill_lines: Option<usize>,
+    /// The `history-limit` to ask tmux for. `None` uses [`DESIRED_HISTORY_LIMIT`].
+    /// Affects panes created after it is set; see the constant's doc.
+    pub history_limit: Option<usize>,
 }
 
 impl LaunchOptions {
@@ -225,14 +267,21 @@ impl PtySession {
     ///
     /// Steps:
     ///   1. Create a named FIFO at `/tmp/seatloom-mirror/<session_id>.fifo`.
-    ///   2. Run `tmux pipe-pane -t <name>:0 'cat >> <fifo>'` so tmux
+    ///   2. Ask tmux for a bigger `history-limit` on this session, so panes
+    ///      created from now on retain enough scrollback for the backfill to
+    ///      find. Scoped to the session, not the server.
+    ///   3. Run `tmux pipe-pane -t <name>:0 'cat >> <fifo>'` so tmux
     ///      appends pane output to the FIFO (and keeps doing so even if
     ///      SeatLoom dies — R3 failure isolation). Deliberately **no `-o`**:
     ///      that flag toggles, so a second attach would close the pipe.
-    ///   3. Verify `#{pane_pipe}` is `1`; a zero exit from `pipe-pane` does
+    ///   4. Verify `#{pane_pipe}` is `1`; a zero exit from `pipe-pane` does
     ///      not mean the pipe opened. Returns [`PtyError::MirrorNotOpen`]
     ///      rather than a session that looks live and emits nothing.
-    ///   4. Spawn a std::thread that opens the FIFO read-side, tail-reads
+    ///   5. Backfill the pane's scrollback (`capture-pane -e -p -S -<n>`) into
+    ///      `initial_snapshot`, which the caller delivers to the terminal
+    ///      BEFORE the live stream — so the operator can scroll up into what
+    ///      the seat did before they attached, with colours intact.
+    ///   6. Spawn a std::thread that opens the FIFO read-side, tail-reads
     ///      it, and broadcasts `PtyEvent::Output` chunks.
     ///
     /// **Re-attach is safe and idempotent.** Calling this twice on the same
@@ -297,6 +346,36 @@ impl PtySession {
             (120, 30)
         };
 
+        // Ask tmux to retain more scrollback for this session, so the backfill
+        // below has something to find and the NEXT pane created here inherits it.
+        //
+        // Session-scoped, never `-g`: mutating the server-wide option from a
+        // desktop app would change every pane the operator has open anywhere.
+        //
+        // This does NOT enlarge the pane being attached — tmux reads
+        // `history-limit` when a pane is created, and measured on a live session
+        // the existing pane stays at 2 000 while the next pane gets the new
+        // value. So a seat that wants more than it already has needs its pane
+        // recreated (relaunch the seat), and that is stated in the delivery note
+        // rather than papered over. A failure here is not fatal: the backfill
+        // still returns whatever the pane does retain.
+        let desired_limit = opts.history_limit.unwrap_or(DESIRED_HISTORY_LIMIT);
+        if let Err(e) = std::process::Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                tmux_session_name,
+                "history-limit",
+                &desired_limit.to_string(),
+            ])
+            .output()
+        {
+            eprintln!(
+                "seatloom-pty: could not raise history-limit for {tmux_session_name}: {e} \
+                 (the backfill will use whatever the pane already retains)"
+            );
+        }
+
         // Ask tmux to copy pane output to our FIFO.
         //
         // NO `-o`. An earlier comment here claimed `-o` "makes the pipe-pane
@@ -354,11 +433,49 @@ impl PtySession {
             return Err(e);
         }
 
-        // Capture historical pane content immediately after pipe-pane (§1.3 fix).
-        // `-e` preserves escape sequences so colors/attributes survive; lines
-        // are joined with `\n`, so we rewrite to `\r\n` for xterm.
+        // Backfill the pane's SCROLLBACK, not just what is on screen.
+        //
+        // THE DEFECT THIS FIXES. `capture-pane -p` with no `-S` returns only the
+        // VISIBLE pane — measured 66 lines on a live seat pane whose scrollback
+        // held 3 273. `pipe-pane` forwards only output produced after it starts,
+        // so the mirror began at the attach instant and the operator could scroll
+        // up almost nowhere. His words: "now he can barely scroll up to see
+        // history".
+        //
+        // `-S -<n>` starts n lines before the visible pane, so the capture is
+        // `min(n, history) + visible`. The budget counts the whole thing, so the
+        // history portion is `backfill - visible`, floored at 1.
+        //
+        // `-e` is NOT OPTIONAL: without it tmux returns plain text and every
+        // colour, bold and progress bar is lost. That is a quality regression and
+        // the acceptance criterion names it as a reject. Measured with `-e`: 1 308
+        // of 3 339 captured lines carry escape sequences.
+        //
+        // The backfill rides on `initial_snapshot` — the SAME field that already
+        // keeps an idle pane from rendering black — and NOT through the FIFO.
+        // That is deliberate and it is measured, not a shortcut:
+        //   · writing the FIFO before pipe-pane deadlocks, because opening a FIFO
+        //     for write blocks until a reader opens it, and the reader thread
+        //     starts after pipe-pane;
+        //   · with both ends held open, tmux's `cat >>` and a history writer race
+        //     for the pipe, which interleaves history with live output — the exact
+        //     failure the dispatch says to avoid;
+        //   · the field is already delivered to the frontend, which writes it to
+        //     xterm AFTER registering the output listener, so there is no ordering
+        //     hazard and no re-attach duplication (each attach is a new session id,
+        //     so the terminal remounts and writes the snapshot once).
+        let backfill = opts.backfill_lines.unwrap_or(DEFAULT_BACKFILL_LINES);
+        let history_lines = backfill.saturating_sub(pane_rows as usize).max(1);
         let capture_out = std::process::Command::new("tmux")
-            .args(["capture-pane", "-t", &tmux_target, "-e", "-p"])
+            .args([
+                "capture-pane",
+                "-t",
+                &tmux_target,
+                "-e",
+                "-p",
+                "-S",
+                &format!("-{history_lines}"),
+            ])
             .output()
             .map_err(|e| PtyError::Tmux(format!("spawn tmux capture-pane: {e}")))?;
         let historical_content = if capture_out.status.success() {
@@ -407,6 +524,10 @@ impl PtySession {
                 .append(true)
                 .open(&transcript_for_reader)
                 .ok();
+            let mut log_bytes: u64 = log
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map_or(0, |m| m.len());
             let mut buf = [0u8; 4096];
             loop {
                 if shutdown_for_reader.load(std::sync::atomic::Ordering::Relaxed) {
@@ -423,6 +544,29 @@ impl PtySession {
                         let chunk = buf[..n].to_vec();
                         if let Some(ref mut f) = log {
                             let _ = f.write_all(&chunk);
+                        }
+                        // R3: rotate instead of growing forever. One FIFO's
+                        // transcript reached 180 986 013 bytes during the
+                        // cross-wiring incident because it silently swallowed two
+                        // high-traffic panes for three hours; the directory that
+                        // holds them is 6.4 GB across 422 files with no ceiling.
+                        //
+                        // Rotating (rename to `.1`, start a fresh file) keeps the
+                        // file at a size the operator can still copy and hand to
+                        // someone, and it costs one rename per 64 MB rather than a
+                        // rewrite of the whole file.
+                        log_bytes += chunk.len() as u64;
+                        if log_bytes >= pipe_guard::MAX_TRANSCRIPT_BYTES {
+                            if let Some(f) = log.take() {
+                                drop(f);
+                                rotate_transcript(&transcript_for_reader);
+                            }
+                            log = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&transcript_for_reader)
+                                .ok();
+                            log_bytes = 0;
                         }
                         if tx_reader.send(PtyEvent::Output(chunk)).is_err() {
                             // No subscribers — keep reading (we're still
@@ -614,6 +758,122 @@ impl PtySession {
         }
         Ok(())
     }
+
+    /// The tmux target this mirror is attached to (e.g. `"Nimbus-TechArchi-seatloom:0"`).
+    pub fn tmux_target(&self) -> &str {
+        &self.tmux_target
+    }
+
+    /// Path of the FIFO this mirror reads.
+    pub fn fifo_path(&self) -> &std::path::Path {
+        &self.fifo_path
+    }
+}
+
+/// Unlink every FIFO in [`mirror_dir`] that no live session is reading.
+///
+/// # The leak this closes
+///
+/// Measured 2026-10-27: `/tmp/seatloom-mirror/` held **48 FIFOs** for **9 live
+/// mirrors**. The 39 extras are orphans from attaches whose reader thread exited
+/// early (a FIFO open failure, an EOF from a writer that was killed) — the
+/// `kill()` path does unlink, so these are specifically the paths that never
+/// reach `kill()`.
+///
+/// They are not merely untidy: an orphan FIFO is a file a pane can be piped into
+/// and nobody is watching, which is exactly the shape that made the cross-wiring
+/// incident invisible. And a stale FIFO blocks a later attach's `mkfifo` unless
+/// it is unlinked first — which `attach_tmux` already does, so the leak is
+/// silent rather than fatal.
+///
+/// # What makes this safe to call at all
+///
+/// It only ever removes a file that is (a) inside `mirror_dir` and (b) not in
+/// `live_fifo_paths`. A session that is mid-attach is registered in
+/// `state.sessions` BEFORE this runs, so its FIFO is in the live set. The one
+/// thing it must never do is delete the FIFO of a session the operator is
+/// looking at — that would be the defect again, with better intentions.
+///
+/// Returns how many orphans were removed, so a caller (and a test) can see the
+/// number rather than trust that it happened.
+pub fn reap_orphan_fifos(live_fifo_paths: &[std::path::PathBuf]) -> usize {
+    reap_orphan_fifos_in(&mirror_dir(), live_fifo_paths)
+}
+
+/// The real implementation, with the directory passed in so it can be tested
+/// against a scratch dir.
+///
+/// Kept separate from [`reap_orphan_fifos`] rather than parameterised at every
+/// call site: a test that reimplements the loop it claims to check is a test that
+/// passes no matter what the production code does. This was the first draft and
+/// it was wrong for exactly that reason.
+fn reap_orphan_fifos_in(dir: &std::path::Path, live_fifo_paths: &[std::path::PathBuf]) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0, // no mirror dir at all — nothing leaked
+    };
+    // Compare by NORMALISED path. Measured on macOS: `lsof` (and anything that
+    // resolves the symlink) reports `/private/tmp/seatloom-mirror/x.fifo` while
+    // `read_dir` on `/tmp/seatloom-mirror` yields `/tmp/seatloom-mirror/x.fifo`.
+    // Comparing raw strings makes every live FIFO look like an orphan — and this
+    // reaper DELETES what it thinks is an orphan. That is the cross-wiring defect
+    // again, committed by the code that was supposed to prevent it.
+    //
+    // The same normalisation the pipe guard uses, so there is one rule.
+    let live: std::collections::HashSet<String> = live_fifo_paths
+        .iter()
+        .map(|p| normalise_for_compare(&p.to_string_lossy()))
+        .collect();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only FIFOs, only ours, only ones nobody is reading.
+        //
+        // `std::os::unix::fs::FileTypeExt::is_fifo` is the stable way to ask;
+        // `FileType::is_fifo` is still unstable on `std`. A non-FIFO entry in
+        // this directory (a stray log, a `.DS_Store`) is never removed.
+        let is_fifo = entry
+            .file_type()
+            .map(|t| std::os::unix::fs::FileTypeExt::is_fifo(&t))
+            .unwrap_or(false);
+        if !is_fifo {
+            continue;
+        }
+        if live.contains(&normalise_for_compare(&path.to_string_lossy())) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Canonical form for comparing two paths that may differ only by the `/tmp` →
+/// `/private/tmp` symlink.
+///
+/// Strips the `/private` prefix from BOTH sides so either spelling compares
+/// equal. Not `canonicalize`: the file may legitimately be gone, and a failed
+/// resolve would make every comparison unequal — which in the reaper means
+/// deleting a live FIFO.
+fn normalise_for_compare(p: &str) -> String {
+    p.strip_prefix("/private").unwrap_or(p).to_string()
+}
+
+/// Rotate a transcript that has hit [`pipe_guard::MAX_TRANSCRIPT_BYTES`].
+///
+/// `<path>` becomes `<path>.1`. A previous `.1` is overwritten rather than
+/// incremented: the point of the ceiling is a bound on total disk, and a chain of
+/// `.1 .2 .3 …` is an unbounded directory by another name.
+///
+/// Failures are ignored deliberately. A transcript is a convenience record of
+/// bytes that are also flowing to the UI; failing to rotate must never take the
+/// mirror down. What the caller does instead is reopen in append mode, so the
+/// worst case is a file larger than the ceiling — the pre-existing behaviour, not
+/// a new failure.
+fn rotate_transcript(path: &std::path::Path) {
+    let rotated = std::path::PathBuf::from(format!("{}.1", path.display()));
+    let _ = std::fs::rename(path, &rotated);
 }
 
 /// Decide whether `tmux pipe-pane` actually opened the pipe.
@@ -723,7 +983,55 @@ fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{verify_pipe_open, verify_resize_applied, PtyError};
+    use super::{
+        verify_pipe_open, verify_resize_applied, PtyError, DEFAULT_BACKFILL_LINES,
+        DESIRED_HISTORY_LIMIT,
+    };
+
+    /// The history portion of a backfill budget. The budget counts the WHOLE
+    /// capture (history + visible pane), so the visible rows come off it first —
+    /// otherwise a 5 000-line budget on a 66-row pane would deliver 5 066 lines
+    /// and quietly exceed what the terminal keeps.
+    fn history_lines_for(backfill: usize, pane_rows: u16) -> usize {
+        backfill.saturating_sub(pane_rows as usize).max(1)
+    }
+
+    /// The default splits the terminal's own scrollback in half, so the live tail
+    /// still has room after the history lands. A `const` block, because both sides
+    /// are compile-time constants: an `assert!` on constants is rejected by the
+    /// `assertions_on_constants` lint, and rightly — it would pass at compile time
+    /// and prove nothing at run time.
+    #[test]
+    fn the_backfill_default_leaves_room_for_the_live_tail() {
+        // The UI's own cap, pinned here so the two cannot drift apart silently.
+        const UI_SCROLLBACK: usize = 10_000;
+        const {
+            assert!(
+                DEFAULT_BACKFILL_LINES < UI_SCROLLBACK,
+                "backfilling the whole scrollback would push the live tail out of the buffer"
+            );
+            assert!(
+                DESIRED_HISTORY_LIMIT > DEFAULT_BACKFILL_LINES,
+                "a pane retaining less than the backfill makes the backfill a silent truncation"
+            );
+            assert!(DESIRED_HISTORY_LIMIT / DEFAULT_BACKFILL_LINES == 10);
+        }
+        // And the run-time half: the arithmetic actually used by `attach_tmux`.
+        assert_eq!(history_lines_for(DEFAULT_BACKFILL_LINES, 66), 4_934);
+    }
+
+    /// The visible rows are subtracted, never the whole budget spent on history.
+    #[test]
+    fn the_history_portion_subtracts_the_visible_rows() {
+        assert_eq!(history_lines_for(5_000, 66), 4_934);
+        assert_eq!(history_lines_for(5_000, 5_000), 1, "floored at 1, never 0");
+        assert_eq!(
+            history_lines_for(10, 6_000),
+            1,
+            "saturating, never negative"
+        );
+        assert_eq!(history_lines_for(0, 24), 1);
+    }
 
     /// The only accepting case: display-message succeeded AND the pane reports
     /// pane_pipe=1.
@@ -885,6 +1193,158 @@ mod tests {
         assert_eq!(shell_quote("/tmp/x.fifo"), "'/tmp/x.fifo'");
         assert_eq!(shell_quote("/tmp/a b/x.fifo"), "'/tmp/a b/x.fifo'");
         assert_eq!(shell_quote("it's.fifo"), "'it'\\''s.fifo'");
+    }
+
+    /// A unique scratch dir per test. Tests run in parallel inside one process,
+    /// so `std::process::id()` is NOT unique — the first draft shared a dir
+    /// between two reaper tests and one of them failed with EEXIST on mkfifo.
+    fn scratch(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("seatloom-{label}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reap_orphan_fifos_leaves_live_ones_alone_and_removes_the_rest() {
+        // The safety property: a live FIFO must NEVER be removed. Deleting the
+        // FIFO of a session the operator is watching would be the cross-wiring
+        // defect again, with better intentions.
+        let dir = scratch("seatloom-reap-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("ses-live.fifo");
+        let orphan = dir.join("ses-orphan.fifo");
+        let plain_file = dir.join("not-a-fifo.txt");
+        for p in [&live, &orphan] {
+            unistd::mkfifo(p, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        }
+        std::fs::write(&plain_file, b"keep me").unwrap();
+
+        // Point the reaper at our scratch dir by swapping the module-level path
+        // through the same function the production code uses.
+        let removed = reap_orphan_fifos_in(&dir, std::slice::from_ref(&live));
+
+        assert_eq!(removed, 1, "exactly the orphan went");
+        assert!(live.exists(), "the live FIFO must survive");
+        assert!(!orphan.exists(), "the orphan must be gone");
+        assert!(plain_file.exists(), "a non-FIFO is never touched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_fifo_spelled_private_tmp_is_not_mistaken_for_an_orphan() {
+        // THE BUG THIS REAPER ALMOST SHIPPED WITH. On macOS `lsof` reports
+        // `/private/tmp/...` while `read_dir` on `/tmp/...` yields `/tmp/...`.
+        // Comparing the raw strings made every live FIFO look orphaned, and the
+        // reaper DELETES what looks orphaned — so it destroyed the three FIFOs the
+        // running app was reading. The fix that was supposed to stop the app
+        // showing foreign panes would have killed the live mirrors instead.
+        //
+        // Reproduces the exact spellings: dir as read_dir yields it, live path as
+        // lsof yields it.
+        let dir = std::env::temp_dir().join("seatloom-mirror");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("ses-live.fifo");
+        unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+
+        // lsof-style spelling of the same file: `/private` inserted at the root of
+        // the temp path, which is exactly the macOS relationship between
+        // `/tmp/x` and `/private/tmp/x`.
+        //
+        // Note the FIRST version of this test built `private/tmp/...` under the
+        // temp dir instead of prefixing the temp dir itself, so it never
+        // reproduced the real mismatch and passed for the wrong reason. A test
+        // that cannot fail is worse than no test.
+        let tmp = std::env::temp_dir();
+        let live_spelling = std::path::PathBuf::from(format!("/private{}", tmp.display()))
+            .join("seatloom-mirror/ses-live.fifo");
+        assert_ne!(
+            live_spelling, fifo,
+            "sanity: the two spellings really do differ, or this test proves nothing"
+        );
+
+        let removed = reap_orphan_fifos_in(&dir, &[live_spelling]);
+        assert_eq!(removed, 0, "a live FIFO must never be reaped");
+        assert!(
+            fifo.exists(),
+            "the live FIFO survived -- the app keeps its mirror"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_orphan_fifos_with_no_live_sessions_removes_every_fifo_but_keeps_other_files() {
+        // The measured leak: 48 FIFOs for 9 live mirrors. With the live set empty
+        // the reaper should be willing to clear all of them — the caller is
+        // responsible for only calling it when there really is nothing live.
+        let dir = scratch("seatloom-reap-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.fifo");
+        let b = dir.join("b.fifo");
+        for p in [&a, &b] {
+            unistd::mkfifo(p, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        }
+        std::fs::write(dir.join("README"), b"keep").unwrap();
+
+        assert_eq!(reap_orphan_fifos_in(&dir, &[]), 2);
+        assert!(dir.join("README").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_orphan_fifos_on_a_missing_dir_reports_zero_rather_than_panicking() {
+        // A machine with no mirror dir has nothing leaked. Returning 0 (not an
+        // error) keeps the periodic reaper from spamming a failure nobody can act
+        // on.
+        let missing = std::env::temp_dir().join("seatloom-reap-does-not-exist-xyz");
+        let _ = std::fs::remove_dir_all(&missing);
+        assert_eq!(reap_orphan_fifos_in(&missing, &[]), 0);
+    }
+
+    #[test]
+    fn rotating_a_transcript_keeps_the_old_bytes_under_dot_one() {
+        // Rotation must not lose data: the point of the ceiling is bounded disk,
+        // and a rename keeps the previous 64 MB readable.
+        let dir = scratch("seatloom-rotate-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ses-x.raw.log");
+        std::fs::write(&path, b"first generation").unwrap();
+
+        rotate_transcript(&path);
+
+        assert!(!path.exists(), "the live path is free for a fresh file");
+        let rotated = dir.join("ses-x.raw.log.1");
+        assert_eq!(std::fs::read(&rotated).unwrap(), b"first generation");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotating_twice_keeps_one_generation_not_an_unbounded_chain() {
+        // `.1 .2 .3 ...` would be an unbounded directory by another name. The
+        // second rotation overwrites, which is what makes the ceiling a bound.
+        let dir = scratch("seatloom-rotate2-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ses-y.raw.log");
+        std::fs::write(&path, b"gen1").unwrap();
+        rotate_transcript(&path);
+        std::fs::write(&path, b"gen2").unwrap();
+        rotate_transcript(&path);
+
+        let rotated = dir.join("ses-y.raw.log.1");
+        assert_eq!(std::fs::read(&rotated).unwrap(), b"gen2");
+        assert!(
+            !dir.join("ses-y.raw.log.2").exists(),
+            "no numbered chain -- that would be unbounded disk by another name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

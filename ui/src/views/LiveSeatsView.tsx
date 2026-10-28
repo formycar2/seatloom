@@ -13,13 +13,34 @@
 //
 // R1/R3: SeatLoom observes, never owns. Detaching a tab stops our mirror and
 // leaves the tmux session running untouched.
+//
+// 2026-10-16, defect fixed: this view is conditionally rendered by App.tsx, so
+// leaving the tab unmounts it. The mirror state used to live in this component's
+// own useState, which meant coming back started from an empty attachment list and
+// re-attached only the first seat — five manual Connects every time, while the
+// backend sessions had been alive the whole time. The durable state now lives in
+// `useLiveSeatsMirrorStore`, so a remount restores what the backend still holds.
+// On mount we ask the backend which session ids are still alive and drop the rest,
+// so a session that exited while the view was away is not shown as connected.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
-import { api, isTauri, onSessionExit, onSessionOutput } from '../lib/api';
-import type { LiveSessionDto } from '../lib/types-dto';
+import { AlertTriangle, Radio, RefreshCw, Plug, Unplug, TerminalSquare } from 'lucide-react';
+import {
+  api,
+  isTauri,
+  onSessionExit,
+  onSessionMirrorLost,
+  onSessionOutput,
+} from '../lib/api';
+import { useDataStore } from '../stores/useDataStore';
+import { boundMirrorNames } from '../lib/project-scope';
 import { parseSeatSession, seatKey, sortSeats, type ParsedSeat } from '../lib/tmux-seats';
 import { useLiveSessionsStore } from '../stores/useLiveSessionsStore';
+import {
+  EMPTY_ACTIVITY,
+  useLiveSeatsMirrorStore,
+  type Attachment,
+} from '../stores/useLiveSeatsMirrorStore';
 import { SessionTerminal } from '../app-v2/panel/SessionTerminal';
 
 /** How often we re-discover tmux sessions. */
@@ -28,19 +49,6 @@ const POLL_MS = 3000;
 const TICK_MS = 500;
 /** A seat counts as "moving" if bytes arrived within this window. */
 const ACTIVE_WINDOW_MS = 2500;
-
-interface Attachment {
-  seat: ParsedSeat;
-  dto: LiveSessionDto;
-}
-
-interface Activity {
-  bytes: number;
-  chunks: number;
-  lastAt: number | null;
-}
-
-const EMPTY_ACTIVITY: Activity = { bytes: 0, chunks: 0, lastAt: null };
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -59,14 +67,31 @@ function formatAgo(at: number | null, now: number): string {
 }
 
 const LiveSeatsView: React.FC = () => {
-  const [seats, setSeats] = useState<ParsedSeat[]>([]);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [activeName, setActiveName] = useState<string | null>(null);
+  const activeProjectId = useDataStore((s) => s.activeProjectId);
+  const selectedProject = useRef(activeProjectId);
+  selectedProject.current = activeProjectId;
+  const [discoveredSeats, setSeats] = useState<ParsedSeat[]>([]);
+  const [discoveryProject, setDiscoveryProject] = useState<string | null>(null);
+  const seats = discoveryProject === activeProjectId ? discoveredSeats : [];
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState(false);
-  const [activity, setActivity] = useState<Record<string, Activity>>({});
   const [now, setNow] = useState(() => Date.now());
+
+  // Durable across unmount: the mirror is a projection of what the backend still
+  // holds, not something this component owns. See the store's header comment.
+  const attachments = useLiveSeatsMirrorStore((s) => s.attachments);
+  const activity = useLiveSeatsMirrorStore((s) => s.activity);
+  const activeName = useLiveSeatsMirrorStore((s) => s.activeName);
+  const setActiveName = useLiveSeatsMirrorStore((s) => s.setActiveName);
+  const addAttachment = useLiveSeatsMirrorStore((s) => s.addAttachment);
+  const removeAttachment = useLiveSeatsMirrorStore((s) => s.removeAttachment);
+  const addBytes = useLiveSeatsMirrorStore((s) => s.addBytes);
+  const pruneDead = useLiveSeatsMirrorStore((s) => s.pruneDead);
+  const markAutoAttached = useLiveSeatsMirrorStore((s) => s.markAutoAttached);
+  const mirrorLost = useLiveSeatsMirrorStore((s) => s.mirrorLost);
+  const markMirrorLost = useLiveSeatsMirrorStore((s) => s.markMirrorLost);
+  const clearMirrorLost = useLiveSeatsMirrorStore((s) => s.clearMirrorLost);
 
   const setSessionForSeat = useLiveSessionsStore((s) => s.setSessionForSeat);
   const clearSession = useLiveSessionsStore((s) => s.clearSession);
@@ -75,7 +100,6 @@ const LiveSeatsView: React.FC = () => {
   // Raw event counters land here first and are flushed on the tick, so a chatty
   // pane cannot trigger a React render per chunk.
   const pendingRef = useRef<Record<string, { bytes: number; chunks: number; lastAt: number }>>({});
-  const autoAttachedRef = useRef(false);
 
   // ── Discovery ──────────────────────────────────────────────────────────────
   // Each poll publishes the discovery outcome to the shared store so the
@@ -89,19 +113,28 @@ const LiveSeatsView: React.FC = () => {
       return;
     }
     try {
-      const list = await api.listTmuxSessions();
-      setSeats(sortSeats(list.map(parseSeatSession)));
+      if (!activeProjectId) { setSeats([]); setDiscovered(true); return; }
+      const [list, bindings] = await Promise.all([
+        api.listTmuxSessions(), api.listSeats(activeProjectId),
+      ]);
+      if (selectedProject.current !== activeProjectId) return;
+      const scoped = boundMirrorNames(list.map(parseSeatSession), bindings);
+      setDiscoveryProject(activeProjectId);
+      setSeats(sortSeats(scoped));
       setDiscovered(true);
-      setSeatDiscovery(list.length > 0 ? 'ok' : 'empty');
+      setSeatDiscovery(scoped.length > 0 ? 'ok' : 'empty');
       setError(null);
     } catch (e) {
+      if (selectedProject.current !== activeProjectId) return;
+      setSeats([]);
       setError(`会话发现失败 (cmd_list_tmux_sessions): ${String(e)}`);
       setDiscovered(true);
       setSeatDiscovery('failed');
     }
-  }, [setSeatDiscovery]);
+  }, [setSeatDiscovery, activeProjectId]);
 
   useEffect(() => {
+    setSeats([]);
     let cancelled = false;
     const run = async () => {
       if (cancelled) return;
@@ -119,9 +152,20 @@ const LiveSeatsView: React.FC = () => {
   useEffect(() => {
     let offOut: (() => void) | null = null;
     let offExit: (() => void) | null = null;
+    let offMirror: (() => void) | null = null;
 
     onSessionOutput((event) => {
       // event.data is base64; decoded length is what actually crossed the FIFO.
+      //
+      // A session whose mirror we could not prove is not counted. Two reasons,
+      // both about not lying: the bytes are not vouched for, and the session has
+      // no attachment any more — so this record would be an orphan that only
+      // exists to make a "last output" clock tick. Measured: without this guard,
+      // output arriving after a mirror-lost event re-creates the activity entry
+      // the store had just deleted.
+      const broken = useLiveSeatsMirrorStore.getState().mirrorLost;
+      const brokenFor = Object.values(broken).some((b) => b.sessionId === event.sessionId);
+      if (brokenFor) return;
       const approxBytes = Math.floor((event.data.length * 3) / 4);
       const slot = pendingRef.current[event.sessionId] ?? { bytes: 0, chunks: 0, lastAt: 0 };
       slot.bytes += approxBytes;
@@ -133,17 +177,39 @@ const LiveSeatsView: React.FC = () => {
     });
 
     onSessionExit((event) => {
-      setAttachments((prev) => prev.filter((a) => a.dto.id !== event.sessionId));
+      removeAttachment(event.sessionId);
       clearSession(event.sessionId);
     }).then((fn) => {
       offExit = fn;
     });
 
+    // R1: the backend could no longer prove this mirror is ours. Stop showing it
+    // and say so. A log line is not a fix — the incident this closes rendered
+    // another seat's output in this seat's slot for three hours in silence.
+    onSessionMirrorLost((event) => {
+      // Attribute to a seat, not just a session id: the operator needs to know
+      // WHICH slot is untrustworthy.
+      const seatName =
+        useLiveSeatsMirrorStore
+          .getState()
+          .attachments.find((a) => a.dto.id === event.sessionId)?.seat.sessionName ??
+        event.tmuxSessionName;
+      markMirrorLost(seatName, event.sessionId, event.reason, event.detail);
+      removeAttachment(event.sessionId);
+      clearSession(event.sessionId);
+      // Drop the in-flight batch too: the tick below would otherwise flush bytes
+      // that arrived before the event into a session the store just forgot.
+      delete pendingRef.current[event.sessionId];
+    }).then((fn) => {
+      offMirror = fn;
+    });
+
     return () => {
       if (offOut) offOut();
       if (offExit) offExit();
+      if (offMirror) offMirror();
     };
-  }, [clearSession]);
+  }, [clearSession, removeAttachment, markMirrorLost]);
 
   // Single tick drives both the counter flush and the relative clocks.
   useEffect(() => {
@@ -152,24 +218,15 @@ const LiveSeatsView: React.FC = () => {
       const ids = Object.keys(pending);
       if (ids.length > 0) {
         pendingRef.current = {};
-        setActivity((prev) => {
-          const next = { ...prev };
-          for (const id2 of ids) {
-            const p = pending[id2];
-            const cur = next[id2] ?? EMPTY_ACTIVITY;
-            next[id2] = {
-              bytes: cur.bytes + p.bytes,
-              chunks: cur.chunks + p.chunks,
-              lastAt: p.lastAt,
-            };
-          }
-          return next;
-        });
+        for (const id2 of ids) {
+          const p = pending[id2];
+          addBytes(id2, p.bytes, p.chunks, p.lastAt);
+        }
       }
       setNow(Date.now());
     }, TICK_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [addBytes]);
 
   // ── Attach / detach ────────────────────────────────────────────────────────
   const attach = useCallback(
@@ -185,11 +242,11 @@ const LiveSeatsView: React.FC = () => {
           tmuxSessionName: seat.sessionName,
           seatId: seat.seatName.toLowerCase(),
         });
-        setAttachments((prev) => [
-          ...prev.filter((a) => a.seat.sessionName !== seat.sessionName),
-          { seat, dto },
-        ]);
+        addAttachment({ seat, dto });
         setActiveName(seat.sessionName);
+        // A successful attach retires any earlier mirror-lost banner for this
+        // seat, so the UI cannot say "broken" over a working terminal.
+        clearMirrorLost(seat.sessionName);
         // Let the Supervisor IM route messages to this seat's real pane.
         setSessionForSeat(seatKey(seat.seatName), dto.id);
       } catch (e) {
@@ -198,40 +255,96 @@ const LiveSeatsView: React.FC = () => {
         setBusy((b) => ({ ...b, [seat.sessionName]: false }));
       }
     },
-    [setSessionForSeat],
+    [addAttachment, clearMirrorLost, setActiveName, setSessionForSeat],
   );
 
   const detach = useCallback(
     (sessionName: string) => {
-      setAttachments((prev) => {
-        const target = prev.find((a) => a.seat.sessionName === sessionName);
-        if (target) clearSession(target.dto.id);
-        const next = prev.filter((a) => a.seat.sessionName !== sessionName);
-        setActiveName((cur) =>
-          cur === sessionName ? (next.length ? next[next.length - 1].seat.sessionName : null) : cur,
-        );
-        return next;
-      });
+      const target = useLiveSeatsMirrorStore
+        .getState()
+        .attachments.find((a) => a.seat.sessionName === sessionName);
+      if (target) {
+        clearSession(target.dto.id);
+        removeAttachment(target.dto.id);
+      }
     },
-    [clearSession],
+    [clearSession, removeAttachment],
   );
 
   // Attach the first discovered seat once, so the view is already moving when
   // it opens instead of asking for a click to prove itself.
+  //
+  // Unchanged design, one correction: the "once" flag used to be a useRef, so it
+  // reset on every remount and seat 0 was attached AGAIN on top of a mirror that
+  // was still live. The backend inserts unconditionally, so that second attach
+  // started a second `pipe-pane` on the same pane. The flag is durable now, and a
+  // remount that finds surviving attachments skips the auto-attach entirely —
+  // there is nothing left to prove.
   useEffect(() => {
-    if (autoAttachedRef.current) return;
     if (!isTauri() || seats.length === 0) return;
-    autoAttachedRef.current = true;
-    void attach(seats[0]);
-  }, [seats, attach]);
+    const state = useLiveSeatsMirrorStore.getState();
+    if (state.autoAttached) return;
+    markAutoAttached();
+    if (state.attachments.length === 0) void attach(seats[0]);
+  }, [seats, attachments.length, attach, markAutoAttached]);
+
+  // Reconcile with the backend on mount: drop attachments whose session is no
+  // longer alive, so a seat that exited while this view was away is not shown as
+  // connected. The `session:exit` listener only runs while the view is mounted,
+  // so this is the one moment we can catch up.
+  //
+  // A failure to list is deliberately NOT a reason to drop what we hold: losing
+  // live mirrors on a transient error would be a worse defect than the one being
+  // fixed here.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    api
+      .listLiveSessions()
+      .then((ids) => {
+        if (cancelled) return;
+        pruneDead(new Set(ids));
+      })
+      .catch(() => {
+        /* keep what we have; the next mount retries */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pruneDead]);
+
+  // Re-assert seat -> session routing for whatever survived, so the Supervisor IM
+  // keeps piping chat into the right pane after the view comes back. The mapping
+  // already lives in `useLiveSessionsStore` and survives unmount; re-asserting is
+  // idempotent and repairs a partial write.
+  useEffect(() => {
+    if (!isTauri()) return;
+    for (const a of useLiveSeatsMirrorStore.getState().attachments) {
+      setSessionForSeat(seatKey(a.seat.seatName), a.dto.id);
+    }
+  }, [setSessionForSeat]);
 
   const attachedByName = useMemo(() => {
     const m = new Map<string, Attachment>();
-    for (const a of attachments) m.set(a.seat.sessionName, a);
+    const names = new Set(seats.map((s) => s.sessionName));
+    for (const a of attachments) {
+      if (names.has(a.seat.sessionName)) m.set(a.seat.sessionName, a);
+    }
     return m;
-  }, [attachments]);
+  }, [attachments, seats]);
 
   const active = activeName ? attachedByName.get(activeName) : undefined;
+
+  // Which seat's mirror-lost banner (if any) should be on screen. Prefer the seat
+  // the operator is looking at; otherwise the most recent failure, so a breakage
+  // is never invisible just because the active tab moved.
+  const lostSeatName = useMemo(() => {
+    if (activeName && mirrorLost[activeName]) return activeName;
+    const entries = Object.entries(mirrorLost);
+    if (entries.length === 0) return null;
+    return entries.sort((a, b) => b[1].at - a[1].at)[0][0];
+  }, [activeName, mirrorLost]);
+  const lostSeat = lostSeatName ? mirrorLost[lostSeatName] : undefined;
 
   const totalBytes = useMemo(
     () => Object.values(activity).reduce((sum, a) => sum + a.bytes, 0),
@@ -269,7 +382,7 @@ const LiveSeatsView: React.FC = () => {
             实时席位 · Live Seats
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--sl-text-secondary)' }}>
-            发现 {seats.length} 个 tmux 席位会话 · 已接入 {attachments.length} 个 · 累计镜像{' '}
+            发现 {seats.length} 个 tmux 席位会话 · 已接入 {attachedByName.size} 个 · 累计镜像{' '}
             <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
               {formatBytes(totalBytes)}
             </span>
@@ -338,7 +451,7 @@ const LiveSeatsView: React.FC = () => {
 
           {isTauri() && discovered && seats.length === 0 && (
             <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--sl-text-secondary)' }}>
-              未发现以 <code>-seatloom</code> 结尾的 tmux 会话。
+              {!activeProjectId ? '请选择项目后查看实时镜像。' : '本项目没有已绑定且正在运行的席位会话；历史语料项目没有席位绑定。'}
               后端按该后缀过滤，因此此处为空即代表
               <strong>确实没有</strong>在线席位。
             </div>
@@ -453,6 +566,27 @@ const LiveSeatsView: React.FC = () => {
                       >
                         已接入 {att.dto.paneCols ?? '?'}×{att.dto.paneRows ?? '?'}
                       </span>
+                      {/* R2: which pane is this slot really showing? During the
+                          2026-10-27 incident the operator had no way to answer
+                          that from the UI, which is why it ran three hours. Two
+                          slots with different ttys cannot both be showing the
+                          same pane — that is the whole point of printing it.
+                          "?" is printed when tmux did not answer; a made-up
+                          value would be worse than none. */}
+                      <span
+                        title="这个 slot 实际显示的 tmux pane（pid / tty）"
+                        style={{
+                          fontSize: 10,
+                          padding: '2px 6px',
+                          borderRadius: 'var(--sl-radius-sm)',
+                          background: 'var(--sl-surface-2, rgba(255,255,255,0.06))',
+                          color: 'var(--sl-text-secondary)',
+                          fontFamily: 'ui-monospace, monospace',
+                        }}
+                      >
+                        {att.dto.panePid ? `pid ${att.dto.panePid}` : 'pid ?'} ·{' '}
+                        {att.dto.paneTty ? att.dto.paneTty.replace('/dev/', '') : 'tty ?'}
+                      </span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -531,6 +665,13 @@ const LiveSeatsView: React.FC = () => {
               <span style={{ fontWeight: 700, color: 'var(--sl-text-primary)' }}>
                 {active.seat.seatName}
               </span>
+              {/* R2 again, on the thing that is actually on screen. The seat card
+                  is in a sidebar the operator may not be looking at; this is next
+                  to the bytes being rendered. */}
+              <code style={{ fontSize: 10.5, opacity: 0.75 }}>
+                {active.dto.panePid ? `pid ${active.dto.panePid}` : 'pid ?'} ·{' '}
+                {active.dto.paneTty ? active.dto.paneTty.replace('/dev/', '') : 'tty ?'}
+              </code>
               <code style={{ fontSize: 10.5 }}>{active.seat.sessionName}</code>
               <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>
                 {formatBytes((activity[active.dto.id] ?? EMPTY_ACTIVITY).bytes)} ·{' '}
@@ -540,14 +681,99 @@ const LiveSeatsView: React.FC = () => {
             </div>
           )}
 
+          {/* ── R1: a mirror we cannot prove is shown as BROKEN, not as content ──
+              This is the whole fix. The 2026-10-27 incident was not an empty slot;
+              it was a slot rendering another seat's output while claiming to be
+              fine. So the state is rendered as an explicit refusal with a
+              reconnect button, and the terminal for that seat is unmounted
+              (the store removed the attachment when the event arrived). */}
+          {lostSeat && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+                padding: '10px 14px',
+                background: 'rgba(248, 81, 73, 0.12)',
+                borderBottom: '1px solid rgba(248, 81, 73, 0.35)',
+                fontSize: 12,
+                color: 'var(--sl-text-primary)',
+                flexShrink: 0,
+              }}
+            >
+              <AlertTriangle size={15} style={{ color: '#f85149', flexShrink: 0, marginTop: 1 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, marginBottom: 3 }}>镜像已断开</div>
+                <div style={{ lineHeight: 1.55, color: 'var(--sl-text-secondary)' }}>
+                  {lostSeat.detail}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 10.5, opacity: 0.75 }}>
+                  reason: <code>{lostSeat.reason}</code>
+                  {lostSeat.reason === 'cross_wired' && ' — 已停止显示，因为无法区分哪些字节属于这个席位'}
+                  {lostSeat.reason === 'lost' && ' — 已停止显示，因为没有进程在写入这个席位对应的 FIFO'}
+                  {lostSeat.reason === 'probe_failed' && ' — 已停止显示，因为无法证明它仍然属于本 app'}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const seat = seats.find((x) => x.sessionName === lostSeatName);
+                  if (seat) void attach(seat);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '5px 10px',
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  color: '#fff',
+                  background: 'var(--sl-brand)',
+                  border: 'none',
+                  borderRadius: 'var(--sl-radius-sm)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <RefreshCw size={12} />
+                重新接入
+              </button>
+            </div>
+          )}
+
           <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-            {attachments.map((a) => (
+            {Array.from(attachedByName.values()).map((a) => (
               <div
                 key={a.dto.id}
                 style={{
                   position: 'absolute',
                   inset: 0,
-                  display: a.seat.sessionName === activeName ? 'block' : 'none',
+                  // Inactive attachments are hidden with `visibility`, NOT
+                  // `display: none`. This is the fix for "the live-seats page
+                  // sometimes will not scroll":
+                  //
+                  // A `display: none` ancestor removes the terminal from
+                  // layout, so xterm cannot measure a character cell — its DOM
+                  // measure strategy reads offsetWidth/offsetHeight of a
+                  // measure element that no longer has a box.
+                  // FitAddon.fit() then returns early WITHOUT resizing (its
+                  // own proposeDimensions() bails on css.cell.width === 0),
+                  // so the viewport silently stays at the pane's attach-time
+                  // row/col seed — normally TALLER than this slot. When the
+                  // pane's content is not longer than that seed row count the
+                  // scroll area equals the viewport height and the operator
+                  // cannot scroll at all.
+                  //
+                  // `visibility: hidden` keeps the box (these layers are
+                  // already position: absolute, so they are out of flow either
+                  // way), so a terminal mounted while its attachment is
+                  // inactive is still measurable and is fitted correctly the
+                  // moment it is armed. It also keeps the hidden terminal out
+                  // of the a11y tree and unfocusable, which display: none was
+                  // providing for free.
+                  visibility: a.seat.sessionName === activeName ? 'visible' : 'hidden',
+                  // Belt and braces: an inactive layer must never swallow a
+                  // wheel or a click even if a browser still routes events.
+                  pointerEvents: a.seat.sessionName === activeName ? 'auto' : 'none',
                 }}
               >
                 <SessionTerminal
@@ -559,7 +785,7 @@ const LiveSeatsView: React.FC = () => {
               </div>
             ))}
 
-            {attachments.length === 0 && (
+            {attachedByName.size === 0 && (
               <div
                 style={{
                   position: 'absolute',
