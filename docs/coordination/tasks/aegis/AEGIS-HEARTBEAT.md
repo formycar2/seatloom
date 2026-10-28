@@ -70,6 +70,15 @@
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
      **卡开出来了不等于卡点得动。**
    - **verdict ref 的有效性**:`bash scripts/check-verdict-refs.sh`
+   - **验法本身是不是废的**:`bash scripts/check-card-verifications.sh`
+     它筛两件事:验法是不是在让操作者跑 shell 命令,以及验法有没有提到
+     任何他能看的界面。**两个数都不是判定,是提问。**
+     2026-10-29 抓到一张真坏的:`acc-disp-session-key-ui` 的验法是
+     "跑 check-verdict-refs.sh 和 check-cards-clickable.sh,两条都绿即可接受" ——
+     那两个脚本是我为了抓自己的账本错误和分支同步错误写的,
+     和 Mira 的会话详情界面毫无关系,而且**即使她的功能被删光也还是绿的**。
+     他会跑完看到两个绿勾,接受一张他没看过的卡。
+     **能永远通过的验法比没有验法更糟** —— 它把"我没看"变成了"我看过了"。
      它把每张 pending 卡的 `flux_verdict_ref` join 回 `dispatches`,
      确认那条 verdict 事件真存在、且点名的就是这张卡的派单。
      2026-10-28 实测发现一条 verdict 的 `dispatch_id` 是
