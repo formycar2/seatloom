@@ -65,12 +65,34 @@ if [ -z "$(db "select 1 from pg_tables where tablename='acceptances'")" ]; then
   exit 2
 fi
 
-# resolve <ref> — 0 if it names something git can use locally.
+# resolve <ref> — 0 if it names something git can use.
+#
+# Two bugs were found by mutation-testing this function, and both made it accept
+# things it should reject, which is the failure direction that matters:
+#
+# 1. It checked `[ -f "$t" ]` for scripts in the CHECKER'S OWN checkout. The
+#    operator follows a card in the primary checkout on `track/infra-foundation`,
+#    so a script that exists only on track reported a false FAIL
+#    (acc-disp-session-key-ui names scripts/check-verdict-refs.sh). Now a script
+#    is checked with `git cat-file -e $REF_BASE:$path`.
+# 2. An earlier fix added `git ls-tree -r --name-only "$REF_BASE" >/dev/null &&
+#    return 0`, which returns 0 whenever the BASE EXISTS and says nothing about
+#    $1 at all — so `packet/x/y` and `track/does-not-exist` both resolved.
+#    Caught by the mutation test below, not by running the checker.
+#
+# The correct question is simply: can git resolve this string as a ref, locally
+# or on either remote? A branch that is not on the base is still a real branch.
+REF_BASE=${REF_BASE:-track/infra-foundation}
 resolve_ref() {
   git rev-parse --verify -q "$1" >/dev/null 2>&1 && return 0
   git rev-parse --verify -q "origin/$1" >/dev/null 2>&1 && return 0
   git rev-parse --verify -q "gitlab/$1" >/dev/null 2>&1 && return 0
   return 1
+}
+
+# Does a path exist ON THE REFERENCE BASE, not in this checkout?
+path_on_base() {
+  git cat-file -e "$REF_BASE:$1" 2>/dev/null
 }
 
 bad=0
@@ -92,7 +114,17 @@ while IFS= read -r cid; do
   # `a..track/infa-foundation` is one grep match when `.` is in the character
   # class, and the second ref would never be checked. This was found by mutation:
   # reintroducing the typo inside a range went undetected.
-  split=$(printf '%s' "$body" | sed 's/\.\./\n/g')
+  #
+  # THEN drop SQL example text. A card that demonstrates the acceptance-plan
+  # constraint shows its reader an INSERT with deliberately fake values
+  # (`'packet/x/y'`, `'demo'`, `'<done dispatch id>'`). Extracting a git ref out
+  # of a demo VALUES list reports a FAIL for a card whose instructions are
+  # perfectly runnable — acc-disp-accplan-lane-c-onyx, measured 2026-10-29.
+  # An example is not an instruction, and a checker that cannot tell them apart
+  # cries wolf until it is ignored. Cut any line that is an INSERT/UPDATE/SELECT
+  # before extracting tokens.
+  instructions=$(printf '%s' "$body" | sed -E '/[Ii][Nn][Ss][Ee][Rr][Tt] +(INTO|into)/d; /[Uu][Pp][Dd][Aa][Tt][Ee] +[a-z_]+ +SET/d; /^[[:space:]]*[Ss][Ee][Ll][Ee][Cc][Tt][[:space:]]/d')
+  split=$(printf '%s' "$instructions" | sed 's/\.\./\n/g')
   tokens=$(printf '%s' "$split" | grep -oE 'track/[A-Za-z0-9_./-]+|packet/[a-z]+/[A-Za-z0-9_.-]+|scripts/[A-Za-z0-9_./-]+\.sh' | sort -u)
 
   for t in $tokens; do
@@ -102,8 +134,8 @@ while IFS= read -r cid; do
 
     case "$t" in
       scripts/*)
-        if [ ! -f "$t" ]; then
-          printf '  ✗ %s  script not in this checkout: %s\n' "$cid" "$t"
+        if ! path_on_base "$t"; then
+          printf '  ✗ %s  script not on %s: %s\n' "$cid" "$REF_BASE" "$t"
           bad=$((bad + 1))
         fi
         ;;
