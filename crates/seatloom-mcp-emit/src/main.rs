@@ -51,7 +51,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the right database via `pi mcp add --env`).
     let pool = create_pool()?;
     let db = SeatloomDb::new(pool.clone());
-    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)");
+    eprintln!("seatloom-mcp-emit: ready (tools: emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, close_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -158,6 +158,10 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
             Ok(a) => render_topic(id, topics::open_topic(db, a).await),
             Err(resp) => resp,
         },
+        "close_topic" => match read_args::<topics::CloseTopicArgs>(&id, arguments) {
+            Ok(a) => render_topic(id, topics::close_topic(db, a).await),
+            Err(resp) => resp,
+        },
         "get_knowledge_tree" => {
             match read_args::<knowledge::GetKnowledgeTreeArgs>(&id, arguments) {
                 Ok(a) => render_knowledge(id, knowledge::get_knowledge_tree(db, a).await),
@@ -231,7 +235,7 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         other => success(
             id,
             tool_call_result(
-                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)"),
+                &format!("unknown tool: {other:?} (emit_event, enqueue_dispatch, get_next_dispatch, complete_dispatch, cancel_dispatch, request_acceptance, cancel_acceptance, get_acceptance_lineage, recall, remember, promote, forget, resolve, get_dispatch, query_ledger, open_topic, close_topic, get_knowledge_tree, get_topic_memories, plan_intent, list_history_projects, list_history_sessions, get_history_session_turns, request_operator_decision, resolve_operator_decision, list_operator_decisions)"),
                 true,
             ),
         ),

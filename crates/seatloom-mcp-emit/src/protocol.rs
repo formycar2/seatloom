@@ -112,6 +112,7 @@ pub fn tools_list_result() -> Value {
             get_dispatch_tool(),
             query_ledger_tool(),
             open_topic_tool(),
+            close_topic_tool(),
             get_knowledge_tree_tool(),
             get_topic_memories_tool(),
             crate::intent::plan_intent_tool(),
@@ -629,6 +630,37 @@ fn open_topic_tool() -> Value {
     })
 }
 
+/// `close_topic` — close a recall scope (024). The counterpart `open_topic` never
+/// had: `topics.status` has carried `open|closed|merged` since 010 and the CHECK
+/// has enforced it, but nothing wrote `closed`, so 51 of 51 live rows were `open`
+/// and the word carried no information.
+///
+/// NOT idempotent, deliberately: a second close is a refusal naming the current
+/// state, not a success. The memories are untouched and still readable — a recall
+/// scope is a finding aid, not an access control.
+fn close_topic_tool() -> Value {
+    json!({
+        "name": "close_topic",
+        "description": "Close a recall scope (topic): open -> closed. One TopicClosed event lands \
+            with the row in ONE transaction. NOT idempotent — a second close is refused and names \
+            the current status, because answering 'already closed' as success would let a caller \
+            believe it had just changed something. The topic's memories are UNTOUCHED and still \
+            readable: closing a scope is not hiding its evidence. closed_by is resolved from \
+            SEATLOOM_ACTOR_REF server-side (never a parameter); closed_at is written by the \
+            database, never passed in. Refusals (typed, zero writes): the topic names no row; the \
+            topic is not open. `merged` is NOT a transition — merging two scopes has to decide \
+            what happens to every memory under both, which is a product decision.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1, "description": "The scope id to close. It must exist and be open." }
+            }
+        }
+    })
+}
+
 /// `get_knowledge_tree` — the topic tree of a project, with memory counts.
 /// PURE READ: no write, no event (a panel query, not a recall).
 fn get_knowledge_tree_tool() -> Value {
@@ -882,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_twenty_seven_tools() {
+    fn tools_list_advertises_the_twenty_eight_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -905,6 +937,8 @@ mod tests {
                 "get_dispatch",
                 "query_ledger",
                 "open_topic",
+                // 024: the close path open_topic never had.
+                "close_topic",
                 "get_knowledge_tree",
                 "get_topic_memories",
                 "plan_intent",

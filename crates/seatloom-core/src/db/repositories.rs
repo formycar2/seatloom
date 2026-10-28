@@ -1676,6 +1676,114 @@ impl SeatloomDb {
         Ok((row, true))
     }
 
+    /// `close_topic` — the 024 closure path: `open -> closed` +
+    /// `TopicClosed` in ONE transaction.
+    ///
+    /// THE RULING THIS IMPLEMENTS (dispatch disp-TbGRGr5cvpJFgCeaayu7S). The
+    /// question was "should a topic be closeable, and by whom". Answer: **yes,
+    /// by the seat that owns the recall scope, and only from `open`.** The
+    /// evidence for that ruling rather than the alternative ("topics are
+    /// permanent, remove the unreachable states"):
+    ///
+    ///   * 010 declares the lifecycle `open|closed|merged` and the CHECK has
+    ///     enforced it since, with `closed_at` sitting unwritten. A vocabulary the
+    ///     database enforces but no path can reach is the "the feature exists but
+    ///     there is no path to it" shape — the operator has objected to that shape
+    ///     repeatedly (dead buttons, states the product claims but cannot reach).
+    ///   * The user-visible cost was already measured: the acceptance card for
+    ///     019 tells the operator that three of the 51 topics are `open`. With all
+    ///     51 open, the word "open" carries no information and a live topic cannot
+    ///     be told from a finished one.
+    ///   * Removing the states instead would delete a declared lifecycle from a
+    ///     shipped schema, which is a bigger act than giving it a path.
+    ///
+    /// WHAT HAPPENS TO A CLOSED TOPIC'S MEMORIES — the question that matters, and
+    /// the answer is **nothing**. A close changes the topic's own status and
+    /// nothing else: `get_topic_memories` and the tree reads do NOT filter on
+    /// topic status (measured — no query in the codebase has a `t.status =`
+    /// predicate), so a closed topic keeps answering exactly as before. That is
+    /// deliberate: a recall scope is a finding aid, not an access control, and
+    /// hiding finished work's evidence behind a status change would make the
+    /// record less auditable, not more.
+    ///
+    /// `merged` is NOT a transition here. Merging two recall scopes has to decide
+    /// what happens to every memory under both, which is a product decision, not a
+    /// state change.
+    ///
+    /// GUARDS, in the same discipline as every other write path here:
+    ///   * `open -> closed` only. A closed topic is not re-closable, and a second
+    ///     call is a refusal that names the current state rather than a no-op.
+    ///   * The topic must EXIST. Closing an unknown id is a refusal.
+    ///   * `closed_at` is written by the database (`NOW()`), never passed in, so
+    ///     the timestamp cannot be invented by the caller.
+    ///   * The event and the row move in ONE transaction: there is no state where
+    ///     the ledger says closed and the row says open.
+    pub async fn close_topic(&self, topic_id: &str, closed_by: &str) -> Result<TopicRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+
+        // Existence and current state in one read, BEFORE any write. A topic that
+        // is not there is a refusal; a topic that is already closed is a different
+        // refusal. Collapsing the two would make "already closed" look like
+        // "never existed".
+        let current = tx
+            .query_opt(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                   FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        let Some(row) = current else {
+            return Err(DbError::TopicNotFound {
+                id: topic_id.to_string(),
+            });
+        };
+        let status: String = row.get(3);
+        if status != "open" {
+            return Err(DbError::TopicNotOpen {
+                id: topic_id.to_string(),
+                status,
+            });
+        }
+
+        tx.execute(
+            "UPDATE topics SET status = 'closed', closed_at = NOW() WHERE id = $1",
+            &[&topic_id],
+        )
+        .await?;
+
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::TopicClosed,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: closed_by.to_string(),
+            project_id: row.get(1),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "topic_id": topic_id,
+                "title": row.get::<_, String>(2),
+                "previous_status": "open",
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Topic, topic_id),
+                ObjectRefDraft::new(RefType::Seat, closed_by, RefRole::Actor),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                   FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        let row = row_to_topic(&row);
+        tx.commit().await?;
+        Ok(row)
+    }
+
     /// `resolve` — the G3 closure path (018): `active -> resolved` +
     /// `MemoryResolved` in ONE transaction. The ONLY closure path: there is no
     /// background sweep and no automatic anything (contract §G3).
@@ -4168,6 +4276,18 @@ pub enum DbError {
         "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
     )]
     MemoryNoTierChange { id: String, tier: String },
+    /// `024`: the topic id names no row. Closing an unknown id is a refusal, not
+    /// a no-op — a no-op would let a caller believe a scope it never created is
+    /// now closed.
+    #[error("topic {id:?} not found")]
+    TopicNotFound { id: String },
+    /// `024`: the topic is not `open`, so there is no `open -> closed` transition
+    /// to make. Reported separately from `TopicNotFound` because the caller's
+    /// next action differs: one is a typo, the other is a double close.
+    #[error(
+        "topic {id:?} is {status:?}, not open — a close moves open -> closed and nothing else"
+    )]
+    TopicNotOpen { id: String, status: String },
     /// `020`: the decision id names no row. A read of a mistyped id must say so,
     /// not render an empty obligation.
     #[error("operator decision {id:?} not found")]
