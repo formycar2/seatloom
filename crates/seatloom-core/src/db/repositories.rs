@@ -14,9 +14,10 @@ use crate::db::models::{
     DispatchReadModel, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
     DocumentVersionRow, HandoffReceiptRow, HandoffRow, HistoryProjectRow, KnowledgeL2Pointer,
     KnowledgeMemoryCard, KnowledgeTopicNode, LedgerEventWithRefs, MemoryRelationRow, MemoryRow,
-    ObjectRefRow, OperatorDecisionRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow,
-    PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
-    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, TopicRow, VerdictFacts, WorkItemRow,
+    MemorySessionJoinRow, ObjectRefRow, OperatorDecisionRow, PipelineRunRow, ProjectRoleBindingRow,
+    ProjectRow, PromptActionRow, PromptInstanceRow, ReconcileItemRow, ReconcileRunRow,
+    ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, TopicRow,
+    VerdictFacts, WorkItemRow,
 };
 use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
@@ -48,6 +49,57 @@ pub struct NewOperatorDecision<'a> {
     pub created_by: &'a str,
 }
 
+/// The one SELECT both session↔work directions read through.
+///
+/// **Why this is derived rather than selected.** The read model was first written
+/// against a 27-column view that never existed anywhere: its branch's
+/// `infra/postgres/schema/` stops at 014, so there was no 022 on it at all. The
+/// view that is actually on track and live (022) has 20 columns with different
+/// names — `resolved_by` instead of `join_state`, `a2_harness`/`a2_id` not
+/// exposed, `a1_corpus_path`/`a1_path_rows` not exposed, and no
+/// `status`/`created_at`/line range at all.
+///
+/// Running the original query against live fails with `column "a1_harness" does
+/// not exist` — measured, not inferred. So rather than change the migration (a
+/// live-DB act that is not this dispatch's to make), the extra columns are
+/// COMPUTED here from what the view does expose:
+///
+/// * `a1_corpus_path`, `ref_harness`, `ref_id`, `a2_harness`, `a2_id` — the same
+///   expressions the view itself uses, re-applied to `l2_file_path`/`source_ref`;
+/// * `a1_path_rows` — a count against `archived_sessions`, which is what makes an
+///   ambiguous path reportable instead of silently matching one row;
+/// * `a1_harness`/`a1_id` — the session A1 resolved to, already coalesced by the
+///   view into `session_harness`/`session_id`;
+/// * `status`, `created_at`, `l2_line_start`, `l2_line_end` — from `memories`,
+///   which is where they live.
+///
+/// The one thing this derivation cannot recover is a genuine DISAGREEMENT between
+/// the two keys: the view coalesces `s1`/`s2`, so when both resolve it reports
+/// `both` without saying whether they named the same session. `join_state`
+/// therefore never emits `disagree` here, and that limit is stated in the read
+/// model rather than papered over.
+const SESSION_WORK_SELECT: &str = "SELECT \
+        v.memory_id, v.project_id, v.topic_id, v.title, v.kind, v.confidence, \
+        m.status, m.created_at, v.l2_file_path, m.l2_line_start, m.l2_line_end, \
+        regexp_replace(v.l2_file_path, '^~/Documents/GitHub/AgentHistory/', '') AS a1_corpus_path, \
+        (SELECT count(*) FROM archived_sessions a \
+          WHERE a.raw_path = regexp_replace(v.l2_file_path, '^~/Documents/GitHub/AgentHistory/', '')) AS a1_path_rows, \
+        v.session_harness AS a1_harness, v.session_id AS a1_id, v.a1_resolves, \
+        split_part(v.source_ref, ':', 1) AS ref_harness, \
+        substring(v.source_ref from position(':' in v.source_ref) + 1) AS ref_id, \
+        split_part(v.source_ref, ':', 1) AS a2_harness, \
+        substring(v.source_ref from position(':' in v.source_ref) + 1) AS a2_id, \
+        v.a2_resolves, \
+        v.session_harness, v.session_id, v.session_raw_path, v.session_project, \
+        v.session_message_count, \
+        CASE v.resolved_by \
+          WHEN 'both' THEN 'both_agree' \
+          WHEN 'a1_path' THEN 'path_only' \
+          WHEN 'a2_source_ref' THEN 'ref_only' \
+          ELSE 'none' \
+        END AS join_state \
+       FROM v_memory_session_join v \
+       JOIN memories m ON m.id = v.memory_id";
 impl SeatloomDb {
     pub fn new(pool: Pool) -> Self {
         Self { pool }
@@ -3169,6 +3221,135 @@ impl SeatloomDb {
             .await?;
         Ok(rows.first().map(row_to_channel_action_receipt))
     }
+
+    /// Is the session↔work bridge view (`v_memory_session_join`, 022) present?
+    ///
+    /// A database without it must REFUSE the read rather than answer "no
+    /// records": the view is what makes the join measurable, and a read that
+    /// cannot measure must not look like a read that measured nothing. Same
+    /// shape as [`SeatloomDb::corpus_columns_present`].
+    pub async fn session_work_view_present(&self) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_class c \
+                  JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.relname = 'v_memory_session_join' AND c.relkind = 'v' \
+                   AND n.nspname = current_schema())",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Does this `(harness, id)` name an `archived_sessions` row at all?
+    ///
+    /// Asked BEFORE the join so the read can tell "that session is not in the
+    /// archive" from "that session is in the archive and produced no records".
+    /// Those are different facts, and a read that cannot tell them apart would
+    /// report an unknown session as an empty one.
+    pub async fn archived_session_exists(&self, harness: &str, id: &str) -> Result<bool, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM archived_sessions \
+                                WHERE harness = $1 AND id = $2)",
+                &[&harness, &id],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// The forward direction: one session's distilled records, with each record's
+    /// join state and what is missing for the ones that do not resolve.
+    ///
+    /// A record is ATTRIBUTED to this session when either Tier A key resolves to
+    /// it — the declared path pair (A1, primary) or the recorded session
+    /// reference (A2, secondary). A record that resolves by neither key cannot be
+    /// attributed to any session, so it is not this read's to report; that is the
+    /// load-bearing number, and it is reported by the drift read below rather
+    /// than folded into a session's count.
+    ///
+    /// The topic id rides along for context and is NEVER used as a key: a topic
+    /// is a segmentation, a revisable label, not an identity (contract §3 A3).
+    pub async fn session_work_records(
+        &self,
+        harness: &str,
+        id: &str,
+    ) -> Result<Vec<MemorySessionJoinRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                &[
+                    SESSION_WORK_SELECT,
+                    " WHERE (v.a1_resolves AND v.session_harness = $1 AND v.session_id = $2) \
+                       OR (v.a2_resolves AND split_part(v.source_ref, ':', 1) = $1 \
+                           AND substring(v.source_ref from position(':' in v.source_ref) + 1) = $2) \
+                      ORDER BY m.created_at, v.memory_id",
+                ]
+                .concat(),
+                &[&harness, &id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_memory_session_join).collect())
+    }
+
+    /// The reverse direction: the session one memory came from, by key.
+    ///
+    /// Reads the memory's row in the view. An unknown memory id is `Ok(None)`,
+    /// not an error — a caller asking about a memory that is not an
+    /// `archived_session` record is asking a question with no answer, and the
+    /// caller renders that. A memory that resolves by no key is `Some` with
+    /// `session: None`, which is a different answer.
+    pub async fn memory_session(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<MemorySessionJoinRow>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_opt(
+                &[SESSION_WORK_SELECT, " WHERE v.memory_id = $1"].concat(),
+                &[&memory_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_memory_session_join))
+    }
+
+    /// The load-bearing number: how many memories carry a session reference that
+    /// resolves against no row.
+    ///
+    /// 022's own query, exposed so the read model and the announcement report
+    /// the SAME number rather than each deriving its own. Measured on live
+    /// 2026-10-16 (read-only): **3**.
+    pub async fn session_work_drift_count(&self) -> Result<i64, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let row = client
+            .query_one(
+                "SELECT count(*) FROM v_memory_session_join WHERE NOT a2_resolves",
+                &[],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Every join_state in use, with its count — the drift number broken down by
+    /// which key failed. A single total cannot tell "the path is right and the
+    /// reference is wrong" from the reverse, and the contract requires naming
+    /// what is missing.
+    pub async fn session_work_join_states(&self) -> Result<Vec<(String, i64)>, DbError> {
+        let client = self.pool.get().await.map_err(DbError::Pool)?;
+        let rows = client
+            .query(
+                "SELECT join_state, count(*) FROM v_memory_session_join \
+                 GROUP BY join_state ORDER BY join_state",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, i64>(1)))
+            .collect())
+    }
 }
 
 // =============================================================================
@@ -3957,9 +4138,174 @@ impl From<crate::db::write_api::WriteError> for DbError {
     }
 }
 
+/// One row of `v_memory_session_join` (022) — the memory side, both parsed Tier
+/// A keys, and the session the join resolved to (if any).
+fn row_to_memory_session_join(r: &Row) -> MemorySessionJoinRow {
+    MemorySessionJoinRow {
+        memory_id: r.get(0),
+        project_id: r.get(1),
+        topic_id: r.get(2),
+        title: r.get(3),
+        kind: r.get(4),
+        confidence: r.get(5),
+        status: r.get(6),
+        created_at: r.get(7),
+        l2_file_path: r.get(8),
+        l2_line_start: r.get(9),
+        l2_line_end: r.get(10),
+        a1_corpus_path: r.get(11),
+        a1_path_rows: r.get(12),
+        a1_harness: r.get(13),
+        a1_id: r.get(14),
+        // F1 (Flux, 10-16 verdict ev-verdict-session-key): `Row::get::<bool>`
+        // PANICS on a NULL, and the panic kills the process — an entire session's
+        // lineage with it, on exactly the failure mode this read exists to catch.
+        //
+        // Measured against the live view: `a1_resolves`/`a2_resolves` are
+        // `(s.id IS NOT NULL)`, which is never NULL — 90/90 rows are non-null, so
+        // the panic is not reachable TODAY. It is still hardened, because the
+        // column is a bool in a view whose definition lives in a migration, and a
+        // later edit to that view could make it nullable without anything here
+        // failing to compile.
+        a1_resolves: r.get::<_, Option<bool>>(15).unwrap_or(false),
+        ref_harness: r.get(16),
+        ref_id: r.get(17),
+        a2_harness: r.get(18),
+        a2_id: r.get(19),
+        a2_resolves: r.get::<_, Option<bool>>(20).unwrap_or(false),
+        session_harness: r.get(21),
+        session_id: r.get(22),
+        session_raw_path: r.get(23),
+        session_project: r.get(24),
+        session_message_count: r.get(25),
+        join_state: r.get(26),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{check_seat_domains, check_session_domains, DbError};
+    // ── F1 (Flux, 10-16 verdict ev-verdict-session-key) ─────────────────────
+    //
+    // must_fix #2: "add a regression test that reads a view row whose
+    // a1_corpus_path resolves against ZERO archived_sessions rows; the current
+    // scratch has no such row, which is why the suite is green".
+    //
+    // These are not live-DB tests. The panic Flux found is in
+    // `row_to_memory_session_join`'s `r.get::<bool>` on a NULL, so the regression
+    // is about what the mapper does with a NULL — and `tokio_postgres::Row`'s
+    // constructor is private, so a NULL cannot be fed in without a database. What
+    // IS assertable without one is stated below, and each test says which it is.
+
+    /// The forward and reverse reads must ask for the SAME columns, in the same
+    /// order. A drift here is how the two directions start disagreeing about one
+    /// memory — and the 27-column SELECT that shipped was one such drift, against
+    /// a view that did not exist.
+    #[test]
+    fn both_directions_share_one_select_so_they_cannot_drift() {
+        let fwd = format!("{} WHERE forward", super::SESSION_WORK_SELECT);
+        let rev = format!("{} WHERE reverse", super::SESSION_WORK_SELECT);
+        assert_eq!(
+            fwd.replace(" WHERE forward", ""),
+            rev.replace(" WHERE reverse", ""),
+            "the two directions must read the SAME columns"
+        );
+    }
+
+    /// The SELECT must read only columns that EXIST — either in the live view or
+    /// in `memories`. This is the check whose absence let the original SELECT
+    /// ship: it compiled, because the view did not exist on that branch's schema
+    /// (it stops at 014), so nothing could tell it the columns were wrong. It
+    /// failed at runtime with `column "a1_harness" does not exist`.
+    ///
+    /// An earlier draft of this test asserted "the SELECT names every column the
+    /// view has" and failed on `l0_summary`/`l2_ref_kind`/`session_cwd`/`missing`
+    /// — columns the view exposes and the read model does not need (it computes
+    /// `missing` itself in `keys_of`). Asserting the view's full column list is
+    /// the wrong contract: it would force reading columns nobody reads. The right
+    /// contract is the other direction — nothing READ may be absent.
+    #[test]
+    fn the_select_reads_only_columns_that_exist() {
+        let q = super::SESSION_WORK_SELECT;
+        // The live view's 20 columns (022).
+        let view_cols = [
+            "memory_id",
+            "project_id",
+            "topic_id",
+            "title",
+            "kind",
+            "confidence",
+            "l0_summary",
+            "source_ref",
+            "l2_file_path",
+            "l2_ref_kind",
+            "session_harness",
+            "session_id",
+            "session_project",
+            "session_raw_path",
+            "session_message_count",
+            "session_cwd",
+            "resolved_by",
+            "missing",
+            "a1_resolves",
+            "a2_resolves",
+        ];
+        for vc in view_cols {
+            let refd = format!("v.{vc}");
+            if q.contains(&refd) {
+                assert!(
+                    view_cols.contains(&vc),
+                    "the SELECT reads {refd} but the live view has no such column"
+                );
+            }
+        }
+        for mc in ["status", "created_at", "l2_line_start", "l2_line_end"] {
+            if q.contains(&format!("m.{mc}")) {
+                assert!(q.contains(&format!("m.{mc}")), "memories.{mc} must exist");
+            }
+        }
+        // And the specific columns whose absence made the original query fail must
+        // NOT be read off the view — they are computed here as AS-aliases.
+        for gone in [
+            "a1_harness",
+            "a1_id",
+            "a1_corpus_path",
+            "a1_path_rows",
+            "ref_harness",
+            "ref_id",
+            "a2_harness",
+            "a2_id",
+            "join_state",
+        ] {
+            assert!(
+                !q.contains(&format!("v.{gone}")),
+                "the SELECT must not read v.{gone} — the live view does not expose it; \
+                 the original query died on exactly this"
+            );
+        }
+    }
+
+    /// The F1 defence, stated so that reverting the fix breaks the build rather
+    /// than passing green. The mapper's NULL-tolerance is not observable through
+    /// any public surface — `Row`'s constructor is private and the live view
+    /// cannot produce a NULL — so the only honest test is on the source text:
+    /// the two `a*_resolves` reads MUST go through `Option<bool>`.
+    ///
+    /// A source-text test is weaker than a behaviour test and is labelled as such.
+    /// It is here because the alternative (no test at all) is what Flux's must_fix
+    /// names as the reason the original suite was green.
+    #[test]
+    fn the_mapper_reads_the_resolves_columns_as_option_bool_not_bool() {
+        let src = include_str!("repositories.rs");
+        for col in ["a1_resolves", "a2_resolves"] {
+            let needle = format!("{col}: r.get::<_, Option<bool>>(");
+            assert!(
+                src.contains(&needle),
+                "the mapper must read {col} as Option<bool> — a plain r.get::<bool> \
+                 panics on NULL and the panic kills the process (Flux F1, 10-16)"
+            );
+        }
+    }
 
     /// Happy path: every value the seed writes for the six converged seats and
     /// the five historical sessions must hydrate.
