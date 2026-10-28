@@ -21,6 +21,25 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 2
 
+# Scope. Default is pending, the population the operator can still click.
+# `--include-accepted` widens it to decided rows, and that flag exists for a
+# measured reason: on 2026-10-29 the pending population had NO shape-B card left
+# (all three had been accepted), so removing the batch path from the SQL changed
+# nothing the script reported and the mutation was invisible. Shape B lives almost
+# entirely in the accepted population — 15 cards there, 0 pending — so a mutation
+# test of this checker that only runs the default scope cannot see the defect it
+# is supposed to catch. This is Aegis's 809839d point applied to myself: a check
+# whose test population has no instance of the defect is a check that passes
+# whether or not it works.
+STATUS_FILTER="'pending'"
+SCOPE_LABEL="pending"
+for arg in "$@"; do
+  case "$arg" in
+    --include-accepted) STATUS_FILTER="'pending','accepted'"; SCOPE_LABEL="pending+accepted" ;;
+    *) echo "usage: $0 [--include-accepted]" >&2; exit 2 ;;
+  esac
+done
+
 db() {
   podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "$1" 2>/dev/null
 }
@@ -30,7 +49,7 @@ if [ -z "$(db "select 1 from pg_tables where tablename='acceptances'")" ]; then
   exit 2
 fi
 
-echo "== pending acceptance cards: is each verdict ref a verdict about THIS dispatch? =="
+echo "== $SCOPE_LABEL acceptance cards: is each verdict ref a verdict about THIS dispatch? =="
 echo "   rule: LYRA-2026-10-29-verdict-ref-validity-ruling-v1 (supersedes the 10-27 ruling on this point)"
 bad=0
 good=0
@@ -75,7 +94,7 @@ done <<< "$(db "
     coalesce((select r.ref_id from event_object_refs r
                where r.event_id=a.flux_verdict_ref and r.role='subject' and r.ref_type='document'
                limit 1), '') as verdict_doc
-  from acceptances a where a.status='pending' order by a.id;")"
+  from acceptances a where a.status in ($STATUS_FILTER) order by a.id;")"
 
 echo "  good=$good bad=$bad (of which shape B, batch verdicts: $batch)"
 
@@ -106,11 +125,11 @@ fi
 
 if [ "$bad" -gt 0 ]; then
   echo
-  echo "FAIL: $bad pending card(s) have a verdict ref that is not a verdict about them."
+  echo "FAIL: $bad $SCOPE_LABEL card(s) have a verdict ref that is not a verdict about them."
   echo "Do not let the operator click those: the merge criterion is not met."
   exit 1
 fi
 
 echo
-echo "OK: every pending card's verdict ref is a verdict about that very dispatch."
+echo "OK: every $SCOPE_LABEL card's verdict ref is a verdict about that very dispatch."
 exit 0
