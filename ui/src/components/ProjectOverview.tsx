@@ -50,7 +50,7 @@ const ProjectOverview: React.FC = () => {
         <h2 className="text-3xl font-black tracking-tight text-ink">{currentProject.name}</h2>
         <div className="flex items-center gap-2 text-xs text-ink-soft font-bold opacity-60">
           <FolderOpen size={14} />
-          <span className="monospace">{currentProject.path}</span>
+          <span className="monospace">{currentProject.path ?? '无 home_path'}</span>
         </div>
       </header>
 

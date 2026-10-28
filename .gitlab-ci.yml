@@ -72,10 +72,10 @@ rust:test:
     - name: hub.i.basemind.com/zhangxiaolong/ci/postgres:16
       alias: postgres
   variables:
-    POSTGRES_DB: "seatloom"
+    POSTGRES_DB: "seatloom_ci"
     POSTGRES_USER: "seatloom"
     POSTGRES_PASSWORD: "seatloom"
-    DATABASE_URL: "postgresql://seatloom:seatloom@postgres:5432/seatloom"
+    DATABASE_URL: "postgresql://seatloom:seatloom@postgres:5432/seatloom_ci"
   cache:
     - key:
         files: [Cargo.lock]

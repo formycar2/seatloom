@@ -99,6 +99,35 @@ pub fn tools_list_result() -> Value {
             enqueue_dispatch_tool(),
             get_next_dispatch_tool(),
             complete_dispatch_tool(),
+            cancel_dispatch_tool(),
+            request_acceptance_tool(),
+            cancel_acceptance_tool(),
+            get_acceptance_lineage_tool(),
+            // --- D5 knowledge layer (Lane B) ---
+            recall_tool(),
+            remember_tool(),
+            promote_tool(),
+            forget_tool(),
+            resolve_tool(),
+            get_dispatch_tool(),
+            query_ledger_tool(),
+            open_topic_tool(),
+            get_knowledge_tree_tool(),
+            get_topic_memories_tool(),
+            crate::intent::plan_intent_tool(),
+            // --- Historical session corpus (LYRA contract slice 2) ---
+            crate::history::list_history_projects_tool(),
+            crate::history::list_history_sessions_tool(),
+            crate::history::get_history_session_turns_tool(),
+            // --- Operator decisions (020): the structured "waiting on the human" ---
+            request_operator_decision_tool(),
+            resolve_operator_decision_tool(),
+            list_operator_decisions_tool(),
+            // --- The session↔work bridge (LYRA contract §11.2 slice 2) ---
+            // Two read-only tools over `v_memory_session_join`, one in each
+            // direction. Without these the view is data nothing can read.
+            crate::session_work::session_work_tool(),
+            crate::session_work::memory_session_tool(),
         ]
     })
 }
@@ -114,12 +143,20 @@ fn emit_event_tool() -> Value {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Event type. One of the 12 PascalCase values.",
+                    "description": "Event type. One of the 30 PascalCase values.",
                     "enum": [
                         "SessionStarted", "WorkItemCreated", "WorkItemStatusChanged",
                         "ArtifactCreated", "HandoffSent", "HandoffAccepted",
                         "HandoffCompleted", "ReviewVerdictIssued", "SeatDelegationIssued",
-                        "SeatDelegationClosed", "SupervisorMessage", "SeatResponse"
+                        "SeatDelegationClosed", "SupervisorMessage", "SeatResponse",
+                        "SeatDispatchIssued", "SeatDispatchDelivered", "SeatDispatchCompleted",
+                        "SeatDispatchFailed", "SeatDispatchRetried", "SeatDispatchCancelled",
+                        "AcceptanceRequested", "AcceptanceGranted", "AcceptanceRejected",
+                        "AcceptanceCancelled",
+                        "MemoryCreated", "MemoryRecalled", "MemoryPromoted",
+                        "MemoryForgotten", "MemoryResolved",
+                        "OperatorDecisionRequested", "OperatorDecisionResolved",
+                        "TopicOpened"
                     ]
                 },
                 "payload": {
@@ -138,7 +175,8 @@ fn emit_event_tool() -> Value {
                                 "type": "string",
                                 "enum": [
                                     "workitem", "session", "handoff", "artifact", "document",
-                                    "seat", "topic", "project", "delegation"
+                                    "seat", "topic", "project", "delegation", "dispatch",
+                                    "acceptance", "memory", "decision"
                                 ]
                             },
                             "ref_id": { "type": "string", "minLength": 1 },
@@ -211,6 +249,16 @@ fn enqueue_dispatch_tool() -> Value {
                             "dep_value": { "type": "string", "minLength": 1, "description": "canonical_events.id | artifacts.id | dispatches.id" }
                         }
                     }
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Retry budget (013): how many FAILED attempts are re-opened to ready before the failure is terminal. 0 (default) = the first failure is terminal."
+                },
+                "verdict_event_id": {
+                    "type": "string",
+                    "pattern": "^ev-.+",
+                    "description": "Only when payload.kind is 'verification' (Aegis ruling 2026-10-11 part 2). The pre-declared id of the ReviewVerdictIssued event this request asks for: the tool MINTS one when you omit it and VALIDATES yours when you supply it, then returns it in the result. The verifier MUST emit its verdict with exactly this id — hang your gated self-dispatch on dep_kind=event, dep_value=<that id> so the existing blocked -> ready trigger wakes you. Supplying it for a non-verification payload is refused."
                 }
             }
         }
@@ -243,15 +291,530 @@ fn get_next_dispatch_tool() -> Value {
 fn complete_dispatch_tool() -> Value {
     json!({
         "name": "complete_dispatch",
-        "description": "Mark THIS seat's in_flight dispatch done and append SeatDispatchCompleted in ONE \
-            transaction. The seat can only complete its own in_flight dispatch (identity from \
-            SEATLOOM_ACTOR_REF, ownership + in_flight state checked in SQL).",
+        "description": "Close THIS seat's in_flight dispatch and append the matching event in ONE \
+            transaction. outcome='done' (default, backward compatible) -> done + SeatDispatchCompleted. \
+            outcome='failed' (+ optional reason) applies the 013 retry budget: retry_count < max_retries \
+            re-opens the dispatch to ready (+SeatDispatchRetried, any eligible seat may pull it again); \
+            otherwise it fails terminally (+SeatDispatchFailed). The seat can only complete its own \
+            in_flight dispatch (identity from SEATLOOM_ACTOR_REF, ownership + in_flight state checked \
+            in SQL).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
             "required": ["dispatch_id"],
             "properties": {
-                "dispatch_id": { "type": "string", "minLength": 1, "description": "The in_flight dispatch to complete." }
+                "dispatch_id": { "type": "string", "minLength": 1, "description": "The in_flight dispatch to complete." },
+                "outcome": { "type": "string", "enum": ["done", "failed"], "description": "Default 'done'. 'failed' reports the attempt failed (013 retry/failure path)." },
+                "reason": { "type": "string", "description": "Optional failure reason; carried verbatim into the SeatDispatchRetried / SeatDispatchFailed payload." }
+            }
+        }
+    })
+}
+
+fn cancel_dispatch_tool() -> Value {
+    json!({
+        "name": "cancel_dispatch",
+        "description": "Withdraw a non-terminal dispatch (issuer side, 013): ready|blocked|in_flight -> \
+            cancelled (terminal) + SeatDispatchCancelled in ONE transaction. Guarded on \
+            issued_by = the resolved SEATLOOM_ACTOR_REF — only the issuer may cancel, and terminal rows \
+            are immutable. Cancelling an in_flight dispatch releases the one-in-flight slot (the work \
+            is abandoned, which is the intended semantics).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1, "description": "The dispatch to withdraw." }
+            }
+        }
+    })
+}
+
+fn request_acceptance_tool() -> Value {
+    json!({
+        "name": "request_acceptance",
+        "description": "Hand a COMPLETED delivery to the D2 acceptance gate (014): insert the \
+            acceptances row + append AcceptanceRequested in ONE transaction. The seat NEVER merges its \
+            own work — an operator later accepts (merge into the named base, via the Tauri command) or \
+            rejects (auto-enqueued rework). Guards: the merge base must be NAMED (the `base` argument, \
+            else SEATLOOM_INTEGRATION_BRANCH) and must exist as a local branch — never the old \
+            hardcoded 'track', which is not a branch in this repository; the dispatch must belong to the \
+            calling seat and be done; flux_verdict_ref must name an existing ReviewVerdictIssued event \
+            or artifact AND is a ReviewVerdictIssued whose payload->>'verdict' is 'pass' AND which is about \
+            THIS dispatch (payload->>'dispatch_id' = <dispatch_id>, or an event_object_refs row with \
+            ref_type='dispatch'); the dispatch must have no pending acceptance; a valid \
+            acceptance_plan (shape v1) is REQUIRED — a missing or malformed plan is a typed rejection \
+            before any DB contact. \
+            Identity from SEATLOOM_ACTOR_REF (never a parameter). \
+            \n\
+            OPTIONAL `acceptance_id`: omit it and the id is derived deterministically as \
+            `acc-<dispatch_id>` — the historical behaviour, unchanged for every existing caller. \
+            Supply it to re-open a card you cancelled under the SAME id: cancel_acceptance is terminal \
+            and never deletes the row, so without this the primary key stayed occupied and \
+            `duplicate key value violates unique constraint acceptances_pkey` was unavoidable. A \
+            supplied id must be fresh, or name a CANCELLED card whose dispatch you own; an id held by \
+            a pending, accepted or rejected card is refused, and another seat's id is never borrowable \
+            — the seat-identity guard is not bypassed by choosing an id.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id", "branch", "how_to_verify", "flux_verdict_ref", "acceptance_plan"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1, "description": "The seat's COMPLETED dispatch being handed over." },
+                "branch": { "type": "string", "minLength": 1, "description": "The delivery branch to merge on accept, e.g. packet/<seat>/<id>." },
+                "how_to_verify": { "type": "string", "minLength": 1, "description": "The one-step verification for the operator: 'do A, see B'." },
+                "flux_verdict_ref": { "type": "string", "minLength": 1, "description": "The Flux GREEN verdict for THIS dispatch: a ReviewVerdictIssued event id whose payload->>'verdict' is 'pass' and which names this dispatch. Must exist, must be a ReviewVerdictIssued, must pass, and must be about this dispatch — a verdict about another unit of work, or a red one, is a typed refusal. Measured on live: three pending cards had named a FAIL verdict about a different dispatch." },
+                "base": { "type": "string", "minLength": 1, "description": "The merge base — the integration branch this delivery branched from (here track/infra-foundation). Optional only because SEATLOOM_INTEGRATION_BRANCH can supply it; if neither names it the request is refused. Validated to exist as a local branch at request time." },
+                "acceptance_plan": {
+                    "type": "object",
+                    "description": "The structured acceptance plan (shape v1, PO-authored, immutable after the request). EXACTLY these keys: plan_version (integer, must be 1); scenario (non-empty string); steps (non-empty array of {action non-empty, input optional}); expected (non-empty array of {output non-empty, expect non-empty}); preconditions (optional array of non-empty strings). An unknown key or an empty object is a typed rejection before any DB contact — no plan, no card.",
+                    "required": ["plan_version", "scenario", "steps", "expected"],
+                    "properties": {
+                        "plan_version": { "type": "integer", "description": "Must be 1." },
+                        "scenario": { "type": "string", "minLength": 1 },
+                        "steps": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["action"],
+                                "properties": {
+                                    "action": { "type": "string", "minLength": 1 },
+                                    "input": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "expected": {
+                            "type": "array", "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["output", "expect"],
+                                "properties": {
+                                    "output": { "type": "string", "minLength": 1 },
+                                    "expect": { "type": "string", "minLength": 1 }
+                                }
+                            }
+                        },
+                        "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                    }
+                },
+                "acceptance_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "OPTIONAL. Omit it and the id is derived as `acc-<dispatch_id>` (unchanged behaviour). Supply it to re-open a card you cancelled under the same id — the only way through the `acceptances_pkey` a cancelled row keeps occupying. Accepted values: a fresh id, or the id of a CANCELLED acceptance whose dispatch is owned by the calling seat. Refused: an id held by a pending card, an id in the terminal accepted/rejected state, another seat's id, and a cancelled card that gates a different dispatch."
+                }
+            }
+        }
+    })
+}
+
+/// `get_acceptance_lineage` — the pure-read lineage of one acceptance card
+/// (acceptance-lineage milestone, Lane B). No identity parameter: a read of an
+/// already-recorded card has nothing to act as, and the non-forgeable-identity
+/// rule governs writes. One shared assembler with the Tauri command, so the two
+/// surfaces cannot drift.
+fn get_acceptance_lineage_tool() -> Value {
+    json!({
+        "name": "get_acceptance_lineage",
+        "description": "Assemble one acceptance card's lineage (READ ONLY, zero writes): the \
+            card itself, the dispatch it gates (title/issuer/when/original task payload), the full \
+            event chain in occurred_at order, the Flux verdict with its evidence, the artifact/ \
+            document products, the dispatch's dependency edges with each referent's existence, and \
+            the rework dispatch when the card was rejected. Answers 'what is this card and where \
+            did it come from' without psql. An unknown acceptance id is a typed rejection, not an \
+            empty card.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to assemble, acc-<dispatch-id>." }
+            }
+        }
+    })
+}
+
+/// `cancel_acceptance` — the seat pulls back its OWN pending request. The
+/// acceptance-side mirror of `cancel_dispatch` (013): the actor that created the
+/// row may withdraw it while it is non-terminal, and the reason is mandatory so
+/// the ledger records WHY the card is no longer being offered.
+fn cancel_acceptance_tool() -> Value {
+    json!({
+        "name": "cancel_acceptance",
+        "description": "Withdraw the calling seat's OWN pending acceptance request (D2 follow-on): \
+            pending -> cancelled (terminal) + AcceptanceCancelled in ONE transaction. No merge, no \
+            rework — the card simply stops being offered to the operator, with the reason recorded. \
+            Use it when the card was satisfied by other means (e.g. the work already landed through a \
+            bootstrap install) instead of hand-editing the ledger. Guarded on the acceptance being \
+            pending AND gating a dispatch owned by the resolved SEATLOOM_ACTOR_REF — terminal rows are \
+            immutable, so a decided card can never be re-cancelled.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["acceptance_id", "reason"],
+            "properties": {
+                "acceptance_id": { "type": "string", "minLength": 1, "description": "The acceptance to withdraw, acc-<dispatch-id>." },
+                "reason": { "type": "string", "minLength": 1, "description": "One line, recorded verbatim on the row and in the AcceptanceCancelled event payload." }
+            }
+        }
+    })
+}
+
+/// `recall` — progressive-disclosure retrieval. Depth defaults to l0; the
+/// topic's ancestor chain rides along so a memory is never read out of context.
+fn recall_tool() -> Value {
+    json!({
+        "name": "recall",
+        "description": "Recall a project+topic's ACTIVE memories with progressive disclosure: \
+            depth l0 (default) returns only the ~100-token summaries, l1 adds the ~2K overview, l2 \
+            adds the raw pointer (document id or file path). The response carries the topic's \
+            ANCESTOR CHAIN (topics.parent_topic_id) so a memory is never read out of context. \
+            Optional text query over title + l0_summary. Side effect: exactly one MemoryRecalled \
+            event per returned memory (heat+1, recall_count+1) — every recall is audited; zero hits \
+            append zero events. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." },
+                "topic_id": { "type": "string", "minLength": 1, "description": "The topic to recall from. project + topic is the ONLY scoping framework — there is no all-projects recall." },
+                "query": { "type": "string", "description": "Text filter over title + l0_summary. Omitted = every active memory of the topic." },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed rejection." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories that a newer one superseded (018). They are excluded by default — a stale decision served as current is worse than no memory — and each included row carries superseded_by." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Page size, default 20, hard ceiling 100. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
+/// `remember` — create a memory. Tier starts cold and status starts active; the
+/// caller cannot specify either.
+fn remember_tool() -> Value {
+    json!({
+        "name": "remember",
+        "description": "Create a memory (small-granularity distilled knowledge, scoped by project + \
+            topic) and append MemoryCreated in ONE transaction. l0_summary is required and is the \
+            only default layer; l1_overview and the l2 pointer are optional. The l2 pointer pair must \
+            match: l2_ref_kind 'document' requires l2_document_id (and no file path), 'file' requires \
+            l2_file_path (and no document id). source_kind/source_ref record provenance. Tier starts \
+            'cold', status starts 'active' — neither is caller-settable. Identity from \
+            SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id", "title", "l0_summary", "l2_ref_kind", "source_kind", "source_ref", "kind", "confidence"],
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it." },
+                "topic_id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "l0_summary": { "type": "string", "minLength": 1, "description": "~100 tokens; the only default layer." },
+                "l1_overview": { "type": "string", "description": "~2K tokens; fetched only when a recall asks for depth l1." },
+                "l2_ref_kind": { "type": "string", "enum": ["document", "file"] },
+                "l2_document_id": { "type": "string", "description": "Required when l2_ref_kind is 'document'." },
+                "l2_file_path": { "type": "string", "description": "Required when l2_ref_kind is 'file'; repo-relative." },
+                "l2_body_digest": { "type": "string", "description": "sha256 hex of the referenced body, documents.body_digest style." },
+                "source_kind": { "type": "string", "enum": ["archived_session", "canonical_event", "document", "manual"] },
+                "source_ref": { "type": "string", "minLength": 1, "description": "Polymorphic provenance: '<harness>:<id>' for archived_session, an event id, a doc id, or an actor note. No FK — recorded, never guessed." },
+                "kind": { "type": "string", "enum": ["decision", "failure", "fact", "preference", "artifact", "unresolved"], "description": "REQUIRED (018). The record type; the DB default is a backfill only, never a write path." },
+                "confidence": { "type": "string", "enum": ["quoted", "inferred"], "description": "REQUIRED (018). Binary, never a score: quoted = the raw text says it, inferred = derived." },
+                "supersedes": { "type": "string", "description": "The memory this one replaces (018). Create-time only; the edge is written in BOTH spellings (the column and a memory_relations row) in the SAME transaction." },
+                "l2_line_start": { "type": "integer", "description": "First line of the L2 evidence (1-based). REQUIRED when l2_ref_kind='file' AND source_kind='archived_session'." },
+                "l2_line_end": { "type": "integer", "description": "Last line of the L2 evidence (>= l2_line_start)." },
+                "relations": {
+                    "type": "array",
+                    "description": "Extra typed edges to other memories (018). Each target must already exist; a duplicate edge in one call is refused.",
+                    "items": {
+                        "type": "object",
+                        "required": ["to_id", "rel"],
+                        "properties": {
+                            "to_id": { "type": "string", "minLength": 1 },
+                            "rel": { "type": "string", "enum": ["supersedes", "caused_by", "fixed_by", "refines"] }
+                        }
+                    }
+                },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        }
+    })
+}
+
+/// `promote` — the ONLY tier channel. Explicit target tier, up OR down; there is
+/// no automatic decay anywhere.
+fn promote_tool() -> Value {
+    json!({
+        "name": "promote",
+        "description": "Change a memory's tier — the ONLY channel, and the only way a tier ever \
+            moves. to_tier may be higher OR lower than the current tier; naming the tier the memory \
+            already has is a typed refusal (no transition, nothing written). Appends MemoryPromoted \
+            with from_tier/to_tier in ONE transaction. There is NO automatic heat decay and NO \
+            background daemon. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "to_tier"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "to_tier": { "type": "string", "enum": ["cold", "warm", "hot"] }
+            }
+        }
+    })
+}
+
+/// `forget` — the soft tombstone. The row is never hard-deleted.
+fn forget_tool() -> Value {
+    json!({
+        "name": "forget",
+        "description": "Soft-forget a memory: status active -> forgotten, the reason recorded on the \
+            row and in the MemoryForgotten event, ONE transaction. The row is NEVER hard-deleted \
+            (ledger discipline), and a second forget of a tombstone is refused. A forgotten memory is \
+            excluded from recall. Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id", "reason"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 },
+                "reason": { "type": "string", "minLength": 1, "description": "Mandatory: a tombstone with no recorded why is an unexplained edit to the ledger." }
+            }
+        }
+    })
+}
+
+/// `get_dispatch` — the dispatch read model. Pure read, no identity.
+/// `resolve` — the G3 closure path (018): the only way an `unresolved` record
+/// becomes `resolved`. No background sweep, ever.
+fn resolve_tool() -> Value {
+    json!({
+        "name": "resolve",
+        "description": "Close an ACTIVE memory: active -> resolved + MemoryResolved in ONE transaction, \
+            with resolved_by taken from the server-side SEATLOOM_ACTOR_REF (never a parameter) and \
+            resolved_at = now. This is the ONLY closure path — there is no background sweep and no \
+            automatic anything. Refused: an unknown id, an already-resolved record (immutable), a \
+            forgotten tombstone (immutable). Identity from SEATLOOM_ACTOR_REF (never a parameter).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
+/// `open_topic` — the governed creation of a recall scope (Aegis ruling
+/// 2026-10-11). `remember` cannot create one implicitly: a typo would open a
+/// scope nobody ever recalls from. `opened_by` is server-side, never a parameter.
+fn open_topic_tool() -> Value {
+    json!({
+        "name": "open_topic",
+        "description": "Open a recall scope (topic) — idempotently. A second open of the same \
+            topic_id succeeds, changes nothing and emits no event. opened_by is resolved from \
+            SEATLOOM_ACTOR_REF server-side (never a parameter). Refusals (typed, zero writes): \
+            the parent topic does not exist (open the parent first — a scope is never created \
+            implicitly); the project does not exist; the parent is in another project; the parent \
+            would make the new topic its own ancestor. On success the row and one TopicOpened \
+            event land in ONE transaction.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id", "title"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1, "description": "The scope id, e.g. 'd5-knowledge-layer'. Stable: memories reference it forever." },
+                "title": { "type": "string", "minLength": 1 },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." },
+                "parent_topic_id": { "type": "string", "description": "An existing topic in the SAME project. Omit for a root scope." }
+            }
+        }
+    })
+}
+
+/// `get_knowledge_tree` — the topic tree of a project, with memory counts.
+/// PURE READ: no write, no event (a panel query, not a recall).
+fn get_knowledge_tree_tool() -> Value {
+    json!({
+        "name": "get_knowledge_tree",
+        "description": "The knowledge topic tree for a project: every topic with its parent and its \
+            ACTIVE, not-superseded memory count. PURE READ — writes nothing, appends no event (a \
+            panel query, not a recall; recall keeps its MemoryRecalled audit). Scope is hard: one \
+            project, never an all-projects read. An empty project is an empty tree, not an error.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `get_topic_memories` — the memories of one topic, progressively disclosed.
+/// PURE READ: no write, no event.
+fn get_topic_memories_tool() -> Value {
+    json!({
+        "name": "get_topic_memories",
+        "description": "The memories of one topic at a disclosure depth, WITH the topic's ancestor \
+            chain (a memory is never returned out of its context). depth l0 (default) returns only \
+            the ~100-token summaries; l1 adds the overview; l2 adds the evidence pointer with the \
+            line range. The token budget belongs to the caller. Superseded rows are excluded unless \
+            include_superseded is set, and then each carries supersededBy. PURE READ — writes \
+            nothing, appends no event.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic_id"],
+            "properties": {
+                "topic_id": { "type": "string", "minLength": 1 },
+                "depth": { "type": "string", "enum": ["l0", "l1", "l2"], "description": "Which layer to return. Default l0. An unknown depth is a typed refusal." },
+                "include_superseded": { "type": "boolean", "default": false, "description": "Include memories a newer one superseded; each is annotated with supersededBy." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Page size, default 50, hard ceiling 200. Ordered by heat DESC then updated_at DESC." }
+            }
+        }
+    })
+}
+
+/// `request_operator_decision` — put a decision only the operator can rule on
+/// into the one structured place that answers "what is waiting on the human?"
+/// (020). NOT a message table: a message does not constitute a decision
+/// obligation. Only the operator (`human:*`) and Aegis (`seat:seat-aegis-001`)
+/// may create one; a seat is refused, because a seat that could create an
+/// obligation could push its own work onto the operator's plate.
+///
+/// `choices` and `consequence` are REQUIRED: one option is not a choice, and a
+/// choice offered without its consequence is the operator clicking in the dark.
+fn request_operator_decision_tool() -> Value {
+    json!({
+        "name": "request_operator_decision",
+        "description": "Put a decision only the operator can rule on into the one structured place \
+            that answers 'how many things are waiting on the human right now, and about what?' \
+            (020). This is NOT a message table — a message does not constitute a decision \
+            obligation; blocked dispatches, failed reads and rework belong to a seat or to Aegis. \
+            CREATORS: only the operator (human:*) and seat:seat-aegis-001. Any other seat is \
+            REFUSED (not discouraged): a seat that could create an obligation could push its own \
+            work onto the operator's plate. REQUIRED: target (the concrete thing to decide, not a \
+            paragraph), choices (a NON-EMPTY array of DISTINCT options — one option is not a \
+            choice), consequence (what happens once it is decided). OPTIONAL: evidence (dispatch \
+            ids, verdict refs, ruling refs — the support chain), decider (default \
+            'human:supervisor'; set a seat decider when Aegis is creating an obligation for ITSELF, \
+            which then does NOT count in the operator's pending total). On success the row and one \
+            OperatorDecisionRequested event land in ONE transaction.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision_id", "target", "choices", "consequence"],
+            "properties": {
+                "decision_id": { "type": "string", "minLength": 1, "description": "The obligation id, e.g. 'dec-containment-exemption'. Stable: it is referenced forever." },
+                "target": { "type": "string", "minLength": 1, "description": "The CONCRETE thing to decide — not a paragraph. This is the whole point of the object." },
+                "choices": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "The legal options. A single option is not a choice; an empty array is not a decision. Distinct strings only — the ruling records ONE string."
+                },
+                "consequence": { "type": "string", "minLength": 1, "description": "What happens once it is decided. REQUIRED: a choice offered without its consequence is the operator clicking in the dark." },
+                "evidence": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "The support chain: dispatch ids, verdict refs, ruling refs — so the claim can be checked rather than trusted. Optional; a blank entry is a refusal."
+                },
+                "decider": { "type": "string", "minLength": 1, "description": "Who is entitled to rule. Omit for the operator (the default). Must be human:* or seat:* — a fabricated decider is an obligation nobody owes." },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `resolve_operator_decision` — the ruling. The only rule: the caller IS the
+/// decider. A second ruling on a resolved obligation is refused (terminal and
+/// immutable, exactly like a decided acceptance).
+fn resolve_operator_decision_tool() -> Value {
+    json!({
+        "name": "resolve_operator_decision",
+        "description": "Land the ruling on an operator decision (020): which of the row's OWN \
+            choices was taken. The caller must BE the decider — a ruling from anyone else is not \
+            a ruling. A row that is already resolved is REFUSED: resolved is terminal and \
+            immutable, the same rule that keeps a decided acceptance from being rolled back, \
+            because the row is a projection of an append-only ledger. A new question is a new \
+            decision, never a rewrite of an answered one. The operator's path is the desktop app \
+            acting as the user's agent; Aegis resolves the rows it created for itself.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision_id", "chosen"],
+            "properties": {
+                "decision_id": { "type": "string", "minLength": 1 },
+                "chosen": { "type": "string", "minLength": 1, "description": "Which of the row's OWN choices was taken. Anything else is a typed refusal naming the legal options." }
+            }
+        }
+    })
+}
+
+/// `list_operator_decisions` — the pure read that answers the count question.
+/// PURE READ: no write, no event.
+///
+/// The decider defaults to the CALLER, not to the operator: a seat asking is
+/// answered about itself and cannot enumerate what is waiting on the operator.
+/// That is the same scoping discipline every other read follows.
+fn list_operator_decisions_tool() -> Value {
+    json!({
+        "name": "list_operator_decisions",
+        "description": "The operator decisions of a project, rendered for a human (020). PURE READ \
+            — writes nothing, appends no event. THE DECIDER DEFAULTS TO THE CALLER: a seat asking \
+            is answered about itself and cannot enumerate what is waiting on the operator. \
+            status 'pending' (default) is the question the object exists for; 'resolved' is the \
+            audit of what has been ruled. An empty answer is an empty answer, not an error.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "status": { "type": "string", "enum": ["pending", "resolved"], "description": "Which obligations to list. Default 'pending'. An unknown status is a typed refusal." },
+                "decider": { "type": "string", "minLength": 1, "description": "Whose obligations. Defaults to the calling actor. Must be human:* or seat:*." },
+                "project_id": { "type": "string", "minLength": 1, "description": "Optional only because SEATLOOM_PROJECT_ID can supply it; a project is never fabricated." }
+            }
+        }
+    })
+}
+
+/// `get_dispatch` — one dispatch's read model. Pure read, no identity.
+fn get_dispatch_tool() -> Value {
+    json!({
+        "name": "get_dispatch",
+        "description": "One dispatch's read model: the row (including the ORIGINAL task statement in \
+            payload), its LIVE status (recomputed from its dependencies' existence, the same rule the \
+            pull decision uses), and each dependency edge with its referent's existence. Pure read — \
+            zero writes, zero events, no write capability. Coordination state is visible to the fleet, \
+            so no seat identity is required.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dispatch_id"],
+            "properties": {
+                "dispatch_id": { "type": "string", "minLength": 1 }
+            }
+        }
+    })
+}
+
+/// `query_ledger` — a filtered ledger query. Pure read, no identity.
+fn query_ledger_tool() -> Value {
+    json!({
+        "name": "query_ledger",
+        "description": "Query the canonical ledger: canonical_events with their event_object_refs, \
+            filtered by project, event types (validated against the closed vocabulary), a ref \
+            (ref_type + ref_id together), and an occurred_at window; newest first, paged. Pure read — \
+            zero writes, zero events. This is the tool that ends the psql era.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "project_id": { "type": "string", "minLength": 1 },
+                "event_types": { "type": "array", "items": { "type": "string" }, "description": "Event types from the closed vocabulary; an unknown type is a typed rejection." },
+                "ref_type": { "type": "string", "description": "With ref_id: filter to events naming that object." },
+                "ref_id": { "type": "string" },
+                "from": { "type": "string", "description": "RFC3339 inclusive lower bound on occurred_at." },
+                "to": { "type": "string", "description": "RFC3339 inclusive upper bound on occurred_at." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 50, hard ceiling 200." },
+                "offset": { "type": "integer", "minimum": 0 }
             }
         }
     })
@@ -319,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_four_tools() {
+    fn tools_list_advertises_the_twenty_seven_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -329,28 +892,123 @@ mod tests {
                 "emit_event",
                 "enqueue_dispatch",
                 "get_next_dispatch",
-                "complete_dispatch"
+                "complete_dispatch",
+                "cancel_dispatch",
+                "request_acceptance",
+                "cancel_acceptance",
+                "get_acceptance_lineage",
+                "recall",
+                "remember",
+                "promote",
+                "forget",
+                "resolve",
+                "get_dispatch",
+                "query_ledger",
+                "open_topic",
+                "get_knowledge_tree",
+                "get_topic_memories",
+                "plan_intent",
+                "list_history_projects",
+                "list_history_sessions",
+                "get_history_session_turns",
+                "request_operator_decision",
+                "resolve_operator_decision",
+                "list_operator_decisions",
+                // The session↔work bridge read (022 + 703c863). Both directions
+                // are advertised: session → records, and record → sessions.
+                "session_work",
+                "memory_session",
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
         let get_next = &tools[2]["inputSchema"]["properties"];
         assert!(get_next.get("seat_id").is_none());
         assert!(get_next.get("target_seat_id").is_none());
+        // request_acceptance likewise takes no seat parameter — identity is
+        // resolved from SEATLOOM_ACTOR_REF server-side (014).
+        let req = tools[5]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!req.contains_key("seat_id"));
+        assert!(!req.contains_key("actor_ref"));
+        // cancel_acceptance is guarded on the same server-side identity.
+        let cancel = tools[6]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!cancel.contains_key("seat_id"));
+        assert!(!cancel.contains_key("actor_ref"));
+        assert!(cancel.contains_key("reason"), "the reason is mandatory");
+        // The lineage READ exposes no identity either — it reads a recorded card.
+        let lineage = tools[7]["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        assert!(!lineage.contains_key("seat_id"));
+        assert!(!lineage.contains_key("actor_ref"));
+        // The five D5 memory tools expose no identity either — identity is
+        // resolved server-side from SEATLOOM_ACTOR_REF.
+        for name in [
+            "recall",
+            "remember",
+            "promote",
+            "forget",
+            "resolve",
+            "open_topic",
+        ] {
+            let t = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} must be advertised"));
+            let props = t["inputSchema"]["properties"].as_object().expect("props");
+            assert!(
+                !props.contains_key("seat_id") && !props.contains_key("actor_ref"),
+                "{name} must not expose identity"
+            );
+        }
+        // request_acceptance REQUIRES the plan on the wire (016).
+        let req = &tools[5]["inputSchema"];
+        assert!(
+            req["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "acceptance_plan"),
+            "acceptance_plan is required: {:?}",
+            req["required"]
+        );
+        // remember REQUIRES kind + confidence on the wire (018).
+        let remember = &tools[9]["inputSchema"];
+        for field in ["kind", "confidence"] {
+            assert!(
+                remember["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == field),
+                "remember must require {field}: {:?}",
+                remember["required"]
+            );
+        }
     }
 
     #[test]
-    fn tool_schema_enumerates_all_12_event_types_and_9_ref_types() {
+    fn tool_schema_enumerates_all_30_event_types_and_13_ref_types() {
         let tool = emit_event_tool();
         let types = tool["inputSchema"]["properties"]["type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(types.len(), 12);
+        assert_eq!(types.len(), 30);
         let ref_types = tool["inputSchema"]["properties"]["refs"]["items"]["properties"]
             ["ref_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(ref_types.len(), 9);
+        // 12 before 020, +decision. `memory` is here too: it has been a valid
+        // RefType since 015 but the advertised enum had never caught up, so a
+        // caller reading the schema would have refused itself a legal call.
+        assert_eq!(ref_types.len(), 13);
         assert!(ref_types.iter().any(|v| v == "delegation"));
+        assert!(ref_types.iter().any(|v| v == "acceptance"));
+        assert!(ref_types.iter().any(|v| v == "memory"));
+        assert!(ref_types.iter().any(|v| v == "decision"));
         // ArtifactProduced must NOT appear.
         assert!(!types.iter().any(|v| v == "ArtifactProduced"));
     }

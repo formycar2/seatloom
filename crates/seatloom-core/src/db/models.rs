@@ -10,6 +10,11 @@ pub struct ProjectRow {
     pub created_at: DateTime<Utc>,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, NULL when the corpus never recorded one (an
+    /// archive-derived project has no home). Carried so the UI can show the real
+    /// path instead of synthesising one — see `projectFromDto`, which for a while
+    /// rendered `'~/' + name` for every project.
+    pub home_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +451,43 @@ pub struct DispatchRow {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// One archived session, as the history read path returns it.
+///
+/// Mirrors `archived_sessions` (011) plus the three corpus columns `021` adds.
+/// The three corpus columns are `Option` because a database without `021` has
+/// them absent, and absent must read as "not loaded" rather than as zero.
+#[derive(Debug, Clone)]
+pub struct ArchivedSessionRow {
+    pub id: String,
+    pub harness: String,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub session_date: Option<String>,
+    pub bytes: Option<i64>,
+    /// INTEGER (INT4), so `i32` — tokio-postgres does not coerce INT4 into i64.
+    pub lines: Option<i32>,
+    pub sha256: Option<String>,
+    pub raw_path: String,
+    pub src_path: Option<String>,
+    /// `021`. INTEGER (INT4) → `i32`. `None` when the column does not exist.
+    pub message_count: Option<i32>,
+    /// `021`.
+    pub first_ts: Option<String>,
+    /// `021`.
+    pub last_ts: Option<String>,
+}
+
+/// One project row joined to its session and message totals.
+#[derive(Debug, Clone)]
+pub struct HistoryProjectRow {
+    pub id: String,
+    pub name: String,
+    pub home_path: Option<String>,
+    pub session_count: i64,
+    /// `None` when `archived_sessions.message_count` does not exist.
+    pub message_count: Option<i64>,
+}
+
 /// One dependency edge of a dispatch (readiness is an existence query over the
 /// referent; no FK, per 012).
 #[derive(Debug, Clone)]
@@ -453,4 +495,359 @@ pub struct DispatchDependencyRow {
     pub dispatch_id: String,
     pub dep_kind: String, // 'event'|'artifact'|'dispatch'
     pub dep_value: String,
+}
+
+/// One memory row (schema 015, D5 knowledge layer) — a small-granularity
+/// distilled knowledge unit scoped by project + topic (the ONLY scoping
+/// framework, contract's unchanged ruling).
+///
+/// The three layers are progressive disclosure: `l0_summary` is the ONLY default
+/// (~100 tokens), `l1_overview` is fetched on demand (~2K tokens), and the L2
+/// pointer (`l2_ref_kind` + `l2_document_id` | `l2_file_path`) leads to the raw
+/// material. Large refined products stay in `documents` (002) — memories point
+/// at them, they do not fork that model.
+#[derive(Debug, Clone)]
+pub struct MemoryRow {
+    pub id: String,
+    pub project_id: String,
+    pub topic_id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2_ref_kind: String, // 'document' | 'file'
+    pub l2_document_id: Option<String>,
+    pub l2_file_path: Option<String>,
+    pub l2_body_digest: Option<String>,
+    /// 'archived_session' | 'canonical_event' | 'document' | 'manual'.
+    pub source_kind: String,
+    /// Polymorphic provenance reference, NO FK (the 010 ref-fabric reasoning):
+    /// `'<harness>:<id>'` | event id | doc id | actor note.
+    pub source_ref: String,
+    /// Record type (018): 'decision' | 'failure' | 'fact' | 'preference' |
+    /// 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred' (018) — binary, never a score.
+    pub confidence: String,
+    /// The memory this one supersedes (018; the same edge as a
+    /// `memory_relations` row with rel='supersedes'). Create-time only.
+    pub supersedes: Option<String>,
+    /// First line of the L2 evidence inside `l2_file_path` (1-based). REQUIRED
+    /// when l2_ref_kind='file' AND source_kind='archived_session' (018).
+    pub l2_line_start: Option<i32>,
+    /// Last line of the L2 evidence (>= l2_line_start).
+    pub l2_line_end: Option<i32>,
+    /// +1 per recall. NO automatic decay, ever.
+    pub heat: i32,
+    pub recall_count: i32,
+    /// NULL = never recalled.
+    pub last_recalled_at: Option<DateTime<Utc>>,
+    /// 'cold' | 'warm' | 'hot'. Transitions ONLY via the promote tool.
+    pub tier: String,
+    pub tier_changed_at: DateTime<Utc>,
+    /// 'active' | 'forgotten' | 'resolved' (018 widened it). forgotten is a SOFT
+    /// tombstone (reason required, rows never hard-deleted); resolved is the G3
+    /// closing state for 'unresolved' records, closed ONLY by the resolve tool.
+    pub status: String,
+    pub forgotten_reason: Option<String>,
+    /// Who closed the record (018; set by the resolve tool, never a parameter).
+    pub resolved_by: Option<String>,
+    /// When it was closed (018).
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One row of `memory_relations` (018): a typed edge between two memories.
+#[derive(Debug, Clone)]
+pub struct MemoryRelationRow {
+    pub from_id: String,
+    pub to_id: String,
+    /// 'supersedes' | 'caused_by' | 'fixed_by' | 'refines'.
+    pub rel: String,
+}
+
+/// One topic row (010) as the lineage assembler needs it: the ancestor chain of
+/// a recall's topic, one entry per level.
+#[derive(Debug, Clone)]
+pub struct TopicRow {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+}
+
+/// One node of the knowledge topic tree (overnight step 4): the topic, its
+/// parent, and how many ACTIVE, not-superseded memories it holds — the count a
+/// recall would actually return.
+#[derive(Debug, Clone)]
+pub struct KnowledgeTopicNode {
+    pub topic_id: String,
+    pub title: String,
+    /// 'open' | 'closed' | 'merged'.
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+    pub memory_count: i64,
+}
+
+/// The L2 evidence pointer of a memory, returned only at depth l2.
+#[derive(Debug, Clone)]
+pub struct KnowledgeL2Pointer {
+    /// 'document' | 'file'.
+    pub ref_kind: String,
+    pub document_id: Option<String>,
+    pub file_path: Option<String>,
+    pub body_digest: Option<String>,
+    /// Present when the source is a slice of an archived session transcript.
+    pub line_start: Option<i32>,
+    pub line_end: Option<i32>,
+}
+
+/// One memory as the knowledge panel renders it. `l1_overview` and `l2` are
+/// `None` below their disclosure depth — the caller asks for more, the shape
+/// carries more.
+#[derive(Debug, Clone)]
+pub struct KnowledgeMemoryCard {
+    pub memory_id: String,
+    pub topic_id: String,
+    pub title: String,
+    /// 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred'.
+    pub confidence: String,
+    /// 'cold' | 'warm' | 'hot'.
+    pub tier: String,
+    /// 'active' | 'forgotten' | 'resolved'.
+    pub status: String,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2: Option<KnowledgeL2Pointer>,
+    /// The memory that replaced this one, when it has been superseded.
+    pub superseded_by: Option<String>,
+    pub source_kind: String,
+    pub source_ref: String,
+}
+
+/// A dispatch with its LIVE status and dependency edges — the `get_dispatch`
+/// read tool's answer. `live_status` is recomputed by the same existence rule the
+/// pull decision uses, so a reader sees what the scheduler would see.
+#[derive(Debug, Clone)]
+pub struct DispatchReadModel {
+    pub dispatch: DispatchRow,
+    pub live_status: String,
+    pub dependencies: Vec<DispatchDependencyStatus>,
+}
+
+/// What a Flux verdict reference actually says, and whether it is about a given
+/// dispatch — the two questions `event_or_artifact_exists` was being asked
+/// instead of the one it answers.
+///
+/// Field order is the reading order of the gate that consumes it: is it there,
+/// is it green, is it about this dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictFacts {
+    /// The referent names a row in `canonical_events` or `artifacts`.
+    pub exists: bool,
+    /// Its `event_type` when it is an event. `None` for an artifact, which has
+    /// none — never defaulted to `ReviewVerdictIssued`.
+    pub event_type: Option<String>,
+    /// `payload->>'verdict'`, verbatim. `None` when absent, null, or the referent
+    /// is an artifact. An absent value is an absence, not a fail and not a pass.
+    pub verdict: Option<String>,
+    /// `payload->>'dispatch_id'`, verbatim, when the verdict states one.
+    pub payload_dispatch_id: Option<String>,
+    /// Whether it names the dispatch under test — via `payload->>'dispatch_id'`
+    /// or via an `event_object_refs` row with `ref_type='dispatch'`. Either
+    /// channel counts; both are things Flux actually writes.
+    pub names_dispatch: bool,
+}
+
+impl VerdictFacts {
+    /// The gate's WHOLE question: does this verdict let the work be merged?
+    ///
+    /// Green means exactly `pass`. Measured on live, the values in use are
+    /// `pass` (27), `fail` (2) and `reject` (1) — so a `reject` is not green
+    /// either, and an absent value is not a pass.
+    ///
+    /// And it must be about the dispatch under test. `names_dispatch` was
+    /// computed by the reader for the dispatch the caller asked about, so this
+    /// ANDs it in rather than deriving it again — a second derivation would be a
+    /// second criterion that could drift from the first.
+    ///
+    /// # Why there is no `is_green()`
+    ///
+    /// There was one, and the proof caught what it invited: a method answering
+    /// only the value half is a method a future caller will use as the whole
+    /// criterion, which is precisely the defect this read exists to close. The
+    /// callers that need the two halves separately — to render two different
+    /// refusals — read the fields directly, which is honest about being partial.
+    pub fn is_merge_criterion(&self) -> bool {
+        self.exists
+            && self.event_type.as_deref() == Some("ReviewVerdictIssued")
+            && self.verdict.as_deref() == Some("pass")
+            && self.names_dispatch
+    }
+}
+
+/// One dependency edge with its referent's live existence.
+#[derive(Debug, Clone)]
+pub struct DispatchDependencyStatus {
+    pub dep_kind: String,
+    pub dep_value: String,
+    pub exists: bool,
+}
+
+/// One ledger event with its object refs — the `query_ledger` read tool's answer.
+#[derive(Debug, Clone)]
+pub struct LedgerEventWithRefs {
+    pub event: CanonicalEventRow,
+    pub refs: Vec<ObjectRefRow>,
+}
+
+/// One row of `event_object_refs` (001): how an event names an object.
+/// `role` was added by 010 and is NOT NULL there; the lineage assembler reads
+/// refs by event id, so the role rides along for callers that need it.
+#[derive(Debug, Clone)]
+pub struct ObjectRefRow {
+    pub event_id: String,
+    pub ref_type: String, // workitem|session|handoff|artifact|document|seat|topic|project|delegation|dispatch|acceptance
+    pub ref_id: String,
+    pub role: String, // 'subject'|'actor'|'context'
+}
+
+/// One acceptance row (schema 014, D2 acceptance gate) — the UI's 待验收 card.
+/// Its own first-class object: the actor is the operator/issuer (not the seat),
+/// and it carries the delivery branch, the one-step verification, the Flux
+/// verdict reference, and the decision lineage (merge commit / rework dispatch).
+#[derive(Debug, Clone)]
+pub struct AcceptanceRow {
+    pub id: String,
+    pub dispatch_id: String,
+    pub project_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    pub flux_verdict_ref: String,
+    pub status: String, // 'pending'|'accepted'|'rejected'|'cancelled'
+    /// The structured acceptance plan (016, shape v1). `'{}'::jsonb` is the
+    /// column default and means "no plan" — the legacy pending row is exempt
+    /// from the plan CHECK until Aegis backfills it. Read as-is; the lineage
+    /// assembler decides what `{}` means.
+    pub acceptance_plan: serde_json::Value,
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+    pub merge_commit: Option<String>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One decision only the operator can rule on (020) — the structured answer
+/// to "what is waiting on the human?", which until 020 existed only as a
+/// message.
+///
+/// `choices` is the non-empty array of legal options (a single option is not a
+/// choice); `consequence` is what happens once it is decided, and it is
+/// REQUIRED — an obligation that does not say its consequence is asking the
+/// operator to click in the dark. `evidence` is the support chain (dispatch
+/// ids, verdict refs, ruling refs) so the claim can be checked rather than
+/// trusted.
+///
+/// `decider` is who is entitled to rule. It defaults to the operator, and a
+/// seat decider means Aegis created this for ITSELF — so it must NOT appear in
+/// the operator's pending count.
+///
+/// `status` is `pending` or `resolved`; `resolved` is terminal and immutable.
+/// `chosen` / `resolved_by` / `resolved_at` are set IFF resolved.
+#[derive(Debug, Clone)]
+pub struct OperatorDecisionRow {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    /// The only two creators: `human:*` or `seat:seat-aegis-001`.
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+/// An acceptance joined to the dispatch it gates plus the Flux verdict's
+/// rendered facts — the read model the Tauri `cmd_list_acceptances` returns.
+/// `flux_verdict` / `flux_verdict_occurred_at` are `None` when the referenced
+/// row is an artifact (which carries no verdict payload) or has vanished.
+/// `dispatch_priority` / `dispatch_payload` are carried so the reject path can
+/// auto-enqueue the rework (priority+10, packet lineage) without a second query.
+#[derive(Debug, Clone)]
+pub struct AcceptanceWithDispatchRow {
+    pub acceptance: AcceptanceRow,
+    pub dispatch_title: String,
+    pub dispatch_seat_id: String,
+    pub dispatch_priority: i32,
+    pub dispatch_payload: serde_json::Value,
+    pub flux_verdict: Option<String>,
+    pub flux_verdict_occurred_at: Option<DateTime<Utc>>,
+}
+
+/// One row of `v_memory_session_join` (022) — the session↔work bridge view.
+///
+/// Every Tier A field is carried **as the view computed it**, never re-derived
+/// here: the row is evidence about what the view said, and re-deriving would let
+/// a change in the read model silently disagree with the database.
+///
+/// The join is expressed on TWO keys, and both are reported rather than merged:
+/// the contract's primary key A1 (the L2 corpus path, immune to id re-keying)
+/// and its secondary key A2 (`source_ref` split on the first colon). Reporting
+/// both is what keeps a disagreement countable instead of collapsing into one
+/// number that looks fine.
+#[derive(Debug, Clone)]
+pub struct MemorySessionJoinRow {
+    pub memory_id: String,
+    pub project_id: String,
+    /// Context only. NEVER a key: a topic is a segmentation, a revisable label.
+    pub topic_id: String,
+    pub title: String,
+    pub kind: String,
+    pub confidence: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    /// The L2 pointer, verbatim — the exact string the write-in declared.
+    pub l2_file_path: String,
+    pub l2_line_start: Option<i32>,
+    pub l2_line_end: Option<i32>,
+    /// A1: `l2_file_path` with the corpus root stripped. `None` when the path is
+    /// neither the ~-rooted form nor the bare `raw/%` form — a NULL pointer is
+    /// measured unresolved, never force-matched.
+    pub a1_corpus_path: Option<String>,
+    /// How many `archived_sessions` rows declare that path. `1` is the only
+    /// resolving value; anything else is ambiguity, counted not guessed.
+    pub a1_path_rows: Option<i64>,
+    pub a1_harness: Option<String>,
+    pub a1_id: Option<String>,
+    pub a1_resolves: bool,
+    /// A2: `source_ref` split on the FIRST colon. Both halves `None` when the
+    /// reference has no colon at all, so the row measures unresolved rather than
+    /// half-resolved.
+    pub ref_harness: Option<String>,
+    pub ref_id: Option<String>,
+    pub a2_harness: Option<String>,
+    pub a2_id: Option<String>,
+    pub a2_resolves: bool,
+    /// The joined session: A1 primary, A2 secondary. `None` when neither key
+    /// resolved.
+    pub session_harness: Option<String>,
+    pub session_id: Option<String>,
+    pub session_raw_path: Option<String>,
+    pub session_project: Option<String>,
+    pub session_message_count: Option<i32>,
+    /// `both_agree` | `path_only` | `ref_only` | `disagree` | `none`.
+    pub join_state: String,
 }

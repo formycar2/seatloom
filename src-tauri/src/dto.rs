@@ -4,11 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use seatloom_core::db::models::{
-    ArtifactRow, CanonicalEventRow, CheckpointRow, DispatchDependencyRow, DispatchRow,
-    DocumentAssociationRow, DocumentRow, DocumentSectionRow, DocumentVersionRow, HandoffReceiptRow,
-    HandoffRow, PipelineRunRow, ProjectRoleBindingRow, ProjectRow, ReconcileItemRow,
-    ReconcileRunRow, ReviewCommentRow, ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow,
-    WorkItemRow,
+    AcceptanceRow, AcceptanceWithDispatchRow, ArtifactRow, CanonicalEventRow, CheckpointRow,
+    DispatchDependencyRow, DispatchRow, DocumentAssociationRow, DocumentRow, DocumentSectionRow,
+    DocumentVersionRow, HandoffReceiptRow, HandoffRow, OperatorDecisionRow, PipelineRunRow,
+    ProjectRoleBindingRow, ProjectRow, ReconcileItemRow, ReconcileRunRow, ReviewCommentRow,
+    ReviewThreadRow, SeatDelegationRow, SeatRow, SessionRow, WorkItemRow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,9 @@ pub struct ProjectDto {
     pub created_at: String,
     pub worker_budget_tokens: i32,
     pub supervisor_budget_tokens: i32,
+    /// The project's home path, or null. Sent so the UI shows the real path; the
+    /// frontend used to synthesise `'~/' + name` because it was not given one.
+    pub home_path: Option<String>,
 }
 
 impl From<ProjectRow> for ProjectDto {
@@ -38,6 +41,7 @@ impl From<ProjectRow> for ProjectDto {
             created_at: iso(r.created_at),
             worker_budget_tokens: r.worker_budget_tokens,
             supervisor_budget_tokens: r.supervisor_budget_tokens,
+            home_path: r.home_path,
         }
     }
 }
@@ -349,6 +353,508 @@ impl DispatchDto {
             deps,
         }
     }
+}
+
+// =============================================================================
+// Acceptance gate (014, D2) — the 待验收 read model + the accept/reject result
+// =============================================================================
+
+/// The Flux green verdict, rendered for the card. `verdict` is `None` when the
+/// referenced row is an artifact (which carries no verdict payload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FluxVerdictDto {
+    pub ref_id: String,
+    pub verdict: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+/// One acceptance card (schema 014): the delivery awaiting the operator's
+/// decision, or the recorded decision. This is the DTO contract Mira's UI
+/// consumes (LYRA-2026-10-09-d2-acceptance-loop-design-v1 §4/D).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceCard {
+    pub id: String,
+    pub dispatch_id: String,
+    pub dispatch_title: String,
+    pub seat_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    pub flux_verdict: FluxVerdictDto,
+    /// 'pending' | 'accepted' | 'rejected' | 'cancelled' (accepted/rejected/
+    /// cancelled are terminal; a cancelled card was withdrawn by the seat that
+    /// requested it, so it is offered to the operator no more).
+    pub status: String,
+    pub created_at: String,
+    pub merge_commit: Option<String>,
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+}
+
+impl From<AcceptanceWithDispatchRow> for AcceptanceCard {
+    fn from(r: AcceptanceWithDispatchRow) -> Self {
+        let AcceptanceWithDispatchRow {
+            acceptance,
+            dispatch_title,
+            dispatch_seat_id,
+            // dispatch_priority / dispatch_payload serve the reject path's
+            // rework enqueue; the card does not surface them.
+            dispatch_priority: _,
+            dispatch_payload: _,
+            flux_verdict,
+            flux_verdict_occurred_at,
+        } = r;
+        let AcceptanceRow {
+            id,
+            dispatch_id,
+            project_id: _,
+            branch,
+            base,
+            how_to_verify,
+            flux_verdict_ref,
+            status,
+            feedback,
+            rework_dispatch_id,
+            merge_commit,
+            decided_by: _,
+            decided_at: _,
+            created_at,
+            // The plan is NOT surfaced on the pending-list card: the 待验收
+            // list is a scan, and the plan is the operator's reading material
+            // on the card's own detail view (the lineage read model).
+            acceptance_plan: _,
+        } = acceptance;
+        Self {
+            id,
+            dispatch_id,
+            dispatch_title,
+            seat_id: dispatch_seat_id,
+            branch,
+            base,
+            how_to_verify,
+            flux_verdict: FluxVerdictDto {
+                ref_id: flux_verdict_ref,
+                verdict: flux_verdict,
+                occurred_at: iso_opt(flux_verdict_occurred_at),
+            },
+            status,
+            created_at: iso(created_at),
+            merge_commit,
+            feedback,
+            rework_dispatch_id,
+        }
+    }
+}
+
+// =============================================================================
+// Acceptance lineage (acceptance-lineage milestone, Lane B) — the read model
+// =============================================================================
+
+/// One acceptance card's full lineage, as the UI renders it. The seven blocks
+/// are the value-domain contract's §3, in the operator's reading order; the
+/// camelCase wire shape is produced here, ONCE, from the core assembler's
+/// already-camelCase structs (the boundary normalises, it does not re-shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDto {
+    pub acceptance: AcceptanceLineageCardDto,
+    pub dispatch: AcceptanceLineageDispatchDto,
+    pub events: Vec<AcceptanceLineageEventDto>,
+    pub flux_verdict: Option<AcceptanceLineageVerdictDto>,
+    pub products: Vec<AcceptanceLineageProductDto>,
+    pub dependencies: Vec<AcceptanceLineageDependencyDto>,
+    pub rework: Option<AcceptanceLineageDispatchDto>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineage> for AcceptanceLineageDto {
+    fn from(l: seatloom_core::db::lineage::AcceptanceLineage) -> Self {
+        Self {
+            acceptance: l.acceptance.into(),
+            dispatch: l.dispatch.into(),
+            events: l.events.into_iter().map(Into::into).collect(),
+            flux_verdict: l.flux_verdict.map(Into::into),
+            products: l.products.into_iter().map(Into::into).collect(),
+            dependencies: l.dependencies.into_iter().map(Into::into).collect(),
+            rework: l.rework.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageCardDto {
+    pub id: String,
+    pub dispatch_id: String,
+    pub project_id: String,
+    pub branch: String,
+    pub base: String,
+    pub how_to_verify: String,
+    /// The structured plan (016). `None` = the legacy row has no plan yet.
+    pub acceptance_plan: Option<serde_json::Value>,
+    pub flux_verdict_ref: String,
+    pub status: String,
+    pub feedback: Option<String>,
+    pub rework_dispatch_id: Option<String>,
+    pub merge_commit: Option<String>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub created_at: String,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageCard> for AcceptanceLineageCardDto {
+    fn from(c: seatloom_core::db::lineage::AcceptanceLineageCard) -> Self {
+        Self {
+            id: c.id,
+            dispatch_id: c.dispatch_id,
+            project_id: c.project_id,
+            branch: c.branch,
+            base: c.base,
+            how_to_verify: c.how_to_verify,
+            acceptance_plan: c.acceptance_plan,
+            flux_verdict_ref: c.flux_verdict_ref,
+            status: c.status,
+            feedback: c.feedback,
+            rework_dispatch_id: c.rework_dispatch_id,
+            merge_commit: c.merge_commit,
+            decided_by: c.decided_by,
+            decided_at: iso_opt(c.decided_at),
+            created_at: iso(c.created_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDispatchDto {
+    pub id: String,
+    pub title: String,
+    pub issued_by: String,
+    pub target_seat_id: String,
+    pub priority: i32,
+    pub status: String,
+    pub issued_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    /// The original task statement (packet path / instructions), verbatim.
+    pub payload: serde_json::Value,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageDispatch> for AcceptanceLineageDispatchDto {
+    fn from(d: seatloom_core::db::lineage::AcceptanceLineageDispatch) -> Self {
+        Self {
+            id: d.id,
+            title: d.title,
+            issued_by: d.issued_by,
+            target_seat_id: d.target_seat_id,
+            priority: d.priority,
+            status: d.status,
+            issued_at: iso(d.issued_at),
+            started_at: iso_opt(d.started_at),
+            completed_at: iso_opt(d.completed_at),
+            payload: d.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageEventDto {
+    pub id: String,
+    pub event_type: String,
+    pub occurred_at: String,
+    pub actor_ref: String,
+    pub payload: Option<serde_json::Value>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageEvent> for AcceptanceLineageEventDto {
+    fn from(e: seatloom_core::db::lineage::AcceptanceLineageEvent) -> Self {
+        Self {
+            id: e.id,
+            event_type: e.event_type,
+            occurred_at: iso(e.occurred_at),
+            actor_ref: e.actor_ref,
+            payload: e.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageVerdictDto {
+    pub ref_id: String,
+    pub verdict: Option<String>,
+    pub evidence: Option<String>,
+    pub evidence_detail: Option<String>,
+    pub target_branch: Option<String>,
+    pub lane: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageVerdict> for AcceptanceLineageVerdictDto {
+    fn from(v: seatloom_core::db::lineage::AcceptanceLineageVerdict) -> Self {
+        Self {
+            ref_id: v.ref_id,
+            verdict: v.verdict,
+            evidence: v.evidence,
+            evidence_detail: v.evidence_detail,
+            target_branch: v.target_branch,
+            lane: v.lane,
+            occurred_at: iso_opt(v.occurred_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageProductDto {
+    pub ref_type: String,
+    pub ref_id: String,
+    /// `None` when the referent could not be joined — the id is still carried.
+    pub title: Option<String>,
+    pub path: Option<String>,
+    /// `false` = the referent is not in the database (carried verbatim, never
+    /// guessed at).
+    pub resolved: bool,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageProduct> for AcceptanceLineageProductDto {
+    fn from(p: seatloom_core::db::lineage::AcceptanceLineageProduct) -> Self {
+        Self {
+            ref_type: p.ref_type,
+            ref_id: p.ref_id,
+            title: p.title,
+            path: p.path,
+            resolved: p.resolved,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceLineageDependencyDto {
+    pub dep_kind: String,
+    pub dep_value: String,
+    /// The referent's live existence (012: readiness is an existence query).
+    pub exists: bool,
+}
+
+impl From<seatloom_core::db::lineage::AcceptanceLineageDependency>
+    for AcceptanceLineageDependencyDto
+{
+    fn from(d: seatloom_core::db::lineage::AcceptanceLineageDependency) -> Self {
+        Self {
+            dep_kind: d.dep_kind,
+            dep_value: d.dep_value,
+            exists: d.exists,
+        }
+    }
+}
+
+// =============================================================================
+// Knowledge read model (overnight step 4) — the DTO contract Mira codes against.
+// ADDITIVE ONLY: no existing struct in this file is touched.
+// =============================================================================
+
+/// One node of the knowledge topic tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicNodeDto {
+    pub topic_id: String,
+    pub title: String,
+    /// 'open' | 'closed' | 'merged'.
+    pub status: String,
+    pub parent_topic_id: Option<String>,
+    /// ACTIVE and not-superseded memories — the count a recall would return.
+    pub memory_count: i64,
+}
+
+impl From<seatloom_core::db::models::KnowledgeTopicNode> for KnowledgeTopicNodeDto {
+    fn from(n: seatloom_core::db::models::KnowledgeTopicNode) -> Self {
+        Self {
+            topic_id: n.topic_id,
+            title: n.title,
+            status: n.status,
+            parent_topic_id: n.parent_topic_id,
+            memory_count: n.memory_count,
+        }
+    }
+}
+
+/// The topic tree of one project (a flat list; the UI groups by parentTopicId).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicTreeDto {
+    pub project_id: String,
+    pub topics: Vec<KnowledgeTopicNodeDto>,
+}
+
+/// The L2 evidence pointer, returned only at depth l2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeL2PointerDto {
+    /// 'document' | 'file'.
+    pub ref_kind: String,
+    pub document_id: Option<String>,
+    pub file_path: Option<String>,
+    pub body_digest: Option<String>,
+    /// Present when the source is a slice of an archived session transcript.
+    pub line_start: Option<i32>,
+    pub line_end: Option<i32>,
+}
+
+/// One memory card, at the requested disclosure depth: `l1_overview` and `l2`
+/// are `None` below their depth.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeMemoryCardDto {
+    pub memory_id: String,
+    pub topic_id: String,
+    pub title: String,
+    /// 'decision' | 'failure' | 'fact' | 'preference' | 'artifact' | 'unresolved'.
+    pub kind: String,
+    /// 'quoted' | 'inferred'.
+    pub confidence: String,
+    /// 'cold' | 'warm' | 'hot'.
+    pub tier: String,
+    /// 'active' | 'forgotten' | 'resolved'.
+    pub status: String,
+    pub l0_summary: String,
+    pub l1_overview: Option<String>,
+    pub l2: Option<KnowledgeL2PointerDto>,
+    /// The memory that replaced this one, when it has been superseded.
+    pub superseded_by: Option<String>,
+    pub source_kind: String,
+    pub source_ref: String,
+}
+
+impl From<seatloom_core::db::models::KnowledgeMemoryCard> for KnowledgeMemoryCardDto {
+    fn from(c: seatloom_core::db::models::KnowledgeMemoryCard) -> Self {
+        Self {
+            memory_id: c.memory_id,
+            topic_id: c.topic_id,
+            title: c.title,
+            kind: c.kind,
+            confidence: c.confidence,
+            tier: c.tier,
+            status: c.status,
+            l0_summary: c.l0_summary,
+            l1_overview: c.l1_overview,
+            l2: c.l2.map(|p| KnowledgeL2PointerDto {
+                ref_kind: p.ref_kind,
+                document_id: p.document_id,
+                file_path: p.file_path,
+                body_digest: p.body_digest,
+                line_start: p.line_start,
+                line_end: p.line_end,
+            }),
+            superseded_by: c.superseded_by,
+            source_kind: c.source_kind,
+            source_ref: c.source_ref,
+        }
+    }
+}
+
+/// One entry of a topic's ancestor chain (ancestors first, the topic itself last).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicChainEntryDto {
+    pub topic_id: String,
+    pub title: String,
+}
+
+/// The memories of one topic, with the chain they belong to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTopicMemoriesDto {
+    pub topic_id: String,
+    /// The depth that was served: 'l0' | 'l1' | 'l2'.
+    pub depth: String,
+    pub topic_chain: Vec<KnowledgeTopicChainEntryDto>,
+    pub memories: Vec<KnowledgeMemoryCardDto>,
+}
+
+/// The outcome of an accept/reject command (D2 contract D, widened by the
+/// Flux HOLD fix). A refusal (merge conflict, missing operator config,
+/// not-pending, unverified) is an `Err` carrying the reason — `error` is the
+/// soft-failure field the contract asks the UI to render, kept for contract
+/// fidelity.
+///
+/// `status` + `rework_dispatch_id` make the response a SUPERSET of the
+/// acceptance-card normaliser (`FLUX-2026-10-09-mira-d2-ui-verify-delivery-v1`
+/// §4): on a reject the UI can render the rejected badge, echo the feedback
+/// (already on the card) and jump to the rework dispatch from the decision
+/// response alone — no follow-up read, no dead-end "already handled" label.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceResult {
+    pub accepted: bool,
+    /// The decided acceptance's status: 'accepted' | 'rejected'.
+    pub status: String,
+    pub merge_commit: Option<String>,
+    /// The auto-enqueued rework dispatch on a reject (lineage jump link).
+    pub rework_dispatch_id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// One operator decision (020): the obligation awaiting the operator's ruling,
+/// or the recorded ruling.
+///
+/// This is NOT an acceptance card and must not be merged into one: an acceptance
+/// asks "do I take this delivered work?" and is about a dispatch; an operator
+/// decision asks "which way do I rule on this?" and may be about anything at
+/// all. The two are listed separately on purpose — a merged list would make the
+/// operator's count wrong, which is the defect 020 exists to fix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionCardDto {
+    pub id: String,
+    pub project_id: String,
+    /// The concrete thing to decide — not a paragraph.
+    pub target: String,
+    pub choices: Vec<String>,
+    pub decider: String,
+    pub consequence: String,
+    pub evidence: Vec<String>,
+    /// 'pending' | 'resolved' (terminal).
+    pub status: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<String>,
+}
+
+impl From<OperatorDecisionRow> for OperatorDecisionCardDto {
+    fn from(r: OperatorDecisionRow) -> Self {
+        Self {
+            id: r.id,
+            project_id: r.project_id,
+            target: r.target,
+            choices: r.choices,
+            decider: r.decider,
+            consequence: r.consequence,
+            evidence: r.evidence,
+            status: r.status,
+            created_by: r.created_by,
+            created_at: r.created_at.to_rfc3339(),
+            chosen: r.chosen,
+            resolved_by: r.resolved_by,
+            resolved_at: r.resolved_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// The result of the operator's ruling on an obligation (020).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorDecisionResolveResultDto {
+    pub decision_id: String,
+    pub status: String,
+    pub chosen: Option<String>,
+    pub resolved_by: Option<String>,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
