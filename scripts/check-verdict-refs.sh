@@ -1,31 +1,21 @@
 #!/usr/bin/env bash
 # Are the acceptance cards' verdict refs actually verdicts ABOUT THEM?
 #
-# The 10-27 ruling made flux_verdict_ref a hard condition: it must name an
-# existing ReviewVerdictIssued that is about the dispatch being accepted, and the
-# ruling accepts TWO paths to "about":
-#   (a) payload.dispatch_id names that dispatch, OR
-#   (b) an event_object_refs row on the verdict with ref_type='dispatch' names it.
+# RULE: LYRA-2026-10-29-verdict-ref-validity-ruling-v1. Three conditions:
+#   1. the event exists and is a ReviewVerdictIssued
+#   2. the verdict is a PASS  (neither earlier implementation checked this)
+#   3. it is about the dispatch, by shape A (payload.dispatch_id) or shape B
+#      (a batch verdict whose subject is the verdict document, the dispatch a
+#      context ref)
 #
-# THIS SCRIPT ORIGINALLY IMPLEMENTED ONLY (a). Found 2026-10-29: it reported BAD
-# for acc-disp-ibABeNk-nkEDAkI6Qj2sG, acc-disp-b5VbRor1fHhP3nN4YZI_l and
-# acc-disp-reemit-stalled-announcements — three cards whose verdicts carry exactly
-# the compensating context|dispatch row my ruling R1 says makes them legitimate
-# and "must not be fixed". A checker that enforces a rule stricter than the ruling
-# it claims to enforce produces false failures, and Mira cancelled and re-opened
-# cards this round because she trusted it. The check is now the ruling, not an
-# older draft of it.
-#
-# Checking "the event exists" is not enough. On 2026-10-28 I found a verdict
-# whose payload.dispatch_id was `disp-B4Y5oAhMQwtXm5Vva1fw` - zero rows in
-# dispatches. The real id is `disp-B4Y5oAohMQwtXm5Vva1fw`: letter o vs digit 0,
-# one character, in a nanoid alphabet that contains both. It looked exactly like
-# a green third-party verdict and pointed at nothing.
-#
-# An empty pointer errors. A wild pointer does not - and if a dispatch ever
-# appear with that id, the verdict silently becomes evidence for unrelated work.
-#
-# This script joins both halves and prints what it finds. Run it every heartbeat.
+# This script previously implemented only shape A and reported BAD for valid
+# batch verdicts, which caused Mira to cancel and re-open correct cards on
+# 2026-10-28. It then implemented "payload or ANY dispatch ref", which was too
+# loose — a context ref means the verdict MENTIONS the dispatch, not that it
+# covers it. The ruling names both shapes and states the half no join can check:
+# for a shape-B card the verdict DOCUMENT must be opened and read. This script
+# therefore prints the document path for every shape-B card rather than passing
+# it silently.
 
 set -u
 
@@ -41,34 +31,53 @@ if [ -z "$(db "select 1 from pg_tables where tablename='acceptances'")" ]; then
 fi
 
 echo "== pending acceptance cards: is each verdict ref a verdict about THIS dispatch? =="
+echo "   rule: LYRA-2026-10-29-verdict-ref-validity-ruling-v1 (supersedes the 10-27 ruling on this point)"
 bad=0
 good=0
-while IFS='|' read -r card dref vref ev_ok names; do
+batch=0
+while IFS='|' read -r card dref vref ev_ok is_pass about shape doc; do
   [ -n "$card" ] || continue
-  if [ "$ev_ok" = "t" ] && [ "$names" = "t" ]; then
+  if [ "$ev_ok" = "t" ] && [ "$is_pass" = "t" ] && [ "$about" = "t" ]; then
     good=$((good + 1))
+    if [ "$shape" = "B" ]; then
+      batch=$((batch + 1))
+      printf '  ok    %-46s shape B (batch verdict — OPEN THE DOCUMENT and confirm it covers the dispatch)\n' "$card"
+      printf '          verdict document: %s\n' "$doc"
+    fi
   else
     bad=$((bad + 1))
     printf '  BAD  %s\n' "$card"
     printf '       dispatch=%s verdict_ref=%s\n' "$dref" "$vref"
     [ "$ev_ok" = "t" ] || printf '       the verdict event does not exist (or is not ReviewVerdictIssued)\n'
-    [ "$names" = "t" ] || printf '       not about THIS dispatch by either path: payload.dispatch_id=%s, and no event_object_refs row with ref_type=dispatch names it\n' \
+    if [ "$ev_ok" = "t" ] && [ "$is_pass" != "t" ]; then
+      printf '       the verdict is not a PASS — it is %s. A fail is never evidence for acceptance.\n' \
+        "$(db "select coalesce(payload->>'verdict','(nothing)') from canonical_events where id='$vref'")"
+    fi
+    [ "$about" = "t" ] || printf '       not about THIS dispatch by either shape: payload.dispatch_id=%s, and no event_object_refs row with ref_type=dispatch names it\n' \
       "$(db "select coalesce(payload->>'dispatch_id','(nothing)') from canonical_events where id='$vref'")"
   fi
 done <<< "$(db "
   select a.id, a.dispatch_id, a.flux_verdict_ref,
     exists(select 1 from canonical_events e
             where e.id=a.flux_verdict_ref and e.event_type='ReviewVerdictIssued') as event_ok,
+    exists(select 1 from canonical_events e
+            where e.id=a.flux_verdict_ref and e.payload->>'verdict'='pass') as is_pass,
     exists(
       select 1 from canonical_events e join dispatches d on d.id = e.payload->>'dispatch_id'
             where e.id=a.flux_verdict_ref and d.id = a.dispatch_id
       union all
       select 1 from event_object_refs r
             where r.event_id=a.flux_verdict_ref and r.ref_type='dispatch' and r.ref_id=a.dispatch_id
-    ) as names_this_dispatch
+    ) as about_this_dispatch,
+    case when exists(select 1 from canonical_events e join dispatches d on d.id = e.payload->>'dispatch_id'
+                     where e.id=a.flux_verdict_ref and d.id = a.dispatch_id)
+         then 'A' else 'B' end as shape,
+    coalesce((select r.ref_id from event_object_refs r
+               where r.event_id=a.flux_verdict_ref and r.role='subject' and r.ref_type='document'
+               limit 1), '') as verdict_doc
   from acceptances a where a.status='pending' order by a.id;")"
 
-echo "  good=$good bad=$bad"
+echo "  good=$good bad=$bad (of which shape B, batch verdicts: $batch)"
 
 echo
 echo "== ReviewVerdictIssued events that name a dispatch which does not exist =="
