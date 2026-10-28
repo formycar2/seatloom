@@ -81,6 +81,36 @@
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
 
+2c. **查"验绿了但没人验收"的活 —— 这一步 2026-10-29 补,和 2b 是同一个病的另一半。**
+    🔴 实例:2026-10-29 01:00 逐件查 `ReviewVerdictIssued`,发现 **10 件 implementation 类
+       派单有 pass verdict、而 `select count(*) from acceptances where flux_verdict_ref=<id>`
+       全是 0**。工作做完了、独立验绿了、操作者从没被要求验收过。
+       019 那张卡从 10-10 挂到 10-29,19 天,就是因为这个。
+       这不是"队列空"能发现的 —— 队列空、派单 done、verdict pass,三样都正常,
+       而事情停在一个没有任何检查看过的地方。
+
+    ```sql
+    -- 有 pass verdict、verdict 没被任何卡引用、该派单也没有任何卡
+    select d.id, d.target_seat_id, e.id as verdict
+    from canonical_events e
+    join event_object_refs r on r.event_id=e.id
+    join dispatches d on d.id = r.ref_id
+    where e.event_type='ReviewVerdictIssued' and e.payload->>'verdict'='pass'
+      and d.payload->>'kind'='implementation'
+      and not exists (select 1 from acceptances a where a.flux_verdict_ref=e.id)
+      and not exists (select 1 from acceptances a where a.dispatch_id=d.id)
+    order by d.completed_at desc;
+    ```
+
+    **三条都要查,只查一条会漏**:
+    - "派单 done" → 有活没人接(2b)
+    - "verdict pass 但没被卡引用" → 验绿了没人验收(2c)
+    - "卡 pending" → 卡点不点得动(第 1 步的 `check-cards-clickable.sh`)
+
+    查到就派 owner 开卡,**verdict 用 pass 那条**;有 fail 和 pass 两条时,
+    fail 那条往往发在修复落地之前(实测:`ev-verdict-integration-round` fail 在 pin `575d85d`,
+    pass 的 `ev-verdict-integration-round-v2` 才是关于现在的代码)。
+
 2b. **查"干完了但没人接"的活 —— 这一步 2026-10-21 补,之前是空的。**
     🔴 空洞实例:净化单 `disp-FzldOwJuxCfxc2TGq9dMw` 04:15 完成、 Mira 同一秒
     发了 SupervisorMessage,但我随后 8 轮心跳每轮都只查"有没有 ready 派单",
