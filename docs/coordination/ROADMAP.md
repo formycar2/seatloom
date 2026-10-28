@@ -560,3 +560,84 @@ when he next has a turn and I have said so in his heartbeat.
    with consequences for the append-only ledger, not a missing button.
 3. **Merge `packet/lyra/milestone-summary` into track.** This is what makes the five standing duties
    real. Until it happens the fleet has one seat with standing duties and I have been reporting six.
+
+---
+
+## 2026-10-29 · Lyra — what the operator needs to decide, measured since the last section
+
+This section is the operator-facing part. The section above it is the product analysis; this one is the
+list of things a seat cannot decide, each with the measurement behind it. **Nothing here is a
+hypothesis.**
+
+### 1. The acceptance checker on track contradicts the product's own guard — and it has cost three cards
+
+This is the most consequential item and the one with a definitive answer.
+
+The product's own acceptance guard, `flux_verdict_facts` (`crates/seatloom-core/src/db/repositories.rs:779`),
+states in its **own doc comment** that a verdict may name its dispatch by **either** channel:
+
+> Both are things Flux actually writes — `payload->>'verdict'` and `payload->>'dispatch_id'`, or an
+> `event_object_refs` row with `ref_type='dispatch'` … **Either channel counts.**
+
+and the code is `names_dispatch = payload_dispatch_id == Some(id) || names_via_ref`. **That guard has
+accepted the two-channel rule since 2026-10-16.**
+
+`scripts/check-verdict-refs.sh` on track checks **only** the payload channel, and prints the loudest
+sentence in the repository: *"Do not let the operator click those."* It is the only component in the
+system that disagrees with the guard.
+
+**Measured cost — three cards cancelled, each `feedback` field naming the script:**
+
+| Card | Cancelled | Would the guard have accepted it? |
+|---|---|---|
+| `acc-disp-ibABeNk-nkEDAkI6Qj2sG` | 18:04:32 | **yes** — verdict `pass`, about the dispatch |
+| `acc-disp-b5VbRor1fHhP3nN4YZI_l` | 18:04:32 | **yes** — verdict `pass`, about the dispatch |
+| `acc-disp-reemit-stalled-announcements` | 18:04:48 | **yes** — verdict `pass`, about the dispatch |
+
+Mira did not simply obey the script. She checked and pushed back, correctly: the verdict's payload
+carries a `re_emitted_events` key whose `both_edges_exist` names the two landed event ids individually,
+so it genuinely verified her re-emission; and `ev-AbuUI51WIx1Ks-Eb_4FZp` was already accepted through
+the refs channel by two cards that are merged. She cancelled anyway, and her reason is the whole problem
+in one line: **a card the operator cannot click is not a card.**
+
+**The ask, deliberately narrow.** Not "merge my branch" — that carries five standing-duty documents and
+four unrelated findings and is the operator's call. **Land `scripts/check-verdict-refs.sh` from
+`packet/lyra/milestone-summary` onto track.** That one file stands between three correct cards and their
+acceptance. If Aegis would rather write it himself, that is fine; the content is no longer in question,
+because the guard's own doc comment states the rule the script violates.
+
+### 2. The branch-sync refusal — 18 emergency dispatches and counting
+
+`DispatchRejection::BranchNotSynced` refuses `request_acceptance` when a branch is behind its base, on
+the stated grounds that it "would merge work that never saw the base's later commits". **Measured on a
+scratch repository, twice, 26 hours apart: that is not what git does.** A branch 1 behind with
+non-overlapping changes merges with exit 0 and all files present; the overlapping case produces a
+CONFLICT and git refuses it itself.
+
+**Measured cost: 18 dispatches** with "will be unclickable" in the title, across 5 seats, two days. Each
+pulls a seat off its task so a card it already earned becomes clickable. The check fires at *request*
+time, so a seat can be current, receive a card, and be told an hour later that its card is unclickable
+because someone else committed.
+
+**Three options, proposed 26 hours ago, still unanswered:**
+
+1. **Downgrade to a warning carried on the card**, with the exact `git rev-list --left-right --count`
+   figure. The Accept path merges safely; what remains of the check is a *disclosure* duty, and
+   disclosure belongs on the card rather than in a refusal. *(My recommendation.)*
+2. **Move the check to Accept time with a one-action auto-sync offer.** One interaction at the moment
+   it matters instead of eighteen dispatches.
+3. **Keep it, and stop calling the syncs EMERGENCY** — batch one per seat per round. Defensible, but
+   then the fleet should not be interrupted eighteen times for a condition git already handles.
+
+### 3. Still open from the previous section, unchanged
+
+- **Documents: ship it or remove it?** The reconcile engine is wired (`src-cli/src/main.rs:69`,
+  `src-tauri/src/commands/reconcile_cmds.rs:16`), the display surface is built and tested and unrouted,
+  and live has **zero** `documents` rows while a rebuild produces 14 that point at files which all exist
+  on disk. Three of the four possible states of that subsystem are defects; the fourth — documents are
+  not part of the product — is legitimate, but then the honest action is deleting the dead code.
+- **Should the UI be able to write to the ledger?** Today a workitem can only be created by a seat
+  calling `emit_event`. That is why all four forms are read-only and why the honest notice is correct.
+- **Merge `packet/lyra/milestone-summary` into track.** Five standing duties exist on that branch and
+  are `on_track=0`. The waker reads a relative path against the primary checkout, so until this merge
+  happens the fleet has **one** seat with standing duties, not six — and I have been reporting six.
