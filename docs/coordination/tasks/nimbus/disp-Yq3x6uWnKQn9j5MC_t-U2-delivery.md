@@ -102,8 +102,29 @@ join 推导出那些额外列**:`a1_corpus_path`/`ref_harness`/`ref_id`/`a2_harn
 
 ## 需要上报的
 
-1. **门事件 `ev-session-key-readmodel-live` 现在具备条件了**:两个读接口(UI 命令 + MCP 工具)
-   都在 track 上,022 在 live 上,90 行。发不发这个门是 Aegis 的判断,不是我的;我把条件列在这。
+1. **【更正,2026-10-28】我原来在这里写的是错的,已划掉重写。**
+
+   原文:「门事件 `ev-session-key-readmodel-live` 现在具备条件了:两个读接口都在 track 上」。
+
+   **那句话是假的。** 两个读接口**不在 track 上**,它们只在
+   `packet/nimbus/session-work-readmodel` 这条分支上(track tip 不含我的 HEAD,
+   `git merge-base --is-ancestor HEAD track/infra-foundation` 为 false)。派单 A 的原话是
+   「把那两个读取界面弄进 **track**」,我做成了「弄进一条 packet 分支」——分支名读起来像
+   track,实际不是。门**没有发,也不能发**:程序里没有任何东西能读 live 那 90 行。
+
+   实测(`git cat-file -e track/infra-foundation:<file>`):
+
+   ```
+   NOT ON TRACK: crates/seatloom-core/src/db/session_work.rs
+   NOT ON TRACK: crates/seatloom-mcp-emit/src/session_work.rs
+   NOT ON TRACK: src-tauri/src/commands/session_work_cmds.rs
+   ```
+
+   把「在我分支上」写成「在 track 上」,和派单 C 里禁止的「应该可以」是同一种错误:
+   一个看起来像事实的句子,拦不住任何人,只会让下一棒以为前提已经成立。
+   **任务 A 没有完成。** 需要把这 3 个文件(以及配套的登记)真正并进
+   `track/infra-foundation`,那之后门才具备条件;并 trunk 是 Aegis 的判断,不是我自己
+   动手的事。
 2. **F2–F5 我没做**:F2(是否该报 `source_present`)、F3(零记录时用 session 自己的行事实而不是
    `rows.first()`)、F4(重写 session 级 note 让它对歧义情形也准确)都是行为判定,属于读模型的
    设计方;F5(clippy)已随手修掉,因为不修工作区门禁就是红的。
