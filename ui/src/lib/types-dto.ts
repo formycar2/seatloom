@@ -665,6 +665,44 @@ export interface LiveSessionDto {
   /// to xterm before subscribing to session:output events so idle panes don't
   /// render as a black screen.
   initialSnapshotB64?: string;
+  /// tmux `#{pane_pid}` — the pid of the process running in the pane.
+  ///
+  /// Not decoration. During the 2026-10-27 cross-wiring incident (AEGIS packet
+  /// AEGIS-2026-10-27-live-seat-mirror-cross-wiring-v1) the UI showed one seat's
+  /// slot full of another seat's output for three hours and nothing on screen
+  /// could tell the operator which pane the bytes actually came from. Two panes
+  /// with different `pane_tty`/`pane_pid` side by side is the cheapest thing that
+  /// makes the mismatch visible by eye at the moment it happens.
+  panePid?: number;
+  /// tmux `#{pane_tty}` — the pane's controlling terminal, e.g. `/dev/ttys005`.
+  paneTty?: string;
+}
+
+/**
+ * Emitted when a live mirror proves its pipe no longer belongs to it.
+ *
+ * The three ways this happens, all measured on tmux 3.x:
+ *   `lost`         no process writes our FIFO any more (someone ran the bare
+ *                  `tmux pipe-pane`, which STOPS rather than queries, or a
+ *                  thief replaced our writer and killed it)
+ *   `cross_wired`  more than one pane writes our FIFO, so the bytes we are
+ *                  about to show are not all ours
+ *   `probe_failed` the check itself could not run — reported rather than
+ *                  silently passing, because a check that cannot fail is worse
+ *                  than no check
+ *
+ * The UI must stop showing content on receipt. A log line is not a fix.
+ */
+export interface SessionMirrorLostEvent {
+  sessionId: string;
+  seatId?: string;
+  tmuxSessionName: string;
+  /// `"lost"` | `"cross_wired"` | `"probe_failed"`.
+  reason: string;
+  /// Number of foreign writers found (cross_wired only; 0 otherwise).
+  writers: number;
+  /// Human-readable line for the operator.
+  detail: string;
 }
 
 export interface SessionOutputEvent {

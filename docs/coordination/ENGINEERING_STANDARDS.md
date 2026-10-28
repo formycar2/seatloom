@@ -237,6 +237,15 @@ It is not a query and it is not a toggle. Any agent or human who reaches for it 
   `docs/coordination/knowledge/a_growing_file_does_not_prove_the_pipe_is_plugged_into_the_right_pane.md`
   for the 2026-10-27 incident where exactly that check certified a cross-wired
   mirror: the operator's messages to Aegis were rendered inside Nimbus's slot.
+- **Do not guess which FIFO a pane is writing from names.** Read the process
+  table for the writer's command line, or match the transcript content. Two agents
+  mis-paired panes with FIFOs during this incident and one of them took three hours
+  to surface.
+
+Why this is a standard and not a delivery note: the failure is not carelessness. The
+obvious command for "what is this pane piped to" is the destructive one, and the
+safe one has a name nobody guesses. Cheaper to fix here than to have a third agent
+learn it from an incident.
 
 ## Documents
 

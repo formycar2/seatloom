@@ -38,6 +38,7 @@ import type {
   SeatDto,
   SessionDto,
   SessionExitEvent,
+  SessionMirrorLostEvent,
   SessionOutputEvent,
   SessionTurnEvent,
   TmuxSessionInfo,
@@ -47,6 +48,7 @@ import type {
 // Re-exported so consumers keep importing event shapes from `api` — the same
 // pattern `SessionOutputEvent` and `SessionExitEvent` already follow.
 export type { SessionTurnEvent } from './types-dto';
+export type { SessionMirrorLostEvent } from './types-dto';
 
 /**
  * True when running inside the Tauri webview; false in plain-browser `vite`.
@@ -298,6 +300,36 @@ export function onSessionOutput(handler: (event: SessionOutputEvent) => void): P
 
 export function onSessionExit(handler: (event: SessionExitEvent) => void): Promise<UnlistenFn> {
   return listen<SessionExitEvent>('session:exit', (e: Event<SessionExitEvent>) =>
+    handler(e.payload),
+  );
+}
+
+/**
+ * The backend could no longer prove this mirror still belongs to us.
+ *
+ * 2026-10-27. The operator reported: "the words I said to Aegis in the live seat
+ * show up in Nimbus's live seat". Root cause was byte-level and is written up in
+ * the AEGIS packet; the short version is that an agent ran `tmux pipe-pane` with
+ * no argument — believing it was a query, when it is a STOP — and then pointed
+ * Aegis's pane at the FIFO the app believed was Nimbus's. `#{pane_pipe}` stayed 1
+ * the whole time, so nothing tmux reports distinguishes that from a healthy
+ * mirror.
+ *
+ * What IS provable is which processes write our FIFO. The backend re-checks that
+ * every 5 s and emits this the moment the answer stops being "exactly one, and it
+ * is ours".
+ *
+ * # What a consumer MUST do
+ *
+ * Stop showing the session's content, and offer a reconnect. A console log is not
+ * a fix: during the incident the bytes were wrong for three hours and the UI kept
+ * rendering them without a word. `LiveSeatsView` does this by dropping the
+ * attachment, which unmounts the terminal.
+ */
+export function onSessionMirrorLost(
+  handler: (event: SessionMirrorLostEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionMirrorLostEvent>('session:mirror-lost', (e: Event<SessionMirrorLostEvent>) =>
     handler(e.payload),
   );
 }
