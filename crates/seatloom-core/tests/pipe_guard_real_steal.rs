@@ -38,16 +38,37 @@ fn a_real_bare_pipe_pane_stops_the_pipe_and_the_guard_says_lost() {
     let _ = Command::new("mkfifo").arg(&fifo).output();
 
     // The pane must have a pid for the pipe to mean anything.
-    let pane_pid: u32 = tmux(&["list-panes", "-t", &format!("{session}:0"), "-F", "#{pane_pid}"])
-        .trim()
-        .parse()
-        .expect("pane pid");
+    let pane_pid: u32 = tmux(&[
+        "list-panes",
+        "-t",
+        &format!("{session}:0"),
+        "-F",
+        "#{pane_pid}",
+    ])
+    .trim()
+    .parse()
+    .expect("pane pid");
 
-    tmux(&["pipe-pane", "-t", &format!("{session}:0"), &format!("cat >> {fifo}")]);
+    tmux(&[
+        "pipe-pane",
+        "-t",
+        &format!("{session}:0"),
+        &format!("cat >> {fifo}"),
+    ]);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let pipe_ok_before = tmux(&["display-message", "-p", "-t", &format!("{session}:0"), "#{pane_pipe}"]);
-    assert_eq!(pipe_ok_before.trim(), "1", "our own attach should set pane_pipe=1");
+    let pipe_ok_before = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("{session}:0"),
+        "#{pane_pipe}",
+    ]);
+    assert_eq!(
+        pipe_ok_before.trim(),
+        "1",
+        "our own attach should set pane_pipe=1"
+    );
 
     // ---- THE BUG, reproduced exactly ----
     // A bare `pipe-pane` is a STOP command, not a query. This is what an
@@ -55,9 +76,16 @@ fn a_real_bare_pipe_pane_stops_the_pipe_and_the_guard_says_lost() {
     tmux(&["pipe-pane", "-t", &format!("{session}:0")]);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let pipe_ok_after = tmux(&["display-message", "-p", "-t", &format!("{session}:0"), "#{pane_pipe}"]);
+    let pipe_ok_after = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("{session}:0"),
+        "#{pane_pipe}",
+    ]);
     assert_eq!(
-        pipe_ok_after.trim(), "0",
+        pipe_ok_after.trim(),
+        "0",
         "the bare pipe-pane must have stopped the pipe - if it did not, \
          this test is not reproducing the bug"
     );
@@ -69,7 +97,9 @@ fn a_real_bare_pipe_pane_stops_the_pipe_and_the_guard_says_lost() {
     // the trap. Record it so the assertion below is about the measured world.
     let writers_still_listed = ps_text
         .lines()
-        .filter(|l| l.contains(&format!("cat >> {fifo}")) || l.contains(&format!("cat >> '{fifo}'")))
+        .filter(|l| {
+            l.contains(&format!("cat >> {fifo}")) || l.contains(&format!("cat >> '{fifo}'"))
+        })
         .count();
 
     let self_pids: HashSet<u32> = [pane_pid].into_iter().collect();
@@ -101,9 +131,7 @@ fn a_real_bare_pipe_pane_stops_the_pipe_and_the_guard_says_lost() {
     // survived). What no reordering survives is deleting the check, so assert
     // against a snapshot that has live writers AND pane_pipe=0 - the exact state
     // the real world was in above.
-    let synthetic = format!(
-        "  100     1 sh -c cat >> {fifo}\n  101   100 sh -c cat >> {fifo}\n"
-    );
+    let synthetic = format!("  100     1 sh -c cat >> {fifo}\n  101   100 sh -c cat >> {fifo}\n");
     let v = pipe_guard::probe_with_snapshot(&fifo, false, &synthetic, &HashSet::new());
     assert_eq!(
         v,
@@ -113,6 +141,8 @@ fn a_real_bare_pipe_pane_stops_the_pipe_and_the_guard_says_lost() {
          operator's text appear in the wrong seat."
     );
 
-    let _ = Command::new("tmux").args(["kill-session", "-t", &session]).output();
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
     let _ = std::fs::remove_file(&fifo);
 }

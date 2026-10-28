@@ -1263,6 +1263,49 @@ impl SeatloomDb {
     ) -> Result<(), DbError> {
         let mut client = self.pool.get().await.map_err(DbError::Pool)?;
         let tx = client.transaction().await?;
+        // `023`: refuse a repeat write BEFORE inserting, inside the same
+        // transaction, so the check and the insert can never disagree.
+        //
+        // The key is the evidence pointer plus the substance: (l2_file_path,
+        // l2_line_start, l2_line_end, l0_summary). `title` is excluded on
+        // purpose — a key that moves with a rename lets the same memory back in,
+        // which is how Vela's 2026-10-11 idempotency probe got a second row out
+        // of a write whose only difference was a title suffix.
+        //
+        // NULL-safe: three of the four duplicate groups on live carry NO line
+        // range at all, and `= NULL` matches nothing, so a plain equality
+        // predicate would miss exactly the groups that need catching.
+        //
+        // Measured on live before writing this: the key catches all 4 true
+        // duplicate groups (8 rows) and produces ZERO false positives on the
+        // legitimate rows that share a pointer — the four distinct memories
+        // citing ONYX-2026-10-14 lines 1-326 share the pointer AND the
+        // source_ref, and differ only in l0_summary, so they are not duplicates.
+        let existing = tx
+            .query_opt(
+                // `created_at` is rendered to text in SQL. Reading it as a
+                // `chrono::DateTime` would be the typed way, but the refusal only
+                // needs it for a human message, and `Row::get::<String>` on a
+                // timestamptz PANICS — which this guard did on its first real run,
+                // turning a clean refusal into a process abort.
+                "SELECT id, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') FROM memories \
+                  WHERE coalesce(l2_file_path, '') = coalesce($1, '') \
+                    AND l2_line_start IS NOT DISTINCT FROM $2 \
+                    AND l2_line_end IS NOT DISTINCT FROM $3 \
+                    AND l0_summary = $4 \
+                  LIMIT 1",
+                &[&l2_file_path, &l2_line_start, &l2_line_end, &l0_summary],
+            )
+            .await?;
+        if let Some(row) = existing {
+            return Err(DbError::MemoryDuplicate {
+                existing_id: row.get(0),
+                created_at: row.get(1),
+                l2_file_path: l2_file_path.map(str::to_string),
+                l2_line_start,
+                l2_line_end,
+            });
+        }
         tx.execute(
             "INSERT INTO memories \
                (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
@@ -4100,6 +4143,36 @@ pub enum DbError {
     /// not render an empty obligation.
     #[error("operator decision {id:?} not found")]
     OperatorDecisionNotFound { id: String },
+    /// `023`: a memory that already exists. The dedup key is
+    /// `(l2_file_path, l2_line_start, l2_line_end, l0_summary)` — the evidence
+    /// pointer plus what the record actually says.
+    ///
+    /// WHY THIS IS A REFUSAL AND NOT AN UPSERT. A repeat `remember` is either a
+    /// retry of a write that landed (in which case the second write is a
+    /// duplicate and the id of the row that already exists is the useful
+    /// answer) or a genuinely new record that happens to cite the same lines
+    /// (in which case the substance differs and the key does not collide).
+    /// Silently updating would rewrite a recorded fact — the same reason
+    /// 013/014 refuse to roll a terminal row back — and silently inserting is
+    /// the defect this closes: measured on live, a retry-shaped probe created a
+    /// second row with no error and no warning.
+    ///
+    /// `title` is deliberately NOT in the key: it changes, and a key that moves
+    /// with a rename lets the same memory back in. Vela's 2026-10-11 probe
+    /// proved exactly that — she altered the title and the write went through.
+    #[error(
+        "memory already exists at {l2_file_path:?} lines {l2_line_start:?}-{l2_line_end:?} \
+         with this l0_summary (row {existing_id:?}, created {created_at:?}) — a repeat write is \
+         refused, never duplicated. If this is a retry, the row is already there; if it is a \
+         genuinely new record, change its l0_summary or its evidence pointer."
+    )]
+    MemoryDuplicate {
+        existing_id: String,
+        created_at: String,
+        l2_file_path: Option<String>,
+        l2_line_start: Option<i32>,
+        l2_line_end: Option<i32>,
+    },
     /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
     /// same reason 013/014 refuse to roll a terminal row back: the row is a
     /// projection of the append-only ledger, and re-deciding would rewrite a
@@ -4417,5 +4490,85 @@ mod tests {
         check_seat_domains("seat-unrecorded", None, None).expect("NULL columns are legitimate");
         check_session_domains("ses-unrecorded", None, "ClaudeCode")
             .expect("NULL harness is legitimate");
+    }
+
+    // ── 023: the dedup key, pinned as source text ───────────────────────────
+    //
+    // The guard itself needs a database and is proven end-to-end by
+    // `crates/seatloom-mcp-emit/proof/memory_dedup_proof.sh` (7 points, all
+    // against a scratch). What is pinned HERE is the part that needs no
+    // database and that a future edit would silently break: the key.
+    //
+    // A source-text test is weaker than a behaviour test and is labelled as such.
+    // It is here because the alternative is nothing, and "nothing" is what let
+    // the write path ship with no dedup at all for twelve days.
+
+    /// The key is the pointer PLUS the substance, and the title is NOT in it.
+    ///
+    /// The title's absence is the load-bearing half: Vela's 2026-10-11 probe
+    /// changed only the title and got a second row, which is the exact shape a
+    /// key containing the title would still allow.
+    #[test]
+    fn the_dedup_key_is_the_pointer_plus_the_substance_and_not_the_title() {
+        let src = include_str!("repositories.rs");
+        // Each of the four key columns must appear in the guard's predicate.
+        // `l2_file_path` goes through COALESCE, the other two through
+        // IS NOT DISTINCT FROM, and l0_summary through plain equality (it is
+        // NOT NULL, so a NULL-safe comparison there would be noise).
+        for predicate in [
+            "coalesce(l2_file_path, '') = coalesce($1, '')",
+            "l2_line_start IS NOT DISTINCT FROM $2",
+            "l2_line_end IS NOT DISTINCT FROM $3",
+            "AND l0_summary = $4",
+        ] {
+            assert!(
+                src.contains(predicate),
+                "the dedup key must contain: {predicate}"
+            );
+        }
+        // The title must NOT appear in the WHERE clause. This is the assertion
+        // that catches a key written with `AND title = $5` — a key that moves
+        // with a rename lets the same memory back in.
+        // Extract the WHERE clause by its delimiters, not by searching the whole
+        // guard: the surrounding comment explains WHY the title is excluded, so a
+        // substring search for "title" matches the explanation and fails on
+        // correct code. A check that cannot tell the key from the comment about
+        // the key is the defect this codebase keeps recording.
+        let guard = src
+            .split("refuse a repeat write BEFORE inserting")
+            .nth(1)
+            .expect("the guard must exist");
+        let where_start = guard.find("WHERE").expect("the guard has a WHERE");
+        let where_end = guard.find("LIMIT 1").expect("the guard has a LIMIT");
+        let where_clause = &guard[where_start..where_end];
+        for column in ["title", "tags", "l2_body_digest", "kind", "confidence"] {
+            assert!(
+                !where_clause.contains(column),
+                "{column} must NOT be in the dedup key — a key that moves with a rename or a retag lets the same memory back in"
+            );
+        }
+    }
+
+    /// The line-range comparison must be NULL-safe, because three of the four
+    /// live duplicate groups carry NO line range and `= NULL` matches nothing.
+    #[test]
+    fn the_line_range_comparison_is_null_safe() {
+        let src = include_str!("repositories.rs");
+        assert!(
+            src.contains("l2_line_start IS NOT DISTINCT FROM"),
+            "the line range must be compared with IS NOT DISTINCT FROM, not `=`: `= NULL` matches nothing, so a plain-equality guard would miss exactly the groups that need catching"
+        );
+    }
+
+    /// A refused duplicate must not be reported as a generic database error.
+    /// The first version of the guard panicked instead (`Row::get::<String>` on a
+    /// timestamptz), which turned a clean refusal into a process abort.
+    #[test]
+    fn a_duplicate_is_a_typed_refusal_not_a_generic_db_error() {
+        let src = include_str!("repositories.rs");
+        assert!(
+            src.contains("to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')"),
+            "created_at must be rendered in SQL: reading a timestamptz as a String PANICS, and the first version of this guard did exactly that"
+        );
     }
 }

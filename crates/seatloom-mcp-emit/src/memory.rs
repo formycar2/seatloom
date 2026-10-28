@@ -166,6 +166,20 @@ pub enum MemoryRejection {
     NotActive { memory_id: String },
     /// `promote` named the tier the memory already has.
     NoTierChange { memory_id: String, tier: String },
+    /// `023`: a memory with this evidence pointer and this substance already
+    /// exists. A repeat write is refused, never duplicated — the caller gets the
+    /// row that is already there so a retry is recognisable as a retry.
+    ///
+    /// WHY NOT AN UPSERT. Silently updating would rewrite a recorded fact, which
+    /// is the same reason 013/014 refuse to roll a terminal row back; silently
+    /// inserting is the defect this closes.
+    Duplicate {
+        existing_id: String,
+        created_at: String,
+        l2_file_path: Option<String>,
+        l2_line_start: Option<i32>,
+        l2_line_end: Option<i32>,
+    },
     /// The recall page size exceeds the hard ceiling.
     LimitTooLarge { limit: i64 },
     /// A `relations` target names no memory.
@@ -221,6 +235,30 @@ impl std::fmt::Display for MemoryRejection {
             ),
             MemoryRejection::LimitTooLarge { limit } => {
                 write!(f, "limit {limit} exceeds the hard ceiling {RECALL_LIMIT_MAX}")
+            }
+            MemoryRejection::Duplicate {
+                existing_id,
+                created_at,
+                l2_file_path,
+                l2_line_start,
+                l2_line_end,
+            } => {
+                let where_ = match l2_file_path {
+                    Some(p) => format!(
+                        "{p} lines {}-{}",
+                        l2_line_start.map_or("(none)".to_string(), |v| v.to_string()),
+                        l2_line_end.map_or("(none)".to_string(), |v| v.to_string())
+                    ),
+                    None => "(no l2 file path)".to_string(),
+                };
+                write!(
+                    f,
+                    "memory already exists at {where_} (row {existing_id}, created {created_at}) with \
+                     this l0_summary — a repeat write is refused, never duplicated. If this is a \
+                     retry, the row is already there; if it is a genuinely new record, change its \
+                     l0_summary or its evidence pointer, because the title is deliberately NOT \
+                     part of the key"
+                )
             }
             MemoryRejection::RelationTargetMissing { to_id } => write!(
                 f,
@@ -282,6 +320,22 @@ impl From<DbError> for MemoryRejection {
             DbError::MemoryNoTierChange { id, tier } => MemoryRejection::NoTierChange {
                 memory_id: id,
                 tier,
+            },
+            // `023`: a repeat write is refused, and the caller is told WHICH row
+            // is already there and when it was created — the answer that makes a
+            // retry cheap to recognise as a retry.
+            DbError::MemoryDuplicate {
+                existing_id,
+                created_at,
+                l2_file_path,
+                l2_line_start,
+                l2_line_end,
+            } => MemoryRejection::Duplicate {
+                existing_id,
+                created_at,
+                l2_file_path,
+                l2_line_start,
+                l2_line_end,
             },
             other => MemoryRejection::Db(other.to_string()),
         }
