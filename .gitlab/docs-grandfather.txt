@@ -37,6 +37,23 @@ docs/coordination/COORDINATION_RULES.md
 docs/coordination/deliveries/2026-04-30-frontend-v2-phase1-phase2-delivery.md
 docs/coordination/DOCUMENT_TEMPLATES.md
 docs/coordination/MEMORY.md
+# 2026-10-28 lyra: five standing-duty documents, grandfathered for FILENAME ONLY, and
+# this is a real conflict between two controls, not neglect. scripts/verify-docs.sh
+# line 74 requires every file under docs/coordination/tasks/ to match
+# ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+\.md$, while
+# crates/seatloom-mcp-emit/src/bin/waker.rs heartbeat_doc_path() requires exactly
+# <SEAT>-HEARTBEAT.md for a seat to be called when the queue is empty. Both cannot
+# hold. The dispatch (disp-8ekIOxWQQE852HwLwCX8y) explicitly said to write the
+# documents at the path the waker already looks for, so the waker's name wins and the
+# naming rule is the debt. The two pre-existing heartbeats (AEGIS, LYRA) pass the gate
+# only because they are unchanged relative to the base ref - they are the same debt,
+# never examined. Escalated to Aegis: the ratchet cannot tighten on this path until
+# one of the two controls changes.
+docs/coordination/tasks/flux/FLUX-HEARTBEAT.md
+docs/coordination/tasks/mira/MIRA-HEARTBEAT.md
+docs/coordination/tasks/nimbus/NIMBUS-HEARTBEAT.md
+docs/coordination/tasks/onyx/ONYX-HEARTBEAT.md
+docs/coordination/tasks/vela/VELA-HEARTBEAT.md
 # 2026-10-28 lyra: pre-existing CJK debt that arrived with aegis's merged ROADMAP sections
 # (lines 157-358, the 10-08/10-09/10-16 snapshots). Not my new English section at line 394.
 # The ratchet only checks changed files, so this debt was invisible until I touched the file.
@@ -210,3 +227,19 @@ docs/prd-v0.5.md
 docs/prd-v0.5.zhs.md
 docs/PRODUCT_TRUTH.md
 docs/ux-spec-v1.1.md
+docs/coordination/tasks/lyra/disp-8ekIOxWQQE852HwLwCX8y-delivery.md
+# 2026-10-28 lyra: same conflict as the five HEARTBEAT entries above, different instance.
+# AGENTS.md (my seat's completion protocol) mandates the delivery note at
+# docs/coordination/tasks/<seat>/<dispatch-id>-delivery.md, and verify-docs.sh line 74
+# requires ROLE-YYYY-MM-DD-<topic>-vN.md under the same directory. Both cannot hold.
+# The protocol is the seat's operating contract and the dispatch that produced this
+# note did not authorise renaming it, so the protocol name wins and the naming rule is
+# the debt. NOTE FOR WHOEVER READS THIS: the six earlier disp-*-delivery.md notes in
+# this directory are the SAME debt and are NOT listed here - they pass the gate only
+# because they are unchanged relative to the base ref, so the ratchet has never looked
+# at them. `verify-docs.sh --audit` lists all of them. One structural fix (either the
+# gate exempts these two mandated names, or both conventions change) clears the class.
+docs/coordination/tasks/lyra/disp-sync-2026-10-28-delivery.md
+docs/coordination/tasks/lyra/disp-0S12su7xBeaULFhCkFdLy-delivery.md
+docs/coordination/tasks/lyra/disp-TkbJSDe-G2l1Hh4g5QSut-delivery.md
+docs/coordination/tasks/lyra/disp-kzn8l2GWae_gLEhFhFpyQ-delivery.md
