@@ -18,6 +18,7 @@ mod memory;
 mod protocol;
 mod read;
 mod scheduler;
+mod session_work;
 mod topics;
 
 use deadpool_postgres::Pool;
@@ -123,8 +124,7 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "cancel_dispatch" => call_cancel(pool, id, arguments).await,
         "request_acceptance" => call_request_acceptance(pool, id, arguments).await,
         "cancel_acceptance" => call_cancel_acceptance(pool, id, arguments).await,
-        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,
-        // --- D5 knowledge layer (Lane B): memory management, explicit tools ---
+        "get_acceptance_lineage" => call_get_acceptance_lineage(db, id, arguments).await,        // --- D5 knowledge layer (Lane B): memory management, explicit tools ---
         "recall" => match memory_args::<memory::RecallArgs>(&id, arguments) {
             Ok(a) => render_memory(id, memory::recall(db, a).await),
             Err(resp) => resp,
@@ -212,6 +212,19 @@ async fn handle_tools_call(db: &SeatloomDb, pool: &Pool, id: Value, params: Valu
         "list_operator_decisions" => {
             match read_args::<decisions::ListOperatorDecisionsArgs>(&id, arguments) {
                 Ok(a) => render_decision(id, decisions::list_operator_decisions(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        // --- The session↔work bridge: two read-only directions over the view ---
+        "session_work" => {
+            match read_args::<session_work::SessionWorkArgs>(&id, arguments) {
+                Ok(a) => render_session_work(id, session_work::session_work(db, a).await),
+                Err(resp) => resp,
+            }
+        }
+        "memory_session" => {
+            match read_args::<session_work::MemorySessionArgs>(&id, arguments) {
+                Ok(a) => render_session_work(id, session_work::memory_session(db, a).await),
                 Err(resp) => resp,
             }
         }
@@ -406,6 +419,19 @@ fn render_intent(id: Value, outcome: Result<String, intent::IntentRejection>) ->
 }
 
 /// Render a memory tool's outcome: the typed rejection verbatim on failure.
+/// A typed rejection rendered verbatim, and a `null` answer as a SUCCESS carrying
+/// `null` — never an error and never an empty object that could be mistaken for a
+/// resolved one.
+fn render_session_work(
+    id: Value,
+    outcome: Result<String, session_work::SessionWorkRejection>,
+) -> Value {
+    match outcome {
+        Ok(msg) => success(id, tool_call_result(&msg, false)),
+        Err(e) => success(id, tool_call_result(&e.to_string(), true)),
+    }
+}
+
 fn render_memory(id: Value, outcome: Result<String, memory::MemoryRejection>) -> Value {
     match outcome {
         Ok(msg) => success(id, tool_call_result(&msg, false)),
