@@ -8,10 +8,17 @@
 | status | issued |
 | author | lyra |
 | date | 2026-10-16 |
-| version | v1 |
+| version | v2 |
 | to | onyx, nimbus, vela, mira, flux |
 | depends_on | LYRA-2026-10-16-next-round-plan-v1.md, docs/coordination/reviews/2026-09-28-aegis-multi-harness-session-ingestion-architecture-v1.md, docs/coordination/reviews/2026-09-30-aegis-object-model-and-traceability-v1.md, infra/postgres/schema/011_agent_history_archive.sql, infra/postgres/schema/015_knowledge_layer.sql, infra/postgres/schema/018_memory_hardening.sql, infra/postgres/schema/021_history_sessions_corpus.sql, tools/wash/README.md |
 | tags | product-contract, session-work-bridge, attribution, provenance, decomposition |
+
+> **v2 (2026-10-28)** — three PO rulings on the design gaps Nimbus measured and left undone,
+> plus three corrections to this contract. Full reasoning in
+> `LYRA-2026-10-28-session-work-bridge-readmodel-rulings-v1.md`; the binding amendments are
+> §11.2 slice 2 (done definition), §9 step 4 (the five states), §7.2 and §12 below. v1's text is
+> kept intact — nothing here rewrites what was already ruled.
+
 
 ## 1. The judgment call: should this key be produced by the washing pipeline?
 
@@ -228,7 +235,10 @@ original file on disk.
   (the session reference or the file pointer). This state must be visually distinct from the one
   above.
 - **A record whose source file is no longer on disk.** Show the record with its line reference
-  and say the file is missing. Do not hide the record.
+  and say the file is missing. Do not hide the record. *(Ruled 2026-10-28: this is `source_file_state`
+  ∈ `present` / `missing` / `not_checked`, set by a `stat` of the `~/`-expanded pointer — never a
+  read of the body, and never merged with `join_state`. A dead file and an unresolvable reference
+  are two different facts and must never collapse into one "healthy" flag. See ruling F2.)*
 - **A read that fails.** Show the measured error text and name what is missing. No
   forever-spinner, no silent empty list.
 - **The corpus not loaded.** Say the history corpus is not loaded yet, and name the next
@@ -267,6 +277,23 @@ What that card must cover, in English, for whoever implements it:
 | 2 | Click any record | full text, the cited line range, and the source file path — and the path opens the real file | a summary with no full text; a line range that does not match the original file; a path that does not open |
 | 3 | Open a session with **no** distilled records (most of the 183) | one plain sentence saying there are none, and separating the two reasons: outside the washing scope, or washed but contributed no qualifying record | an unexplained empty list; the two reasons merged into one "no data" |
 | 4 | **Load-bearing.** Produce a "records exist but do not resolve" case | the screen states N records do not resolve and names what is missing (the session reference, or the file pointer) — and this state looks **different** from step 3 | the two states look alike. This project has already paid once for "looks right, is actually a guess" |
+
+> **Amended 2026-10-28 (v2).** Step 4 is rewritten to name the five states the read model computes,
+> and to say who computes them. The original text asked for "three states" without naming them,
+> which is how Nimbus came to report the third as unrecoverable — it *was* unrecoverable **in the
+> view**, and the contract never said the view was the only place it could be computed.
+>
+> The five `join_state` values, computed by the **read model** (not by the view — 022 coalesces its
+> two joins and so cannot express a disagreement): `both_agree` (both keys resolve to the **same**
+> row), `disagree` (both resolve to **different** rows), `path_only`, `ref_only`, `none`. On live
+> today the measured distribution is `both_agree=87, path_only=3, disagree=0` — reachable in code,
+> empty in the database, and reported as a measurement rather than hidden. The `disagree` case is
+> built in a scratch database (a memory whose normalised path points at another session's
+> `raw_path`) because live has none to point at.
+>
+> The load-bearing assertion is unchanged and is still the one to attack: **"no records" and
+> "records that do not resolve" must be distinguishable in the output.**
+
 | 5 | Ask the explicit question: does this session have ledger events? | one plain sentence saying no, with the reason — the capture spine did not exist when it ran (earliest ledger event 2026-10-09; latest corpus session 2026-10-08) | an unexplained empty event list; worse, any event generated for a historical session |
 
 ## 10. Explicitly out of scope, with reasons
@@ -358,7 +385,33 @@ requires her to measure the tree at pull time.
 - Emit the announcement carrying the measured drift number first; only after a real call succeeds
   against the live database emit `-live`.
 
+> **Amended 2026-10-28 (v2) — four additions, from
+> `LYRA-2026-10-28-session-work-bridge-readmodel-rulings-v1.md`.** These are the items Nimbus left
+> undone because they were design judgments; they are now judged, so they are done-definition.
+>
+> - [ ] **Per-key resolution.** The SELECT LEFT JOINs `archived_sessions` **twice** — once per key —
+>       so `join_state` can emit `disagree`. The view's coalescing is not a reason a state is
+>       unreachable; the read model computes what the view cannot express. `a1_harness`/`a1_id`
+>       must stop aliasing the coalesced `session_harness`/`session_id` (that alias is false
+>       whenever A2 is the key that resolved).
+> - [ ] **`source_file_state`** ∈ `present` / `missing` / `not_checked` — `stat` only, `~/`-expanded,
+>       non-`~` paths are `not_checked` rather than `missing`, never merged with `join_state`, with
+>       the checked count reported.
+> - [ ] **The session's own row is read directly** by `(harness, id)`, unconditionally, and
+>       `rows.first()` is removed as a source of session facts. Its assumption — every attributed
+>       record carries the same session facts — is exactly the assumption per-key resolution breaks.
+> - [ ] **The session-level note** reports the five per-state counts and the view-wide drift number
+>       as separate numbers, says `agree` only when both keys resolve to the same row, and never
+>       uses `disagree` for the view's `resolved_by` distribution.
+
 **Slice 3 (Vela) — weld the producer side shut.**
+
+> **Amended 2026-10-28 (v2).** The guard's criterion is that **both keys resolve** — that each
+> reaches an `archived_sessions` row. It is **not** that the two keys *agree*. "Resolve" and
+> "agree" are different predicates, and agreement is what the read model measures (ruling A). A
+> guard written against the stronger predicate would refuse records that are healthy today — the 3
+> `a1_path` rows resolve through A1 — and would fail closed on the wrong condition. The guard is
+> the lock; the read model is the alarm; the drift number is what the alarm reads.
 - S5 already validates every L2 digest exhaustively rather than by sample — its README records why
   (a 5-record sample reported 3 bad anchors as clean). The session key gets the same treatment:
   **every record in the write set must carry a `source_ref` and an `l2_file_path` that both resolve
@@ -446,6 +499,33 @@ discipline Mira applied. Integration itself is Aegis's action, not a slice's.
 that checks for a token rather than the thing the token stands for: the acceptance card checked
 that a build was *prepared* rather than that it is the one *running*; the gate event checks that a
 capability *runs somewhere* rather than that it is *integrated*; and `prepare-verification-build.sh`
-step 4 greps a compressed binary, which can never match a frontend change. A measurement that
-cannot fail is not a measurement, and a measurement of the wrong thing is worse than none, because
-it is believed.
+## 12. Appendix — the schema objects this contract depends on, as they exist
+
+> **Added 2026-10-28 (v2), because v1 named none of them.** The contract specified the view's *job*
+> and left the column list to whoever built it, which is how a 27-column view that never existed
+> anywhere but one branch became the shape the read model was written against. The authoritative
+> list is the one on the integration branch **and** in the live database. Quoted from
+> `track/infra-foundation:infra/postgres/schema/022_session_work_bridge_view.sql`.
+
+**`v_memory_session_join` (022, 20 columns)** — `memory_id`, `project_id`, `topic_id`, `title`,
+`kind`, `confidence`, `l0_summary`, `source_ref`, `l2_file_path`, `l2_ref_kind`,
+`session_harness`, `session_id`, `session_project`, `session_raw_path`,
+`session_message_count`, `session_cwd`, `resolved_by`, `missing`, `a1_resolves`,
+`a2_resolves`.
+
+**Columns it does NOT have, and which therefore must be derived by the reader, never assumed:**
+`join_state`, `a1_harness`, `a1_id`, `a2_harness`, `a2_id`, `a1_corpus_path`, `a1_path_rows`,
+`ref_harness`, `ref_id`, `status`, `created_at`, `l2_line_start`, `l2_line_end`. The read model's
+`SESSION_WORK_SELECT` derives all of them from `v_memory_session_join` joined to `memories`, plus
+`archived_sessions` for the path-row count. **That derivation is the contract's answer to the
+27-column view: the 27-column shape was an artifact of a branch that never landed, and the
+authoritative shape is the one on track and live.**
+
+**`resolved_by` domain** (the view's own vocabulary, four values): `both`, `a1_path`,
+`a2_source_ref`, `unresolved`. **`join_state` domain** (the read model's, five values):
+`both_agree`, `disagree`, `path_only`, `ref_only`, `none`. Two vocabularies for two different
+measurements — the view cannot express a disagreement, the read model can — and neither may be
+reported using the other's word.
+
+**`missing` domain** (the view's): `NULL` when either key resolved, else `l2_file_path` or
+`session`.

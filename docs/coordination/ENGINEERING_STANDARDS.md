@@ -8,13 +8,15 @@
 | status | active |
 | author | aegis |
 | date | 2026-10-27 |
-| version | v2 |
+| version | v3 |
 | depends_on | `docs/coordination/COORDINATION_RULES.md`, `docs/coordination/DOCUMENT_TEMPLATES.md`, `.gitlab-ci.yml` |
 | tags | engineering, ci, code-standards, quality-gates, ratchet, acceptance, verification-gate-class |
 
 > Changelog: v1 (2026-09-29) aegis — initial standard. v2 (2026-10-27)
 > lyra — added `## Acceptance gate class` (decision
 > `docs/coordination/acceptance/2026-10-27-verification-gate-class-rule-decision.md`).
+> v3 (2026-10-28) lyra — added `## Read models and the contracts that describe them`
+> (decision `docs/coordination/tasks/lyra/LYRA-2026-10-28-session-work-bridge-readmodel-rulings-v1.md`).
 > v2 keeps id `engineering-standards-v1` so existing `depends_on` and document
 > references stay resolvable; the version row records the content revision.
 
@@ -205,6 +207,39 @@ Non-obvious CI facts, all verified 2026-09-29 against a fresh database:
   diffing against it marks every file changed. Both verifier scripts resolve the
   base the same way and CI fetches that ref explicitly.
 
+## Read models and the contracts that describe them
+
+**Authoritative decision**: `docs/coordination/tasks/lyra/LYRA-2026-10-28-session-work-bridge-readmodel-rulings-v1.md`
+(Lyra, 2026-10-28). This section owns the rule; that memo owns the reasoning.
+
+Measured, 2026-10-28: a read model was written against a **27-column view that never existed
+anywhere but one branch**. Its own branch's `infra/postgres/schema/` stopped at 014, so 022 was
+not on it at all. Running the query against live failed with `column "a1_harness" does not
+exist` — the view that is actually on track and live has 20 columns with different names. The
+defect lived only in the scratch for a while, then in the read model.
+
+### Rules
+
+1. **A contract that names database columns is a claim about a database.** Every such claim is
+   verified against the integration branch **and** the live database before the contract is
+   issued. A branch-local artifact is not a contract.
+2. **A contract names its schema objects, or it does not name them at all.** Specifying a view's
+   *job* while leaving its columns to the implementer is how the next person re-derives the wrong
+   shape. Either quote the authoritative column list in an appendix, or state explicitly that the
+   list is not fixed by the contract.
+3. **"Resolve" and "agree" are different predicates.** Two keys can each reach a row while naming
+   different rows. A view that coalesces its joins cannot express the difference — so the reader
+   computes it, with one join per key, rather than reporting a state as unreachable. A state that
+   is claimed but not computed is worse than an honest "not measurable".
+4. **Derive in the reader, never in a live migration.** Extra columns belong in the read model's
+   SELECT, not in a DDL change to a view readers already depend on. A view definition change is a
+   new migration's `DROP`+`CREATE`, never a silent rewrite.
+5. **A file being gone and a reference not resolving are two different facts.** `source_file_state`
+   and `join_state` are never merged into one "healthy" flag, and neither defaults to a value its
+   caller did not measure (`not_checked` exists so that "unchecked" is visible).
+6. **The entity's own row is read by its own key.** Never reconstruct an entity's facts from the
+   first row of a join over it — that assumption breaks the moment the join is per-key.
+
 ## Acceptance gate class
 
 **Authoritative decision**: `docs/coordination/acceptance/2026-10-27-verification-gate-class-rule-decision.md`
@@ -300,3 +335,6 @@ Three consequences that need stating once, plainly:
    seat's own dispatch to the forbidden-verdict check.
 7. **Lyra** — release the eight blocked Flux dispatches once the memo's
    classification of each one is recorded (memo §6 backlog).
+8. **Governance** — add a header field or a lint that records which schema revision a
+   read-model contract was verified against, so "verified against 022 @ <sha>" is checkable
+   rather than remembered. The 10-28 ruling's rule 1 is currently prose.
