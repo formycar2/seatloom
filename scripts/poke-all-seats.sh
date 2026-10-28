@@ -148,8 +148,17 @@ else
   fi
 fi
 
+# The verification token is a PREFIX fragment, not a suffix marker.
+#
+# On 2026-10-29 02:1x a poke to a working seat reported UNVERIFIED while the pane
+# showed the message plainly as "Steering: # 紧急:优先级 99 ... 我提..." - the TUI
+# had TRUNCATED the line, and the truncation cut off exactly the "[POKE-...]" at
+# the end. A suffix marker is invisible to any message long enough to wrap.
+#
+# So: send the token at the START, where it survives, and search for the token
+# alone. The message itself stays after it, so the seat still reads plain text.
 MARKER="POKE-$(date +%s)"
-BODY="$MSG  [$MARKER]"
+BODY="[$MARKER] $MSG"
 
 poked=0
 failed=0
@@ -171,15 +180,28 @@ while IFS= read -r s; do
   # on its own schedule. A check that fails exactly when it matters is not a
   # check.
   #
-  # Window is 15s, not 6. On 2026-10-28 19:0x a poke to a Working seat reported
-  # UNVERIFIED while the marker was provably in the pane the whole time - and a
-  # re-poke one call later succeeded. Measured separately: markers become visible
-  # 0-2s after send, but the distribution has a tail, and a false UNVERIFIED is
-  # worse than a slow OK because it makes the caller re-send and the seat gets
-  # the message twice.
+  # Window is 15s x a DEEP scrollback, not 6s x a shallow one.
+  #
+  # Two separate bugs found by testing this, both of which produced a false
+  # UNVERIFIED while the marker was provably in the pane:
+  #
+  # 1. TOO SHORT a wait. A marker sent to a busy pane reads back absent at t=0
+  #    and present at t=3s, because the agent TUI owns the pane and redraws on
+  #    its own schedule. A check that fails exactly when the seat is working
+  #    fails when it matters.
+  #
+  # 2. TOO SHALLOW a capture. `capture-pane -S -15` on a 50-row pane returns 65
+  #    lines, and a long message wraps to 3-4 of them. If the TUI redraws during
+  #    the wait - which is exactly what a working seat does - the message scrolls
+  #    out of those 65 lines and is then permanently invisible to this read, no
+  #    matter how long we wait. On 2026-10-29 02:10 the marker was visible in the
+  #    pane AFTER the script had already given up.
+  #
+  # A false UNVERIFIED is worse than a slow OK: the caller re-sends, and the seat
+  # gets the message twice.
   seen=0
   for _ in $(seq 1 15); do
-    if "$TMUX_BIN" capture-pane -p -t "$s:0" -S -15 2>/dev/null | grep -q "$MARKER"; then
+    if "$TMUX_BIN" capture-pane -p -t "$s:0" -S -400 2>/dev/null | grep -q "$MARKER"; then
       seen=1
       break
     fi
