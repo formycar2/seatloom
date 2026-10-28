@@ -129,3 +129,34 @@ git merge-base --is-ancestor track/infra-foundation HEAD   # 在各分支上跑
 ## 一句话
 
 **规则写第二遍不等于规则被执行了。第二次犯同一个错的时候,该动的不是措辞,是执行方式。**
+
+---
+
+## 第三次,同一天,而且这次我有机械守卫(2026-10-28 13:04)
+
+第二次之后我装了两个东西:`scripts/check-cards-clickable.sh`(打印数字、点不动 exit 1)
+和 `.git/hooks/pre-commit`(有 pending 卡就拒绝提交)。第二个被验证过会拒 ——
+它确实拒了我自己一笔提交。
+
+然后 13:04 我又提了一笔。钩子输出:
+
+```
+pre-commit: pending acceptance cards exist. Checking that they stay clickable...
+pre-commit: OK - pending cards remain clickable
+```
+
+**它放行了,而那一笔又卡住 12 张卡。**
+
+原因:钩子测的是 `track` **当前的** tip,而跑钩子那一刻三个分支都包含当前 tip。
+这个提交本身会变成新 tip,而没有任何分支包含它。
+
+**守卫测的是改动之前的世界;它要防的恰好是改动本身。**
+
+这比没有守卫更糟:没有守卫我只是没查,有了守卫我收到一个明确的 OK,
+于是把"我没查"升级成了"我查过了"。
+
+改成:用 `git commit-tree` 造出即将存在的那个提交(不动 ref、不 push、不动工作区),
+每张 pending 卡去比**那个** tip。现在它拒了,理由也对。
+
+**判据:凡是"防某个改动"的检查,都必须拿改动之后的世界去测。**
+"提交前分支同步吗"没用,提交正是产生不同步的原因。
