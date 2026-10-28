@@ -48,6 +48,12 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { api, isTauri } from '../../lib/api';
+// The session<->work read model's Tauri command. Reached through `invoke`
+// directly rather than through `api.ts`, because `api.ts` and `types-dto.ts` are
+// Nimbus's fence (dispatch disp-session-key-ui: "never edit them") and this seat's
+// contract adds no shape to them. The command returns the read model's own JSON
+// text verbatim, so there is no second, summarised shape that could drift.
+import { invoke } from '@tauri-apps/api/core';
 import type {
   HistoryContextSlice,
   HistoryProject,
@@ -72,6 +78,14 @@ export interface HistoryLoader {
     lineEnd: number,
   ) => Promise<HistoryContextSlice>;
   openPath: (path: string) => Promise<void>;
+  /**
+   * The forward read of the session<->work bridge: one session's distilled
+   * records plus the three separated numbers. Returns the read model's own JSON
+   * text verbatim — a refusal (the bridge view is absent, or the session is not
+   * in the archive) comes back as the tool's typed message, so this screen can
+   * name what is missing instead of rendering an empty list.
+   */
+  sessionWork: (harness: string, id: string) => Promise<string>;
 }
 
 const liveLoader: HistoryLoader = {
@@ -81,6 +95,7 @@ const liveLoader: HistoryLoader = {
   readContextSlice: (contextPath, lineStart, lineEnd) =>
     api.readHistoryContextSlice(contextPath, lineStart, lineEnd),
   openPath: (path) => api.openLocalPath(path),
+  sessionWork: (harness, id) => invoke('cmd_session_work', { harness, id }),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -107,6 +107,14 @@ function loaderFromFixture(overrides: Partial<HistoryLoader> = {}): HistoryLoade
       };
     },
     openPath: async () => {},
+    // The session<->work read. Refuses rather than returning an empty answer, so
+    // a test that wants this section rendered must SAY what the read returns —
+    // a silent empty object here would make "no records" and "the read was never
+    // stubbed" look identical, which is the exact collapse this section exists to
+    // prevent.
+    sessionWork: async () => {
+      throw new Error('sessionWork not stubbed for this test');
+    },
     ...overrides,
   };
 }
