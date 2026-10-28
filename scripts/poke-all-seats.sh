@@ -1,48 +1,55 @@
 #!/usr/bin/env bash
-# Poke every live seat with a short message. The session names are NOT the
-# obvious ones and are not derivable from the seat id.
+# Poke seats with a short message, verified by reading the pane back.
 #
-# Why this exists: on 2026-10-28 I poked 'Flux-QA/seatloom', 'Lyra-PO/seatloom',
-# 'Nimbus-Backend/seatloom', 'Onyx-Data/seatloom' and 'Vela-Wash/seatloom'.
-# Every one of them is the wrong name. tmux send-keys returns exit 0 for a
-# session that does not exist in some invocations and non-zero in others, so the
-# failure mode is silent: it looks like nine seats were poked and in fact zero
-# were. The real names carry the seat's role, not its discipline:
+# Two things this script exists to stop, both of which happened on 2026-10-28:
 #
-#   Lyra-po-seatloom            (not Lyra-PO)
-#   Mira-UX/UED-seatloom        (the only one that matches the seat id)
-#   Nimbus-TechArchi-seatloom   (not Nimbus-Backend)
-#   Flux-Quality&Ops-seatloom   (not Flux-QA)   <- contains a bare &
-#   Onyx-data-seatloom          (not Onyx-Data)
-#   Vela-DataWash-seatloom      (not Vela-Wash)
+# 1. WRONG SESSION NAMES. I poked 'Flux-QA', 'Lyra-PO', 'Nimbus-Backend',
+#    'Onyx-Data' and 'Vela-Wash'. All five are wrong; tmux send-keys to a
+#    non-existent session looks like success. The real names are
+#    `Lyra-po-seatloom`, `Mira-UX/UED-seatloom`, `Nimbus-TechArchi-seatloom`,
+#    `Flux-Quality&Ops-seatloom` (contains a bare &), `Onyx-data-seatloom`,
+#    `Vela-DataWash-seatloom` - the pattern is <seat>-<ROLE>-seatloom, and the
+#    role is a job title, not a discipline. So the names are READ FROM THE LIVE
+#    SERVER here, never hardcoded.
 #
-# Two consequences this script enforces:
-#   1. session names are read from the live tmux server, never hardcoded here.
-#      The authoritative list is scripts/restart-seats-for-new-binary.sh.
-#   2. the message is verified to have LANDED by reading the pane back. send-keys
-#      succeeding is not evidence the seat saw it.
+# 2. BROADCASTING TO ADOPTED EXTERNAL PROJECTS. I sent an urgent SeatLoom
+#    branch-sync message to all nine -seatloom sessions. Three of them are
+#    adopted external projects (QL, networkOrchestrator, stepaicloud) that have
+#    nothing to do with track/infra-foundation and had zero pending acceptance
+#    cards. QL spent a session re-deriving the whole situation to conclude it
+#    should do nothing - the right answer, reached at the cost of its context.
 #
-# Usage: scripts/poke-all-seats.sh "<message>"
-#        scripts/poke-all-seats.sh --list     # print the live seat sessions
+# So the default scope is SeatLoom seats ONLY. External projects are listed
+# explicitly and require --all-seats, which prints what it is about to touch.
+#
+# Usage:
+#   scripts/poke-all-seats.sh --scope          # who counts as a SeatLoom seat
+#   scripts/poke-all-seats.sh "<message>"      # SeatLoom seats only (default)
+#   scripts/poke-all-seats.sh --all-seats "<message>"
+#
+# Verification: each message carries a per-run marker and the pane is read back
+# for it. send-keys returning 0 is not evidence of delivery.
 
 set -u
-
-# NOTE: deliberately no `pipefail`. `grep -q` exits on first match and closes
-# the pipe, which sends SIGPIPE to `tmux capture-pane`; with pipefail that turns a
-# successful read-back into a failure and this script reports every seat as
-# UNVERIFIED while the message is plainly sitting in the pane. This was the actual
-# bug on the first run of this script.
+# NOTE: no `pipefail`. `grep -q` exits on match and closes the pipe, which
+# SIGPIPEs `tmux capture-pane`; with pipefail every successful read-back turns
+# into a failure and this script reports all seats UNVERIFIED while the message
+# is plainly in the pane. That was the first bug found testing this script.
 
 cd "$(dirname "$0")/.." || exit 2
 
 TMUX_BIN=""
 for c in "$(command -v tmux || true)" /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
-  [ -n "$c" ] && [ -x "$c" ] && { TMUX_BIN="$c"; break; }
-done
+  if [ -n "$c" ] && [ -x "$c" ]; then TMUX_BIN="$c"; break; fi
+done 2>/dev/null
 if [ -z "$TMUX_BIN" ]; then
   echo "FAIL: tmux not found (PATH=$PATH)" >&2
   exit 2
 fi
+
+db() {
+  podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "$1" 2>/dev/null
+}
 
 sessions=$("$TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null | grep -- '-seatloom$')
 if [ -z "$sessions" ]; then
@@ -50,20 +57,78 @@ if [ -z "$sessions" ]; then
   exit 2
 fi
 
-if [ "${1:-}" = "--list" ]; then
-  echo "$sessions"
+# The adopted external projects are the projects bound in project_role_bindings
+# whose id is not seatloom. Ask the ledger, because "which projects are ours" is
+# exactly the thing that changes - QL, networkOrchestrator and stepaicloud were
+# all adopted during this project's life.
+#
+# The session name is NOT the project name and not even the same case:
+#   project_delivery/networkOrchestrator  ->  session NetworkOrchestrator-seatloom
+#   project_delivery/stepaicloud           ->  session Stepaicloud-seatloom
+#   project_delivery/QL                    ->  session QL-seatloom
+# So compare the lowercased leading segment of the session name against the
+# lowercased last path segment of the project id. (bash 3.2 has no ${v,,}; use
+# tr.)
+external_projects=$(db "select project_id from project_role_bindings where project_id <> 'seatloom' order by 1")
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# A session belongs to an external project when its leading segment matches an
+# external project's last id segment. SeatLoom's own seats carry ROLE names
+# (po, UX/UED, TechArchi, Quality&Ops, data, DataWash) that match no project
+# segment, so this does not misfire on Flux-Quality&Ops-seatloom.
+is_external() {
+  s_name="$1"
+  seg=$(lower "${s_name%%-*}")
+  [ -n "$seg" ] || return 1
+  [ -n "$external_projects" ] || return 1
+  while IFS= read -r proj; do
+    [ -n "$proj" ] || continue
+    base=$(lower "${proj##*/}")
+    if [ "$seg" = "$base" ]; then return 0; fi
+  done <<< "$external_projects"
+  return 1
+}
+
+seatloom_sessions=""
+external_sessions=""
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  if is_external "$s"; then
+    external_sessions="$external_sessions$s\n"
+  else
+    seatloom_sessions="$seatloom_sessions$s\n"
+  fi
+done <<< "$sessions"
+
+if [ "${1:-}" = "--scope" ]; then
+  echo "SeatLoom seats (default scope):"
+  printf "$seatloom_sessions" | sed '/^$/d'
+  echo
+  echo "Adopted external projects (NOT SeatLoom seats; --all-seats required):"
+  printf "$external_sessions" | sed '/^$/d'
   exit 0
 fi
 
+ALL=0
+[ "${1:-}" = "--all-seats" ] && { ALL=1; shift; }
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
-  echo "usage: $0 \"<message>\" | --list" >&2
+  echo "usage: $0 --scope | \"<message>\" | --all-seats \"<message>\"" >&2
   exit 2
 fi
 
-# A marker that is short and unlikely to appear in a seat's own output. The pane
-# is read back for this string; without it a send-keys success is indistinguishable
-# from a message that never arrived.
+if [ "$ALL" = "1" ]; then
+  targets="$sessions"
+  echo "WARNING: broadcasting to SeatLoom seats AND adopted external projects." >&2
+else
+  targets="$seatloom_sessions"
+  if [ -z "$(printf '%s' "$targets" | tr -d '\n')" ]; then
+    echo "FAIL: no SeatLoom seat sessions found; refusing to fall back to everyone" >&2
+    exit 2
+  fi
+fi
+
 MARKER="POKE-$(date +%s)"
 BODY="$MSG  [$MARKER]"
 
@@ -72,8 +137,6 @@ failed=0
 
 while IFS= read -r s; do
   [ -n "$s" ] || continue
-  # A bare & in the session name is fine for tmux (it is one argument) but would
-  # be a shell operator if this string were ever interpolated unquoted.
   if "$TMUX_BIN" send-keys -t "$s:0" -l "$BODY" 2>/dev/null && \
      "$TMUX_BIN" send-keys -t "$s:0" Enter 2>/dev/null; then
     :
@@ -83,15 +146,11 @@ while IFS= read -r s; do
     continue
   fi
 
-  # Read the pane back. The seat may have already consumed the line into its
-  # prompt, in which case the raw text is still in the last few scrollback rows.
-  #
-  # The read is RETRIED, not single-shot: on the first run of this script every
-  # busy seat read as UNVERIFIED. Measured, not guessed — a marker sent to a
-  # working pane read back as absent at t=0 and present at t=3s, because the
-  # agent's TUI owns the pane and redraws on its own schedule. A single-shot
-  # read-back is a check that fails when the seat is working, which is exactly
-  # when it matters.
+  # Read the pane back, RETRIED. Single-shot read-back is a check that fails when
+  # the seat is working: measured, a marker sent to a busy pane reads back absent
+  # at t=0 and present at t=3s, because the agent's TUI owns the pane and redraws
+  # on its own schedule. A check that fails exactly when it matters is not a
+  # check.
   seen=0
   for _ in 1 2 3 4 5 6; do
     if "$TMUX_BIN" capture-pane -p -t "$s:0" -S -15 2>/dev/null | grep -q "$MARKER"; then
@@ -105,10 +164,10 @@ while IFS= read -r s; do
     printf '  OK   %s\n' "$s"
     poked=$((poked + 1))
   else
-    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane\n' "$s"
+    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane after 6s\n' "$s"
     failed=$((failed + 1))
   fi
-done <<< "$sessions"
+done <<< "$(printf '%b' "$targets")"
 
 echo "poked=$poked failed=$failed"
 [ "$failed" -eq 0 ] || exit 1
