@@ -23,7 +23,27 @@ from vela_wash.s5_store import deep_cycle_detect  # noqa: E402
 
 WASH = os.path.join(os.path.dirname(__file__), "..")
 MANIFEST = os.path.join(WASH, ".local", "wash", "s5", "writein_manifest.json")
+REFUSAL = os.path.join(WASH, ".local", "wash", "s5", "writein_refusal.json")
 AH = os.path.expanduser("~/Documents/GitHub/AgentHistory")
+
+
+def _skip_reason() -> str | None:
+    """Why these gates cannot run. Said honestly: since the session-key gate
+    landed, a missing manifest usually means the driver REFUSED the write set,
+    not that nobody ran it. Pointing at the refusal record is the difference
+    between a useful skip and a misleading one."""
+    if os.path.exists(MANIFEST):
+        return None
+    if os.path.exists(REFUSAL):
+        try:
+            with open(REFUSAL, encoding="utf-8") as f:
+                n = len(json.load(f)["validation"]["problems"])
+        except (OSError, ValueError, KeyError):
+            n = -1
+        return (f"the write-in driver REFUSED this write set ({n} validation "
+                f"problem(s)) — read {os.path.relpath(REFUSAL, WASH)}; the "
+                f"manifest gates have nothing to check until it is clean")
+    return "run the write-in driver first (python3 tools/wash/s5_writein.py)"
 
 SECRET_PATTERNS = {
     "stepplan_key65": re.compile(r"\b[0-9a-f]{65}\b"),
@@ -58,8 +78,7 @@ def content_digest(rec):
     return h.hexdigest()
 
 
-@unittest.skipUnless(os.path.exists(MANIFEST),
-                     "run the write-in driver first (python3 tools/wash/s5_writein.py)")
+@unittest.skipUnless(os.path.exists(MANIFEST), _skip_reason())
 class TestWriteInManifest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

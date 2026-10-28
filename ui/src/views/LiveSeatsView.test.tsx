@@ -41,6 +41,7 @@ const state = vi.hoisted(() => ({
   nextId: 0,
   outputHandlers: [] as Array<(e: { sessionId: string; data: string }) => void>,
   exitHandlers: [] as Array<(e: { sessionId: string; code: number | null }) => void>,
+  mirrorLostHandlers: [] as Array<(e: Record<string, unknown>) => void>,
 }));
 
 vi.mock('../lib/api', () => {
@@ -80,12 +81,19 @@ vi.mock('../lib/api', () => {
       state.exitHandlers.push(h);
       return Promise.resolve(() => {});
     },
+    // R1: the mirror could not be proven. Captured so a test can fire it and
+    // assert the view stops showing that session.
+    onSessionMirrorLost: (h: (e: Record<string, unknown>) => void) => {
+      state.mirrorLostHandlers.push(h as never);
+      return Promise.resolve(() => {});
+    },
   };
   return {
     api,
     isTauri: () => true,
     onSessionOutput: api.onSessionOutput,
     onSessionExit: api.onSessionExit,
+    onSessionMirrorLost: api.onSessionMirrorLost,
   };
 });
 
@@ -356,5 +364,84 @@ describe('the scroll defect: inactive attachments stay laid out', () => {
       expect(style.visibility).toBe(expected ? 'visible' : 'hidden');
       expect(style.pointerEvents).toBe(expected ? 'auto' : 'none');
     }
+  });
+});
+
+// ── R1, end to end: the acceptance criterion ────────────────────────────────
+//
+// The packet requires a path where, after the pipe is stolen, the UI does NOT
+// keep showing content. This is that path. It is tested at the view level (not
+// the store level) because the store test alone cannot prove the terminal
+// actually unmounts — and an unmounted terminal is what stops the bytes.
+describe('R1: a mirror that cannot be proven stops being shown', () => {
+  it('unmounts the terminal and says why, instead of rendering the foreign bytes', async () => {
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+
+    const sessionId = useLiveSeatsMirrorStore.getState().attachments[0].dto.id;
+    expect(screen.getAllByTestId('terminal')).toHaveLength(1);
+
+    // The backend proves the pipe is no longer ours.
+    await act(async () => {
+      for (const h of state.mirrorLostHandlers) {
+        h({
+          sessionId,
+          seatId: 'nimbus',
+          tmuxSessionName: 'Lyra-lyra-seatloom',
+          reason: 'cross_wired',
+          writers: 2,
+          detail: '镜像已断开：有 2 个进程在写入这个 FIFO',
+        });
+      }
+    });
+
+    // 1. The terminal is GONE. This is the criterion — without it the foreign
+    //    bytes keep rendering and the rest is decoration.
+    expect(screen.queryAllByTestId('terminal')).toHaveLength(0);
+    // 2. The operator is told, in words, not a log line.
+    expect(screen.getByText('镜像已断开')).toBeTruthy();
+    expect(screen.getByText(/有 2 个进程在写入/)).toBeTruthy();
+    expect(screen.getByText('cross_wired')).toBeTruthy();
+    // 3. There is a way back.
+    expect(screen.getByRole('button', { name: /重新接入/ })).toBeTruthy();
+  });
+
+  it('bytes arriving after the event are not counted as live activity', async () => {
+    // A counter still climbing is a quieter version of the same lie: it says the
+    // stream is healthy while the bytes are unvouched for.
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+
+    const sessionId = useLiveSeatsMirrorStore.getState().attachments[0].dto.id;
+    await act(async () => {
+      for (const h of state.outputHandlers) h({ sessionId, data: 'QUJDREVG' });
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    const before = useLiveSeatsMirrorStore.getState().activity[sessionId].bytes;
+    expect(before).toBeGreaterThan(0);
+
+    await act(async () => {
+      for (const h of state.mirrorLostHandlers) {
+        h({ sessionId, reason: 'lost', detail: '镜像已断开', tmuxSessionName: 'Lyra-lyra-seatloom' });
+      }
+    });
+    await act(async () => {
+      for (const h of state.outputHandlers) h({ sessionId, data: 'QUJDREVGR0hJ' });
+      await new Promise((r) => setTimeout(r, 600));
+    });
+
+    // No new record, and certainly not a growing one.
+    const after = useLiveSeatsMirrorStore.getState().activity[sessionId];
+    expect(after === undefined || after.bytes === before).toBe(true);
+  });
+
+  it('shows the pane identity in the header so cross-wiring is visible by eye', async () => {
+    // R2. The incident ran three hours partly because nothing on screen answered
+    // "which pane am I actually looking at".
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+    // The mock DTO carries no pane_pid/pane_tty; the view must say "?" rather
+    // than invent a value.
+    expect(screen.getAllByText(/pid \?/).length).toBeGreaterThan(0);
   });
 });

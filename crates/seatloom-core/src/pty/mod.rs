@@ -23,6 +23,11 @@ use nix::unistd;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+// The pipe guard is a downstream self-proof on the mirror this module builds.
+// Declared here (not in lib.rs) because it exists to answer "is this session's
+// FIFO still the one our own pipe writes" — a question only `pty` can ask.
+pub mod pipe_guard;
+
 /// Output events broadcast from the tmux mirror reader to subscribers.
 #[derive(Debug, Clone)]
 pub enum PtyEvent {
@@ -519,6 +524,10 @@ impl PtySession {
                 .append(true)
                 .open(&transcript_for_reader)
                 .ok();
+            let mut log_bytes: u64 = log
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map_or(0, |m| m.len());
             let mut buf = [0u8; 4096];
             loop {
                 if shutdown_for_reader.load(std::sync::atomic::Ordering::Relaxed) {
@@ -535,6 +544,29 @@ impl PtySession {
                         let chunk = buf[..n].to_vec();
                         if let Some(ref mut f) = log {
                             let _ = f.write_all(&chunk);
+                        }
+                        // R3: rotate instead of growing forever. One FIFO's
+                        // transcript reached 180 986 013 bytes during the
+                        // cross-wiring incident because it silently swallowed two
+                        // high-traffic panes for three hours; the directory that
+                        // holds them is 6.4 GB across 422 files with no ceiling.
+                        //
+                        // Rotating (rename to `.1`, start a fresh file) keeps the
+                        // file at a size the operator can still copy and hand to
+                        // someone, and it costs one rename per 64 MB rather than a
+                        // rewrite of the whole file.
+                        log_bytes += chunk.len() as u64;
+                        if log_bytes >= pipe_guard::MAX_TRANSCRIPT_BYTES {
+                            if let Some(f) = log.take() {
+                                drop(f);
+                                rotate_transcript(&transcript_for_reader);
+                            }
+                            log = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&transcript_for_reader)
+                                .ok();
+                            log_bytes = 0;
                         }
                         if tx_reader.send(PtyEvent::Output(chunk)).is_err() {
                             // No subscribers — keep reading (we're still
@@ -726,6 +758,122 @@ impl PtySession {
         }
         Ok(())
     }
+
+    /// The tmux target this mirror is attached to (e.g. `"Nimbus-TechArchi-seatloom:0"`).
+    pub fn tmux_target(&self) -> &str {
+        &self.tmux_target
+    }
+
+    /// Path of the FIFO this mirror reads.
+    pub fn fifo_path(&self) -> &std::path::Path {
+        &self.fifo_path
+    }
+}
+
+/// Unlink every FIFO in [`mirror_dir`] that no live session is reading.
+///
+/// # The leak this closes
+///
+/// Measured 2026-10-27: `/tmp/seatloom-mirror/` held **48 FIFOs** for **9 live
+/// mirrors**. The 39 extras are orphans from attaches whose reader thread exited
+/// early (a FIFO open failure, an EOF from a writer that was killed) — the
+/// `kill()` path does unlink, so these are specifically the paths that never
+/// reach `kill()`.
+///
+/// They are not merely untidy: an orphan FIFO is a file a pane can be piped into
+/// and nobody is watching, which is exactly the shape that made the cross-wiring
+/// incident invisible. And a stale FIFO blocks a later attach's `mkfifo` unless
+/// it is unlinked first — which `attach_tmux` already does, so the leak is
+/// silent rather than fatal.
+///
+/// # What makes this safe to call at all
+///
+/// It only ever removes a file that is (a) inside `mirror_dir` and (b) not in
+/// `live_fifo_paths`. A session that is mid-attach is registered in
+/// `state.sessions` BEFORE this runs, so its FIFO is in the live set. The one
+/// thing it must never do is delete the FIFO of a session the operator is
+/// looking at — that would be the defect again, with better intentions.
+///
+/// Returns how many orphans were removed, so a caller (and a test) can see the
+/// number rather than trust that it happened.
+pub fn reap_orphan_fifos(live_fifo_paths: &[std::path::PathBuf]) -> usize {
+    reap_orphan_fifos_in(&mirror_dir(), live_fifo_paths)
+}
+
+/// The real implementation, with the directory passed in so it can be tested
+/// against a scratch dir.
+///
+/// Kept separate from [`reap_orphan_fifos`] rather than parameterised at every
+/// call site: a test that reimplements the loop it claims to check is a test that
+/// passes no matter what the production code does. This was the first draft and
+/// it was wrong for exactly that reason.
+fn reap_orphan_fifos_in(dir: &std::path::Path, live_fifo_paths: &[std::path::PathBuf]) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0, // no mirror dir at all — nothing leaked
+    };
+    // Compare by NORMALISED path. Measured on macOS: `lsof` (and anything that
+    // resolves the symlink) reports `/private/tmp/seatloom-mirror/x.fifo` while
+    // `read_dir` on `/tmp/seatloom-mirror` yields `/tmp/seatloom-mirror/x.fifo`.
+    // Comparing raw strings makes every live FIFO look like an orphan — and this
+    // reaper DELETES what it thinks is an orphan. That is the cross-wiring defect
+    // again, committed by the code that was supposed to prevent it.
+    //
+    // The same normalisation the pipe guard uses, so there is one rule.
+    let live: std::collections::HashSet<String> = live_fifo_paths
+        .iter()
+        .map(|p| normalise_for_compare(&p.to_string_lossy()))
+        .collect();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only FIFOs, only ours, only ones nobody is reading.
+        //
+        // `std::os::unix::fs::FileTypeExt::is_fifo` is the stable way to ask;
+        // `FileType::is_fifo` is still unstable on `std`. A non-FIFO entry in
+        // this directory (a stray log, a `.DS_Store`) is never removed.
+        let is_fifo = entry
+            .file_type()
+            .map(|t| std::os::unix::fs::FileTypeExt::is_fifo(&t))
+            .unwrap_or(false);
+        if !is_fifo {
+            continue;
+        }
+        if live.contains(&normalise_for_compare(&path.to_string_lossy())) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Canonical form for comparing two paths that may differ only by the `/tmp` →
+/// `/private/tmp` symlink.
+///
+/// Strips the `/private` prefix from BOTH sides so either spelling compares
+/// equal. Not `canonicalize`: the file may legitimately be gone, and a failed
+/// resolve would make every comparison unequal — which in the reaper means
+/// deleting a live FIFO.
+fn normalise_for_compare(p: &str) -> String {
+    p.strip_prefix("/private").unwrap_or(p).to_string()
+}
+
+/// Rotate a transcript that has hit [`pipe_guard::MAX_TRANSCRIPT_BYTES`].
+///
+/// `<path>` becomes `<path>.1`. A previous `.1` is overwritten rather than
+/// incremented: the point of the ceiling is a bound on total disk, and a chain of
+/// `.1 .2 .3 …` is an unbounded directory by another name.
+///
+/// Failures are ignored deliberately. A transcript is a convenience record of
+/// bytes that are also flowing to the UI; failing to rotate must never take the
+/// mirror down. What the caller does instead is reopen in append mode, so the
+/// worst case is a file larger than the ceiling — the pre-existing behaviour, not
+/// a new failure.
+fn rotate_transcript(path: &std::path::Path) {
+    let rotated = std::path::PathBuf::from(format!("{}.1", path.display()));
+    let _ = std::fs::rename(path, &rotated);
 }
 
 /// Decide whether `tmux pipe-pane` actually opened the pipe.
@@ -1045,6 +1193,158 @@ mod tests {
         assert_eq!(shell_quote("/tmp/x.fifo"), "'/tmp/x.fifo'");
         assert_eq!(shell_quote("/tmp/a b/x.fifo"), "'/tmp/a b/x.fifo'");
         assert_eq!(shell_quote("it's.fifo"), "'it'\\''s.fifo'");
+    }
+
+    /// A unique scratch dir per test. Tests run in parallel inside one process,
+    /// so `std::process::id()` is NOT unique — the first draft shared a dir
+    /// between two reaper tests and one of them failed with EEXIST on mkfifo.
+    fn scratch(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("seatloom-{label}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reap_orphan_fifos_leaves_live_ones_alone_and_removes_the_rest() {
+        // The safety property: a live FIFO must NEVER be removed. Deleting the
+        // FIFO of a session the operator is watching would be the cross-wiring
+        // defect again, with better intentions.
+        let dir = scratch("seatloom-reap-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("ses-live.fifo");
+        let orphan = dir.join("ses-orphan.fifo");
+        let plain_file = dir.join("not-a-fifo.txt");
+        for p in [&live, &orphan] {
+            unistd::mkfifo(p, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        }
+        std::fs::write(&plain_file, b"keep me").unwrap();
+
+        // Point the reaper at our scratch dir by swapping the module-level path
+        // through the same function the production code uses.
+        let removed = reap_orphan_fifos_in(&dir, std::slice::from_ref(&live));
+
+        assert_eq!(removed, 1, "exactly the orphan went");
+        assert!(live.exists(), "the live FIFO must survive");
+        assert!(!orphan.exists(), "the orphan must be gone");
+        assert!(plain_file.exists(), "a non-FIFO is never touched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_fifo_spelled_private_tmp_is_not_mistaken_for_an_orphan() {
+        // THE BUG THIS REAPER ALMOST SHIPPED WITH. On macOS `lsof` reports
+        // `/private/tmp/...` while `read_dir` on `/tmp/...` yields `/tmp/...`.
+        // Comparing the raw strings made every live FIFO look orphaned, and the
+        // reaper DELETES what looks orphaned — so it destroyed the three FIFOs the
+        // running app was reading. The fix that was supposed to stop the app
+        // showing foreign panes would have killed the live mirrors instead.
+        //
+        // Reproduces the exact spellings: dir as read_dir yields it, live path as
+        // lsof yields it.
+        let dir = std::env::temp_dir().join("seatloom-mirror");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("ses-live.fifo");
+        unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+
+        // lsof-style spelling of the same file: `/private` inserted at the root of
+        // the temp path, which is exactly the macOS relationship between
+        // `/tmp/x` and `/private/tmp/x`.
+        //
+        // Note the FIRST version of this test built `private/tmp/...` under the
+        // temp dir instead of prefixing the temp dir itself, so it never
+        // reproduced the real mismatch and passed for the wrong reason. A test
+        // that cannot fail is worse than no test.
+        let tmp = std::env::temp_dir();
+        let live_spelling = std::path::PathBuf::from(format!("/private{}", tmp.display()))
+            .join("seatloom-mirror/ses-live.fifo");
+        assert_ne!(
+            live_spelling, fifo,
+            "sanity: the two spellings really do differ, or this test proves nothing"
+        );
+
+        let removed = reap_orphan_fifos_in(&dir, &[live_spelling]);
+        assert_eq!(removed, 0, "a live FIFO must never be reaped");
+        assert!(
+            fifo.exists(),
+            "the live FIFO survived -- the app keeps its mirror"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_orphan_fifos_with_no_live_sessions_removes_every_fifo_but_keeps_other_files() {
+        // The measured leak: 48 FIFOs for 9 live mirrors. With the live set empty
+        // the reaper should be willing to clear all of them — the caller is
+        // responsible for only calling it when there really is nothing live.
+        let dir = scratch("seatloom-reap-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.fifo");
+        let b = dir.join("b.fifo");
+        for p in [&a, &b] {
+            unistd::mkfifo(p, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        }
+        std::fs::write(dir.join("README"), b"keep").unwrap();
+
+        assert_eq!(reap_orphan_fifos_in(&dir, &[]), 2);
+        assert!(dir.join("README").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_orphan_fifos_on_a_missing_dir_reports_zero_rather_than_panicking() {
+        // A machine with no mirror dir has nothing leaked. Returning 0 (not an
+        // error) keeps the periodic reaper from spamming a failure nobody can act
+        // on.
+        let missing = std::env::temp_dir().join("seatloom-reap-does-not-exist-xyz");
+        let _ = std::fs::remove_dir_all(&missing);
+        assert_eq!(reap_orphan_fifos_in(&missing, &[]), 0);
+    }
+
+    #[test]
+    fn rotating_a_transcript_keeps_the_old_bytes_under_dot_one() {
+        // Rotation must not lose data: the point of the ceiling is bounded disk,
+        // and a rename keeps the previous 64 MB readable.
+        let dir = scratch("seatloom-rotate-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ses-x.raw.log");
+        std::fs::write(&path, b"first generation").unwrap();
+
+        rotate_transcript(&path);
+
+        assert!(!path.exists(), "the live path is free for a fresh file");
+        let rotated = dir.join("ses-x.raw.log.1");
+        assert_eq!(std::fs::read(&rotated).unwrap(), b"first generation");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotating_twice_keeps_one_generation_not_an_unbounded_chain() {
+        // `.1 .2 .3 ...` would be an unbounded directory by another name. The
+        // second rotation overwrites, which is what makes the ceiling a bound.
+        let dir = scratch("seatloom-rotate2-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ses-y.raw.log");
+        std::fs::write(&path, b"gen1").unwrap();
+        rotate_transcript(&path);
+        std::fs::write(&path, b"gen2").unwrap();
+        rotate_transcript(&path);
+
+        let rotated = dir.join("ses-y.raw.log.1");
+        assert_eq!(std::fs::read(&rotated).unwrap(), b"gen2");
+        assert!(
+            !dir.join("ses-y.raw.log.2").exists(),
+            "no numbered chain -- that would be unbounded disk by another name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

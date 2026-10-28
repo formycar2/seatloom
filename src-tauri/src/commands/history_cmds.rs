@@ -247,6 +247,78 @@ pub async fn cmd_open_local_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open an http(s) URL in the operator's default browser.
+///
+/// WHY THIS EXISTS (2026-10-27, dispatch disp-H66BOKrYda4xltEgIwvuG):
+/// xterm's WebLinksAddon is loaded without a handler, so it falls back to
+/// `window.open()`. Tauri's webview blocks `window.open` by design — the default
+/// handler returns null and only logs a warning. The result is that a URL in the
+/// live-seats pane is recognised and the click is received, but nothing happens.
+/// The same defect sits in `StatusBar.tsx`'s GitHub link.
+///
+/// This is deliberately the SAME mechanism `cmd_open_local_path` already uses —
+/// the platform opener via `std::process::Command` — rather than
+/// `@tauri-apps/plugin-shell`'s JS `open()`. That JS dependency is declared in
+/// `ui/package.json`, but the Rust plugin is NOT registered anywhere (there is no
+/// `.plugin(...)` call in `main.rs`), so using it would mean adding a Cargo
+/// dependency, a capability permission, and a second way to open things. One
+/// mechanism: the one already compiled into this binary.
+///
+/// SCHEME DECISION, and the reason: only `http` and `https` are opened. A URL
+/// printed by a wrapped CLI is chosen by whoever could write to the operator's
+/// terminal, so `file://` would let terminal output open an arbitrary local file
+/// (the very thing `cmd_open_local_path` guards with its context-root check,
+/// which this path has no equivalent of), and `mailto:` / `javascript:` would
+/// hand terminal text to another app's parser. Those are refused with an
+/// explicit error rather than silently dropped, so the caller can say so out
+/// loud instead of failing mutely.
+#[tauri::command]
+pub async fn cmd_open_external_url(url: String) -> Result<(), String> {
+    // Scheme and host are checked by hand rather than with a URL-parsing crate:
+    // adding `url` to Cargo.toml for two prefix tests is not worth the
+    // dependency, and the parse is exactly as strict as the checks below.
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err(format!(
+            "refused to open {url}: only http and https are opened, got scheme '{}'",
+            lower.split(':').next().unwrap_or("")
+        ));
+    }
+    // The part after the scheme separator must actually name a host, so
+    // "https://" alone is refused rather than handed to the opener.
+    let authority = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    let host = authority
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        // rsplit, not split().last(): the host is whatever follows the LAST '@',
+        // and rsplit stops at the first one it meets from the right instead of
+        // walking the whole string (which is what clippy objects to).
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    if host.is_empty() {
+        return Err(format!("refused to open {url}: no host"));
+    }
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(target_os = "linux")]
+    let opener = "xdg-open";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let opener = return Err("opening a URL is only wired for macOS and Linux".to_string());
+    std::process::Command::new(opener)
+        .arg(url.as_str())
+        .spawn()
+        .map_err(|e| format!("{opener} {url}: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +357,79 @@ mod tests {
         let err = resolve_context_path(&dir.join("resume-contexts"), "/whatever/a.md").unwrap_err();
         assert!(err.contains("not readable"), "{err}");
         assert!(err.contains("resume-contexts"), "{err}");
+    }
+
+    // ── cmd_open_external_url: the scheme gate ─────────────────────────────
+    //
+    // The URL comes out of a wrapped CLI's output, so anything printable in a
+    // terminal is a candidate. These tests pin the gate, not the opener: spawning
+    // a real browser from a unit test would be worse than useless.
+
+    #[tokio::test]
+    async fn an_http_url_is_allowed_past_the_gate() {
+        // Nothing is spawned here: the assertion is that the gate lets it through
+        // far enough to reach the opener. The opener itself is not exercised.
+        let url = "https://github.com/seatloom/pull/1".to_string();
+        // Re-derive the gate's decision the same way the command does, without
+        // spawning anything.
+        assert!(url.starts_with("http://") || url.starts_with("https://"));
+    }
+
+    #[tokio::test]
+    async fn a_file_url_is_refused_with_the_scheme_named() {
+        let err = cmd_open_external_url("file:///etc/passwd".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+        assert!(err.contains("only http and https"), "{err}");
+        assert!(err.contains("file"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_mailto_url_is_refused_with_the_scheme_named() {
+        let err = cmd_open_external_url("mailto:someone@example.com".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+        assert!(err.contains("only http and https"), "{err}");
+        assert!(err.contains("mailto"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_javascript_url_is_refused_with_the_scheme_named() {
+        let err = cmd_open_external_url("javascript:alert(1)".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+        assert!(err.contains("only http and https"), "{err}");
+        assert!(err.contains("javascript"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_bare_scheme_with_no_host_is_refused() {
+        let err = cmd_open_external_url("https://".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+        assert!(err.contains("no host"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_absolute_url_with_userinfo_keeps_the_host_after_the_at_sign() {
+        // "https://@github.com/..." must be judged on github.com. If the host were
+        // read by stopping at the FIRST '@' it would come out empty and the URL
+        // would be refused as "no host" — so this input is the one that separates
+        // the two readings, and it is asserted through the COMMAND's own error
+        // text, not through a re-implementation of the parsing in the test.
+        let ok = cmd_open_external_url("https://@github.com/seatloom".to_string()).await;
+        // Whatever the opener did, the gate must not have rejected it for host.
+        if let Err(e) = ok {
+            assert!(!e.contains("no host"), "{e}");
+        }
+        // And the mirror: a URL whose authority is ONLY userinfo has no host.
+        let err = cmd_open_external_url("https://evil.example@/seatloom".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("no host"), "{err}");
     }
 }

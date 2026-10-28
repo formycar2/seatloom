@@ -64,9 +64,52 @@
      - 要确认某个 pid 的父进程,用 `ps -o pid=,ppid= -ax | awk '$2==<pid>'`
      - 我的 `scripts/fleet-process-census.sh` 在 pgrep 返回空时报 ❌ 而不是静默跳过,
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
+   - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
+     它查每张 pending 卡的分支是否还包含它的 base。
+     `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
+     "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
+     **卡开出来了不等于卡点得动。**
+   - **verdict ref 的有效性**:`bash scripts/check-verdict-refs.sh`
+     它把每张 pending 卡的 `flux_verdict_ref` join 回 `dispatches`,
+     确认那条 verdict 事件真存在、且点名的就是这张卡的派单。
+     2026-10-28 实测发现一条 verdict 的 `dispatch_id` 是
+     `disp-B4Y5oAhMQwtXm5Vva1fw`(数字 0),而真 id 是
+     `disp-B4Y5oAohMQwtXm5Vva1fw`(字母 o)—— 一个字符,而 nanoid 字符集里两者都在。
+     它看起来完全是绿的第三方 verdict,指向 0 行。
+     **verdict 事件存在不等于它是关于这张卡的。**
 
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
+
+2c. **查"验绿了但没人验收"的活 —— 这一步 2026-10-29 补,和 2b 是同一个病的另一半。**
+    🔴 实例:2026-10-29 01:00 逐件查 `ReviewVerdictIssued`,发现 **10 件 implementation 类
+       派单有 pass verdict、而 `select count(*) from acceptances where flux_verdict_ref=<id>`
+       全是 0**。工作做完了、独立验绿了、操作者从没被要求验收过。
+       019 那张卡从 10-10 挂到 10-29,19 天,就是因为这个。
+       这不是"队列空"能发现的 —— 队列空、派单 done、verdict pass,三样都正常,
+       而事情停在一个没有任何检查看过的地方。
+
+    ```sql
+    -- 有 pass verdict、verdict 没被任何卡引用、该派单也没有任何卡
+    select d.id, d.target_seat_id, e.id as verdict
+    from canonical_events e
+    join event_object_refs r on r.event_id=e.id
+    join dispatches d on d.id = r.ref_id
+    where e.event_type='ReviewVerdictIssued' and e.payload->>'verdict'='pass'
+      and d.payload->>'kind'='implementation'
+      and not exists (select 1 from acceptances a where a.flux_verdict_ref=e.id)
+      and not exists (select 1 from acceptances a where a.dispatch_id=d.id)
+    order by d.completed_at desc;
+    ```
+
+    **三条都要查,只查一条会漏**:
+    - "派单 done" → 有活没人接(2b)
+    - "verdict pass 但没被卡引用" → 验绿了没人验收(2c)
+    - "卡 pending" → 卡点不点得动(第 1 步的 `check-cards-clickable.sh`)
+
+    查到就派 owner 开卡,**verdict 用 pass 那条**;有 fail 和 pass 两条时,
+    fail 那条往往发在修复落地之前(实测:`ev-verdict-integration-round` fail 在 pin `575d85d`,
+    pass 的 `ev-verdict-integration-round-v2` 才是关于现在的代码)。
 
 2b. **查"干完了但没人接"的活 —— 这一步 2026-10-21 补,之前是空的。**
     🔴 空洞实例:净化单 `disp-FzldOwJuxCfxc2TGq9dMw` 04:15 完成、 Mira 同一秒

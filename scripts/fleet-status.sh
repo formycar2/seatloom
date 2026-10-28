@@ -107,12 +107,25 @@ if [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)";
     base=$(PSQL "select coalesce(base,'?') from acceptances where id='$id'")
     how=$(PSQL "select coalesce(how_to_verify,'(没写验法)') from acceptances where id='$id'")
     # base 必须是真实存在的分支,否则这张卡点了只会报错 —— 必须明说
-    if git -C "$REPO" rev-parse --verify "refs/heads/$base" >/dev/null 2>&1; then
-      echo "  ✅ 可以点:$br"
-      echo "     怎么验:$how"
-    else
+    #
+    # 🔴 2026-10-28 13:00 补第二个条件,它才是真正会卡住 Accept 的那个:
+    #    base 存在**不代表**卡的分支包含 base。track 往前走一个提交,
+    #    分支就落后一个提交,验收门会拒绝未同步的分支 —— 张先生点任何一张
+    #    都收到拒绝,而他不知道为什么。这个检查原来只查 base 存在,
+    #    于是 23 张全点不动的卡被打成 23 个 "✅ 可以点"。
+    #    那天早上我正好在犯这个错(开卡后往 track 提了 8 次),
+    #    而唯一该提醒他的脚本在说反话。
+    if ! git -C "$REPO" rev-parse --verify "refs/heads/$base" >/dev/null 2>&1; then
       echo "  ⚠️ 这张点不了(坏卡,不用管):$br"
       echo "     原因:要合进的分支「${base}」不存在,点了只会报错,不会损坏任何东西"
+    elif ! git -C "$REPO" merge-base --is-ancestor "$base" "$br" 2>/dev/null; then
+      behind=$(git -C "$REPO" rev-list --count "$br".."$base" 2>/dev/null)
+      echo "  ⛔ 这张点了会被拒:$br"
+      echo "     原因:分支落后「${base}」${behind} 个提交,验收门拒绝未同步的分支。"
+      echo "     已派该席位的 owner 合并 track 进它的 packet 分支;同步完这张就能点。"
+    else
+      echo "  ✅ 可以点:$br"
+      echo "     怎么验:$how"
     fi
     echo "     卡号 $id"
     echo "     类型:验收(交付做完了,要不要收)"
@@ -136,7 +149,15 @@ echo
 echo "── 真的需要人介入 ──"
 need=0
 if [ "$alive" != "$total" ]; then echo "  • 有席位掉线(见上)—— 修:bash scripts/seat-launch.sh --all --force"; need=1; fi
-tmux has-session -t seatloom-waker 2>/dev/null || { echo "  • 唤醒服务停了,新活不会被派下去"; need=1; }
+# waker 是一个 Rust 常驻守护进程(src/bin/waker.rs),不是一个 tmux 会话。
+# 原来这里查 `tmux has-session -t seatloom-waker`,而那个会话在 2026-10-28 16:00
+# 之前从未存在过 —— 二进制也没编译、没跑、没有日志。会话检查会为一个
+# 恰好同名的空 tmux 会话报"在跑",而那正是发生过的事:我建了会话,
+# 这一行立刻变绿,而守护进程依然没跑。查进程,不查会话名。
+if ! pgrep -f 'seatloom-waker' >/dev/null 2>&1; then
+  echo "  • 唤醒服务停了,新活不会被派下去 —— 起法:bash scripts/start-waker.sh"
+  need=1
+fi
 [ "$need" = "0" ] && echo "  (没有需要你动手的事)"
 # 失败的单单独说明,它不算「需要你动手」——所以放在结论之后,不影响上面那句
 f=$(PSQL "select count(*) from dispatches where status='failed'")
@@ -154,7 +175,26 @@ if [ "$(PSQL "select count(*) from pg_tables where tablename='memories'")" = "1"
 else
   printf "  记忆功能             ❌ 未上线(memories 表还没建到数据库里)\n"
 fi
-printf "  唤醒服务             %s\n" "$(tmux has-session -t seatloom-waker 2>/dev/null && echo 在跑 || echo '❌ 停了')"
+# 同上:查进程。pgrep -f 的模式是 'seatloom-waker',会同时匹配到
+# target/*/seatloom-waker 和包名 crate seatloom-mcp-emit 的路径,所以还要再确认
+# 它真的是那个二进制的进程,而不是一条命令里提到了这个名字。
+# 只认 waker 二进制本身的进程。pgrep -f 'seatloom-waker' 会抓到三类:
+#   外层 zsh -c ...target/debug/seatloom-waker(是壳,不是守护进程)
+#   target/debug/seatloom-waker          (这才是)
+#   任何命令行里提到这个名字的进程(包括查它的那条命令自己)
+# 所以用 ps 抓全表,再筛 command 以 target/ 下的可执行路径开头的那条。
+waker_pid=""
+for p in $(pgrep -f 'seatloom-waker' 2>/dev/null); do
+  c=$(ps -p "$p" -o command= 2>/dev/null)
+  case "$c" in
+    target/*seatloom-waker|*/target/*seatloom-waker) waker_pid="$p"; break ;;
+  esac
+done
+if [ -n "$waker_pid" ]; then
+  printf "  唤醒服务             在跑(pid %s)\n" "$waker_pid"
+else
+  printf "  唤醒服务             ❌ 停了\n"
+fi
 # Aegis 的自醒必须由自醒之外的东西来查。心跳协议里那句"看日志验证自醒活着"
 # 只有心跳跑得起来才执行 —— 自醒死了就不会有心跳,那是循环依赖。
 # 所以这项检查放在任何人都会跑的这个脚本里(张先生随时会跑)。

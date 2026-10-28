@@ -1,0 +1,120 @@
+{
+ "schema": "vela-wash/archived-sessions-index/v1",
+ "fetched_at": "2026-10-19T05:00:53+00:00",
+ "source": "seatloom MCP read tools, PURE READ (no psql): get_history_session_turns(harness, id, contexts_dir=/Users/jyxc-dz-0100609/Documents/GitHub/seatloom/resume-contexts) per in-scope session, probed under EVERY id spelling. 2026-10-19 re-probe after Aegis re-keyed the 019dda18 row.",
+ "scope": "seatloom project — the 16 sessions the operator fixed the washing scope to on 2026-10-16 (8 claude-code, 6 codex, 1 cursor, 1 gemini).",
+ "rows": [
+  {
+   "harness": "claude-code",
+   "id": "01565715-3e7f-48c8-9ff0-fdd8edbfdf9f",
+   "raw_path": "raw/claude-code/01565715-3e7f-48c8-9ff0-fdd8edbfdf9f.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "5c09cdda-ec7d-4881-89af-2a7c00b53c68",
+   "raw_path": "raw/claude-code/5c09cdda-ec7d-4881-89af-2a7c00b53c68.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "621ae382-d6c1-4f0c-b3fa-7c1155a5ecb8",
+   "raw_path": "raw/claude-code/621ae382-d6c1-4f0c-b3fa-7c1155a5ecb8.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "75984b9d-9917-4057-bc90-8d4fcb553786",
+   "raw_path": "raw/claude-code/75984b9d-9917-4057-bc90-8d4fcb553786.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "adb08b3c-2591-4cea-8be5-be5241967415",
+   "raw_path": "raw/claude-code/adb08b3c-2591-4cea-8be5-be5241967415.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "b0100cff-2426-4786-b165-45827c9e2713",
+   "raw_path": "raw/claude-code/b0100cff-2426-4786-b165-45827c9e2713.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "ca5f59be-32fc-493e-ac44-3731062d4c75",
+   "raw_path": "raw/claude-code/ca5f59be-32fc-493e-ac44-3731062d4c75.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "claude-code",
+   "id": "ccec8b39-b1b9-4445-bb7a-336ec823f8f2",
+   "raw_path": "raw/claude-code/ccec8b39-b1b9-4445-bb7a-336ec823f8f2.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019dbf27-7abf-7391-9661-d90524e4a554",
+   "raw_path": "raw/codex/rollout-2026-04-24T19-02-08-019dbf27-7abf-7391-9661-d90524e4a554.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019dce05-fb23-7081-aaa6-40d60b4b33d2",
+   "raw_path": "raw/codex/rollout-2026-04-27T16-19-51-019dce05-fb23-7081-aaa6-40d60b4b33d2.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019dda18-07f6-79e0-8008-e4eb16a5448d",
+   "raw_path": "raw/codex/rollout-2026-04-30T00-35-01-019dda18-07f6-79e0-8008-e4eb16a5448d.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019ddc3e-06d0-73c3-a80e-0d49f38ffe80",
+   "raw_path": "raw/codex/rollout-2026-04-30T10-35-45-019ddc3e-06d0-73c3-a80e-0d49f38ffe80.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019dfc2c-e64b-7952-b1dd-c416d499939f",
+   "raw_path": "raw/codex/rollout-2026-05-06T15-24-54-019dfc2c-e64b-7952-b1dd-c416d499939f.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "codex",
+   "id": "codex:019dfc2f-3035-7d83-88b7-ae941c74e95c",
+   "raw_path": "raw/codex/rollout-2026-05-06T15-27-24-019dfc2f-3035-7d83-88b7-ae941c74e95c.jsonl",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "cursor",
+   "id": "seatloom__d73725d80aa3442b0d73b0e4a7911be0",
+   "raw_path": "raw/cursor/seatloom__d73725d80aa3442b0d73b0e4a7911be0/chat_dump.json",
+   "project": "seatloom",
+   "corpus_loaded": true
+  },
+  {
+   "harness": "gemini",
+   "id": "seatloom",
+   "raw_path": "raw/gemini/seatloom",
+   "project": "seatloom",
+   "corpus_loaded": false
+  }
+ ]
+}

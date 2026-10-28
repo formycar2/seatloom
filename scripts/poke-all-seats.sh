@@ -111,14 +111,33 @@ if [ "${1:-}" = "--scope" ]; then
 fi
 
 ALL=0
-[ "${1:-}" = "--all-seats" ] && { ALL=1; shift; }
+TARGET=""
+case "${1:-}" in
+  --scope|--list) echo "$sessions"; exit 0 ;;
+  --all-seats) ALL=1; shift ;;
+  --to)
+    # Address ONE seat. A seat-specific instruction broadcast to everyone is
+    # noise for five seats and, when the content is false for them, a lie.
+    TARGET="${2:-}"
+    shift 2 || true
+    ;;
+esac
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
   echo "usage: $0 --scope | \"<message>\" | --all-seats \"<message>\"" >&2
   exit 2
 fi
 
-if [ "$ALL" = "1" ]; then
+if [ -n "$TARGET" ]; then
+  # Exact session name, no guessing. If it is not live, say so rather than
+  # silently poking nobody - that is the failure this script was written for.
+  if ! printf '%s\n' "$sessions" | grep -qxF "$TARGET"; then
+    echo "FAIL: session '$TARGET' is not live. Live sessions:" >&2
+    echo "$sessions" >&2
+    exit 2
+  fi
+  targets="$TARGET"
+elif [ "$ALL" = "1" ]; then
   targets="$sessions"
   echo "WARNING: broadcasting to SeatLoom seats AND adopted external projects." >&2
 else
@@ -151,8 +170,15 @@ while IFS= read -r s; do
   # at t=0 and present at t=3s, because the agent's TUI owns the pane and redraws
   # on its own schedule. A check that fails exactly when it matters is not a
   # check.
+  #
+  # Window is 15s, not 6. On 2026-10-28 19:0x a poke to a Working seat reported
+  # UNVERIFIED while the marker was provably in the pane the whole time - and a
+  # re-poke one call later succeeded. Measured separately: markers become visible
+  # 0-2s after send, but the distribution has a tail, and a false UNVERIFIED is
+  # worse than a slow OK because it makes the caller re-send and the seat gets
+  # the message twice.
   seen=0
-  for _ in 1 2 3 4 5 6; do
+  for _ in $(seq 1 15); do
     if "$TMUX_BIN" capture-pane -p -t "$s:0" -S -15 2>/dev/null | grep -q "$MARKER"; then
       seen=1
       break
@@ -164,7 +190,7 @@ while IFS= read -r s; do
     printf '  OK   %s\n' "$s"
     poked=$((poked + 1))
   else
-    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane after 6s\n' "$s"
+    printf '  UNVERIFIED %s — send-keys returned 0 but the text is not in the pane after 15s\n' "$s"
     failed=$((failed + 1))
   fi
 done <<< "$(printf '%b' "$targets")"

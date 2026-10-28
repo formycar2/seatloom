@@ -33,6 +33,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
 import { api, decodeSessionOutput, onSessionExit, onSessionOutput } from '../../lib/api';
+import { dropStaleSnapshotViewport } from './dropStaleSnapshotViewport';
 
 interface Props {
   sessionId: string;
@@ -89,8 +90,9 @@ export const SessionTerminal: React.FC<Props> = ({
   /// latest target so a window drag cannot spam tmux.
   const inFlightResizeRef = useRef<Promise<unknown> | null>(null);
   const pendingResizeRef = useRef<{ rows: number; cols: number } | null>(null);
-  /// The stale attach-time snapshot is dropped exactly once, on the first
-  /// effective geometry sync after mount.
+  /// The stale attach-time snapshot's VIEWPORT is cleared exactly once, on the
+  /// first effective geometry sync after mount. Its SCROLLBACK is deliberately
+  /// kept — see the long note at the clear site for why this is not `reset()`.
   const clearedStaleSnapshotRef = useRef(false);
 
   useEffect(() => {
@@ -113,7 +115,25 @@ export const SessionTerminal: React.FC<Props> = ({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    // A handler is REQUIRED here, not optional polish. WebLinksAddon's default
+    // handler is `window.open()`, and Tauri's webview blocks window.open by
+    // design — so without this the addon still recognises the URL and still
+    // receives the click, but the open is a no-op that only logs a warning. That
+    // was the operator's bug (dispatch disp-H66BOKrYda4xltEgIwvuG): a link in a
+    // live-seats pane looked clickable and did nothing.
+    //
+    // The handler is synchronous by xterm's contract (it returns a boolean), so
+    // the async command is fired and its rejection is reported. Returning true
+    // tells the addon we took responsibility, which stops it from also trying
+    // its own default.
+    term.loadAddon(
+      new WebLinksAddon((_event: MouseEvent, uri: string) => {
+        api.openExternalUrl(uri).catch((err) => {
+          console.error('[SessionTerminal] openExternalUrl failed:', uri, err);
+        });
+        return true;
+      }),
+    );
     term.open(containerRef.current);
 
     termRef.current = term;
@@ -192,15 +212,56 @@ export const SessionTerminal: React.FC<Props> = ({
       const { rows, cols } = terminal;
       if (!clearedStaleSnapshotRef.current) {
         clearedStaleSnapshotRef.current = true;
-        // The snapshot was painted at the pane's launch geometry. Once the
-        // pane follows the viewport the TUI repaints from scratch (SIGWINCH),
-        // so drop the stale absolutely-positioned frame instead of leaving it
-        // underneath the repaint — that layering is what made pi's input box
-        // read as garbled. Only needed when the fitted geometry actually
-        // differs from the seed; an exact match needs no repaint.
+        // The snapshot was painted at the pane's launch geometry. Once the pane
+        // follows the viewport the TUI repaints from scratch (SIGWINCH), so the
+        // stale absolutely-positioned frame must not be left UNDERNEATH the
+        // repaint — that layering is what made pi's input box read as garbled.
+        // Only needed when the fitted geometry actually differs from the seed;
+        // an exact match needs no repaint.
+        //
+        // ── WHY THIS IS NOT `reset()` ANY MORE (P0, 2026-10-27) ─────────────
+        //
+        // This used to be `terminal.clear(); terminal.reset();`. BOTH destroy
+        // the scrollback, measured rather than assumed:
+        //
+        //   · `clear()` -> `BufferService.clear()` sets `lines.length = 1`;
+        //   · `reset()` -> `BufferService.reset()` does `this._normal = new
+        //     Buffer(...)`, i.e. a brand-new buffer object.
+        //
+        // Measured on a 300-line history: `clear()`+`reset()` left 40 lines
+        // (== the row count) with the oldest line empty. So every seat except
+        // the one the operator happened to be looking at had NO scrollback at
+        // all — the P0 report: "除了 ql 这个 seat 实时席位可以上下翻,其他所有
+        // seat 都不能".
+        //
+        // Why QL worked: its fitted geometry matched the pane seed, so this
+        // branch never ran for it. That is the whole difference between seats —
+        // not anything about QL itself.
+        //
+        // What is actually needed is only to clear WHAT IS ON SCREEN, so the
+        // repaint does not layer over the stale frame. Measured: `ESC[2J ESC[H`
+        // clears the viewport and leaves the scrollback untouched (301 lines
+        // before and after), and the repainted content lands correctly in the
+        // viewport. `resize` itself also does NOT clear the scrollback — a
+        // 300-line history stayed at 301 lines through a 80->120 column resize,
+        // and through a 80->78 one, with the oldest line intact. The garbling
+        // only ever came from the stale frame in the VIEWPORT, never from the
+        // scrollback.
+        //
+        // The residual, stated because it is real: a line WIDER than the new
+        // column count is reflowed onto extra rows by `resize`, and those
+        // reflowed rows stay in the scrollback. A tmux pane is typically 200+
+        // columns and the UI viewport is usually narrower, so lines that fit
+        // the pane but not the viewport are the ones affected. Measured with
+        // 45-character lines (what a real TUI emits) resized 80->78: zero
+        // reflow, `lines.length` unchanged, oldest line intact. So the damage
+        // is confined to genuinely over-wide lines, which is a far better
+        // trade than having no history at all — and it is the honest limit of
+        // what a UI-side fix can do without re-capturing at the new geometry.
         if (!seedDims || seedDims.rows !== rows || seedDims.cols !== cols) {
-          terminal.clear();
-          terminal.reset();
+          // Viewport only — see dropStaleSnapshotViewport for why this is not
+          // clear()+reset() and what the residual reflow damage is.
+          dropStaleSnapshotViewport(terminal);
         }
       }
       const last = lastPushedRef.current;
@@ -279,6 +340,66 @@ export const SessionTerminal: React.FC<Props> = ({
     const elementResizeObserver = term.element ? new ResizeObserver(retryIfUnfitted) : null;
     if (term.element && elementResizeObserver) elementResizeObserver.observe(term.element);
     const resizeSubscription = term.onResize(retryIfUnfitted);
+
+    // ── Wheel scrolling, bound by us because xterm will not ────────────────
+    //
+    // THE OPERATOR'S BUG (2026-10-27): "the live-seats pane cannot be scrolled
+    // up freely to read history". Measured, in this order, to rule out the
+    // obvious suspects:
+    //
+    //   * `scrollback: 10000` is already set, and 200 lines of output really do
+    //     land in the buffer — so it is NOT a too-small scrollback.
+    //   * `scrollToBottom` is called ONCE, at the stale-snapshot clear, and
+    //     measured to leave a parked viewport parked (see below) — so it is NOT
+    //     a repeated forced return to the bottom.
+    //   * writing NEW output while the viewport is parked mid-history leaves it
+    //     parked (measured: 174 before the write, 174 after) — so output does
+    //     NOT yank the operator back.
+    //   * `scrollLines()` moves the viewport fine — so the viewport itself is
+    //     not stuck.
+    //
+    // What is actually broken is that THE WHEEL LISTENER IS NEVER REGISTERED.
+    // xterm binds `wheel` on its element only when a mouse-reporting protocol is
+    // active: the binding is gated on `16 & protocolMask` inside
+    // `coreMouseService.onProtocolChange`, and the mask only becomes non-zero
+    // after the program in the pane emits DECSET 1000/1006/1015. Measured: with
+    // no protocol the element has no `enable-mouse-events` class; after writing
+    // `ESC[?1000h` the class appears. A tmux mirror pane does not emit those
+    // sequences on our behalf — tmux's own `mouse on` is consumed by tmux, and
+    // this xterm is a SEPARATE display surface from the pane — so the mask stays
+    // zero here and the wheel event goes nowhere.
+    //
+    // The fix is therefore not a scrollback number and not an option flag: bind
+    // the wheel ourselves and drive xterm's own public `scrollLines`, which is
+    // the same call its internal handler would have made. `preventDefault` is
+    // called so the page does not also scroll underneath the panel.
+    //
+    // Deliberately NOT done: enabling a mouse-reporting protocol ourselves. That
+    // would make the pane's program start receiving mouse events it never asked
+    // for, changing what the operator's session does — a behaviour change far
+    // beyond "let me read my history".
+    const WHEEL_LINES_PER_NOTCH = 3;
+    const onWheel = (event: WheelEvent) => {
+      // A modifier wheel means something else (zoom in most apps); leave it alone
+      // rather than scrolling under an intent we are guessing at.
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      // Kept even though xterm's own handler also calls preventDefault: ours is
+      // bound directly to the element and must not depend on xterm's internal
+      // listener being registered, which (per the note above) is exactly the
+      // assumption that broke scrolling in the first place. Measured redundant
+      // today, load-bearing if xterm's binding ever changes.
+      event.preventDefault();
+      // xterm's contract: positive scrolls DOWN toward newer output, negative
+      // scrolls UP toward history. A trackpad's deltaY is negative when the
+      // user scrolls up, which is the direction that reads history.
+      term.scrollLines(event.deltaY < 0 ? -WHEEL_LINES_PER_NOTCH : WHEEL_LINES_PER_NOTCH);
+    };
+    // Registered on the terminal element (not the container) so the listener is
+    // scoped to the pane the operator is actually pointing at — the container
+    // also holds the padding, and a wheel over the padding is not a wheel over
+    // the terminal. `passive: false` is required for preventDefault to work.
+    term.element?.addEventListener('wheel', onWheel, { passive: false });
+
     const onWindowResize = () => syncGeometry();
     window.addEventListener('resize', onWindowResize);
 
@@ -308,6 +429,7 @@ export const SessionTerminal: React.FC<Props> = ({
     return () => {
       fontsPending = false;
       window.removeEventListener('resize', onWindowResize);
+      term.element?.removeEventListener('wheel', onWheel);
       resizeObserver.disconnect();
       elementResizeObserver?.disconnect();
       resizeSubscription.dispose();
