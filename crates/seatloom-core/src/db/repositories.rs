@@ -3340,8 +3340,13 @@ impl SeatloomDb {
         let client = self.pool.get().await.map_err(DbError::Pool)?;
         let rows = client
             .query(
-                "SELECT join_state, count(*) FROM v_memory_session_join \
-                 GROUP BY join_state ORDER BY join_state",
+                // `resolved_by`, not `join_state`: the live 022 view names the column
+                // `resolved_by` and speaks its vocabulary (both / a1_path /
+                // a2_source_ref / unresolved). `join_state` was the 27-column view's
+                // name, and that view was never on track — asking for it here is how
+                // the read model died with `column "join_state" does not exist`.
+                "SELECT resolved_by, count(*) FROM v_memory_session_join \
+                 GROUP BY resolved_by ORDER BY resolved_by",
                 &[],
             )
             .await?;

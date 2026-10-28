@@ -31,7 +31,6 @@ ROOT="$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
 SCRATCH="${SEATLOOM_PROOF_DB:-seatloom_sw}"
 ONYX_REF="${ONYX_REF:-packet/onyx/topic-opened-019}"
-VIEW_COMMIT="${SESSION_KEY_VIEW_COMMIT:-0e32054}"
 BIN="$ROOT/target/debug/seatloom-mcp-emit"
 
 [ "$SCRATCH" != "seatloom" ] || { echo "REFUSING the live DB"; exit 1; }
@@ -70,6 +69,16 @@ done
 git show "${ONYX_REF}:infra/postgres/schema/021_history_sessions_corpus.sql" > /tmp/021.sql 2>/dev/null \
   || { echo "cannot read 021 from ${ONYX_REF}"; exit 1; }
 apply < /tmp/021.sql || { echo "failed at 021"; exit 1; }
+# The view comes from TRACK, not from Onyx's 0e32054. Those are two different
+# views: 0e32054 exposes 27 columns (join_state, a1_harness, a1_corpus_path,
+# a1_path_rows, ref_harness, ...) and was never on track; track's 022 exposes 20
+# columns (resolved_by, missing, l0_summary, ...) and is the one that is LIVE.
+# A scratch built from the wrong view makes the read model look broken for a
+# reason that does not exist on the real database — the first run of this proof
+# did exactly that: point 1 passed, point 2 failed with
+# `session_work rejected: postgres error`, and the cause was the scratch, not
+# the read.
+VIEW_COMMIT="${SESSION_KEY_VIEW_COMMIT:-${TRACK_REF:-track/infra-foundation}}"
 git show "${VIEW_COMMIT}:infra/postgres/schema/022_session_work_bridge_view.sql" > /tmp/022.sql 2>/dev/null \
   || { echo "cannot read 022 from ${VIEW_COMMIT}"; exit 1; }
 apply < /tmp/022.sql || { echo "failed at 022"; exit 1; }
@@ -120,8 +129,8 @@ LIVE_BOTH_AGREE=87
 LIVE_PATH_ONLY=3
 for pair in "view rows|SELECT count(*) FROM v_memory_session_join|$LIVE_VIEW_ROWS" \
             "drift (a2 unresolved)|SELECT count(*) FROM v_memory_session_join WHERE NOT a2_resolves|$LIVE_DRIFT" \
-            "both_agree|SELECT count(*) FROM v_memory_session_join WHERE join_state='both_agree'|$LIVE_BOTH_AGREE" \
-            "path_only|SELECT count(*) FROM v_memory_session_join WHERE join_state='path_only'|$LIVE_PATH_ONLY"; do
+            "both_agree|SELECT count(*) FROM v_memory_session_join WHERE resolved_by='both'|$LIVE_BOTH_AGREE" \
+            "path_only|SELECT count(*) FROM v_memory_session_join WHERE resolved_by='a1_path'|$LIVE_PATH_ONLY"; do
   label="${pair%%|*}"; rest="${pair#*|}"; sql="${rest%%|*}"; want="${rest#*|}"
   got="$(q "$sql")"
   echo "  $label: scratch=$got  live-measured-by-Onyx=$want"
@@ -132,7 +141,7 @@ echo "THE SCRATCH IS LIVE-SHAPED"
 
 echo
 echo "########## POINT 2 — the forward read returns records, with no bodies ##########"
-BIG="$(q "SELECT session_harness, session_id FROM v_memory_session_join WHERE join_state='both_agree' GROUP BY 1,2 ORDER BY count(*) DESC LIMIT 1;")"
+BIG="$(q "SELECT session_harness, session_id FROM v_memory_session_join WHERE resolved_by='both' GROUP BY 1,2 ORDER BY count(*) DESC LIMIT 1;")"
 BH="${BIG%%|*}"; BI="${BIG#*|}"
 echo "  the session with the most records: ($BH, $BI)"
 OUT="$(call session_work "{\"harness\":\"$BH\",\"id\":\"$BI\"}" | text)"
@@ -171,7 +180,7 @@ echo "########## POINT 3 — THE LOAD-BEARING CASE ##########"
 NOREC="$(q "SELECT harness, id FROM archived_sessions WHERE message_count IS NOT NULL AND (harness,id) NOT IN (SELECT session_harness, session_id FROM v_memory_session_join WHERE session_id IS NOT NULL) ORDER BY harness, id LIMIT 1;")"
 NH="${NOREC%%|*}"; NI="${NOREC#*|}"
 # (b) the session whose records do NOT resolve: the 3 path_only memories.
-DRIFT="$(q "SELECT session_harness, session_id FROM v_memory_session_join WHERE join_state='path_only' LIMIT 1;")"
+DRIFT="$(q "SELECT session_harness, session_id FROM v_memory_session_join WHERE resolved_by='a1_path' LIMIT 1;")"
 DH="${DRIFT%%|*}"; DI="${DRIFT#*|}"
 echo "  (a) no records:    ($NH, $NI)"
 echo "  (b) do not resolve: ($DH, $DI)"
@@ -213,7 +222,7 @@ echo "THE LOAD-BEARING WALL HOLDS"
 
 echo
 echo "########## POINT 4 — the reverse read resolves BY KEY ##########"
-MEM="$(q "SELECT memory_id FROM v_memory_session_join WHERE join_state='both_agree' LIMIT 1;")"
+MEM="$(q "SELECT memory_id FROM v_memory_session_join WHERE resolved_by='both' LIMIT 1;")"
 OUT="$(call memory_session "{\"memory_id\":\"$MEM\"}" | text)"
 echo "$OUT" | python3 -c '
 import sys, json

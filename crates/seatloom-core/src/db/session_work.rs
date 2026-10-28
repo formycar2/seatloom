@@ -293,7 +293,14 @@ pub async fn session_work(
         .iter()
         .map(|(s, n)| format!("{s}={n}"))
         .collect();
-    notes.push(format!("join_state across the view: {}", states.join(", ")));
+    // Named for the view's own column (`resolved_by`), not the read model's
+    // `join_state`: the note describes what the database says, and the read
+    // model's word for it is a DIFFERENT word — the view coalesces s1/s2 and so
+    // cannot express a disagreement, which the read model's vocabulary can.
+    notes.push(format!(
+        "resolved_by across the view: {}",
+        states.join(", ")
+    ));
 
     Ok(SessionWork {
         ref_: r.clone(),
