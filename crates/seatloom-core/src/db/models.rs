@@ -796,3 +796,58 @@ pub struct AcceptanceWithDispatchRow {
     pub flux_verdict: Option<String>,
     pub flux_verdict_occurred_at: Option<DateTime<Utc>>,
 }
+
+/// One row of `v_memory_session_join` (022) — the session↔work bridge view.
+///
+/// Every Tier A field is carried **as the view computed it**, never re-derived
+/// here: the row is evidence about what the view said, and re-deriving would let
+/// a change in the read model silently disagree with the database.
+///
+/// The join is expressed on TWO keys, and both are reported rather than merged:
+/// the contract's primary key A1 (the L2 corpus path, immune to id re-keying)
+/// and its secondary key A2 (`source_ref` split on the first colon). Reporting
+/// both is what keeps a disagreement countable instead of collapsing into one
+/// number that looks fine.
+#[derive(Debug, Clone)]
+pub struct MemorySessionJoinRow {
+    pub memory_id: String,
+    pub project_id: String,
+    /// Context only. NEVER a key: a topic is a segmentation, a revisable label.
+    pub topic_id: String,
+    pub title: String,
+    pub kind: String,
+    pub confidence: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    /// The L2 pointer, verbatim — the exact string the write-in declared.
+    pub l2_file_path: String,
+    pub l2_line_start: Option<i32>,
+    pub l2_line_end: Option<i32>,
+    /// A1: `l2_file_path` with the corpus root stripped. `None` when the path is
+    /// neither the ~-rooted form nor the bare `raw/%` form — a NULL pointer is
+    /// measured unresolved, never force-matched.
+    pub a1_corpus_path: Option<String>,
+    /// How many `archived_sessions` rows declare that path. `1` is the only
+    /// resolving value; anything else is ambiguity, counted not guessed.
+    pub a1_path_rows: Option<i64>,
+    pub a1_harness: Option<String>,
+    pub a1_id: Option<String>,
+    pub a1_resolves: bool,
+    /// A2: `source_ref` split on the FIRST colon. Both halves `None` when the
+    /// reference has no colon at all, so the row measures unresolved rather than
+    /// half-resolved.
+    pub ref_harness: Option<String>,
+    pub ref_id: Option<String>,
+    pub a2_harness: Option<String>,
+    pub a2_id: Option<String>,
+    pub a2_resolves: bool,
+    /// The joined session: A1 primary, A2 secondary. `None` when neither key
+    /// resolved.
+    pub session_harness: Option<String>,
+    pub session_id: Option<String>,
+    pub session_raw_path: Option<String>,
+    pub session_project: Option<String>,
+    pub session_message_count: Option<i32>,
+    /// `both_agree` | `path_only` | `ref_only` | `disagree` | `none`.
+    pub join_state: String,
+}

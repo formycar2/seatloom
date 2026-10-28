@@ -51,6 +51,7 @@ use commands::{
         cmd_list_sessions_for_project, cmd_list_sessions_for_seat, cmd_list_tmux_sessions,
         cmd_pty_resize, cmd_pty_write, cmd_pty_write_bytes,
     },
+    session_work_cmds::{cmd_memory_session, cmd_session_work},
     supervisor_cmds::{
         cmd_append_supervisor_message, cmd_close_supervisor_window, cmd_list_supervisor_messages,
         cmd_open_supervisor_window, cmd_supervisor_window_status,
@@ -208,6 +209,13 @@ fn main() {
             // in the database and none crosses MCP (011's rule stands).
             cmd_read_history_context_slice,
             cmd_open_local_path,
+            // The session↔work bridge (LYRA-2026-10-16 contract §11.2 slice 2) —
+            // one read-only function in each direction over
+            // `v_memory_session_join`. The migration (022) is on track and the view
+            // is live with 90 rows; these two commands are what let anything READ
+            // it. Without them the view is data nothing can reach.
+            cmd_session_work,
+            cmd_memory_session,
             // supervisor IM
             cmd_list_supervisor_messages,
             cmd_append_supervisor_message,

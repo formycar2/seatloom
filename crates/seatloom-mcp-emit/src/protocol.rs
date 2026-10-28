@@ -123,6 +123,11 @@ pub fn tools_list_result() -> Value {
             request_operator_decision_tool(),
             resolve_operator_decision_tool(),
             list_operator_decisions_tool(),
+            // --- The session↔work bridge (LYRA contract §11.2 slice 2) ---
+            // Two read-only tools over `v_memory_session_join`, one in each
+            // direction. Without these the view is data nothing can read.
+            crate::session_work::session_work_tool(),
+            crate::session_work::memory_session_tool(),
         ]
     })
 }
@@ -877,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_advertises_the_twenty_five_tools() {
+    fn tools_list_advertises_the_twenty_seven_tools() {
         let r = tools_list_result();
         let tools = r["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -909,6 +914,10 @@ mod tests {
                 "request_operator_decision",
                 "resolve_operator_decision",
                 "list_operator_decisions",
+                // The session↔work bridge read (022 + 703c863). Both directions
+                // are advertised: session → records, and record → sessions.
+                "session_work",
+                "memory_session",
             ]
         );
         // get_next_dispatch exposes NO seat identity parameter (non-forgeable).
