@@ -641,3 +641,53 @@ because someone else committed.
 - **Merge `packet/lyra/milestone-summary` into track.** Five standing duties exist on that branch and
   are `on_track=0`. The waker reads a relative path against the primary checkout, so until this merge
   happens the fleet has **one** seat with standing duties, not six — and I have been reporting six.
+
+### 4. NEW, and it is live right now — should the fleet's own conversations go into 历史会话?
+
+Aegis asked you this at 04:01 today, after you asked why QL's history in the app looked nothing like
+tmux. He traced it to the bottom: the archive holds **six** harnesses (`codex` 210, `stepcode` 20,
+`claude-code` 18, `cursor` 14, `gemini` 9, `opencode` 1) and **not `saih`** — the one every seat runs on.
+So opening QL history shows that seat's work in another tool months ago, and none of its work as a
+SeatLoom seat.
+
+Vela measured the corpus rather than opining: 40 `saih` files, 51,748 records, roles assistant 25,173 /
+toolResult 23,854 / user 1,598 / system 58, with ordinary tool calls (bash 18,874, codemode 2,208, read
+983) plus your own typos (`cash` 82, `bodemode` 52) — which is itself evidence these are real
+transcripts.
+
+**Three things you should know before you answer, and one correction to the question as asked.**
+
+**Correction first, because it changes the cost.** The question says adding a harness would change 011's
+closed vocabulary and is therefore a migration. **It is not.** I measured: `archived_sessions` has exactly
+one constraint — `PRIMARY KEY (harness, id)` — and no CHECK on `harness`, so it is free TEXT. The Rust
+read path does not validate it either (`repositories.rs:3466` is a plain `harness: r.get(1)`). The
+`Harness` enum in `objects/session.rs` is the **seat** harness, a different column on a different table.
+So rows with `harness='saih'` are accepted by the schema today — no DDL, no migration, no
+`apply-db.sh` registration. **The adapter is the whole change.** A false premise that makes an option
+look more expensive than it is biases toward doing nothing, which is why I am correcting it before you
+answer rather than after.
+
+**Second: the option that is already chosen is the worst one.** Vela's point, and I agree with it: the
+feature exists, covers five harnesses, and silently omits the one every seat runs on. You opened QL and
+saw a live pipe stream instead of a recording, and nothing in the product told you why. Silence is a
+choice, and it is currently making the decision for you.
+
+**Third: the real gate is redaction, not schema.** Vela found **38 intranet-domain hits and 21
+basic-auth hits in her own session file**. She also measured the already-archived corpus at the same
+density (a 62 MB codex file: 32 intranet + 26 basic-auth; a 15 MB claude-code file: 9 + 79), so `saih`
+is **not** a new risk class — which is an argument for archiving it *through* the pipeline that already
+handles the others, not for leaving it out. She wants a **full, not sampled, redaction dry-run** before
+anything is written. **That gate should stay yours**, because a leak through the archive is not
+recoverable.
+
+**The three options as Aegis put them**, with my note on each:
+
+| Option | What it means | My note |
+|---|---|---|
+| A — add it | a thin `handle("saih", …)` source adapter | Cheaper than the question says. Leaves "cannot tell apart" unsolved. |
+| B — do not add, but label | the panel says it does not cover the fleet's own conversations | Honest, and leaves the fleet's work invisible to the product that governs it. |
+| C — add **and** distinguish | add it, filtered or tagged, so fleet working state is not mixed with your personal history | **I lean here.** It is the only option that solves both, and Vela's objection to mixing is the strongest argument on the table. |
+
+**What I am not doing:** not ruling it. This is your surface and you are engaged on it right now. What I
+am ruling is that the question must be answered rather than left as an accident of which harnesses the
+corpus happens to name.
