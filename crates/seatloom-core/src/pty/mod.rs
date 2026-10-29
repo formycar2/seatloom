@@ -103,6 +103,40 @@ pub fn pane_history_limit(target: &str) -> Option<usize> {
         .ok()
 }
 
+/// Clamp a backfill request to what the pane can actually give.
+///
+/// WHY THIS IS A FUNCTION AND NOT AN INLINE `min`. Flux's mutation M-S1 removed the
+/// clamp from `attach_tmux` and **all 213 tests stayed green, including the one
+/// named `the_backfill_never_asks_for_more_than_the_pane_retains`**. The reason was
+/// precise and it was my defect: that test asserted `wanted.min(2_000) == 2_000` —
+/// a statement about `usize::min` computed INSIDE the test — while the product's
+/// clamp was inline in a function that needs a live tmux pane, so no unit test
+/// could reach it. The test re-implemented the thing it claimed to pin.
+///
+/// Extracting the clamp makes it callable, so the test can pin the PRODUCT's
+/// behaviour instead of a copy of it. A guard that reads correctly, is documented,
+/// and is not covered is the same finding as an uncovered test, except here it was
+/// the PRIMARY fix rather than defence in depth.
+///
+/// THE THREE CASES THAT MUST HOLD:
+///   * a pane that retains LESS than asked caps the request (the defect Mr. Zhang
+///     reported: nine seat panes at 2 000 under a 50 000 global);
+///   * a pane that retains MORE is not capped — the clamp must not quietly become a
+///     ceiling of its own;
+///   * `None` (tmux would not answer) leaves the request UNCLAMPED, because a
+///     transient failure must not silently seed nothing.
+///
+/// `Some(0)` is deliberately treated as "answered, retains nothing" and clamps to
+/// 0. It is unreachable in practice (a live pane always retains some scrollback),
+/// and guessing otherwise would mean inventing a number, which is the failure this
+/// whole unit refuses.
+pub fn clamp_backfill_to_pane(wanted: usize, pane_limit: Option<usize>) -> usize {
+    match pane_limit {
+        Some(limit) => wanted.min(limit),
+        None => wanted,
+    }
+}
+
 /// How many lines of pane scrollback to backfill into the mirror at attach time.
 ///
 /// **The default is derived, not guessed.** The terminal component caps its own
@@ -500,22 +534,22 @@ impl PtySession {
         // when it is smaller than what we wanted, the interface says so rather
         // than showing a scrollbar that goes nowhere.
         let backfill = opts.backfill_lines.unwrap_or(DEFAULT_BACKFILL_LINES);
-        let pane_history_limit = pane_history_limit(&tmux_target).unwrap_or(0);
+        let pane_history_limit = pane_history_limit(&tmux_target);
         // Only clamp when tmux actually answered. A 0 is "tmux would not say", and
         // clamping to it would seed nothing on a transient failure.
         let wanted = backfill.saturating_sub(pane_rows as usize).max(1);
-        let history_lines = if pane_history_limit > 0 {
-            wanted.min(pane_history_limit as usize)
-        } else {
-            wanted
-        };
-        if pane_history_limit > 0 && history_lines < wanted {
-            eprintln!(
-                "seatloom-pty: pane {tmux_target} retains {pane_history_limit} lines, \
-                 so the backfill asks for {history_lines} instead of {wanted} — \
-                 the pane was created before history-limit was raised, and only a new \
-                 pane inherits the higher value"
-            );
+        // The clamp is a named function so a unit test can call the PRODUCT's
+        // logic rather than re-implement it — see `clamp_backfill_to_pane`.
+        let history_lines = clamp_backfill_to_pane(wanted, pane_history_limit);
+        if let Some(limit) = pane_history_limit {
+            if history_lines < wanted {
+                eprintln!(
+                    "seatloom-pty: pane {tmux_target} retains {limit} lines, \
+                     so the backfill asks for {history_lines} instead of {wanted} — \
+                     the pane was created before history-limit was raised, and only a new \
+                     pane inherits the higher value"
+                );
+            }
         }
         let capture_out = std::process::Command::new("tmux")
             .args([
@@ -1047,24 +1081,99 @@ mod tests {
         backfill.saturating_sub(pane_rows as usize).max(1)
     }
 
-    /// The clamp that makes the backfill honest: it never asks tmux for more than
-    /// the pane can give. Measured on live 2026-10-29 — nine seat panes at 2 000
-    /// under a 50 000 global, because tmux reads the option at pane creation.
+    /// The clamp that makes the backfill honest, pinned by CALLING the product's
+    /// function rather than re-implementing it.
+    ///
+    /// THIS TEST USED TO BE VACUOUS AND FLUX PROVED IT. It asserted
+    /// `wanted.min(2_000) == 2_000` — arithmetic done inside the test — while the
+    /// product's clamp was inline in `attach_tmux`, which needs a live tmux pane
+    /// and so could not be reached. Flux's mutation M-S1 deleted the clamp from the
+    /// product, restoring the exact defect Mr. Zhang reported, and **all 213 tests
+    /// stayed green including this one**. A check that cannot fail on the thing it
+    /// claims to check is worse than no check.
+    ///
+    /// The three cases are the three the dispatch names, and each one fails if the
+    /// corresponding branch of `clamp_backfill_to_pane` is removed.
     #[test]
     fn the_backfill_never_asks_for_more_than_the_pane_retains() {
-        // 5 000 asked, 24 visible rows -> 4 976 wanted. A 2 000-line pane cannot
-        // give that, and asking anyway is what made the scrollbar imply a depth
-        // the pane did not have.
+        // 5 000 asked, 24 visible rows -> 4 976 wanted.
         let wanted = history_lines_for(DEFAULT_BACKFILL_LINES, 24);
         assert_eq!(wanted, 4_976);
-        let clamped = wanted.min(2_000);
-        assert_eq!(clamped, 2_000, "a 2 000-line pane must cap the request");
-        // A pane that CAN give more is not capped — the clamp must not become a
-        // ceiling of its own.
-        let roomy = wanted.min(50_000);
+
+        // CASE 1 — the pane retains LESS than asked: the request is capped. This is
+        // the measured live shape (nine seat panes at 2 000 under a 50 000 global)
+        // and the defect Mr. Zhang reported.
         assert_eq!(
-            roomy, wanted,
+            clamp_backfill_to_pane(wanted, Some(2_000)),
+            2_000,
+            "a 2 000-line pane must cap the request"
+        );
+
+        // CASE 2 — the pane retains MORE: NOT capped. Without this the clamp
+        // quietly becomes a ceiling of its own and a roomy pane is throttled.
+        assert_eq!(
+            clamp_backfill_to_pane(wanted, Some(50_000)),
+            wanted,
             "a 50 000-line pane must get the full request"
+        );
+
+        // CASE 3 — tmux would not answer: UNCLAMPED. A transient failure must not
+        // silently seed nothing; the None is carried, never turned into 0.
+        assert_eq!(
+            clamp_backfill_to_pane(wanted, None),
+            wanted,
+            "an unknown limit must leave the request unclamped, never clamp to 0"
+        );
+    }
+
+    /// The clamp must be CALLED, not merely defined.
+    ///
+    /// This is the assertion whose absence let Flux's mutation M-S1 through even
+    /// after the clamp was extracted: deleting the call site leaves the function
+    /// defined and fully tested, and every test still passes. A correct helper
+    /// nobody calls is the original defect wearing a refactor.
+    ///
+    /// Checked by counting the call sites in production code — exactly one, inside
+    /// `attach_tmux`. The count is taken on the code BEFORE `#[cfg(test)]`, so the
+    /// test's own references are not counted.
+    #[test]
+    fn the_clamp_is_actually_called_by_the_backfill() {
+        let src = include_str!("mod.rs");
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("there is code before the test module");
+        let calls = prod.matches("clamp_backfill_to_pane(wanted,").count();
+        assert_eq!(
+            calls, 1,
+            "the clamp must be called exactly once in production code (in \
+             attach_tmux). {calls} calls means the backfill bypasses it — that is \
+             the mutation Flux ran, and it stayed green."
+        );
+    }
+
+    /// `None` and `Some(0)` are DIFFERENT answers and must stay different.
+    ///
+    /// `Some(0)` means "tmux answered, this pane retains nothing" and clamps to 0.
+    /// `None` means "tmux did not answer" and must not clamp at all. Collapsing
+    /// them — which is what `.unwrap_or(0)` did on the way to the UI — turns an
+    /// unknown into a measurement, the same lie shape this unit exists to remove.
+    #[test]
+    fn an_unknown_limit_is_not_the_same_as_a_limit_of_zero() {
+        assert_eq!(
+            clamp_backfill_to_pane(4_976, Some(0)),
+            0,
+            "Some(0) caps to 0"
+        );
+        assert_eq!(
+            clamp_backfill_to_pane(4_976, None),
+            4_976,
+            "None leaves it unclamped — the two must never converge"
+        );
+        assert_ne!(
+            clamp_backfill_to_pane(4_976, Some(0)),
+            clamp_backfill_to_pane(4_976, None),
+            "an unknown and a measured zero are different facts"
         );
     }
 

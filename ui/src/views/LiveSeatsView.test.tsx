@@ -444,4 +444,53 @@ describe('R1: a mirror that cannot be proven stops being shown', () => {
     // than invent a value.
     expect(screen.getAllByText(/pid \?/).length).toBeGreaterThan(0);
   });
+
+  // ── the backfill is labelled, and an unknown is not a zero ──────────────────
+  // Mr. Zhang's symptom: QL looked scrollable but showed content with nothing in
+  // common with tmux. The depth was one cause — the backfill asked for 5 000 lines
+  // while the pane retained 2 000, and tmux silently gave less.
+  it('labels the scrollback as a backfill, and never calls an unknown 0 lines', async () => {
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+
+    // 1. The header names a line count AND says it is a backfill. A history with
+    //    no label looks exactly like a recorded one.
+    const code = screen.getAllByText(/历史 \d+ 行\(回填\)/);
+    expect(code.length).toBeGreaterThan(0);
+
+    // 2. The fixture DTO carries no paneHistoryLimit. The tooltip must DECLINE to
+    //    state a number. This is the assertion whose absence let Flux's finding
+    //    stand: the UI used to render "history-limit is 0 lines" for an unknown.
+    const node = code[0] as HTMLElement;
+    const tip = node.getAttribute('title') ?? '';
+    expect(tip).toContain('回填');
+    expect(tip).toContain('不是录制');
+    expect(tip).toContain('history-limit 未取得');
+    expect(tip).not.toContain('history-limit 是 0 行');
+    expect(tip).not.toMatch(/history-limit 是 0/);
+  });
+
+  it('a measured limit of 0 is still stated as a fact, not swallowed', async () => {
+    // The other half: an unknown must not become a zero, AND a zero must not be
+    // hidden. Some(0) and None are different facts and the UI keeps them apart.
+    render(<LiveSeatsView />);
+    await waitForFirstAutoAttach();
+
+    const sessionId = useLiveSeatsMirrorStore.getState().attachments[0].dto.id;
+    const before = useLiveSeatsMirrorStore.getState().attachments[0].dto;
+    await act(async () => {
+      useLiveSeatsMirrorStore.setState((s) => ({
+        attachments: s.attachments.map((a) =>
+          a.dto.id === sessionId
+            ? { ...a, dto: { ...a.dto, paneHistoryLimit: 0, seededScrollbackLines: 3 } }
+            : a,
+        ),
+      }));
+    });
+    expect(before.paneHistoryLimit).not.toBe(0);
+
+    const code = screen.getAllByText(/历史 \d+ 行\(回填\)/);
+    const tip = (code[0] as HTMLElement).getAttribute('title') ?? '';
+    expect(tip).toContain('history-limit 是 0 行');
+  });
 });

@@ -169,9 +169,20 @@ pub struct LiveSessionDto {
     /// and the scrollbar implies a depth the pane does not have. Reporting the
     /// real number lets the interface say what is true instead of implying more.
     ///
-    /// 0 when tmux would not answer — never fabricated as a plausible number.
+    /// `null` when tmux would not answer — never fabricated as a plausible number.
+    ///
+    /// WHY Option AND NOT 0. The Rust reader returns Option and its doc promises a
+    /// None is never turned into a number. This DTO then did `.unwrap_or(0)` and the
+    /// UI printed it into a sentence, so a transient `display-message` failure told
+    /// the operator "this pane's history-limit is 0 lines" — an unknown stated as a
+    /// measurement, which is the same lie shape this whole unit removes. Flux
+    /// proved the collision: `None` and `Some(0)` both arrived at the UI as 0.
+    ///
+    /// Carrying the Option through lets the interface decline to state a number
+    /// instead of inventing one. A limit of 0 is still expressible (Some(0)); it is
+    /// just no longer confusable with "we do not know".
     #[serde(default)]
-    pub pane_history_limit: i64,
+    pub pane_history_limit: Option<i64>,
     /// How many lines of scrollback the attach actually seeded, counted from the
     /// capture rather than from the request.
     ///
@@ -528,9 +539,10 @@ pub async fn cmd_attach_tmux_session(
         pane_cols: session.pane_cols,
         pane_pid,
         pane_tty,
+        // Passed THROUGH as an Option. Do not `unwrap_or(0)` here: that is what made
+        // an unknown render as a measured zero. See the field's doc.
         pane_history_limit: seatloom_core::pty::pane_history_limit(&session.tmux_target)
-            .map(|v| v as i64)
-            .unwrap_or(0),
+            .map(|v| v as i64),
         // Counted from what ARRIVED, not from what was asked for. The seed's own
         // size is the only honest number: `backfill_lines` is a request, and a
         // request that tmux silently truncates is not a measurement.

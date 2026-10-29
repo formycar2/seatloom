@@ -686,8 +686,14 @@ export interface LiveSessionDto {
    * backfill asks for 5 000 lines and silently gets ~2 000. Without this number
    * the interface implies a scrollback depth the pane does not have, which is the
    * same class of lie as a mockup.
+   *
+   * NULLABLE ON PURPOSE. `null` means tmux would not answer; `0` would mean it
+   * answered "this pane retains nothing". Those are different facts, and the DTO
+   * used to collapse them both to 0 — which made the tooltip state an unknown as
+   * a measurement. Keep the two apart: the UI must decline to say a number rather
+   * than print a fabricated one.
    */
-  paneHistoryLimit?: number;
+  paneHistoryLimit?: number | null;
   /**
    * How many lines of scrollback the attach actually seeded — counted from what
    * arrived, not from what was requested. 0 means the seed was empty.
