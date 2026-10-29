@@ -66,6 +66,17 @@
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
    - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      它查每张 pending 卡的分支是否还包含它的 base。
+   - **verdict 自己有没有说这份活是坏的**:`bash scripts/check-verdict-defects.sh`
+     🔴 2026-10-29 补。前四项检查**没有一个读过 verdict 的 payload** ——
+     `check-verdict-refs.sh` 只读 `payload->>'dispatch_id'`,问的是"指对派单了吗",
+     不问"这份 verdict 说了什么"。于是写着 **"THE FIX DOES NOT WORK"** 的 verdict
+     和一份干净通过的 verdict,在我所有控制眼里一模一样。
+     现在这个脚本读 `the_honest_summary` / `what_i_did_not_verify` / `finding_*`,
+     抓四类:verdict 不是 pass、payload 有点名的 finding、
+     honest summary 里出现"does not work / is unpinned / not covered / failing / defect"、
+     以及**完全没有 summary 和 finding**(那和"我没看"分不出来)。
+     判据写在文件头注释里,因为它就是为那一次事故建的。
+   - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
      🔴 **2026-10-29 11:28:这个脚本又一次说了反话,这次是它自己的运行条件骗它。**
