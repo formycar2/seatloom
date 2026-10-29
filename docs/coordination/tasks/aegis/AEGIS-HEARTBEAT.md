@@ -68,6 +68,22 @@
      它查每张 pending 卡的分支是否还包含它的 base。
      `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
+     🔴 **2026-10-29 11:28:这个脚本又一次说了反话,这次是它自己的运行条件骗它。**
+        它第 19 行 `cd "$(dirname "$0")/.."` —— 把自己 cd 进主检出再跑 git,
+        所以它测的是主检出,不是应用。而验收门的 `repo_root` 来自
+        `resolve_repo_root()`:`SEATLOOM_REPO_ROOT` 有就用,没有就用**进程 cwd**。
+        `open -a` 启的应用 cwd 是 `/`,`/` 不是 git 仓库,门在那儿跑 git 得到
+        `fatal: not a git repository`,`branch_contains` 返回 `Err`,
+        **门把 `Err` 映射成 `BranchNotSynced`**。
+        结果:四个分支 behind 0,7 张卡全显示「验收被拒/分支未包含验收基准」。
+        张先生 11:28 截图过来说"全都不能点",而我 11:26 刚打印"全部可点"。
+        **从 10-28 22:25 应用重启起,这 7 张卡的门就是坏的,只是没人点过。**
+        现在脚本会先解析门实际用的 repo root(应用进程环境变量,否则应用 cwd),
+        `git -C "$GATE_REPO_ROOT" rev-parse --git-dir` 不过就 FAIL 并给出根因,
+        分支检查也改成 `git -C "$GATE_REPO_ROOT"`。
+        修完必须两个方向都验:无 root 报 FAIL 带根因,有 root 报 OK。
+        启动必须走 `scripts/launch-seatloom.sh`(它设并**验证** `SEATLOOM_REPO_ROOT`
+        到达进程),从 Dock/Finder/`open -a` 点的都不带这个变量。
      **卡开出来了不等于卡点得动。**
    - **verdict ref 的有效性**:`bash scripts/check-verdict-refs.sh`
    - **验法本身是不是废的**:`bash scripts/check-card-verifications.sh`
