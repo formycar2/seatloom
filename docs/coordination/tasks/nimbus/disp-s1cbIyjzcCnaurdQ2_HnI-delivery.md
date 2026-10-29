@@ -2,7 +2,7 @@
 
 ## 结果
 
-卡已开出:**`acc-disp-H7pVyxTHO077Rlp6GrmzX`** 修正:`acc-disp-H7pVqxTHO077Rlp6GrmzX`
+卡已开出:**`acc-disp-H7pVqxTHO077Rlp6GrmzX`**
 - 状态:`pending`,等操作者决定
 - 分支 `packet/nimbus/project-scoped-reads`,base `track/infra-foundation`
 - `flux_verdict_ref` = `ev-sitJrfiH1K8-lLl0hmCbP`
