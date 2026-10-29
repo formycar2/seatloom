@@ -95,33 +95,30 @@ const App: React.FC = () => {
     projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
   });
   const [restoredPosition, setRestoredPosition] = useState(false);
-  // The project the cold-start restore lands on. Read by the tab-memory effect
-  // below to tell a cold start from an in-session switch. Held as STATE, not a
-  // ref: a ref was measured unreliable because which of the two effects runs
-  // first on a given render is not something the code can see.
-  const [coldStartProjectId, setColdStartProjectId] = useState<string | null>(null);
+  // The project id whose arrival is the cold-start restore, cleared as soon as
+  // the tab effect has seen it. See the assignment in the restore effect below.
+  const coldStartSkip = useRef<string | null>(null);
   useEffect(() => {
     if (restoredPosition) return;
     if (!backendHydrated) return; // do not guess before the read lands
     const ids = new Set(projectDataOrderRef.current);
     if (!ids.has(persistedProjectId ?? '')) {
       // The backend has already selected the first real project, or null.
+      coldStartSkip.current = useDataStore.getState().activeProjectId;
       if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
-      setColdStartProjectId(useDataStore.getState().activeProjectId);
       setRestoredPosition(true);
       return;
     }
+    // Mark BEFORE the project changes. `activeProjectId` is derived from the
+    // data store, so it changes as soon as setActiveProject runs, and the tab
+    // effect re-runs within the same effect flush — this ref is what tells that
+    // re-run "this arrival is the cold-start restore, do not apply its saved tab".
+    // Setting it after would be a render too late, which is the mechanism Flux
+    // named.
+    coldStartSkip.current = persistedProjectId as string;
     setActiveProject(persistedProjectId as string);
-    setColdStartProjectId(persistedProjectId as string);
     setRestoredPosition(true);
-  }, [
-    backendHydrated,
-    persistedProjectId,
-    restoredPosition,
-    setActiveProject,
-    setActiveProjectId,
-    setColdStartProjectId,
-  ]);
+  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject, setActiveProjectId]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -467,27 +464,39 @@ const App: React.FC = () => {
   // Two earlier attempts were measured and reverted, recorded so they are not
   // retried: gating the WRITE effect froze the remembered project permanently;
   // delaying `setLoadedUIProjectId` broke the write gate's own precondition.
-  const coldStartTabSkipped = useRef(false);
   useEffect(() => {
     if (activeProjectId && activeProjectId !== 'all-projects') {
-      const savedState = projectUIStatesRef.current[activeProjectId];
-      const isColdStartRestore =
-        coldStartProjectId === activeProjectId && !coldStartTabSkipped.current;
-      if (savedState && !isColdStartRestore) {
-        setActiveTab(savedState.activeTab as Tab);
-        setSelectedObject(
-          savedState.selectedObjectId && savedState.selectedObjectType
-            ? { type: savedState.selectedObjectType, id: savedState.selectedObjectId }
-            : null,
-        );
+      // The cold-start restore arrives once, on the project the restore effect
+      // put there. Its saved tab must NOT be written over the 派单 default — but
+      // every later arrival at that project (a switch back) must restore. So the
+      // skip is consumed on first sight, not sticky.
+      //
+      // A ref, not state: state set here would not be visible to the tab effect's
+      // re-run within the same effect flush, which is the mechanism Flux named.
+      // Before the restore has landed, NO arrival at a project is the operator's:
+      // the app is still showing defaults ('p-1') and then whatever the data
+      // store picked for itself while the backend read was in flight (measured:
+      // the first real project). Applying a saved tab to either would be
+      // answering "where was the operator?" with a project they never opened.
+      //
+      // After it lands, every arrival restores normally — including a switch back
+      // to the restored project, because the skip is consumed on first sight.
+      const skipColdStart = !restoredPosition || coldStartSkip.current === activeProjectId;
+      if (coldStartSkip.current === activeProjectId) coldStartSkip.current = null;
+      if (!skipColdStart) {
+        const savedState = projectUIStatesRef.current[activeProjectId];
+        if (savedState) {
+          setActiveTab(savedState.activeTab as Tab);
+          setSelectedObject(
+            savedState.selectedObjectId && savedState.selectedObjectType
+              ? { type: savedState.selectedObjectType, id: savedState.selectedObjectId }
+              : null,
+          );
+        }
       }
-      // One skip per launch. Flipping here rather than on the cold-start run
-      // itself means the very next run at the same project restores normally —
-      // which is what a project switch back must do.
-      if (isColdStartRestore) coldStartTabSkipped.current = true;
     }
     setLoadedUIProjectId(activeProjectId);
-  }, [activeProjectId, coldStartProjectId]);
+  }, [activeProjectId, restoredPosition]);
 
   useEffect(() => {
     if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;

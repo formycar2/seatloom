@@ -161,7 +161,7 @@ function readStoredAppStore(): { activeProjectId: string | null } {
  */
 function mainText(): string {
   const main = document.querySelector('main');
-  return main ? main.textContent ?? '' : '';
+  return main ? (main.textContent ?? '') : '';
 }
 
 function mountApp() {
@@ -343,7 +343,12 @@ describe('restart lands back in the recorded project, and the write cannot win t
           filters: {},
         },
         [FIRST_REAL_PROJECT]: {
-          activeTab: 'dispatches',
+          // 'workitems', NOT 'dispatches': 'dispatches' is the cold-start default,
+          // so "the memory was applied" and "nothing happened" are the same
+          // observation. This is the same measurement the cold-start test above
+          // records, and it was left behind here — which is why this test could
+          // not tell a working restore from a missing one.
+          activeTab: 'workitems',
           selectedObjectId: null,
           selectedObjectType: null,
           filters: {},
@@ -371,7 +376,6 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // cold-start default, and the live-seats headline is rendered in several
     // places. What makes this one valid is that the dispatches page does NOT
     // contain it — checked against the cold-start test's own render.
-    console.log('PROBE firstReal saved=', JSON.stringify(useAppStore.getState().projectUIStates[FIRST_REAL_PROJECT]));
     await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
     // ...and the other project's tab is not inherited.
     expect(screen.queryByText('产出物')).toBeNull();
