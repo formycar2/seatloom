@@ -40,12 +40,19 @@ db() {
 
 # Which pending card rests on which verdict, and what that verdict actually says.
 # The payload is read, not just the dispatch id.
+#
+# EVERY TEXT FIELD IS NEWLINE-STRIPPED IN SQL. `while read` reads LINES, so a
+# payload containing a newline is not one row - the JSON lands on the next line
+# and gets consumed as a new card id, leaving the shell patterns looking at an
+# empty or truncated summary. That exact bug shipped in
+# check-card-verifications.sh earlier today and I reproduced it here within
+# hours. translate() removes both CR and LF so one row is one row.
 rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
-                  coalesce(e.payload->>'the_honest_summary',''),
-                  coalesce(e.payload->>'what_i_did_not_verify',''),
-                  coalesce(e.payload->>'finding_1',''),
-                  coalesce(e.payload->>'finding_2',''),
-                  coalesce(e.payload->>'finding_3','')
+                  translate(coalesce(e.payload->>'the_honest_summary',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'what_i_did_not_verify',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'finding_1',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'finding_2',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'finding_3',''), chr(10)||chr(13), ' ')
            from acceptances a
            join canonical_events e on e.id = a.flux_verdict_ref
            where a.status = 'pending'
@@ -57,7 +64,6 @@ if [ -z "$rows" ]; then
 fi
 
 bad=0
-declare_bad=""
 
 while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified f1 f2 f3; do
   [ -n "$card" ] || continue
@@ -79,11 +85,41 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
   # 3. The honest summary says the thing does not work. These phrases are the
   #    tell. They are written in lower case and matched case-insensitively so a
   #    shouted "THE FIX DOES NOT WORK" is caught as readily as a quiet one.
+  #
+  #    FALSE POSITIVE, caught the first time this ran for real: a verifier
+  #    routinely writes "the defect is real and reproduces at the line numbers
+  #    cited" - meaning the ORIGINAL defect he was asked to verify is genuine,
+  #    which is a PASS with confirmation, not a defect in the new work. Matching
+  #    the bare word "defect" flagged a clean verdict and would have had me tell
+  #    the operator a good card was broken.
+  #
+  #    So the rule is not "does the payload contain the word defect". It is "does
+  #    the verdict say THE WORK IT IS PASSING does not work". Phrases that
+  #    describe the pre-existing defect being confirmed are excluded first.
   low=$(printf '%s %s' "$summary" "$not_verified" | tr '[:upper:]' '[:lower:]')
+  # Strip the confirmation-of-the-original-defect phrasing, then look for what
+  # is left. "the defect is real", "the premise is real", "the reported defect
+  # reproduces" all describe the thing being verified, not a fault in the fix.
+  low=$(printf '%s' "$low" | sed -E 's/the (defect|premise|reported defect|bug) is (real|correct|confirmed|genuine|accurate)//g; s/(defect|premise) (is|was) real//g; s/reproduces at the line numbers cited//g')
+  # Second false positive, caught the same run: "the mutation that PREVIOUSLY
+  # survived now goes red" is a verifier reporting that a fix WORKS. Matching the
+  # bare word "survives" flagged a clean verdict. The honest lesson is that a
+  # keyword cannot carry tense - "survived, and was then fixed" and "survives"
+  # are opposite facts spelled with the same stem. So the patterns below require
+  # the present-tense claim ("one mutation survives", "mutation survives",
+  # "survives the mutation") rather than the bare stem.
+  # This check is therefore a PROMPT, not a verdict. It cannot read; it can only
+  # ask a human to look. Every FAIL it prints must be read, not obeyed.
   case "$low" in
     *"does not work"*|*"not working"*|*"fix is not complete"*|*"is unpinned"*|\
-    *"not covered"*|*"uncovered"*|*"red"*"test"*|*"test"*"red"*|*"failing"*|*"defect"*)
-      hit=$(printf '%s' "$low" | grep -o -m1 '.\{0,60\}\(does not work\|not working\|is unpinned\|not covered\|uncovered\|failing\|defect\).\{0,60\}')
+    *"not covered"*|*"uncovered"*|*"failing"*|*"not pinned"*|*"one mutation survives"*|\
+    *"mutation survives"*|*"survives the mutation"*|*"gap in the test"*|\
+    *"tests are red"*|*"is red"*|*"stays red"*|*"remains red"*)
+      # head -1, not just -m1: BSD grep's -m1 limits matching LINES, and one
+      # line can yield several overlapping matches, so $hit arrived with two
+      # lines and printed as two separate "reasons" - which reads as two defects
+      # where there is one verdict.
+      hit=$(printf '%s' "$low" | grep -o '.\{0,60\}\(does not work\|not working\|is unpinned\|not covered\|uncovered\|failing\|defect\).\{0,60\}' | head -1)
       reasons="${reasons}the honest summary says so: ...${hit}...|"
       ;;
   esac
@@ -97,7 +133,16 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
 
   if [ -n "$reasons" ]; then
     bad=$((bad + 1))
-    declare_bad="${declare_bad}${card}|${verdict}|${reasons}"$'\n'
+    # Printed AS FOUND, not accumulated into a buffer and re-split later. The
+    # buffer version used '|' as a separator while the reasons themselves can
+    # contain '|', and it emitted blank card/verdict lines when a payload held a
+    # newline. Printing at the point of discovery removes both failure modes.
+    echo "  card:     $card"
+    echo "  verdict:  $verdict"
+    printf '%s\n' "$reasons" | tr '|' '\n' | while IFS= read -r line; do
+      [ -n "$line" ] && echo "            - $line"
+    done
+    echo
   fi
 done <<< "$rows"
 
@@ -108,15 +153,7 @@ if [ "$bad" -gt 0 ]; then
   echo "only thing that merges a card, and he would be merging on a verdict that"
   echo "already told us the work is broken."
   echo
-  printf '%s' "$declare_bad" | while IFS='|' read -r card verdict rest; do
-    [ -n "$card" ] || continue
-    echo "  card:     $card"
-    echo "  verdict:  $verdict"
-    printf '%s\n' "$rest" | while IFS= read -r line; do
-      [ -n "$line" ] && echo "            - $line"
-    done
-    echo
-  done
+  # (each card's reasons were printed inside the loop above)
   echo "The rework belongs to the seat that did the work. A defect found by the"
   echo "verifier is not a rejection of the work - it is the verifier doing its job."
   exit 1

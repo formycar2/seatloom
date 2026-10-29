@@ -55,6 +55,24 @@
      `round(extract(epoch from (now()-started_at))/60)`,减法在库内完成。
      别拿库的时间戳去跟宿主机 `date` 比(podman 虚拟机时钟会在宿主机休眠后停摆,
      实测慢过 137 分钟,那样算出来的"挂了 10 小时"是假的)。
+   - 🔴🔴 **测量前先打印分支,和权威来源对一次。2026-10-29 我一天内测错三次代码。**
+     **权威来源是卡上/派单上写的分支名,不是我猜的目录名。**
+     ```bash
+     cd <worktree> && git branch --show-current    # 必须等于要测的分支,不等就停
+     ```
+     三次实测教训:
+     1. 在主检出跑 Mira 的测试得 `2 failed | 8 passed` —— 那是 track 的 `App.tsx`,
+        她分支上是 **10 passed**。
+     2. 报"有缺陷的修复被合并了" —— 那张卡绑定的是另一个 verdict,干净。
+     3. 报"Nimbus 的修复丢失了" —— 我站在 `seatloom-worktrees/nimbus`,它在
+        `packet/nimbus/session-work-readmodel`;**正确分支在 `nimbus-psr`**。
+        `git worktree add` 报 "already used by worktree at nimbus-psr" 才救了我。
+     **目录名不是分支名。** `worktrees/<name>` 的 `<name>` 是给人看的。
+     `git worktree list` 才是权威。
+     🔴 **越是不好的结果,越要先确认测量对象** —— 好消息测错了会自我矛盾,
+        坏消息不会。今天三次全是坏结果,所以每一次看起来都"合理"。
+     🔴 在别人分支上做变异,恢复后必须证明干净:
+        `git diff --stat` 空 + 相关测试全绿 + 关键符号 `grep -c` 数回原值。
    - 进程活着是存活信号,**不是进度信号**。账本最后一条事件的时间比面板可靠:
      `canonical_events` 空白 17 小时而面板显示"6/6 在线"真的发生过。
    - ⚠️ `pgrep -P` 在 macOS 上会**漏子进程**,不漏的时候才准。2026-10-12 实测:
