@@ -152,6 +152,30 @@
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
 
+2e. **派验绿单时,必须把「verdict 怎么命名实现派单」写清 —— 2026-10-29 补,
+    今天我在这里连错三次,烧掉三件 failed 派单和一次假警报。**
+    门的判据(`dispatch.rs` Guard 2)是**两条通道任一即可**,代码注释写得很清楚:
+    verdict 命名一件派单,要么 `payload->>'dispatch_id'`(live 上 27/30),
+    **要么一条 `event_object_refs` 行 `ref_type='dispatch'` 且 `ref_id` 指向它(5/30)**。
+    `role` **不在判据里** —— `subject` 只是诚实标注,`context` 同样过门。
+    历史上 56 个 verdict 的 subject 指向验单自己,其中 40 个已被接受的卡引用过,
+    说明第二条通道一直在正常使用。
+
+    🔴 我今天的错:验单里写"Your verdict must name THIS dispatch id in
+       `payload.dispatch_id`" —— 他照做,指向验单自己。**我从没告诉他还有第二条通道,
+       也从没给过他实现派单的 id。** 结果三件开卡单被门拒,而正确解法是补 ref。
+
+    **派验绿单必写**:
+    ```json
+    {"implementation_dispatch": "<被验的实现派单 id,从账本拷,不要手打>",
+     "verdict_must_name_it_via": "payload.dispatch_id = <实现派单 id> AND/OR
+        event_object_refs(event_id=<verdict id>, ref_type='dispatch',
+        ref_id=<实现派单 id>, role='subject')"}
+    ```
+    🔴 **实现派单 id 从账本拷。** 今天我第三件还指错了单元(说成记忆去重那件,
+       实际验的是去重**测试**),Nimbus 两种配对都实测被拒、报上来才发现。
+       **一个 typo 的 id 会造出一张指向空气的卡。**
+
 2c. **查"验绿了但没人验收"的活 —— 这一步 2026-10-29 补,和 2b 是同一个病的另一半。**
     🔴 实例:2026-10-29 01:00 逐件查 `ReviewVerdictIssued`,发现 **10 件 implementation 类
        派单有 pass verdict、而 `select count(*) from acceptances where flux_verdict_ref=<id>`
