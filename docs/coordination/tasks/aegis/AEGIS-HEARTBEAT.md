@@ -68,8 +68,44 @@
      它查每张 pending 卡的分支是否还包含它的 base。
      `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
+     🔴 **2026-10-29 11:28:这个脚本又一次说了反话,这次是它自己的运行条件骗它。**
+        它第 19 行 `cd "$(dirname "$0")/.."` —— 把自己 cd 进主检出再跑 git,
+        所以它测的是主检出,不是应用。而验收门的 `repo_root` 来自
+        `resolve_repo_root()`:`SEATLOOM_REPO_ROOT` 有就用,没有就用**进程 cwd**。
+        `open -a` 启的应用 cwd 是 `/`,`/` 不是 git 仓库,门在那儿跑 git 得到
+        `fatal: not a git repository`,`branch_contains` 返回 `Err`,
+        **门把 `Err` 映射成 `BranchNotSynced`**。
+        结果:四个分支 behind 0,7 张卡全显示「验收被拒/分支未包含验收基准」。
+        张先生 11:28 截图过来说"全都不能点",而我 11:26 刚打印"全部可点"。
+        **从 10-28 22:25 应用重启起,这 7 张卡的门就是坏的,只是没人点过。**
+        现在脚本会先解析门实际用的 repo root(应用进程环境变量,否则应用 cwd),
+        `git -C "$GATE_REPO_ROOT" rev-parse --git-dir` 不过就 FAIL 并给出根因,
+        分支检查也改成 `git -C "$GATE_REPO_ROOT"`。
+        修完必须两个方向都验:无 root 报 FAIL 带根因,有 root 报 OK。
+        启动必须走 `scripts/launch-seatloom.sh`(它设并**验证** `SEATLOOM_REPO_ROOT`
+        到达进程),从 Dock/Finder/`open -a` 点的都不带这个变量。
      **卡开出来了不等于卡点得动。**
    - **verdict ref 的有效性**:`bash scripts/check-verdict-refs.sh`
+   - **验法本身是不是废的**:`bash scripts/check-card-verifications.sh`
+     它筛两件事:验法是不是在让操作者跑 shell 命令,以及验法有没有提到
+     任何他能看的界面。**两个数都不是判定,是提问。**
+     2026-10-29 抓到一张真坏的:`acc-disp-session-key-ui` 的验法是
+     "跑 check-verdict-refs.sh 和 check-cards-clickable.sh,两条都绿即可接受" ——
+     那两个脚本是我为了抓自己的账本错误和分支同步错误写的,
+     和 Mira 的会话详情界面毫无关系,而且**即使她的功能被删光也还是绿的**。
+     他会跑完看到两个绿勾,接受一张他没看过的卡。
+     🔴 **2026-10-29 11:00 这个工具本身被抓到假阴性,别只信它的 0。**
+        它报 `shell-based=0`,而同时有四张卡的 `acceptance_plan` 在让张先生
+        敲 `psql`、跑两遍 `apply-db.sh`,其中 `acc-disp-accplan-lane-c-onyx`
+        的第 4、5 步是 **`INSERT INTO acceptances`** —— 用写账本的动作来验 schema。
+        两个 bug 叠在一起:(1) 只读 `how_to_verify`(席位写得整齐的那栏),
+        shell 在 `acceptance_plan`(产品真正渲染的那栏)里;
+        (2) 连接符用 `chr(10)`,换行把 `while read` 的行切碎了。
+        已修成 `-F'\037'` + 空格连接,现在报 `shell-based=4`。
+        **规矩:计数为 0 时,先拿一个确定应该命中的样本去撞它。
+        修好之后必须能对那张已知的卡报出 SHELL,否则说明工具还是坏的,
+        不是卡变干净了。**
+     **能永远通过的验法比没有验法更糟** —— 它把"我没看"变成了"我看过了"。
      它把每张 pending 卡的 `flux_verdict_ref` join 回 `dispatches`,
      确认那条 verdict 事件真存在、且点名的就是这张卡的派单。
      2026-10-28 实测发现一条 verdict 的 `dispatch_id` 是
@@ -77,6 +113,30 @@
      `disp-B4Y5oAohMQwtXm5Vva1fw`(字母 o)—— 一个字符,而 nanoid 字符集里两者都在。
      它看起来完全是绿的第三方 verdict,指向 0 行。
      **verdict 事件存在不等于它是关于这张卡的。**
+
+2d. **分支落后就让 owner 合并 —— 这一步 2026-10-29 补,之前它只在我的检查里。**
+    🔴 结构缺口实例:2026-10-29 06:00 和 07:00,Onyx 的三个分支各落后 track 1 个提交,
+       他的 4 张卡因此点不动。而他**没有任何派单** —— `seatloom-waker` 只对
+       "有 ready 派单且空闲"的席位发叫醒,所以它正确地不叫他。
+       于是"你的卡点不动"这件事只存在于我的 `check-cards-clickable.sh` 输出里,
+       没有任何机制把它变成他的派单。他空闲、什么都不知道、卡一直点不动。
+
+    **命令**(先看,再派):
+    ```bash
+    bash scripts/check-cards-clickable.sh        # 列出每张点不动的卡和它的分支
+    ```
+
+    判据:**每个有 pending 卡且分支落后的席位,都必须有一件派单告诉他合并。**
+    没有派单 = 他不会知道 = 卡会一直点不动,而 `fleet-status.sh` 只会显示"⛔ 点了会被拒"。
+
+    派单内容必须包含:
+    - 他哪些分支落后、各落后几个提交(不要只说"落后 1 个",要说清是哪些分支)
+    - 哪些卡因此点不动(点名卡号)
+    - `git merge track/infra-foundation` 然后 push,**不要 rebase**
+    - 一句"这不是你的错"—— 落后通常是我提交造成的,而他只是没被告知
+
+    🔴 **一个分支一张卡也不派**:分支落后但没有 pending 卡时,同步不紧急,
+       派单是浪费他的上下文。落后数本身不说明严重程度,**那个分支上有几张卡才说明**。
 
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
@@ -86,6 +146,15 @@
        派单有 pass verdict、而 `select count(*) from acceptances where flux_verdict_ref=<id>`
        全是 0**。工作做完了、独立验绿了、操作者从没被要求验收过。
        019 那张卡从 10-10 挂到 10-29,19 天,就是因为这个。
+    🔴🔴 **2026-10-29 12:00:还有更上游一格,2c 抓不到,我漏了一整天。**
+        **done 了、连 verdict 都没有、更没有卡。** 实测 6 件真产品改动停在这里:
+        镜像滚动条报真实深度(b6ef3aa)、主题能关闭(57bda95)、去重测试不自证(01517af)、
+        验收方案去掉 SQL、默认落地页修复、saih 归档裁定。
+        四项机械检查**全绿** —— 因为它们各自只问"已开到张先生面前的那 7 张"的
+        一个问题。还没开到那儿的活,三个检查都看不见它,而"全绿"读起来就是"没问题"。
+        **绿灯的数量是已知问题的数量,不是健康程度的度量。**
+        已经补派 5 个验绿单(一件一个 verdict id,没批量),第 6 件是裁定,
+        直接转成操作者裁定请求。
        这不是"队列空"能发现的 —— 队列空、派单 done、verdict pass,三样都正常,
        而事情停在一个没有任何检查看过的地方。
 
