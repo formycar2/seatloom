@@ -381,6 +381,65 @@ describe('restart lands back in the recorded project, and the write cannot win t
     expect(screen.queryByText('产出物')).toBeNull();
   });
 
+  it('switching AWAY and then BACK to the restored project still restores its tab', async () => {
+    // Lyra's mutation 2, made un-survivable.
+    //
+    // The cold-start skip is CONSUMPTIVE — it fires once and clears itself — and
+    // that is the whole design. But no test covered the case the consumptive
+    // shape depends on: leave the restored project, come back to it, and its
+    // saved tab must still be applied.
+    //
+    // Lyra ran three mutations. Mutation 2 — delete the line that consumes the
+    // skip, making it permanent — SURVIVED a fully green suite, and it silently
+    // destroys per-project tab memory for every project after the first. The
+    // operator asked for that feature. This test is what kills it.
+    //
+    // Three distinct tabs across two projects, so all three observations are
+    // distinguishable from each other and from the cold-start default.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          // 'artifacts': neither the cold-start default ('dispatches') nor the
+          // other project's tab, so "restored", "still on the switch-back page"
+          // and "nothing happened" are three different observations.
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          activeTab: 'workitems',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    // Cold start: the restored project, on the 派单 default — its saved
+    // 'artifacts' must NOT be applied here.
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
+
+    // Away. FIRST_REAL_PROJECT's saved tab applies.
+    act(() => {
+      useDataStore.getState().setActiveProject(FIRST_REAL_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+    expect(screen.queryByText('产出物')).toBeNull();
+
+    // Back. THIS is the assertion the suite was missing. A permanent skip would
+    // leave the app on 'workitems' here — the previous project's page — and the
+    // operator would silently lose the memory he asked for.
+    act(() => {
+      useDataStore.getState().setActiveProject(RECORDED_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('产出物'));
+    expect(screen.queryByText('活跃工作项账本')).toBeNull();
+  });
+
   it('does not restore a project the backend did not return', async () => {
     // The record names a project that no longer exists. The app must land on a
     // real backend project rather than on the stale id — never on an invented one.
@@ -436,13 +495,20 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
     expect(screen.queryByText('产出物')).toBeNull();
 
-    // The saved TAB is whatever the operator is actually looking at. Since the
-    // 2026-10-29 contract change that is 'dispatches' on a cold start — the point
-    // of the assertion is that disk agrees with the screen, which is what the
-    // `loadedUIProjectId` gate protects: without it the write effect fires before
-    // the destination's saved tab has been applied, overwriting it with the
-    // previous tab.
-    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('dispatches');
+    // The saved TAB is what the OPERATOR chose, not what a cold start happened to
+    // be showing.
+    //
+    // 2026-10-29, second correction: this used to assert 'dispatches' here — i.e.
+    // that the cold-start default IS written into the project's memory, replacing
+    // the saved 'artifacts'. That is the pollution, stated as the expectation.
+    // Measured: with that write in place, the restored project's per-project tab
+    // memory is destroyed on every launch, and the operator silently loses the
+    // feature he asked for. Lyra's mutation 2 was surviving a green suite for
+    // exactly this reason.
+    //
+    // So the assertion is the opposite: the saved tab survives the launch
+    // untouched, because nothing on a cold start is the operator's choice.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
 
     // ...and it never wrote any OTHER tab for that project, not even for one
     // render. The final value above is what a later launch reads; a wrong tab on
@@ -450,9 +516,14 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // window loses. React applies the tab restore and the write effect in the
     // same commit, so an ungated write effect reads the OLD tab and persists it —
     // invisible in the final state, fatal in the window.
+    //
+    // 2026-10-29, second correction: this asserted `new Set(['dispatches'])` —
+    // that the ONLY tab ever written for the restored project is the cold-start
+    // default. That is the pollution again, now stated as "it never wrote
+    // anything else". The set must be the operator's own tab.
     const writtenTabs = writtenTabsFor(RECORDED_PROJECT).filter((t) => t !== undefined);
     expect(writtenTabs.length).toBeGreaterThan(0);
-    expect(new Set(writtenTabs)).toEqual(new Set(['dispatches']));
+    expect(new Set(writtenTabs)).toEqual(new Set(['artifacts']));
   });
 
   it('starts with no active project when the backend has none at all', async () => {
