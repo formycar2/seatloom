@@ -691,3 +691,61 @@ recoverable.
 **What I am not doing:** not ruling it. This is your surface and you are engaged on it right now. What I
 am ruling is that the question must be answered rather than left as an accident of which harnesses the
 corpus happens to name.
+
+---
+
+## 2026-10-29 evening · Lyra — two cards are waiting on you, and one carries a caveat you should have before you click
+
+This section exists because the previous sections asked you to decide things and then the answers
+changed. Keeping the operator-facing list current is my job; a stale list is a false premise with my name
+on it.
+
+### The two cards pending right now
+
+| Card | What it verifies | Branch | State |
+|---|---|---|---|
+| `acc-disp-H7pVqxTHO077Rlp6GrmzX` | the mirror reports its real scrollback depth and says it is a backfill | `packet/nimbus/project-scoped-reads` | **sound, with a caveat below** |
+| `acc-disp-pQ6kiHvOb-IrrfFW1m1Jx` | the dedup test no longer matches its own assertion text | same branch | **clean** |
+
+**Both are fine to accept.** I verified both myself rather than taking a seat's word.
+
+**The second one is straightforward.** Flux verified the exact commit the card names — zero commits
+between what he checked and the branch tip.
+
+**The first one carries a caveat, and it is real.** Flux's verdict was issued at **04:08**. The fix it
+names landed at **13:16** — nine hours later. So the verdict is a **PASS with two named defects**: the
+clamp that fixes it was not pinned by any test (deleting it left 213 tests green, including the one named
+for it, because that test re-implemented `min` internally while the clamp was inline), and an unknown
+pane limit was being rendered as `"0 lines"` — a number presented as a measurement that is not one.
+
+**Those two defects are now fixed, and I proved it rather than accepting it.** The clamp is a named
+function that the call site actually calls, and I mutation-tested it: restoring the exact defect turns
+precisely the two tests that should catch it red. Restored, the suite is 215/215 and the branch is
+untouched.
+
+**So the caveat is honest and already resolved — but it is a caveat.** The verdict is evidence about a
+state that no longer exists: **117 commits** sit between what Flux verified and the branch tip. That is
+why Aegis offered a re-verify before you decide. **If you would rather not accept on a verdict that names
+a defect, say so and Flux re-verifies the branch as it now stands.** One more cycle, and you get a clean
+verdict instead of a stale-but-honest one. That is your call and either answer is defensible.
+
+### What I got wrong this round, recorded because the list above is the thing you read
+
+I reported yesterday-style that two cards repeated an evidence defect. **The pointer was right and the
+conclusion was wrong.** The verdict documents never mention the implementation dispatch the cards are
+opened against — that part is true — but the reason is benign: a verdict is about the *verification* unit,
+which is what a verdict is, and the implementation dispatch is named as a context reference because the
+verification covered it. Reading the verdict payload (`verifying_dispatch`, `fix_at`,
+`what_i_did_not_verify`) settles it in one query.
+
+**I queried three other fields from that same row and stopped before the ones that answered the
+question.** That is the fourth time today a seat measured the wrong thing or in the wrong place — Aegis
+recorded three of his own, in a different worktree on a different branch. The pattern across all seven:
+**a measurement taken somewhere that was not verified to be the place the claim was about.**
+
+### What is still open, unchanged
+
+Everything in sections 1–4 above is still open. Nothing in this section closes them. In particular the
+sauh decision is still yours, the sync-refusal options are still unruled, and
+`packet/lyra/milestone-summary` is still not on track — which means the five standing-duty documents are
+still invisible to the waker, and the fleet still goes quiet when the queue empties.
