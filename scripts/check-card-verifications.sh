@@ -27,8 +27,14 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 2
 
+# The field separator is a unit separator (0x1f), not a pipe. acceptance_plan is
+# JSON and JSON is full of pipes - with IFS='|' the row was shredded and $how
+# received only the first fragment, so a card whose acceptance_plan is five psql
+# commands still printed shell-based=0. The separator must be a character that
+# cannot occur in the payload, not one that is merely unlikely.
+US=$(printf '\037')
 db() {
-  podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "$1" 2>/dev/null
+  podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F"$US" -c "$1" 2>/dev/null
 }
 
 if [ -z "$(db "select 1 from pg_tables where tablename='acceptances'")" ]; then
@@ -36,7 +42,20 @@ if [ -z "$(db "select 1 from pg_tables where tablename='acceptances'")" ]; then
   exit 2
 fi
 
-rows=$(db "select a.id, a.dispatch_id, coalesce(a.how_to_verify,'') from acceptances a where a.status='pending' order by a.id")
+# acceptance_plan IS part of the verification. This script originally read only
+# how_to_verify, and reported shell-based=0 while four cards' acceptance_plan
+# fields told Mr. Zhang to run psql, run apply-db.sh twice, and INSERT rows into
+# the acceptances table itself. The shell was one column over. A check that reads
+# the column the seat filled in nicely and not the one the product renders is not
+# a check on the card - it is a check on the seat's typing habits.
+# Join with a space, NOT chr(10). A newline inside the payload splits the row in
+# `while read`, and then the JSON lands in $card on the NEXT iteration - the shell
+# pattern then never sees it, and the script prints shell-based=0 for a card whose
+# acceptance_plan is five psql commands. Newlines are field separators to `read`,
+# so a payload containing them is not one row.
+rows=$(db "select a.id, a.dispatch_id,
+              coalesce(a.how_to_verify,'') || ' ' || coalesce(a.acceptance_plan::text,'')
+            from acceptances a where a.status='pending' order by a.id")
 
 if [ -z "$rows" ]; then
   echo "no pending cards"
@@ -47,7 +66,7 @@ shell=0
 no_app=0
 total=0
 
-while IFS='|' read -r card dispatch how; do
+while IFS="$US" read -r card dispatch how; do
   [ -n "$card" ] || continue
   total=$((total + 1))
 
