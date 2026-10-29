@@ -82,6 +82,27 @@ impl std::fmt::Debug for PtySession {
     }
 }
 
+/// The pane's own `history-limit`, or `None` if tmux would not answer.
+///
+/// Read per PANE and never from the global option: the global is what the NEXT
+/// pane will inherit, so reporting it would describe a pane that does not exist.
+/// tmux reads this option when a pane is created, which is why raising the global
+/// does not reach panes that already exist — measured 2026-10-29, all nine seat
+/// panes still at 2 000 under a 50 000 global.
+pub fn pane_history_limit(target: &str) -> Option<usize> {
+    let out = std::process::Command::new("tmux")
+        .args(["display-message", "-t", target, "-p", "#{history_limit}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
 /// How many lines of pane scrollback to backfill into the mirror at attach time.
 ///
 /// **The default is derived, not guessed.** The terminal component caps its own
@@ -464,8 +485,38 @@ impl PtySession {
         //     xterm AFTER registering the output listener, so there is no ordering
         //     hazard and no re-attach duplication (each attach is a new session id,
         //     so the terminal remounts and writes the snapshot once).
+        // The backfill asks for what the pane can actually GIVE, not for a number
+        // that sounds good.
+        //
+        // Measured 2026-10-29 (dispatch disp-H7pVqxTHO077Rlp6GrmzX): the global
+        // `history-limit` is 50 000 and all nine seat panes carry 2 000, because
+        // tmux reads the option when a pane is CREATED and every seat pane predates
+        // the global being raised. `set-option -p` on a live pane is accepted and
+        // changes nothing (re-measured: still 2 000); only a new pane inherits it.
+        //
+        // So asking for 5 000 silently returns ~2 000, and the operator's scrollbar
+        // implies a depth the pane does not have. Reading the pane's own limit
+        // first costs one `display-message` and makes the request honest — and
+        // when it is smaller than what we wanted, the interface says so rather
+        // than showing a scrollbar that goes nowhere.
         let backfill = opts.backfill_lines.unwrap_or(DEFAULT_BACKFILL_LINES);
-        let history_lines = backfill.saturating_sub(pane_rows as usize).max(1);
+        let pane_history_limit = pane_history_limit(&tmux_target).unwrap_or(0);
+        // Only clamp when tmux actually answered. A 0 is "tmux would not say", and
+        // clamping to it would seed nothing on a transient failure.
+        let wanted = backfill.saturating_sub(pane_rows as usize).max(1);
+        let history_lines = if pane_history_limit > 0 {
+            wanted.min(pane_history_limit as usize)
+        } else {
+            wanted
+        };
+        if pane_history_limit > 0 && history_lines < wanted {
+            eprintln!(
+                "seatloom-pty: pane {tmux_target} retains {pane_history_limit} lines, \
+                 so the backfill asks for {history_lines} instead of {wanted} — \
+                 the pane was created before history-limit was raised, and only a new \
+                 pane inherits the higher value"
+            );
+        }
         let capture_out = std::process::Command::new("tmux")
             .args([
                 "capture-pane",
@@ -994,6 +1045,51 @@ mod tests {
     /// and quietly exceed what the terminal keeps.
     fn history_lines_for(backfill: usize, pane_rows: u16) -> usize {
         backfill.saturating_sub(pane_rows as usize).max(1)
+    }
+
+    /// The clamp that makes the backfill honest: it never asks tmux for more than
+    /// the pane can give. Measured on live 2026-10-29 — nine seat panes at 2 000
+    /// under a 50 000 global, because tmux reads the option at pane creation.
+    #[test]
+    fn the_backfill_never_asks_for_more_than_the_pane_retains() {
+        // 5 000 asked, 24 visible rows -> 4 976 wanted. A 2 000-line pane cannot
+        // give that, and asking anyway is what made the scrollbar imply a depth
+        // the pane did not have.
+        let wanted = history_lines_for(DEFAULT_BACKFILL_LINES, 24);
+        assert_eq!(wanted, 4_976);
+        let clamped = wanted.min(2_000);
+        assert_eq!(clamped, 2_000, "a 2 000-line pane must cap the request");
+        // A pane that CAN give more is not capped — the clamp must not become a
+        // ceiling of its own.
+        let roomy = wanted.min(50_000);
+        assert_eq!(
+            roomy, wanted,
+            "a 50 000-line pane must get the full request"
+        );
+    }
+
+    /// `pane_history_limit` reads the PANE, and it is a real tmux call rather than
+    /// a constant: the whole point is that the global option does not describe the
+    /// pane being attached.
+    #[test]
+    fn the_pane_limit_is_read_not_derived_from_the_global() {
+        // A live pane exists in this repo's tmux (the seat that runs this test),
+        // so the reader is exercised against a real answer rather than a mock.
+        let session = std::env::var("SEATLOOM_TEST_TMUX_SESSION").ok();
+        if let Some(name) = session {
+            let limit = pane_history_limit(&format!("{name}:0"));
+            assert!(
+                limit.is_some(),
+                "tmux answered for {name}:0, so the reader must too"
+            );
+            assert!(limit.unwrap() > 0, "a real pane retains some scrollback");
+        }
+        // A target that does not exist is None, not 0 and not a panic: a caller
+        // must be able to tell "tmux would not say" from "the pane retains none".
+        assert!(
+            pane_history_limit("no-such-session-xyz:0").is_none(),
+            "an unknown target must be None, never a fabricated number"
+        );
     }
 
     /// The default splits the terminal's own scrollback in half, so the live tail

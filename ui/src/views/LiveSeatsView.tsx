@@ -672,6 +672,22 @@ const LiveSeatsView: React.FC = () => {
                 {active.dto.panePid ? `pid ${active.dto.panePid}` : 'pid ?'} ·{' '}
                 {active.dto.paneTty ? active.dto.paneTty.replace('/dev/', '') : 'tty ?'}
               </code>
+              {/* The scrollback's real depth, labelled as a backfill.
+                  tmux reads `history-limit` when a pane is CREATED, so the global
+                  option never reaches panes that already exist — measured
+                  2026-10-29: global 50 000, all nine seat panes at 2 000. Without
+                  this line the scrollbar implies a depth the pane does not have,
+                  and a backfilled history looks identical to a recorded one. */}
+              <code
+                style={{ fontSize: 10.5, opacity: 0.75 }}
+                title={
+                  `接入时从 tmux 回填了 ${active.dto.seededScrollbackLines ?? 0} 行历史` +
+                  `（该 pane 的 history-limit 是 ${active.dto.paneHistoryLimit ?? 0} 行）。` +
+                  `这是回填，不是录制：更早的内容 tmux 已经丢掉了。`
+                }
+              >
+                {`历史 ${active.dto.seededScrollbackLines ?? 0} 行(回填)`}
+              </code>
               <code style={{ fontSize: 10.5 }}>{active.seat.sessionName}</code>
               <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>
                 {formatBytes((activity[active.dto.id] ?? EMPTY_ACTIVITY).bytes)} ·{' '}

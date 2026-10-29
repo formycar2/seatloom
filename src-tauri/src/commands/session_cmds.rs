@@ -156,6 +156,42 @@ pub struct LiveSessionDto {
     /// tmux `#{pane_tty}` at attach time, e.g. `/dev/ttys005`.
     #[serde(default)]
     pub pane_tty: String,
+    /// The pane's own `history-limit`, read from tmux at attach time.
+    ///
+    /// WHY THIS IS REPORTED AT ALL. tmux reads `history-limit` when a PANE IS
+    /// CREATED, so raising the global option does not reach panes that already
+    /// exist — measured 2026-10-29: the global is 50 000 and all nine seat panes
+    /// carry 2 000, because every one of them was born before the option was
+    /// raised. `set-option -p` on a live pane is ACCEPTED and changes nothing
+    /// (re-measured: still 2 000 afterwards); only a new pane inherits the global.
+    ///
+    /// So the app's backfill asks tmux for 5 000 lines and silently gets ~2 000,
+    /// and the scrollbar implies a depth the pane does not have. Reporting the
+    /// real number lets the interface say what is true instead of implying more.
+    ///
+    /// 0 when tmux would not answer — never fabricated as a plausible number.
+    #[serde(default)]
+    pub pane_history_limit: i64,
+    /// How many lines of scrollback the attach actually seeded, counted from the
+    /// capture rather than from the request.
+    ///
+    /// The distinction is the whole point: `backfill_lines` is what was ASKED
+    /// for, and this is what ARRIVED. A seed that reports its own size cannot
+    /// pretend to be deeper than it is.
+    #[serde(default)]
+    pub seeded_scrollback_lines: usize,
+    /// Whether the seeded scrollback is a BACKFILL rather than a recording.
+    ///
+    /// Always true today (the seed comes from `capture-pane`), and carried
+    /// explicitly so the interface can label it. A backfilled history that looks
+    /// identical to a recorded one is the same class of lie as a mockup — which
+    /// is why the dispatch says a seed must be marked as a seed.
+    #[serde(default = "yes")]
+    pub seeded_is_backfill: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The event the frontend gets when a mirror stops being provably ours.
@@ -229,6 +265,21 @@ fn query_pane_identity(target: &str) -> (i64, String) {
         .unwrap_or(0);
     let tty = parts.next().unwrap_or("").to_string();
     (pid, tty)
+}
+
+/// How many lines a `capture-pane -e -p` snapshot actually contains.
+///
+/// Counted, not derived from the request. tmux answers `min(asked, pane history)`
+/// plus the visible pane, so the number that ARRIVED is the only one that
+/// describes what the operator can scroll. An empty snapshot is 0 rather than an
+/// error, because a pane with nothing in it has no history to seed.
+fn count_captured_lines(snapshot: &[u8]) -> usize {
+    if snapshot.is_empty() {
+        return 0;
+    }
+    // `lines()` counts a final line with no trailing newline, which is exactly
+    // what capture-pane produces, so no special case is needed.
+    String::from_utf8_lossy(snapshot).lines().count()
 }
 
 /// `#{pane_pipe}` for a target: "1", "0", or None if tmux would not answer.
@@ -477,6 +528,14 @@ pub async fn cmd_attach_tmux_session(
         pane_cols: session.pane_cols,
         pane_pid,
         pane_tty,
+        pane_history_limit: seatloom_core::pty::pane_history_limit(&session.tmux_target)
+            .map(|v| v as i64)
+            .unwrap_or(0),
+        // Counted from what ARRIVED, not from what was asked for. The seed's own
+        // size is the only honest number: `backfill_lines` is a request, and a
+        // request that tmux silently truncates is not a measurement.
+        seeded_scrollback_lines: count_captured_lines(&session.initial_snapshot),
+        seeded_is_backfill: true,
         initial_snapshot_b64: base64::engine::general_purpose::STANDARD
             .encode(&session.initial_snapshot),
     };
