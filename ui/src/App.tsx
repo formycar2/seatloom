@@ -95,6 +95,11 @@ const App: React.FC = () => {
     projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
   });
   const [restoredPosition, setRestoredPosition] = useState(false);
+  // The project the cold-start restore lands on. Read by the tab-memory effect
+  // below to tell a cold start from an in-session switch. Held as STATE, not a
+  // ref: a ref was measured unreliable because which of the two effects runs
+  // first on a given render is not something the code can see.
+  const [coldStartProjectId, setColdStartProjectId] = useState<string | null>(null);
   useEffect(() => {
     if (restoredPosition) return;
     if (!backendHydrated) return; // do not guess before the read lands
@@ -102,12 +107,21 @@ const App: React.FC = () => {
     if (!ids.has(persistedProjectId ?? '')) {
       // The backend has already selected the first real project, or null.
       if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
+      setColdStartProjectId(useDataStore.getState().activeProjectId);
       setRestoredPosition(true);
       return;
     }
     setActiveProject(persistedProjectId as string);
+    setColdStartProjectId(persistedProjectId as string);
     setRestoredPosition(true);
-  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject, setActiveProjectId]);
+  }, [
+    backendHydrated,
+    persistedProjectId,
+    restoredPosition,
+    setActiveProject,
+    setActiveProjectId,
+    setColdStartProjectId,
+  ]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -431,10 +445,35 @@ const App: React.FC = () => {
     () => setShowCommandBar(true),
   );
 
+  //
+  // A COLD START begins on 派单. The per-project tab memory is a real feature and
+  // is NOT removed — it still applies when the operator switches projects inside a
+  // session. What it must not do is overwrite the first screen of a fresh launch:
+  // `useState<Tab>('dispatches')` above is the contract, and this effect used to
+  // beat it on mount because the store is persisted without a partialize, so
+  // `projectUIStates` survives a restart.
+  //
+  // Measured on the operator's machine (2026-10-29): the persisted project was
+  // `project_delivery/QL` with `activeTab: 'live-seats'`, so the app opened on
+  // 实时席位 every launch — and the first-screen card asserted the opposite.
+  //
+  // THE GATE. `coldStartProjectId` is the project the restore effect lands on,
+  // captured as STATE there so ordering between the two effects cannot matter.
+  // Skipping only that one project's tab — and only on the run where it first
+  // appears — leaves every other behaviour exactly as it was: a switch to a
+  // different project still restores that project's tab, and the write effect
+  // below is untouched, so the memory is neither lost nor frozen.
+  //
+  // Two earlier attempts were measured and reverted, recorded so they are not
+  // retried: gating the WRITE effect froze the remembered project permanently;
+  // delaying `setLoadedUIProjectId` broke the write gate's own precondition.
+  const coldStartTabSkipped = useRef(false);
   useEffect(() => {
     if (activeProjectId && activeProjectId !== 'all-projects') {
       const savedState = projectUIStatesRef.current[activeProjectId];
-      if (savedState) {
+      const isColdStartRestore =
+        coldStartProjectId === activeProjectId && !coldStartTabSkipped.current;
+      if (savedState && !isColdStartRestore) {
         setActiveTab(savedState.activeTab as Tab);
         setSelectedObject(
           savedState.selectedObjectId && savedState.selectedObjectType
@@ -442,9 +481,13 @@ const App: React.FC = () => {
             : null,
         );
       }
+      // One skip per launch. Flipping here rather than on the cold-start run
+      // itself means the very next run at the same project restores normally —
+      // which is what a project switch back must do.
+      if (isColdStartRestore) coldStartTabSkipped.current = true;
     }
     setLoadedUIProjectId(activeProjectId);
-  }, [activeProjectId]);
+  }, [activeProjectId, coldStartProjectId]);
 
   useEffect(() => {
     if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;
