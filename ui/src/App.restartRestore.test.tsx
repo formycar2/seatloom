@@ -72,6 +72,12 @@ const CANNED: Record<string, unknown> = {
   cmd_list_sessions: [],
   cmd_list_events: [],
   cmd_list_documents: [],
+  // Which build this is. `live-seats` (and anything that renders the seat
+  // mirror) reads it; without an answer the surface fails to render and a test
+  // that switches to a saved 'live-seats' tab measures the failure, not the tab.
+  // snake_case on purpose: SandboxBanner reads the raw payload and checks
+  // `is_sandbox` before any normalise step.
+  cmd_get_runtime_identity: { is_sandbox: false, branch: null, commit: null, built_at: null },
 };
 
 // ONE source of truth for "the backend", answering every command the app can
@@ -146,6 +152,18 @@ function readStoredAppStore(): { activeProjectId: string | null } {
  * under test, after all), so the log is cleared here — a "first write" taken
  * before the mount would be the test setup's write, not the app's.
  */
+/**
+ * The MAIN region's text, not the whole document's. `document.body.textContent`
+ * was tried first and is useless for tab assertions: every tab's content is in
+ * the DOM at once, so a query for the dispatches heading is satisfied even while
+ * another tab is showing. The nav rail is excluded for the same reason — it
+ * names all the tabs whether or not they are active.
+ */
+function mainText(): string {
+  const main = document.querySelector('main');
+  return main ? main.textContent ?? '' : '';
+}
+
 function mountApp() {
   appStoreWrites.values.length = 0;
   render(<App />);
@@ -259,10 +277,63 @@ describe('restart lands back in the recorded project, and the write cannot win t
     expect(readStoredAppStore().activeProjectId).toBe(RECORDED_PROJECT);
   });
 
-  it("lands on the recorded project's saved tab, not another project's", async () => {
+  it('a COLD START lands on 派单 even when the recorded project has a saved tab', async () => {
     // The two projects have different saved tabs, so "the tab followed the
     // restored project" and "the tab followed the first backend project" are
     // distinguishable observations rather than a shared coincidence.
+    //
+    // 2026-10-29: the contract CHANGED here. This test used to assert that a
+    // restart lands on the recorded project's saved tab ('artifacts'). Measured
+    // on the operator's machine, that behaviour made the app open on 实时席位
+    // every launch, and the first-screen card asserted the opposite — so the
+    // card was written against a false premise. A cold start now begins on
+    // 派单 (App.tsx's useState default, which this effect used to overwrite
+    // because the store is persisted without a partialize). The per-project tab
+    // memory is NOT removed; it still applies when the operator switches
+    // projects inside a running session — see the next test.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        // 'workitems', NOT 'dispatches': the cold-start default IS 'dispatches',
+        // so a saved 'dispatches' makes "the memory was applied" and "nothing
+        // happened" the same observation. Measured — that exact choice left this
+        // test green with the restore deleted, which is the whole reason this
+        // sentence exists. ('live-seats' was tried next; its rediscover control
+        // only renders when there are sessions, and its provenance headline is
+        // rendered in several places, so neither discriminated.)
+        [FIRST_REAL_PROJECT]: {
+          activeTab: 'workitems',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    // The PROJECT is still the recorded one — only the tab changed.
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+
+    // And the tab is 派单, not the saved 'artifacts' and not another project's
+    // 'playbook'. The dispatches page's own heading is the evidence — matched
+    // with a function because the string is split across nodes. Neither of the
+    // other two headings may appear.
+    // The heading is split across nested elements, so match on the container's
+    // textContent rather than on a text node.
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
+    expect(screen.queryByText(/Playbook & 治理文档/)).toBeNull();
+  });
+
+  it('switching projects inside a session still restores THAT project\u2019s tab', async () => {
+    // The fix above must not delete the per-project tab memory: it is a real
+    // feature the operator asked for. Same two saved tabs, but the restore is
+    // triggered by a project SWITCH after mount, not by the cold-start mount.
     useAppStore.setState({
       projectUIStates: {
         [RECORDED_PROJECT]: {
@@ -272,7 +343,7 @@ describe('restart lands back in the recorded project, and the write cannot win t
           filters: {},
         },
         [FIRST_REAL_PROJECT]: {
-          activeTab: 'playbook',
+          activeTab: 'dispatches',
           selectedObjectId: null,
           selectedObjectType: null,
           filters: {},
@@ -283,10 +354,27 @@ describe('restart lands back in the recorded project, and the write cannot win t
     mountApp();
     await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
 
-    // 'artifacts' renders the ArtifactsView heading; 'playbook' renders a
-    // different one. This heading, and not the other one, is the evidence.
-    await waitFor(() => expect(screen.getByText('产出物')).toBeTruthy());
-    expect(screen.queryByText(/Playbook & 治理文档/)).toBeNull();
+    // Now switch. The memory must come back: FIRST_REAL_PROJECT's saved tab is
+    // 'live-seats', so the seat mirror must appear. Its own banner is the
+    // evidence — NOT the absence of the dispatches heading, because the
+    // live-seats page embeds the dispatch inbox and both texts are present
+    // either way (measured: asserting on the absence was a false negative).
+    act(() => {
+      useDataStore.getState().setActiveProject(FIRST_REAL_PROJECT);
+    });
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(FIRST_REAL_PROJECT));
+    // The rediscover button is unique to the live-seats surface. The provenance
+    // headline was tried first and is NOT unique — ProvenanceBanner renders it in
+    // several places, so that assertion passed with the tab memory deleted.
+    // The work-items ledger heading is unique to that surface. Two earlier
+    // attempts were measured non-discriminating: 'dispatches' equals the
+    // cold-start default, and the live-seats headline is rendered in several
+    // places. What makes this one valid is that the dispatches page does NOT
+    // contain it — checked against the cold-start test's own render.
+    console.log('PROBE firstReal saved=', JSON.stringify(useAppStore.getState().projectUIStates[FIRST_REAL_PROJECT]));
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+    // ...and the other project's tab is not inherited.
+    expect(screen.queryByText('产出物')).toBeNull();
   });
 
   it('does not restore a project the backend did not return', async () => {
@@ -317,7 +405,7 @@ describe('restart lands back in the recorded project, and the write cannot win t
           filters: {},
         },
         [FIRST_REAL_PROJECT]: {
-          activeTab: 'playbook',
+          activeTab: 'dispatches',
           selectedObjectId: null,
           selectedObjectType: null,
           filters: {},
@@ -327,21 +415,30 @@ describe('restart lands back in the recorded project, and the write cannot win t
 
     mountApp();
     await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
-    await waitFor(() => expect(screen.getByText('产出物')).toBeTruthy());
+    // 2026-10-29: the CONTRACT changed. This used to assert the first launch
+    // lands on the saved 'artifacts' tab. Measured on the operator's machine,
+    // that behaviour made every cold start open on 实时席位 while the
+    // first-screen card asserted 派单 — the card was false. A cold start now
+    // begins on 派单; what the launch must still restore is the PROJECT.
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
     const tabAfterFirstLaunch = readStoredAppStore().activeProjectId;
     expect(tabAfterFirstLaunch).toBe(RECORDED_PROJECT);
 
     // Now close and reopen: the ONLY input the second launch has is what the
-    // first one wrote to disk.
+    // first one wrote to disk. Same rule — project restored, tab on 派单.
     await relaunch();
     await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
-    await waitFor(() => expect(screen.getByText('产出物')).toBeTruthy());
-    expect(screen.queryByText(/Playbook & 治理文档/)).toBeNull();
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
 
-    // The saved TAB survived too. This is what the `loadedUIProjectId` gate
-    // protects: without it the write effect fires before the destination's saved
-    // tab has been applied, overwriting it with the previous tab.
-    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
+    // The saved TAB is whatever the operator is actually looking at. Since the
+    // 2026-10-29 contract change that is 'dispatches' on a cold start — the point
+    // of the assertion is that disk agrees with the screen, which is what the
+    // `loadedUIProjectId` gate protects: without it the write effect fires before
+    // the destination's saved tab has been applied, overwriting it with the
+    // previous tab.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('dispatches');
 
     // ...and it never wrote any OTHER tab for that project, not even for one
     // render. The final value above is what a later launch reads; a wrong tab on
@@ -351,7 +448,7 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // invisible in the final state, fatal in the window.
     const writtenTabs = writtenTabsFor(RECORDED_PROJECT).filter((t) => t !== undefined);
     expect(writtenTabs.length).toBeGreaterThan(0);
-    expect(new Set(writtenTabs)).toEqual(new Set(['artifacts']));
+    expect(new Set(writtenTabs)).toEqual(new Set(['dispatches']));
   });
 
   it('starts with no active project when the backend has none at all', async () => {
