@@ -684,6 +684,36 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(screen.getByText('2')).toBeTruthy());
   });
 
+  it('zero pending cards means NO badge — the assumption the whole harness rests on', async () => {
+    // Flux found this and Lyra reproduced it: change `> 0` to `>= 0` in the badge
+    // expression and 15 tests stay green. The consequence is a permanent 0 sitting
+    // on the 派单 nav item forever — and a badge that is always there cannot
+    // convey anything.
+    //
+    // It matters more than noise because of the comment this file already carries:
+    // "Empty by default so the nav badge is absent unless a test says otherwise —
+    // a badge that is always there cannot prove anything." That is the assumption
+    // the ENTIRE harness is built on, and nothing asserted it. A suite whose
+    // instrumentation depends on an unasserted premise is a suite that can be
+    // quietly disarmed.
+    //
+    // Mutation this kills: `pendingAcceptanceCount >= 0 ? ... : undefined`. With
+    // that, a 0 badge renders and this test fails.
+    CANNED.cmd_list_acceptances = [];
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().projects.length).toBeGreaterThan(0));
+
+    // No badge on the 派单 item. The nav item renders its label with no number
+    // beside it.
+    //
+    // Scoped to that button's own text, not the document: a bare `queryByText('0')`
+    // matches every other zero on screen (the inbox badge, the counters), and the
+    // assertion has to be about THIS item to fail for the right reason.
+    await waitFor(() => expect(screen.getByTitle('派单')).toBeTruthy());
+    expect(screen.getByTitle('派单').textContent).not.toContain('0');
+  });
+
   it('does not restore a project the backend did not return', async () => {
     // The record names a project that no longer exists. The app must land on a
     // real backend project rather than on the stale id — never on an invented one.
