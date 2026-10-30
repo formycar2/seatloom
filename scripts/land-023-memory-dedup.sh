@@ -81,13 +81,29 @@ say "== duplicate groups on live (what blocks the index) =="
 # one file printed as three copies of the same six rows, which reads as one
 # group of six. It is five groups of two. Print the key exactly as it is grouped
 # on, or the report misdescribes what it found.
-# NO "where l2_file_path is not null" FILTER. The index key is coalesce(...), so
-# rows with a NULL file path participate in uniqueness too - two NULL-path rows
-# sharing an l0_summary would collide on ('', '', '', summary) and block the
-# index, and a query that filters them out would not show them. Live happens to
-# have zero NULL-path rows today (measured 2026-10-30), so the filter was
-# harmless in practice; removing it makes the report match the index's actual
-# key rather than a subset of it.
+# NO "where l2_file_path is not null" FILTER, so the report matches the index's
+# actual key rather than a subset of it.
+#
+# CORRECTING MY OWN REASON, WHICH WAS FALSE. I first removed the filter arguing
+# that "the index key is coalesce(...), so NULL-path rows participate in
+# uniqueness, and two NULL-path rows sharing an l0_summary would block the index".
+# Flux measured that the NULL case is STRUCTURALLY UNREACHABLE and reproduced the
+# constraint that makes it so:
+#
+#   memories_l2_pairing CHECK:
+#     (l2_ref_kind='document' AND l2_document_id IS NOT NULL)
+#     OR (l2_ref_kind='file' AND l2_file_path IS NOT NULL)
+#
+# So l2_file_path cannot be NULL for a file-kind row. His attempt to CREATE a
+# NULL-path duplicate was refused by memories_l2_pairing, not by the index. Live
+# has 0 NULL-path rows out of 427.
+#
+# The coalesce in the index key is still correct - it is what makes the index
+# NULL-safe - but the scenario I described as the reason for this change cannot
+# occur. The change is harmless (the filter was redundant) and stays, because a
+# report should describe the key it is measured against. The reason I wrote for
+# it was invented, and this is the second time today I wrote a confident
+# mechanism I had not measured.
 groups=$(podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "
   select coalesce(l2_file_path,'(null)'), coalesce(l2_line_start::text,'(null)'),
          coalesce(l2_line_end::text,'(null)'), l0_summary, count(*), min(id)
