@@ -52,7 +52,17 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
                   translate(coalesce(e.payload->>'what_i_did_not_verify',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_1',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_2',''), chr(10)||chr(13), ' '),
-                  translate(coalesce(e.payload->>'finding_3',''), chr(10)||chr(13), ' ')
+                  translate(coalesce(e.payload->>'finding_3',''), chr(10)||chr(13), ' '),
+                  -- findings AS AN ARRAY. Flux wrote `findings` (plural, a JSON
+                  -- array) on one verdict and `finding` (singular, a string) on
+                  -- another. My query read only finding_1/2/3, so it saw NEITHER -
+                  -- two verdicts carrying two real findings each were invisible to
+                  -- this check, which then reported nothing wrong. A field name I
+                  -- did not anticipate is the same as a field that is not there.
+                  translate(coalesce(array_to_string(array(SELECT jsonb_array_elements_text(
+                     CASE WHEN jsonb_typeof(e.payload->'findings') = 'array'
+                          THEN e.payload->'findings' ELSE '[]'::jsonb END)), ' | '), ''),
+                    chr(10)||chr(13), ' ')
            from acceptances a
            join canonical_events e on e.id = a.flux_verdict_ref
            where a.status = 'pending'
@@ -65,7 +75,7 @@ fi
 
 bad=0
 
-while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified f1 f2 f3; do
+while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified f1 f2 f3 farr; do
   [ -n "$card" ] || continue
   reasons=""
 
@@ -86,7 +96,7 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
   #
   #    So: a finding that DISCLAIMS itself is not a defect. Look for the verifier
   #    explicitly downgrading it before treating it as one.
-  for f in "$f1" "$f2" "$f3"; do
+  for f in "$f1" "$f2" "$f3" "$farr"; do
     [ -n "$f" ] || continue
     flow=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
     case "$flow" in
@@ -146,7 +156,7 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
   # 4. A verdict with an empty summary is not a verdict I can rely on. Not a
   #    defect in the work, but it is one in the record: I cannot tell a clean
   #    pass from an unexamined one.
-  if [ -z "$summary" ] && [ -z "$f1" ] && [ -z "$f2" ] && [ -z "$f3" ]; then
+  if [ -z "$summary" ] && [ -z "$f1" ] && [ -z "$f2" ] && [ -z "$f3" ] && [ -z "$farr" ]; then
     reasons="${reasons}the verdict carries no summary and no findings - nothing to distinguish it from 'I did not look'|"
   fi
 
