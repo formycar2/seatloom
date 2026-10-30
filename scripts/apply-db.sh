@@ -91,16 +91,11 @@ else
   echo "apply-db: pass --apply to actually apply."
 fi
 
-# A missing psql must fail LOUDLY and BEFORE the plan is printed, because a
-# half-printed plan reads like a half-applied migration.
-if ! command -v psql >/dev/null 2>&1; then
-  echo "apply-db: psql not found on PATH." >&2
-  echo "  On this project postgres runs in a container, so psql exists only inside it:" >&2
-  echo "    podman exec -e PGPASSWORD=... seatloom-postgres psql -U seatloom -d <db> -f <file>" >&2
-  echo "  This script does not shell into the container for you — apply each file" >&2
-  echo "  with the command above, in the order this script prints." >&2
-  exit 127
-fi
+# psql is only needed to WRITE. A dry run reads only the files on disk, so
+# refusing to print the plan because psql is missing would hide the one thing a
+# dry run is for. (It was written that way first — the check sat before the plan
+# — and that made step 3 of the acceptance card impossible to perform, which is
+# how the mistake surfaced.) The check now happens at APPLY time, below.
 
 SCHEMA_DIR="infra/postgres/schema"
 SEED_DIR="infra/postgres/seed"
@@ -200,6 +195,15 @@ apply_group() {
     fi
   done
 }
+
+if [ "$DRY" = "0" ] && ! command -v psql >/dev/null 2>&1; then
+  echo "apply-db: psql not found on PATH — cannot apply." >&2
+  echo "  On this project postgres runs in a container, so psql exists only inside it:" >&2
+  echo "    podman exec -e PGPASSWORD=... seatloom-postgres psql -U seatloom -d <db> -f <file>" >&2
+  echo "  This script does not shell into the container for you — apply each file" >&2
+  echo "  with the command above, in the order printed below." >&2
+  exit 127
+fi
 
 apply_group "pre-seed schema (seed writes columns these create)" \
   ${PRE_SEED_SCHEMA[@]+"${PRE_SEED_SCHEMA[@]}"}
