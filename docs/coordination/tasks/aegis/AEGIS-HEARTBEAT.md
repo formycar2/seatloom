@@ -55,6 +55,49 @@
      `round(extract(epoch from (now()-started_at))/60)`,减法在库内完成。
      别拿库的时间戳去跟宿主机 `date` 比(podman 虚拟机时钟会在宿主机休眠后停摆,
      实测慢过 137 分钟,那样算出来的"挂了 10 小时"是假的)。
+   - 🔴🔴 **测量前先打印分支,和权威来源对一次。2026-10-29 我一天内测错三次代码。**
+     **权威来源是卡上/派单上写的分支名,不是我猜的目录名。**
+     ```bash
+     cd <worktree> && git branch --show-current    # 必须等于要测的分支,不等就停
+     ```
+     三次实测教训:
+     1. 在主检出跑 Mira 的测试得 `2 failed | 8 passed` —— 那是 track 的 `App.tsx`,
+        她分支上是 **10 passed**。
+     2. 报"有缺陷的修复被合并了" —— 那张卡绑定的是另一个 verdict,干净。
+     3. 报"Nimbus 的修复丢失了" —— 我站在 `seatloom-worktrees/nimbus`,它在
+        `packet/nimbus/session-work-readmodel`;**正确分支在 `nimbus-psr`**。
+        `git worktree add` 报 "already used by worktree at nimbus-psr" 才救了我。
+     **目录名不是分支名。** `worktrees/<name>` 的 `<name>` 是给人看的。
+     `git worktree list` 才是权威。
+     🔴 **越是不好的结果,越要先确认测量对象** —— 好消息测错了会自我矛盾,
+        坏消息不会。今天三次全是坏结果,所以每一次看起来都"合理"。
+     🔴🔴 **空输出必须被验证,不能被解读 —— 2026-10-30 第四次,这次是拼错分支名。**
+         `git ls-tree` / `git cat-file -e` 对一个**不存在的 ref** 和对一个
+         **真的不存在的文件**返回**完全相同的空输出**(退出码都非零)。
+         我把 `track/infa-foundation` 打成 `infa`,读到空,就告诉张先生
+         "023_memory_dedup.sql 不在 track 上" —— 它从 10-28 就在。
+         据此我派了一件 99 优先级的活,理由是错的。
+         **规矩:任何"查了,结果为空"的结论,先证明那个查询能返回非空。**
+         ```bash
+         git rev-parse --verify track/infra-foundation >/dev/null \
+           || { echo "ref 拼错了,不是文件不存在"; exit 1; }
+         ```
+         🔴 "不在"比"在"危险:"在"会被下游撞出来,"不在"让下游推理自洽跑完,
+            而且它通常正好支持一个我想说的故事。
+         🔴 结论对、理由错,比结论错更危险 —— 下一个人会照错的理由做判断。
+     🔴🔴 **同一天第二次空输出被当结论,而且这次我据它写了假因射进派单。**
+         grep `2004` 找 saih 的 bracketed paste 支持 → 零命中 → 我写进派单和知识库
+         "saih 不声明 2004,所以 `-p` 无用"。**假。**
+         `saih/pi/packages/tui/src/terminal.ts:212` 明确写着 `\x1b[?2004h`。
+         两个原因叠加:(1) 源码写的是**转义形式**,不含字面量 `2004`,要搜 `2004h`;
+         (2) `saih/pi/packages/tui/dist/bundle/chunks/` 有单行几百 KB 的 chunk,
+         2004 作为数字在 Unicode 宽度表里到处都是,真信号被淹掉。
+         **规矩:在含 dist/bundle 的树里搜信号,先限定 src 目录;搜转义序列搜转义形式。**
+         🔴 更要紧的一条:我对 `cat`(不声明 2004)测出"`-p` 无效",
+            然后断言 saih(声明了 2004)也无效。**测量没错,推论越过了测量能支撑的范围。**
+            拿 A 的测量结果断言 B 的行为,是最隐蔽的一种编造。
+     🔴 在别人分支上做变异,恢复后必须证明干净:
+        `git diff --stat` 空 + 相关测试全绿 + 关键符号 `grep -c` 数回原值。
    - 进程活着是存活信号,**不是进度信号**。账本最后一条事件的时间比面板可靠:
      `canonical_events` 空白 17 小时而面板显示"6/6 在线"真的发生过。
    - ⚠️ `pgrep -P` 在 macOS 上会**漏子进程**,不漏的时候才准。2026-10-12 实测:
@@ -66,6 +109,17 @@
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
    - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      它查每张 pending 卡的分支是否还包含它的 base。
+   - **verdict 自己有没有说这份活是坏的**:`bash scripts/check-verdict-defects.sh`
+     🔴 2026-10-29 补。前四项检查**没有一个读过 verdict 的 payload** ——
+     `check-verdict-refs.sh` 只读 `payload->>'dispatch_id'`,问的是"指对派单了吗",
+     不问"这份 verdict 说了什么"。于是写着 **"THE FIX DOES NOT WORK"** 的 verdict
+     和一份干净通过的 verdict,在我所有控制眼里一模一样。
+     现在这个脚本读 `the_honest_summary` / `what_i_did_not_verify` / `finding_*`,
+     抓四类:verdict 不是 pass、payload 有点名的 finding、
+     honest summary 里出现"does not work / is unpinned / not covered / failing / defect"、
+     以及**完全没有 summary 和 finding**(那和"我没看"分不出来)。
+     判据写在文件头注释里,因为它就是为那一次事故建的。
+   - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
      🔴 **2026-10-29 11:28:这个脚本又一次说了反话,这次是它自己的运行条件骗它。**
@@ -141,6 +195,30 @@
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
 
+2e. **派验绿单时,必须把「verdict 怎么命名实现派单」写清 —— 2026-10-29 补,
+    今天我在这里连错三次,烧掉三件 failed 派单和一次假警报。**
+    门的判据(`dispatch.rs` Guard 2)是**两条通道任一即可**,代码注释写得很清楚:
+    verdict 命名一件派单,要么 `payload->>'dispatch_id'`(live 上 27/30),
+    **要么一条 `event_object_refs` 行 `ref_type='dispatch'` 且 `ref_id` 指向它(5/30)**。
+    `role` **不在判据里** —— `subject` 只是诚实标注,`context` 同样过门。
+    历史上 56 个 verdict 的 subject 指向验单自己,其中 40 个已被接受的卡引用过,
+    说明第二条通道一直在正常使用。
+
+    🔴 我今天的错:验单里写"Your verdict must name THIS dispatch id in
+       `payload.dispatch_id`" —— 他照做,指向验单自己。**我从没告诉他还有第二条通道,
+       也从没给过他实现派单的 id。** 结果三件开卡单被门拒,而正确解法是补 ref。
+
+    **派验绿单必写**:
+    ```json
+    {"implementation_dispatch": "<被验的实现派单 id,从账本拷,不要手打>",
+     "verdict_must_name_it_via": "payload.dispatch_id = <实现派单 id> AND/OR
+        event_object_refs(event_id=<verdict id>, ref_type='dispatch',
+        ref_id=<实现派单 id>, role='subject')"}
+    ```
+    🔴 **实现派单 id 从账本拷。** 今天我第三件还指错了单元(说成记忆去重那件,
+       实际验的是去重**测试**),Nimbus 两种配对都实测被拒、报上来才发现。
+       **一个 typo 的 id 会造出一张指向空气的卡。**
+
 2c. **查"验绿了但没人验收"的活 —— 这一步 2026-10-29 补,和 2b 是同一个病的另一半。**
     🔴 实例:2026-10-29 01:00 逐件查 `ReviewVerdictIssued`,发现 **10 件 implementation 类
        派单有 pass verdict、而 `select count(*) from acceptances where flux_verdict_ref=<id>`
@@ -212,6 +290,35 @@
    - 不要打印席位的派单标题给他看
    - 被权限拦住的动作:写成 `scripts/` 下一条可审计、可重复跑的命令给他,
      **不拆成小块绕、不换工具绕、不让席位代跑**。
+
+4b. **张先生接受卡之后,查这件活在他那边真的有效吗 —— 2026-10-30 补。
+    这次我验到第一个绿灯就停了,两个迁移零效果地混过了验收。**
+
+    他点"接受"之后,`merge_commit` 会出现在 track 上。**那是第一件事,不是最后一件事。**
+    三件都要查:
+
+    | 查什么 | 命令 |
+    |---|---|
+    | 迁移在 track 上吗 | `git ls-tree track/infra-foundation infra/postgres/schema/` |
+    | `apply-db.sh` 登记它了吗 | `grep -c '<filename>' scripts/apply-db.sh` |
+    | live 上它的效果在吗 | 按它造的对象查(索引/列/约束/视图) |
+
+    🔴 实例:2026-10-30 10:35。他接受了 2 张卡,merge `980e490` 是 track 的 tip,
+       代码真在 track 上。**但这次合入还带了 `023_memory_dedup.sql` 和
+       `024_topic_close.sql`,而 `apply-db.sh` 里一次都没出现它们。**
+       live 实测:去重索引不存在、**仍有 5 组重复**、非 open 主题 0 条。
+       两张卡被接受、合并、代码在 track 上,而在跑着的库里效果是零 ——
+       **而产品里没有任何一处说明这件事。** 一个席位读账本会得出
+       "去重已生效、主题可以关闭"的结论,两个都不真。
+
+    🔴 顺带抓到编号撞号:schema 目录里同时有 `023_gate_criterion.sql` 和
+       `023_memory_dedup.sql`。前者注释说它从 020 改号、"取下一个空号",
+       但 023 早被占了。**改号这个动作本身要被验证,不能只在注释里声明。**
+
+    根因:`apply-db.sh` 是**显式登记制**,人手写进 `PRE_SEED_SCHEMA` /
+    `POST_SEED_SCHEMA` 并写明排序理由(现有条目那些注释解释了真实依赖,
+    比如 008 必须在 010 前)。意图是好的,**但合并没有机制提醒你登记** ——
+    git 不知道 `apply-db.sh` 存在,`apply-db.sh` 不知道 schema 目录多了文件。
 
 ## 它刻意不做的事
 

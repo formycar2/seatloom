@@ -676,6 +676,35 @@ export interface LiveSessionDto {
   panePid?: number;
   /// tmux `#{pane_tty}` — the pane's controlling terminal, e.g. `/dev/ttys005`.
   paneTty?: string;
+  /**
+   * The pane's own `history-limit`, read from tmux at attach time (0 when tmux
+   * would not answer).
+   *
+   * WHY THE UI NEEDS IT. tmux reads `history-limit` when a pane is CREATED, so
+   * raising the global option never reaches panes that already exist. Measured
+   * 2026-10-29: the global is 50 000 and all nine seat panes carry 2 000, so the
+   * backfill asks for 5 000 lines and silently gets ~2 000. Without this number
+   * the interface implies a scrollback depth the pane does not have, which is the
+   * same class of lie as a mockup.
+   *
+   * NULLABLE ON PURPOSE. `null` means tmux would not answer; `0` would mean it
+   * answered "this pane retains nothing". Those are different facts, and the DTO
+   * used to collapse them both to 0 — which made the tooltip state an unknown as
+   * a measurement. Keep the two apart: the UI must decline to say a number rather
+   * than print a fabricated one.
+   */
+  paneHistoryLimit?: number | null;
+  /**
+   * How many lines of scrollback the attach actually seeded — counted from what
+   * arrived, not from what was requested. 0 means the seed was empty.
+   */
+  seededScrollbackLines?: number;
+  /**
+   * Whether the seeded scrollback is a BACKFILL from `capture-pane` rather than a
+   * recording. Always true today. Carried so the interface can label it: a
+   * backfilled history must not look identical to a recorded one.
+   */
+  seededIsBackfill?: boolean;
 }
 
 /**

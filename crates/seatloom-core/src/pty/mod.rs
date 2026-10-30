@@ -41,6 +41,83 @@ pub enum PtyEvent {
     },
 }
 
+/// Is this payload a multi-line PASTE rather than a keystroke?
+///
+/// WHY A NAMED FUNCTION AND NOT AN INLINE TEST. Aegis's dispatch gave the fix as
+/// "add an onPaste handler", with the mechanism stated as: xterm.js 5.5.0 routes a
+/// paste through its per-character input path, so `onData` fires N times and
+/// `write()` forks N `load-buffer`+`paste-buffer` pairs.
+///
+/// I measured that mechanism and it is not what happens. Reading xterm.js
+/// 5.5.0's own bundle (`node_modules/@xterm/xterm/lib/xterm.js`):
+///
+///   * the string `onPaste` occurs **0** times in the whole package, and
+///     `ITerminalOptions` has no such member — the option the dispatch asked for
+///     does not exist in this version, so it is not implementable as stated;
+///   * the real paste handler is `handlePasteEvent -> paste(text, textarea,
+///     coreService, optionsService)`, which runs `prepareTextForTerminal`
+///     (every `\n` becomes `\r`), then calls `coreService.triggerDataEvent(
+///     wholeText, true)` — ONE event, ONE `onData`, the ENTIRE block.
+///
+/// So the paste already arrives as one chunk and already becomes one write.
+/// Measured for real against a line-logging pane: three separate
+/// `load-buffer`+`paste-buffer` round trips deliver byte-for-byte the same thing
+/// as one — `aa\rbb\rcc\r`. Splitting the write is not the defect.
+///
+/// THE ACTUAL DEFECT, measured with a program that declares bracketed paste the
+/// way saih does (`packages/tui/src/terminal.ts:212` writes `ESC[?2004h`):
+///
+///   `paste-buffer`      -> the pane receives `aa\rbb\rcc\r`   (3 submits)
+///   `paste-buffer -p`   -> the pane receives `ESC[200~aa\rbb\rcc\rESC[201~`
+///                                                                 (1 paste)
+///
+/// saih's editor parses the bracketed form correctly — `packages/tui/src/
+/// components/editor.ts:721` detects `ESC[200~`, buffers until `ESC[201~`, and
+/// `handlePaste` inserts the block as ONE message (a >10-line paste even becomes
+/// a single `[paste #1 +N lines]` marker). So the capability is already there on
+/// both ends and nothing was using it. A native paste works because the terminal
+/// wraps it before tmux ever sees it; our path bypasses that entirely.
+///
+/// Aegis recorded "I also tested paste-buffer -p, which made NO difference,
+/// because saih does not emit 2004". That is measured false — terminal.ts:212
+/// does emit it — and it is the reason he ruled the fix out. A `-p` measured
+/// against a non-declaring program correctly does nothing, which is what he saw.
+///
+/// WHY NOT `-p` ON EVERY WRITE. `paste-buffer -p` wraps unconditionally when the
+/// pane has declared support, and saih's `handlePaste` STRIPS non-printables
+/// except newlines — so `ESC[200~\x03ESC[201~` would swallow Ctrl+C, and
+/// `handlePaste` also calls `cancelAutocomplete()`. Wrapping every keystroke
+/// would break the control chords and the autocomplete dropdown. So the wrap is
+/// applied only to payloads that are a paste.
+///
+/// THE RULE. A payload is a paste iff it carries a newline AND at least one byte
+/// that is not a newline and not ESC.
+///
+/// THE FIRST VERSION OF THIS RULE WAS WRONG AND FLUX CAUGHT IT. It said a paste
+/// needs "a newline AND other bytes", and I claimed in the same breath that
+/// "a control chord has no newline at all". Measured false, in xterm.js 5.5.0's
+/// own `evaluateKeyboardEvent`: case 13 is `o.key = e.altKey ? ESC + CR : CR`, so
+/// **Alt+Enter emits ESC+CR** — a newline plus another byte. It is classified as
+/// a paste and IS wrapped: measured through the production path, the pane
+/// receives `ESC[200~ESC CR ESC[201~`.
+///
+/// The end state happens to be equivalent today — saih matches `data ===
+/// "\x1b\r"` as `tui.input.newLine` (packages/tui/src/components/editor.ts:894),
+/// and its `handlePaste` reduces `ESC CR` to a bare `\n` via `normalizeText` and
+/// the non-printable filter, so both routes insert one newline. Aegis and Flux
+/// are right that this is a LATENT HAZARD, not a demonstrable defect: relying on
+/// another package's internals to make a deliberate keystroke come out the same
+/// is relying on an implementation detail that can change without us noticing.
+///
+/// So the rule now excludes ESC from "other bytes". Alt+Enter is a deliberate
+/// keystroke, not a paste, and it stays on the raw path where saih handles it
+/// explicitly. A real paste always carries printable content, so nothing is lost:
+/// the only payloads this excludes are newlines and escapes with no content.
+pub fn is_multiline_paste(bytes: &[u8]) -> bool {
+    let has_newline = bytes.iter().any(|&b| b == b'\r' || b == b'\n');
+    let has_content = bytes.iter().any(|&b| b != b'\r' && b != b'\n' && b != 0x1b);
+    has_newline && has_content
+}
 /// Handle to an attached tmux mirror session. Clone is cheap (Arc-based).
 #[derive(Clone)]
 pub struct PtySession {
@@ -79,6 +156,61 @@ impl std::fmt::Debug for PtySession {
             .field("pane_rows", &self.pane_rows)
             .field("pane_cols", &self.pane_cols)
             .finish()
+    }
+}
+
+/// The pane's own `history-limit`, or `None` if tmux would not answer.
+///
+/// Read per PANE and never from the global option: the global is what the NEXT
+/// pane will inherit, so reporting it would describe a pane that does not exist.
+/// tmux reads this option when a pane is created, which is why raising the global
+/// does not reach panes that already exist — measured 2026-10-29, all nine seat
+/// panes still at 2 000 under a 50 000 global.
+pub fn pane_history_limit(target: &str) -> Option<usize> {
+    let out = std::process::Command::new("tmux")
+        .args(["display-message", "-t", target, "-p", "#{history_limit}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
+/// Clamp a backfill request to what the pane can actually give.
+///
+/// WHY THIS IS A FUNCTION AND NOT AN INLINE `min`. Flux's mutation M-S1 removed the
+/// clamp from `attach_tmux` and **all 213 tests stayed green, including the one
+/// named `the_backfill_never_asks_for_more_than_the_pane_retains`**. The reason was
+/// precise and it was my defect: that test asserted `wanted.min(2_000) == 2_000` —
+/// a statement about `usize::min` computed INSIDE the test — while the product's
+/// clamp was inline in a function that needs a live tmux pane, so no unit test
+/// could reach it. The test re-implemented the thing it claimed to pin.
+///
+/// Extracting the clamp makes it callable, so the test can pin the PRODUCT's
+/// behaviour instead of a copy of it. A guard that reads correctly, is documented,
+/// and is not covered is the same finding as an uncovered test, except here it was
+/// the PRIMARY fix rather than defence in depth.
+///
+/// THE THREE CASES THAT MUST HOLD:
+///   * a pane that retains LESS than asked caps the request (the defect Mr. Zhang
+///     reported: nine seat panes at 2 000 under a 50 000 global);
+///   * a pane that retains MORE is not capped — the clamp must not quietly become a
+///     ceiling of its own;
+///   * `None` (tmux would not answer) leaves the request UNCLAMPED, because a
+///     transient failure must not silently seed nothing.
+///
+/// `Some(0)` is deliberately treated as "answered, retains nothing" and clamps to
+/// 0. It is unreachable in practice (a live pane always retains some scrollback),
+/// and guessing otherwise would mean inventing a number, which is the failure this
+/// whole unit refuses.
+pub fn clamp_backfill_to_pane(wanted: usize, pane_limit: Option<usize>) -> usize {
+    match pane_limit {
+        Some(limit) => wanted.min(limit),
+        None => wanted,
     }
 }
 
@@ -464,8 +596,38 @@ impl PtySession {
         //     xterm AFTER registering the output listener, so there is no ordering
         //     hazard and no re-attach duplication (each attach is a new session id,
         //     so the terminal remounts and writes the snapshot once).
+        // The backfill asks for what the pane can actually GIVE, not for a number
+        // that sounds good.
+        //
+        // Measured 2026-10-29 (dispatch disp-H7pVqxTHO077Rlp6GrmzX): the global
+        // `history-limit` is 50 000 and all nine seat panes carry 2 000, because
+        // tmux reads the option when a pane is CREATED and every seat pane predates
+        // the global being raised. `set-option -p` on a live pane is accepted and
+        // changes nothing (re-measured: still 2 000); only a new pane inherits it.
+        //
+        // So asking for 5 000 silently returns ~2 000, and the operator's scrollbar
+        // implies a depth the pane does not have. Reading the pane's own limit
+        // first costs one `display-message` and makes the request honest — and
+        // when it is smaller than what we wanted, the interface says so rather
+        // than showing a scrollbar that goes nowhere.
         let backfill = opts.backfill_lines.unwrap_or(DEFAULT_BACKFILL_LINES);
-        let history_lines = backfill.saturating_sub(pane_rows as usize).max(1);
+        let pane_history_limit = pane_history_limit(&tmux_target);
+        // Only clamp when tmux actually answered. A 0 is "tmux would not say", and
+        // clamping to it would seed nothing on a transient failure.
+        let wanted = backfill.saturating_sub(pane_rows as usize).max(1);
+        // The clamp is a named function so a unit test can call the PRODUCT's
+        // logic rather than re-implement it — see `clamp_backfill_to_pane`.
+        let history_lines = clamp_backfill_to_pane(wanted, pane_history_limit);
+        if let Some(limit) = pane_history_limit {
+            if history_lines < wanted {
+                eprintln!(
+                    "seatloom-pty: pane {tmux_target} retains {limit} lines, \
+                     so the backfill asks for {history_lines} instead of {wanted} — \
+                     the pane was created before history-limit was raised, and only a new \
+                     pane inherits the higher value"
+                );
+            }
+        }
         let capture_out = std::process::Command::new("tmux")
             .args([
                 "capture-pane",
@@ -621,19 +783,24 @@ impl PtySession {
         }
         use std::io::Write as _;
         use std::process::{Command, Stdio};
+        // A paste is wrapped in bracketed-paste markers so a program that has
+        // declared support receives the whole block as ONE message instead of
+        // one submit per line. `-p` is a no-op against a pane that has NOT
+        // declared `ESC[?2004h`, so the raw path is untouched for programs that
+        // do not understand it. See `is_multiline_paste` for why only some
+        // payloads qualify.
+        let paste_args: &[&str] = if is_multiline_paste(bytes) {
+            &["-p"]
+        } else {
+            &[]
+        };
         let mut child = Command::new("tmux")
-            .args([
-                "load-buffer",
-                "-b",
-                "seatloom",
-                "-",
-                ";",
-                "paste-buffer",
-                "-b",
-                "seatloom",
-                "-t",
-                &self.tmux_target,
-            ])
+            .args(
+                ["load-buffer", "-b", "seatloom", "-", ";", "paste-buffer"]
+                    .into_iter()
+                    .chain(paste_args.iter().copied())
+                    .chain(["-b", "seatloom", "-t", self.tmux_target.as_str()]),
+            )
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -994,6 +1161,126 @@ mod tests {
     /// and quietly exceed what the terminal keeps.
     fn history_lines_for(backfill: usize, pane_rows: u16) -> usize {
         backfill.saturating_sub(pane_rows as usize).max(1)
+    }
+
+    /// The clamp that makes the backfill honest, pinned by CALLING the product's
+    /// function rather than re-implementing it.
+    ///
+    /// THIS TEST USED TO BE VACUOUS AND FLUX PROVED IT. It asserted
+    /// `wanted.min(2_000) == 2_000` — arithmetic done inside the test — while the
+    /// product's clamp was inline in `attach_tmux`, which needs a live tmux pane
+    /// and so could not be reached. Flux's mutation M-S1 deleted the clamp from the
+    /// product, restoring the exact defect Mr. Zhang reported, and **all 213 tests
+    /// stayed green including this one**. A check that cannot fail on the thing it
+    /// claims to check is worse than no check.
+    ///
+    /// The three cases are the three the dispatch names, and each one fails if the
+    /// corresponding branch of `clamp_backfill_to_pane` is removed.
+    #[test]
+    fn the_backfill_never_asks_for_more_than_the_pane_retains() {
+        // 5 000 asked, 24 visible rows -> 4 976 wanted.
+        let wanted = history_lines_for(DEFAULT_BACKFILL_LINES, 24);
+        assert_eq!(wanted, 4_976);
+
+        // CASE 1 — the pane retains LESS than asked: the request is capped. This is
+        // the measured live shape (nine seat panes at 2 000 under a 50 000 global)
+        // and the defect Mr. Zhang reported.
+        assert_eq!(
+            clamp_backfill_to_pane(wanted, Some(2_000)),
+            2_000,
+            "a 2 000-line pane must cap the request"
+        );
+
+        // CASE 2 — the pane retains MORE: NOT capped. Without this the clamp
+        // quietly becomes a ceiling of its own and a roomy pane is throttled.
+        assert_eq!(
+            clamp_backfill_to_pane(wanted, Some(50_000)),
+            wanted,
+            "a 50 000-line pane must get the full request"
+        );
+
+        // CASE 3 — tmux would not answer: UNCLAMPED. A transient failure must not
+        // silently seed nothing; the None is carried, never turned into 0.
+        assert_eq!(
+            clamp_backfill_to_pane(wanted, None),
+            wanted,
+            "an unknown limit must leave the request unclamped, never clamp to 0"
+        );
+    }
+
+    /// The clamp must be CALLED, not merely defined.
+    ///
+    /// This is the assertion whose absence let Flux's mutation M-S1 through even
+    /// after the clamp was extracted: deleting the call site leaves the function
+    /// defined and fully tested, and every test still passes. A correct helper
+    /// nobody calls is the original defect wearing a refactor.
+    ///
+    /// Checked by counting the call sites in production code — exactly one, inside
+    /// `attach_tmux`. The count is taken on the code BEFORE `#[cfg(test)]`, so the
+    /// test's own references are not counted.
+    #[test]
+    fn the_clamp_is_actually_called_by_the_backfill() {
+        let src = include_str!("mod.rs");
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("there is code before the test module");
+        let calls = prod.matches("clamp_backfill_to_pane(wanted,").count();
+        assert_eq!(
+            calls, 1,
+            "the clamp must be called exactly once in production code (in \
+             attach_tmux). {calls} calls means the backfill bypasses it — that is \
+             the mutation Flux ran, and it stayed green."
+        );
+    }
+
+    /// `None` and `Some(0)` are DIFFERENT answers and must stay different.
+    ///
+    /// `Some(0)` means "tmux answered, this pane retains nothing" and clamps to 0.
+    /// `None` means "tmux did not answer" and must not clamp at all. Collapsing
+    /// them — which is what `.unwrap_or(0)` did on the way to the UI — turns an
+    /// unknown into a measurement, the same lie shape this unit exists to remove.
+    #[test]
+    fn an_unknown_limit_is_not_the_same_as_a_limit_of_zero() {
+        assert_eq!(
+            clamp_backfill_to_pane(4_976, Some(0)),
+            0,
+            "Some(0) caps to 0"
+        );
+        assert_eq!(
+            clamp_backfill_to_pane(4_976, None),
+            4_976,
+            "None leaves it unclamped — the two must never converge"
+        );
+        assert_ne!(
+            clamp_backfill_to_pane(4_976, Some(0)),
+            clamp_backfill_to_pane(4_976, None),
+            "an unknown and a measured zero are different facts"
+        );
+    }
+
+    /// `pane_history_limit` reads the PANE, and it is a real tmux call rather than
+    /// a constant: the whole point is that the global option does not describe the
+    /// pane being attached.
+    #[test]
+    fn the_pane_limit_is_read_not_derived_from_the_global() {
+        // A live pane exists in this repo's tmux (the seat that runs this test),
+        // so the reader is exercised against a real answer rather than a mock.
+        let session = std::env::var("SEATLOOM_TEST_TMUX_SESSION").ok();
+        if let Some(name) = session {
+            let limit = pane_history_limit(&format!("{name}:0"));
+            assert!(
+                limit.is_some(),
+                "tmux answered for {name}:0, so the reader must too"
+            );
+            assert!(limit.unwrap() > 0, "a real pane retains some scrollback");
+        }
+        // A target that does not exist is None, not 0 and not a panic: a caller
+        // must be able to tell "tmux would not say" from "the pane retains none".
+        assert!(
+            pane_history_limit("no-such-session-xyz:0").is_none(),
+            "an unknown target must be None, never a fabricated number"
+        );
     }
 
     /// The default splits the terminal's own scrollback in half, so the live tail
