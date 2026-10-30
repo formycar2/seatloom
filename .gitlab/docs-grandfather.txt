@@ -205,3 +205,19 @@ docs/prd-v0.5.md
 docs/prd-v0.5.zhs.md
 docs/PRODUCT_TRUTH.md
 docs/ux-spec-v1.1.md
+
+# ─── 2026-10-30 lyra: standing-duty (HEARTBEAT) documents ───────────────────
+# crates/seatloom-mcp-emit/src/bin/waker.rs heartbeat_doc_path() requires exactly
+# <SEAT>-HEARTBEAT.md for a seat to be called when the queue is empty. The §4
+# filename rule requires ROLE-YYYY-MM-DD-<topic>-vN.md. Both cannot be satisfied by
+# one file, and only one of them is load-bearing: a seat with no HEARTBEAT.md is
+# never called at all when the queue is empty (verified in the waker log: 79
+# heartbeat nudges, all for Lyra, zero for the other five seats). The two
+# pre-existing heartbeats (AEGIS, LYRA) already pass the gate, so the naming rule
+# is the debt, not the mechanism. Tracked so it is burned down, not forgotten —
+# see LYRA-2026-10-28-heartbeat-findings-v1.md.
+docs/coordination/tasks/flux/FLUX-HEARTBEAT.md
+docs/coordination/tasks/mira/MIRA-HEARTBEAT.md
+docs/coordination/tasks/nimbus/NIMBUS-HEARTBEAT.md
+docs/coordination/tasks/onyx/ONYX-HEARTBEAT.md
+docs/coordination/tasks/vela/VELA-HEARTBEAT.md
