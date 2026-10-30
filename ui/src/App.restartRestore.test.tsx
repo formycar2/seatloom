@@ -502,6 +502,80 @@ describe('restart lands back in the recorded project, and the write cannot win t
     expect(screen.queryByText('活跃工作项账本')).toBeNull();
   });
 
+  it('chooseTab persists the SELECTED OBJECT alongside the tab — M-4', async () => {
+    // Flux's M-4, made un-survivable.
+    //
+    // chooseTab is the ONLY writer of selectedObjectId / selectedObjectType into
+    // the persisted ProjectUIState, and nothing asserted those fields. Flux ran
+    // the mutation — chooseTab writes null for both — and the file stayed 12
+    // passed. It survives.
+    //
+    // THE HARD PART, stated plainly: on a cold start nothing is selected, so
+    // null-for-null looks correct on disk and the mutation hides there too. The
+    // mutation is only observable on a frame where something IS selected. Every
+    // backend list in this suite is mocked empty, so the reachable way to get a
+    // selection is the saved record itself: give the project a saved
+    // selectedObjectId, switch to it, and the restore applies that selection —
+    // then the operator's next tab change must carry it into the write.
+    //
+    // So this test does two things the others do not: it puts a real selection on
+    // screen, and it asserts the write carried it. With Flux's mutation the write
+    // carries null and the assertion fails.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          // A saved selection, so the restore has something real to apply.
+          activeTab: 'workitems',
+          selectedObjectId: 'wi-saved-42',
+          selectedObjectType: 'WorkItem',
+          filters: {},
+        },
+      },
+    });
+
+    // Watch what chooseTab hands to the store. Installed BEFORE the mount: App
+    // captures `updateProjectUIState` from the store when it renders, so a spy
+    // installed afterwards is invisible to it. (Measured — installing it after
+    // the mount gave writes.length === 0 and the test could not fail for the
+    // right reason.)
+    const writes: Array<{ projectId: string; updates: Record<string, unknown> }> = [];
+    const realUpdate = useAppStore.getState().updateProjectUIState;
+    vi.spyOn(useAppStore.getState(), 'updateProjectUIState').mockImplementation(
+      (projectId, updates) => {
+        writes.push({ projectId, updates: updates as Record<string, unknown> });
+        realUpdate(projectId, updates);
+      },
+    );
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+
+    // Switch to the project that carries a saved selection. The restore applies
+    // it, so `selectedObject` is now non-null — the state M-4 needs.
+    act(() => {
+      useDataStore.getState().setActiveProject(FIRST_REAL_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+
+    // Now the operator changes tab. This write must carry the selection through.
+    writes.length = 0;
+    fireEvent.click(screen.getByTitle('时间线'));
+    await waitFor(() => expect(writes.length).toBeGreaterThan(0));
+
+    const last = writes[writes.length - 1];
+    expect(last.projectId).toBe(FIRST_REAL_PROJECT);
+    expect(last.updates).toHaveProperty('activeTab', 'timeline');
+    // The fields Flux found unwatched. With the mutation these are null.
+    expect(last.updates.selectedObjectId).toBe('wi-saved-42');
+    expect(last.updates.selectedObjectType).toBe('WorkItem');
+  });
+
   it('does not restore a project the backend did not return', async () => {
     // The record names a project that no longer exists. The app must land on a
     // real backend project rather than on the stale id — never on an invented one.
