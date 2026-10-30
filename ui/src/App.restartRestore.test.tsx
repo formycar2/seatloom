@@ -196,6 +196,16 @@ function writtenProjectIds(): Array<string | null> {
   return appStoreWrites.values.map((v) => JSON.parse(v).state.activeProjectId);
 }
 
+/**
+ * Every `updateProjectUIState` call the app made, in order.
+ *
+ * This watches the WRITE PATH rather than what landed on disk. A disk-level check
+ * cannot see a write that happens to write the same value back — and "the restore
+ * writes its own value back" is precisely the mutation that survived a green
+ * suite (Lyra, 2026-10-29). Whether a write HAPPENED is decidable only here.
+ */
+const restoreFrameWrites: Array<{ projectId: string; updates: unknown }> = [];
+
 /** Every tab the app persisted for one project, in order. */
 function writtenTabsFor(projectId: string): Array<string | undefined> {
   return appStoreWrites.values.map(
@@ -236,6 +246,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  restoreFrameWrites.length = 0;
   cleanup();
   window.localStorage.clear();
 });
@@ -375,8 +387,21 @@ describe('restart lands back in the recorded project, and the write cannot win t
       },
     });
 
+    // Watch the WRITE PATH for the whole test. `restoreFrameWrites` is what the
+    // ruling's exception has to keep empty while the restore runs.
+    restoreFrameWrites.length = 0;
+    const realUpdate = useAppStore.getState().updateProjectUIState;
+    vi.spyOn(useAppStore.getState(), 'updateProjectUIState').mockImplementation(
+      (projectId, updates) => {
+        restoreFrameWrites.push({ projectId, updates });
+        realUpdate(projectId, updates);
+      },
+    );
+
     mountApp();
     await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    // The cold start wrote nothing either — the other half of the same exception.
+    expect(restoreFrameWrites).toEqual([]);
 
     // Now switch. The memory must come back: FIRST_REAL_PROJECT's saved tab is
     // 'live-seats', so the seat mirror must appear. Its own banner is the
@@ -398,6 +423,24 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
     // ...and the other project's tab is not inherited.
     expect(screen.queryByText('产出物')).toBeNull();
+
+    // AND the restore itself did not WRITE.
+    //
+    // This is the assertion the ruling was built around, and it was missing: the
+    // tests above assert the tab IS restored, which is a different claim from
+    // "restoring it did not persist". Lyra added
+    // `updateProjectUIState(activeProjectId, { activeTab: savedState.activeTab })`
+    // right after the restore's setActiveTab and the whole file stayed 12 passed —
+    // because nothing watched the write path.
+    //
+    // Spied on the STORE ACTION, not on a snapshot of what landed on disk: a
+    // disk-level check cannot see a write that happens to write the same value
+    // back, and that is exactly the mutation in question.
+    //
+    // The cold-start frame cannot host this test: the restore is inside
+    // `if (!skipColdStart)`, which a cold start never enters. A SWITCH is where
+    // the restore actually runs, so it is where the write path must be watched.
+    expect(restoreFrameWrites).toEqual([]);
   });
 
   it('switching AWAY and then BACK to the restored project still restores its tab', async () => {
