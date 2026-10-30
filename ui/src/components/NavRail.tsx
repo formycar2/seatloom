@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BarChart3,
   Inbox,
@@ -22,6 +22,7 @@ import ProjectSwitcher from './ProjectSwitcher';
 import { SeatLoomLogo } from '../app-v2/components/Avatar';
 import { ProvenanceDot } from './ProvenanceBanner';
 import { provenanceForTab } from '../lib/provenance';
+import { api } from '../lib/api';
 
 export type NavTab =
   | 'live-seats'
@@ -51,6 +52,62 @@ interface NavRailProps {
 const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProject }) => {
   const { navCollapsed, toggleNav } = useAppStore();
   const { activeProjectId, projectData, backendHydrated } = useDataStore();
+
+  // How many acceptance cards are waiting for the operator, across ALL projects.
+  //
+  // This is deliberately NOT scoped to `activeProjectId`. The panel that lists
+  // the cards does scope its reads that way, and measured against the live
+  // database that hides them: every acceptance belongs to seatloom while the
+  // operator's active project was project_delivery, which has none. Opening the
+  // panel showed an empty "no pending cards" — worse than not showing him at all.
+  //
+  // A count is also the only part of this that works with the panel CLOSED, which
+  // is its default state (and his persisted state). The cards were unreachable
+  // from the product for two independent reasons; this closes both.
+  const [pendingAcceptanceCount, setPendingAcceptanceCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const read = async () => {
+      try {
+        // `listAcceptances` takes a projectId and the backend filters by it — so
+        // one call scoped to the active project is exactly the bug this badge
+        // exists to fix: measured, every acceptance belongs to seatloom while the
+        // operator's active project had none, so the scoped read returned an
+        // empty "no pending cards" while three waited elsewhere.
+        //
+        // Read EVERY project and take the union. That is the honest count of
+        // cards waiting for him, and it is the only thing a badge can show
+        // without lying. The per-card scoping bug in the panel itself is
+        // reported, not patched here: the panel's read is Nimbus's fence.
+        const projects = useDataStore.getState().projects;
+        const ids = projects.map((p) => p.id);
+        const perProject = await Promise.all(
+          ids.map((id) => api.listAcceptances(id).catch(() => [])),
+        );
+        if (cancelled) return;
+        const seen = new Set<string>();
+        let pending = 0;
+        for (const rows of perProject) {
+          for (const r of rows) {
+            if (seen.has(r.id)) continue;
+            seen.add(r.id);
+            if (r.status === 'pending' || r.status === 'awaiting_acceptance') pending += 1;
+          }
+        }
+        setPendingAcceptanceCount(pending);
+      } catch {
+        // A failed read must not invent a badge. Zero is the honest answer to
+        // "how many do I know about", and it is what the operator already had.
+        if (!cancelled) setPendingAcceptanceCount(0);
+      }
+    };
+    void read();
+    const timer = setInterval(read, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
   // Mirrors the banner in App.tsx: the live-seats dot must not read as LIVE
   // while tmux discovery is empty or has failed (UM0 HOLD-3).
   const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
@@ -72,7 +129,14 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
     { id: 'inbox', icon: Inbox, label: '收件箱', badge: inboxCount > 0 ? inboxCount : undefined },
     { id: 'workitems', icon: ClipboardList, label: '工作项' },
     { id: 'timeline', icon: Calendar, label: '时间线' },
-    { id: 'dispatches', icon: Send, label: '派单' },
+    // The badge belongs on 派单: that is the surface a card is about, and it is
+    // where the operator already looks for work waiting on him.
+    {
+      id: 'dispatches',
+      icon: Send,
+      label: '派单',
+      badge: pendingAcceptanceCount > 0 ? pendingAcceptanceCount : undefined,
+    },
     { id: 'seats', icon: Users, label: '席位' },
     { id: 'artifacts', icon: Package, label: '产出物' },
     { id: 'playbook', icon: BookOpen, label: 'Playbook' },

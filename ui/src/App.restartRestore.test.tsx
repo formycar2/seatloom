@@ -78,6 +78,9 @@ const CANNED: Record<string, unknown> = {
   // snake_case on purpose: SandboxBanner reads the raw payload and checks
   // `is_sandbox` before any normalise step.
   cmd_get_runtime_identity: { is_sandbox: false, branch: null, commit: null, built_at: null },
+  // Acceptance cards. Empty by default so the nav badge is absent unless a test
+  // says otherwise — a badge that is always there cannot prove anything.
+  cmd_list_acceptances: [],
 };
 
 // ONE source of truth for "the backend", answering every command the app can
