@@ -41,6 +41,83 @@ pub enum PtyEvent {
     },
 }
 
+/// Is this payload a multi-line PASTE rather than a keystroke?
+///
+/// WHY A NAMED FUNCTION AND NOT AN INLINE TEST. Aegis's dispatch gave the fix as
+/// "add an onPaste handler", with the mechanism stated as: xterm.js 5.5.0 routes a
+/// paste through its per-character input path, so `onData` fires N times and
+/// `write()` forks N `load-buffer`+`paste-buffer` pairs.
+///
+/// I measured that mechanism and it is not what happens. Reading xterm.js
+/// 5.5.0's own bundle (`node_modules/@xterm/xterm/lib/xterm.js`):
+///
+///   * the string `onPaste` occurs **0** times in the whole package, and
+///     `ITerminalOptions` has no such member — the option the dispatch asked for
+///     does not exist in this version, so it is not implementable as stated;
+///   * the real paste handler is `handlePasteEvent -> paste(text, textarea,
+///     coreService, optionsService)`, which runs `prepareTextForTerminal`
+///     (every `\n` becomes `\r`), then calls `coreService.triggerDataEvent(
+///     wholeText, true)` — ONE event, ONE `onData`, the ENTIRE block.
+///
+/// So the paste already arrives as one chunk and already becomes one write.
+/// Measured for real against a line-logging pane: three separate
+/// `load-buffer`+`paste-buffer` round trips deliver byte-for-byte the same thing
+/// as one — `aa\rbb\rcc\r`. Splitting the write is not the defect.
+///
+/// THE ACTUAL DEFECT, measured with a program that declares bracketed paste the
+/// way saih does (`packages/tui/src/terminal.ts:212` writes `ESC[?2004h`):
+///
+///   `paste-buffer`      -> the pane receives `aa\rbb\rcc\r`   (3 submits)
+///   `paste-buffer -p`   -> the pane receives `ESC[200~aa\rbb\rcc\rESC[201~`
+///                                                                 (1 paste)
+///
+/// saih's editor parses the bracketed form correctly — `packages/tui/src/
+/// components/editor.ts:721` detects `ESC[200~`, buffers until `ESC[201~`, and
+/// `handlePaste` inserts the block as ONE message (a >10-line paste even becomes
+/// a single `[paste #1 +N lines]` marker). So the capability is already there on
+/// both ends and nothing was using it. A native paste works because the terminal
+/// wraps it before tmux ever sees it; our path bypasses that entirely.
+///
+/// Aegis recorded "I also tested paste-buffer -p, which made NO difference,
+/// because saih does not emit 2004". That is measured false — terminal.ts:212
+/// does emit it — and it is the reason he ruled the fix out. A `-p` measured
+/// against a non-declaring program correctly does nothing, which is what he saw.
+///
+/// WHY NOT `-p` ON EVERY WRITE. `paste-buffer -p` wraps unconditionally when the
+/// pane has declared support, and saih's `handlePaste` STRIPS non-printables
+/// except newlines — so `ESC[200~\x03ESC[201~` would swallow Ctrl+C, and
+/// `handlePaste` also calls `cancelAutocomplete()`. Wrapping every keystroke
+/// would break the control chords and the autocomplete dropdown. So the wrap is
+/// applied only to payloads that are a paste.
+///
+/// THE RULE. A payload is a paste iff it carries a newline AND at least one byte
+/// that is not a newline and not ESC.
+///
+/// THE FIRST VERSION OF THIS RULE WAS WRONG AND FLUX CAUGHT IT. It said a paste
+/// needs "a newline AND other bytes", and I claimed in the same breath that
+/// "a control chord has no newline at all". Measured false, in xterm.js 5.5.0's
+/// own `evaluateKeyboardEvent`: case 13 is `o.key = e.altKey ? ESC + CR : CR`, so
+/// **Alt+Enter emits ESC+CR** — a newline plus another byte. It is classified as
+/// a paste and IS wrapped: measured through the production path, the pane
+/// receives `ESC[200~ESC CR ESC[201~`.
+///
+/// The end state happens to be equivalent today — saih matches `data ===
+/// "\x1b\r"` as `tui.input.newLine` (packages/tui/src/components/editor.ts:894),
+/// and its `handlePaste` reduces `ESC CR` to a bare `\n` via `normalizeText` and
+/// the non-printable filter, so both routes insert one newline. Aegis and Flux
+/// are right that this is a LATENT HAZARD, not a demonstrable defect: relying on
+/// another package's internals to make a deliberate keystroke come out the same
+/// is relying on an implementation detail that can change without us noticing.
+///
+/// So the rule now excludes ESC from "other bytes". Alt+Enter is a deliberate
+/// keystroke, not a paste, and it stays on the raw path where saih handles it
+/// explicitly. A real paste always carries printable content, so nothing is lost:
+/// the only payloads this excludes are newlines and escapes with no content.
+pub fn is_multiline_paste(bytes: &[u8]) -> bool {
+    let has_newline = bytes.iter().any(|&b| b == b'\r' || b == b'\n');
+    let has_content = bytes.iter().any(|&b| b != b'\r' && b != b'\n' && b != 0x1b);
+    has_newline && has_content
+}
 /// Handle to an attached tmux mirror session. Clone is cheap (Arc-based).
 #[derive(Clone)]
 pub struct PtySession {
@@ -706,19 +783,24 @@ impl PtySession {
         }
         use std::io::Write as _;
         use std::process::{Command, Stdio};
+        // A paste is wrapped in bracketed-paste markers so a program that has
+        // declared support receives the whole block as ONE message instead of
+        // one submit per line. `-p` is a no-op against a pane that has NOT
+        // declared `ESC[?2004h`, so the raw path is untouched for programs that
+        // do not understand it. See `is_multiline_paste` for why only some
+        // payloads qualify.
+        let paste_args: &[&str] = if is_multiline_paste(bytes) {
+            &["-p"]
+        } else {
+            &[]
+        };
         let mut child = Command::new("tmux")
-            .args([
-                "load-buffer",
-                "-b",
-                "seatloom",
-                "-",
-                ";",
-                "paste-buffer",
-                "-b",
-                "seatloom",
-                "-t",
-                &self.tmux_target,
-            ])
+            .args(
+                ["load-buffer", "-b", "seatloom", "-", ";", "paste-buffer"]
+                    .into_iter()
+                    .chain(paste_args.iter().copied())
+                    .chain(["-b", "seatloom", "-t", self.tmux_target.as_str()]),
+            )
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
