@@ -34,8 +34,15 @@ cd "$(dirname "$0")/.." || exit 2
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
+# SQL comments live inside a double-quoted bash string, so bash performs
+# command substitution on them BEFORE psql ever sees the SQL. A backtick in a
+# -- comment is not a comment to bash: it is a subshell. That happened here -
+# `findings` and `finding` were eaten as command names, the query that actually
+# ran had those words deleted, and the check printed "no pending cards".
+# RULE: in SQL passed to psql -c, no backticks and no double quotes, in the
+# comment as well as in the statement.
 db() {
-  podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F"$(printf '\037')" -c "$1" 2>/dev/null
+  podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F"$(printf '\037')" -c "$1"
 }
 
 # Which pending card rests on which verdict, and what that verdict actually says.
@@ -53,8 +60,8 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
                   translate(coalesce(e.payload->>'finding_1',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_2',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_3',''), chr(10)||chr(13), ' '),
-                  -- findings AS AN ARRAY. Flux wrote `findings` (plural, a JSON
-                  -- array) on one verdict and `finding` (singular, a string) on
+                  -- findings AS AN ARRAY. Flux wrote the plural field findings (a JSON
+                  -- array) on one verdict and the singular field finding (a string) on
                   -- another. My query read only finding_1/2/3, so it saw NEITHER -
                   -- two verdicts carrying two real findings each were invisible to
                   -- this check, which then reported nothing wrong. A field name I
@@ -66,7 +73,82 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
            from acceptances a
            join canonical_events e on e.id = a.flux_verdict_ref
            where a.status = 'pending'
-           order by a.id")
+           union all
+           -- SELF-TEST ROW. A query that returns no rows is indistinguishable from
+           -- a query that is broken - both print nothing. With zero pending cards
+           -- there is nothing to count either, so a count probe cannot catch a
+           -- broken query in the one state where I most want to trust it. This row
+           -- is returned no matter what the tables contain, so its absence from the
+           -- output proves the QUERY failed, independently of the data.
+           -- The second column carries the number of pending cards the SAME query
+           -- would return if the sentinel were not there. The sentinel proves the
+           -- SQL runs; this number proves the card arm still FINDS cards. Without
+           -- it, a join that silently matches nothing - e.g. a condition changed to
+           -- a constant - returns only the sentinel and the check reports no pending
+           -- cards, which is exactly the false clean it exists to catch.
+           select 'SENTINEL-CARD',
+                  (select count(*)::text from acceptances a2
+                    where a2.status = 'pending'),
+                  'pass', '', '', '', '', '', ''
+           order by 1")
+
+# An empty result and a broken query look identical. I shipped that bug once
+# already in check-card-verifications.sh and rebuilt it here within hours: a
+# psql error left rows empty, the script printed no pending cards and exited 0,
+# which reads as a clean bill of health. So the query now carries a sentinel row
+# that it returns regardless of the data. If it is missing from the output,
+# the query is broken and this check FAILS. Matched on the sentinel name alone,
+# not on the field separator: BSD grep does not read 037 as an octal escape, so
+# a pattern that includes the separator matches nothing and would report FAIL on
+# a working query - the mirror image of the bug it was added to catch.
+# Proof by mutation: I broke the query (renamed a payload column) and ran it -
+# before the sentinel it printed no pending cards and exited 0, which is a
+# check that can never fail.
+if ! printf '%s\n' "$rows" | grep -q '^SENTINEL-CARD'; then
+  echo "FAIL: the verdict query returned no sentinel row - the QUERY is broken,"
+  echo "      not that there are no cards. A broken query and an empty result"
+  echo "      print the same thing, which is how this check would otherwise report"
+  echo "      OK while having looked at nothing."
+  echo ""
+  echo "      The query, for diagnosis:"
+  printf '%s\n' "$rows" | sed 's/^/        /' | head -5
+  exit 1
+fi
+
+# The sentinel also carries how many pending cards a simple count sees. If the
+# sentinel is present but the count is zero while the query found no card rows,
+# the card arm is not finding them - a join that matches nothing looks exactly
+# like no pending cards. Fail loudly rather than report a clean I did not check.
+sentinel_count=$(printf '%s\n' "$rows" | sed -n 's/^SENTINEL-CARD\x1f\([0-9][0-9]*\)\x1f.*/\1/p')
+if [ -z "$sentinel_count" ]; then
+  echo "FAIL: the sentinel row is present but carries no count - the query shape"
+  echo "      changed under me. I cannot tell a working query from a silent one."
+  exit 1
+fi
+# ...but the count is zero while the query DID return card rows. The two
+# halves of the same query disagree about the state of the same table. Either
+# the count or the card arm is wrong, and I cannot tell which, so I must not
+# silently pick the more convenient reading - which would be the card arm,
+# because that is the one that lets the check report OK.
+card_rows=$(printf '%s\n' "$rows" | grep -vc '^SENTINEL-CARD')
+if [ "$sentinel_count" -eq 0 ] && [ "$card_rows" -gt 0 ]; then
+  echo "FAIL: the verdict query returned $card_rows card row(s), but its own count says"
+  echo "      there are 0 pending cards. The two halves of one query disagree about"
+  echo "      the state of one table. Reporting either number as the truth would be"
+  echo "      picking the convenient one, so this check stops instead."
+  exit 1
+fi
+if [ "$sentinel_count" -gt 0 ] && [ "$card_rows" -eq 0 ]; then
+  echo "FAIL: $sentinel_count pending card(s) exist but the verdict query found none of them."
+  echo "      The sentinel proves the SQL runs; this proves the card arm does not."
+  echo "      A join that matches nothing is indistinguishable from no pending cards,"
+  echo "      and reporting no pending cards is the false clean this check exists to catch."
+  exit 1
+fi
+
+# Now the sentinel has done its job, drop it from what we read. The first field
+# alone recognises it, for the same BSD-grep reason as above.
+rows=$(printf '%s\n' "$rows" | grep -v '^SENTINEL-CARD')
 
 if [ -z "$rows" ]; then
   [ "$QUIET" = "1" ] || echo "no pending acceptance cards"
