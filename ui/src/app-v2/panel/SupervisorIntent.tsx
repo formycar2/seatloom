@@ -83,6 +83,76 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /** "Why empty and what next" — never a blank frame (contract §4). */
+/**
+ * Shown when the active project's acceptance read came back empty.
+ *
+ * Its whole job is to avoid one specific lie: "there are no cards waiting for
+ * you" when the truth is "this project has none, and N are waiting under other
+ * projects". The two readings demand opposite actions from the operator, and the
+ * empty state cannot tell them apart from a scoped read alone.
+ *
+ * It reads every project and unions the pending cards. That is the same
+ * algorithm the nav badge uses, for the same reason.
+ */
+function ElsewherePendingAcceptances() {
+  const [elsewhere, setElsewhere] = useState<{ count: number; projectIds: string[] } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const projects = useDataStore.getState().projects;
+        // Read per project and keep the project alongside its rows: the DTO does
+        // not carry a projectId, so the only way to say WHERE the cards are is to
+        // remember which read they came from.
+        const perProject = await Promise.all(
+          projects.map(async (p) => ({
+            projectId: p.id,
+            rows: await api.listAcceptances(p.id).catch(() => []),
+          })),
+        );
+        if (cancelled) return;
+        const ids = new Set<string>();
+        const holders = new Set<string>();
+        let count = 0;
+        for (const { projectId, rows } of perProject) {
+          for (const r of rows) {
+            if (r.status !== 'pending' && r.status !== 'awaiting_acceptance') continue;
+            if (ids.has(r.id)) continue;
+            ids.add(r.id);
+            holders.add(projectId);
+            count += 1;
+          }
+        }
+        setElsewhere({ count, projectIds: [...holders] });
+      } catch {
+        // A failed read must not become a claim. Leave it null and the caller
+        // falls back to the plain empty state, which is the honest answer to
+        // "what do I know".
+        if (!cancelled) setElsewhere(null);
+      }
+    };
+    void read();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (elsewhere && elsewhere.count > 0) {
+    const where = elsewhere.projectIds.length > 0 ? `(${elsewhere.projectIds.join(', ')})` : '';
+    return (
+      <MeaningfulEmpty
+        why={`当前项目没有待验收卡,但别处有 ${elsewhere.count} 张在等你${where}。`}
+        next="左边栏「派单」上的数字就是它们;切换到那个项目可以看到详情。"
+      />
+    );
+  }
+
+  return (
+    <MeaningfulEmpty why="没有待运营者判定的验收卡。" next="新交付经 Flux 验绿后会在这里出现。" />
+  );
+}
+
 function MeaningfulEmpty({ why, next }: { why: string; next: string }) {
   return (
     <div style={{ fontSize: 12, color: 'var(--sl-text-secondary)', lineHeight: 1.6 }}>
@@ -159,7 +229,10 @@ function useContinuityDelta() {
   // default project — which is how it used to show seatloom's data under any tab.
   const activeProjectId = useDataStore((s) => s.activeProjectId);
 
-  useEffect(() => { setDelta(null); setError(null); }, [activeProjectId]);
+  useEffect(() => {
+    setDelta(null);
+    setError(null);
+  }, [activeProjectId]);
   const load = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');
@@ -256,10 +329,21 @@ function ContinuityDeltaCard() {
           <div>
             <div style={sectionLabel}>待验收卡({delta.pendingAcceptances.length})</div>
             {delta.pendingAcceptances.length === 0 ? (
-              <MeaningfulEmpty
-                why="没有待运营者判定的验收卡。"
-                next="新交付经 Flux 验绿后会在这里出现。"
-              />
+              // A scoped read that comes back empty must not be reported as
+              // "nothing is waiting for you". Measured: the operator's three cards
+              // all belong to seatloom while his active project held none, so this
+              // panel showed an empty "no pending cards" — worse than not showing
+              // him, because it actively told him there was nothing to do.
+              //
+              // Lyra then measured one worse: his active project was `p-1`, the
+              // first entry of SEED_PROJECTS_FOR_TESTS, which has no row in
+              // projects at all. So the read was not scoped to the wrong project,
+              // it was scoped to a project that does not exist.
+              //
+              // So before saying "none", ask the other projects. If any of them
+              // holds cards, say exactly that — the count and where it is — rather
+              // than a sentence that reads as "you are done".
+              <ElsewherePendingAcceptances />
             ) : (
               delta.pendingAcceptances.map((a) => (
                 <Row key={a.id} label={a.id}>
@@ -334,7 +418,11 @@ function DecisionAnswerCard() {
   const [loadingMem, setLoadingMem] = useState(false);
 
   const activeProjectId = useDataStore((s) => s.activeProjectId);
-  useEffect(() => { setTopics(null); setSelected(null); setMemories(null); }, [activeProjectId]);
+  useEffect(() => {
+    setTopics(null);
+    setSelected(null);
+    setMemories(null);
+  }, [activeProjectId]);
   const loadTree = useCallback(async () => {
     if (!isTauri()) {
       setError('not running inside the SeatLoom app');

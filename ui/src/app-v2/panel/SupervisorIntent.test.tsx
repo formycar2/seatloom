@@ -45,6 +45,10 @@ const state = vi.hoisted(() => ({
     },
   ],
   acceptances: [] as unknown[],
+  // Per-project acceptance rows, so the mock can answer the way the Rust command
+  // does — by project_id. Without this a client-side scoping bug is invisible.
+  acceptancesByProject: {} as Record<string, unknown[]>,
+  projects: [] as Array<{ id: string; name: string }>,
   dispatches: [] as unknown[],
   handoffs: [] as unknown[],
   events: [] as unknown[],
@@ -68,7 +72,16 @@ vi.mock('../../lib/api', () => ({
       if (!state.seatsOk) throw new Error('db unreachable');
       return state.seats;
     }),
-    listAcceptances: vi.fn(async () => state.acceptances),
+    // Scoped server-side, like the real command: it takes a project_id and filters
+    // by it. Answering the whole list regardless would make a client-side scoping
+    // bug invisible — any code asking about the wrong project would still get the
+    // cards. `acceptancesByProject` holds the rows for projects OTHER than the
+    // active one, which is what the "empty here, waiting elsewhere" test needs.
+    listAcceptances: vi.fn(async (projectId: string) =>
+      projectId === 'seatloom'
+        ? (state.acceptances as never[])
+        : ((state.acceptancesByProject[projectId] as never[]) ?? []),
+    ),
     listDispatches: vi.fn(async () => state.dispatches),
     listHandoffs: vi.fn(async () => state.handoffs),
     listEvents: vi.fn(async () => state.events),
@@ -201,9 +214,23 @@ describe('SupervisorIntent', () => {
     // is project-scoped, so the tests say which project they run under. They used
     // to rely on useDataStore's launch default — a SEED_PROJECTS_FOR_TESTS id that
     // named no project in any database.
-    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [{ id: 'seatloom', name: 'SeatLoom' }, ...state.projects] as never,
+    });
     state.seatsOk = true;
     state.acceptances = [];
+    state.acceptancesByProject = {};
+    // The OTHER projects the elsewhere-check reads. Set per test; the active
+    // project ('seatloom') is always added by the store setup below.
+    state.projects = [];
+    // Re-seed the store, because the beforeEach above ran before these were set.
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [{ id: 'seatloom', name: 'SeatLoom' }, ...state.projects] as never,
+    });
     state.dispatches = [];
     state.handoffs = [];
     state.events = [];
@@ -246,6 +273,50 @@ describe('SupervisorIntent', () => {
     fireEvent.click(screen.getByText('读取'));
     await waitFor(() => expect(screen.getByText(/没有待运营者判定的验收卡/)).toBeTruthy());
     expect(screen.getByText(/新交付经 Flux 验绿后会在这里出现/)).toBeTruthy();
+  });
+
+  it('an empty acceptance read says WHERE the cards are instead of "none waiting"', async () => {
+    // The failure this closes, measured: the operator's three cards all belong to
+    // seatloom while his active project held none, so this panel showed an empty
+    // "no pending cards" — which is worse than not showing him, because it
+    // actively told him there was nothing to do.
+    //
+    // Lyra then measured one worse: his active project was `p-1`, the first entry
+    // of SEED_PROJECTS_FOR_TESTS, which has no row in projects at all. So the read
+    // was not scoped to the wrong project — it was scoped to a project that does
+    // not exist.
+    //
+    // Two independent reasons, one shape: a scoped read that comes back empty must
+    // not be reported as "nothing is waiting for you". The two readings demand
+    // opposite actions from him.
+    //
+    // The mock answers per project, exactly like the Rust command does — it takes
+    // a project_id and filters by it. Answering the whole list regardless would
+    // make the scoping bug invisible, because any code asking about the wrong
+    // project would still get the cards.
+    state.acceptances = [];
+    state.acceptancesByProject = { other: [acc({ id: 'acc-elsewhere' })] };
+    state.projects = [{ id: 'other', name: 'Other' }];
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [
+        { id: 'seatloom', name: 'SeatLoom' },
+        { id: 'other', name: 'Other' },
+      ] as never,
+    });
+    mount();
+    fireEvent.click(screen.getByText('读取'));
+
+    // It must NOT claim there is nothing waiting.
+    await waitFor(() => expect(screen.queryByText(/没有待运营者判定的验收卡/)).toBeNull());
+    // It says how many and under which project — a number he can act on.
+    await waitFor(() => expect(screen.getByText(/别处有 1 张在等你/)).toBeTruthy());
+    expect(screen.getByText(/other/)).toBeTruthy();
+    // And it points at the surface that shows them, rather than leaving him to
+    // guess where a count lives. Matched on the full sentence, because '派单'
+    // alone matches several surfaces.
+    expect(screen.getByText(/左边栏「派单」上的数字就是它们/)).toBeTruthy();
   });
 
   // 3. decision-answer — real reads; no active memories is a meaningful empty.
@@ -415,12 +486,18 @@ describe('澄清选项被点后必须直接继续,不要把活推回给用户', 
       clarification: {
         question: '这句话里没有我能确定执行的动作。你要做下面哪一种?',
         choices: [
-          { label: 'create — 给 nimbus 派个活,把唤醒服务的硬底兜底接上', value: 'create', why: 'one of the five verbs' },
+          {
+            label: 'create — 给 nimbus 派个活,把唤醒服务的硬底兜底接上',
+            value: 'create',
+            why: 'one of the five verbs',
+          },
         ],
       },
     });
     render(<SupervisorIntent onRawSend={vi.fn()} />);
-    fireEvent.change(screen.getByPlaceholderText(/说你想干什么/), { target: { value: '给后端席位派一张单' } });
+    fireEvent.change(screen.getByPlaceholderText(/说你想干什么/), {
+      target: { value: '给后端席位派一张单' },
+    });
     fireEvent.click(screen.getByText('拆解'));
     await screen.findByText(/你要做下面哪一种/);
     expect(state.planCalls).toHaveLength(1);

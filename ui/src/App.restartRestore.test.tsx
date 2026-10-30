@@ -101,7 +101,20 @@ const CANNED: Record<string, unknown> = {
 // failure instead of a rejection attributed to whichever effect got there first.
 const answerCommand = async (cmd: string, args?: unknown): Promise<unknown> => {
   calls.order.push(`${cmd}${args ? ` ${JSON.stringify(args)}` : ''}`);
-  if (cmd in CANNED) return CANNED[cmd];
+  if (cmd in CANNED) {
+    // `cmd_list_acceptances` is scoped SERVER-SIDE — the Rust command takes a
+    // project_id and filters by it (acceptance_cmds.rs, and the comment there
+    // records the same silent-default bug being removed). Returning the whole
+    // list regardless would make a client-side scoping bug invisible: any code
+    // that asked about the wrong project would still get the cards. So the mock
+    // filters, exactly like the backend.
+    if (cmd === 'cmd_list_acceptances') {
+      const asked = (args as { projectId?: string } | undefined)?.projectId;
+      const rows = (CANNED[cmd] as Array<{ projectId?: string }>) ?? [];
+      return rows.filter((r) => r.projectId === asked);
+    }
+    return CANNED[cmd];
+  }
   throw new Error(`unmocked Tauri command: ${cmd}`);
 };
 
@@ -577,6 +590,98 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // The fields Flux found unwatched. With the mutation these are null.
     expect(last.updates.selectedObjectId).toBe('wi-saved-42');
     expect(last.updates.selectedObjectType).toBe('WorkItem');
+  });
+
+  it('a pending acceptance count is visible with the panel closed and regardless of project', async () => {
+    // The operator's cards were unreachable from the product for THREE independent
+    // reasons, and any one of them hides them.
+    //
+    // 1. the panel that lists them defaults CLOSED (his live persisted state is
+    //    seatloom.supervisor.open = f) and there was no count anywhere outside
+    //    it — grepped NavRail, layouts, components: zero matches;
+    // 2. the panel scopes its reads with api.listAcceptances(activeProjectId),
+    //    and every card belongs to seatloom while his active project had none;
+    // 3. Lyra measured worse than either: his saved active project is `p-1`,
+    //    which is the first entry of SEED_PROJECTS_FOR_TESTS — a test fixture.
+    //    select count(*) from projects where id='p-1' returns 0. So the read was
+    //    not scoped to the wrong project, it was scoped to a project that does
+    //    not exist. (localStorage holds it as UTF-16LE 70 00 2d 00 31 00 = 'p-1'.)
+    //
+    // This test closes reason 1: a count on the nav, which renders whatever the
+    // panel state is.
+    //
+    // The count is deliberately NOT scoped to the active project. Reading every
+    // project and unioning the cards is the only algorithm a badge can use
+    // without lying — and reason 3 is why: the active project may be an id the
+    // backend does not return at all.
+    //
+    // Mutation this kills: scope the read back to activeProjectId. The badge
+    // becomes 0 and this fails — but in the product it reads "nothing is waiting
+    // for me", which is the exact failure.
+    CANNED.cmd_list_acceptances = [
+      { id: 'acc-one', status: 'pending', dispatchId: 'disp-one', projectId: FIRST_REAL_PROJECT },
+      {
+        id: 'acc-two',
+        status: 'awaiting_acceptance',
+        dispatchId: 'disp-two',
+        projectId: FIRST_REAL_PROJECT,
+      },
+      // Not pending: must not be counted.
+      {
+        id: 'acc-three',
+        status: 'accepted',
+        dispatchId: 'disp-three',
+        projectId: FIRST_REAL_PROJECT,
+      },
+    ];
+
+    mountApp();
+    // Wait for the project list to land first. The badge reads `projects` to know
+    // which project ids to ask about, and measuring it before hydration gives an
+    // empty id set — a badge of 0 that is indistinguishable from "nothing
+    // waiting". (Measured: that was my first version's failure.)
+    await waitFor(() => expect(useDataStore.getState().projects.length).toBeGreaterThan(0));
+
+    // The count appears. Two pending, one accepted — so the badge reads 2.
+    await waitFor(() => expect(screen.getByText('2')).toBeTruthy());
+    // And the supervisor panel was never opened: this suite never opens it.
+    expect(window.localStorage.getItem('seatloom.supervisor.open')).not.toBe('true');
+  });
+
+  it('the count survives an active project that does not exist in the database', async () => {
+    // Lyra measured a third reason, worse than the two I reported: his saved
+    // active project is `p-1`, the first entry of SEED_PROJECTS_FOR_TESTS — a test
+    // fixture. `select count(*) from projects where id='p-1'` returns 0, and
+    // `select count(*) from acceptances where project_id='p-1'` returns 0.
+    //
+    // So the panel's read was not scoped to the wrong project. It was scoped to a
+    // project that does not exist. Both roads lead away from his three cards:
+    // hydration drops an id the backend does not return and falls back to
+    // projects[0], and projects[0] is not seatloom either.
+    //
+    // This is the mutation that matters: scope the badge to activeProjectId. With
+    // a real project selected that mutation can pass by coincidence — the active
+    // project happens to hold the cards — so the test above cannot catch it. This
+    // one can, because the active project here holds nothing and does not exist.
+    //
+    // Mutation this kills: `const ids = [activeProjectId]` instead of every
+    // project. Then the badge is 0 while two cards wait, and the operator reads
+    // "nothing needs me" — the exact failure this whole chain is about.
+    CANNED.cmd_list_acceptances = [
+      { id: 'acc-one', status: 'pending', dispatchId: 'disp-one', projectId: FIRST_REAL_PROJECT },
+      { id: 'acc-two', status: 'pending', dispatchId: 'disp-two', projectId: FIRST_REAL_PROJECT },
+    ];
+
+    mountApp();
+    // Force the state Lyra measured: an active project the backend never returned.
+    // Set after the mount so it is not immediately overwritten by hydration.
+    await waitFor(() => expect(useDataStore.getState().backendHydrated).toBe(true));
+    act(() => {
+      useDataStore.setState({ activeProjectId: 'p-1' });
+    });
+
+    // The badge must still count the cards that exist, wherever they live.
+    await waitFor(() => expect(screen.getByText('2')).toBeTruthy());
   });
 
   it('does not restore a project the backend did not return', async () => {

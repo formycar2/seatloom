@@ -107,7 +107,13 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+    // Depends on `backendHydrated`, not on nothing. Measured: with an empty dep
+    // array the effect ran before hydration and read an empty project list, so
+    // the badge sat at 0 — which is indistinguishable from "nothing is waiting".
+    // The poll alone would have caught it 15 seconds later, but a badge that is
+    // wrong for the first quarter minute is a badge that lies during the exact
+    // window the operator opens the app in.
+  }, [backendHydrated]);
   // Mirrors the banner in App.tsx: the live-seats dot must not read as LIVE
   // while tmux discovery is empty or has failed (UM0 HOLD-3).
   const seatDiscovery = useLiveSessionsStore((s) => s.seatDiscovery);
