@@ -48,11 +48,55 @@
 #
 # Usage: DATABASE_URL=postgresql://user:pass@host:port/db scripts/apply-db.sh
 # Needs: psql on PATH. Exit nonzero on first SQL error.
-
+#
+# DRY-RUN BY DEFAULT. This script writes to a database. Running it with no
+# argument APPLIES to whatever DATABASE_URL names, and the default is live. That
+# is how it nearly went wrong once already: it was invoked as `apply-db.sh --help`
+# (it has no --help handling), the default URL pointed at live, localhost:5432 was
+# reachable, and the only thing that stopped it was that psql was not on PATH —
+# not a guard, not a prompt, not a dry-run default. So now there is one.
+#
+#   scripts/apply-db.sh              # DRY RUN: prints the plan, writes nothing
+#   scripts/apply-db.sh --apply      # actually applies
+#
+# Naming the database explicitly still counts as explicit, because you typed it.
+# Passing --apply is what says you meant to write.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 : "${DATABASE_URL:=postgresql://seatloom:seatloom@localhost:5432/seatloom}"
+
+# --- mode: dry-run unless --apply --------------------------------------------
+# The failure this guards against is documented in the header. The check is that
+# --apply was PASSED, not that the URL looks safe: an operator who exported
+# DATABASE_URL for a scratch database has already made a deliberate choice, and
+# demanding --apply there too would be the boy who cried wolf.
+APPLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) APPLY=1 ;;
+    *) printf 'apply-db: unknown argument: %s\n' "$arg" >&2
+       printf 'usage: [DATABASE_URL=...] %s [--apply]\n' "$0" >&2
+       exit 2 ;;
+  esac
+done
+
+if [ "$APPLY" = "1" ]; then
+  DRY=0
+  echo "apply-db: APPLY — this will write to $DATABASE_URL"
+else
+  DRY=1
+  echo "apply-db: DRY RUN — no database will be written."
+  echo "apply-db: target=$DATABASE_URL"
+  echo "apply-db: pass --apply to actually apply."
+fi
+
+# psql is only needed to WRITE. A dry run reads only the files on disk, so
+# refusing to print the plan because psql is missing would hide the one thing a
+# dry run is for. (It was written that way first — the check sat before the plan
+# — and that made step 3 of the acceptance card impossible to perform, which is
+# how the mistake surfaced.) The check now happens at APPLY time, below.
+
 SCHEMA_DIR="infra/postgres/schema"
 SEED_DIR="infra/postgres/seed"
 
@@ -95,6 +139,8 @@ POST_SEED_SCHEMA=(
   "020_operator_decisions.sql|creates operator_decisions — the structured 'waiting on the human' object, closing the measured gap where a product-direction ruling or an operator-only precondition existed ONLY as a SupervisorMessage and nothing could answer 'how many things are waiting on him' (fleet-status.sh read acceptances alone) — and widens canonical_events_event_type_vocab 28->30 (+OperatorDecisionRequested/Resolved) and event_object_refs_ref_type_vocab 12->13 (+decision), both by DROP+ADD of the COMPLETE lists in 013's guarded pattern (guards check for the new value; no pre-020 value contains it as a substring), so it applies cleanly from the track state (28/12, post-019) or any intermediate. Same POST-SEED rule as 010/012/013/014/017/015/018/019: both widened CHECKs exist only post-seed, and the seed writes none of operator_decisions' columns. NO SEED DATA by design — a pending '等你决定' nobody created is contamination, not a feature. resolved is terminal and immutable (operator_decisions_resolved_pairing, 018's IFF pattern); only human:* and seat:seat-aegis-001 may create (operator_decisions_creator_shape). Canonical order 019 -> 020. Registered by disp-dwSmYkULRU4HdSDJCDWH9 (AEGIS-2026-10-22-operator-decision-object-v1, 020 landing)."
   "022_session_work_bridge_view.sql|creates v_memory_session_join — the ONE read-only view that makes the session<->work bridge measurable (contract LYRA-2026-10-16-session-work-bridge-contract-v1 §11.2 slice 1). A memory's source_ref is recorded provenance with NO FK by design, so the join can break in silence and already has: before 021's re-key, 3 codex references resolved against nothing and nothing reported it. The view joins on the contract's PRIMARY key A1 (l2_file_path with the corpus-root prefix stripped == archived_sessions.raw_path, both sides DECLARED and immune to id re-keying) AND its SECONDARY key A2 (source_ref split on the first colon == (harness, id)), reporting both verdicts plus a resolved_by column, so a disagreement between them stays countable instead of collapsing into one number. It writes NO data (a view has no rows), so classification follows what it READS: memories and archived_sessions, which no seed file writes (measured: zero INSERT INTO memories in any seed; the seed's only sessions writes are 5 rows this view does not touch). Same POST-SEED rule as 015's v_archived_sessions_normalized. Catalog-guarded creation (015's pattern) so a re-apply writes zero catalog rows and a later definition change must be a follow-up migration's DROP+CREATE rather than a silent rewrite. Canonical order 021 -> 022. Registered by disp-XnCxvGI88oAbdGcyeefhl (AEGIS-2026-10-26-two-gates-blocked-v1 task A) — the gate ev-session-key-readmodel-live measured this view ABSENT and three dispatches have been blocked on it since 10-16."
   "023_gate_criterion.sql|RENUMBERED from 020 on the 2026-10-28 merge of track/infra-foundation: both branches had independently landed a migration numbered 020 (track's 020_operator_decisions.sql and this one), and only one file can carry a number, so this one takes the next free slot rather than colliding. The renumber changed ONLY the filename and this migration's self-references — no SQL object was renamed and no dependency changed. WHAT IT DOES: replaces the BODY of fn_dispatch_recompute_ready (013) so a GATE-SHAPED event dep must be a MEASURED gate rather than merely an existing row (the release-time half of Aegis ruling 2026-10-11; criterion shape is Nimbus's gate.rs on packet/nimbus/gate-vs-announcement), adds the two IMMUTABLE criterion helpers (fn_gate_is_gate_id / fn_gate_row_is_gate) that the new body, the new dispatch_dependencies CHECK and the new v_dispatch_gate_held view all share so the criterion exists in ONE place per language, and adds a CHECK refusing a gate-shaped dep_value on a non-event edge. POST-SEED by the same rule as 011-013: the seed writes no dispatch_dependencies rows and none of these objects touch a seeded table's columns. Uses CREATE OR REPLACE rather than DROP+CREATE because the three 013 triggers are bound to the function — a DROP would take them with it. Zero data rows inserted or rewritten. NOTE FOR THE RUST SIDE: track's crates/seatloom-mcp-emit/src/gate.rs cites this file by its OLD name (020_gate_criterion.sql) in a comment — that citation is now stale and is listed as a known gap in this dispatch's delivery note rather than silently edited. Canonical order 013 -> 023. Registered by disp-onyx-gate-release-check (gate release-time check, 020 landing)."
+  "025_memory_dedup.sql|RENUMBERED from 023 on 2026-10-30 — two migrations had independently landed as 023 (this one and 023_gate_criterion.sql, which had itself moved from 020 the day before). 023_gate_criterion was already registered and its header records why it moved, so it keeps 023 and this takes the next free slot; filename and self-references only, no SQL object renamed, no dependency changed. WHAT IT DOES: creates ONE partial unique index, memories_dedup_key, so a second remember of the same (project, topic, kind, l2_file_path, l2_line_start) cannot be inserted — the application-level guard in insert_memory stops NEW duplicates but the table never enforced it. POST-SEED by the same rule as 015/018: it indexes columns of memories, which 015 (POST-SEED) creates and no seed file writes. IT WILL REFUSE ON A DATABASE THAT ALREADY HAS DUPLICATES: measured on live 2026-10-30, 5 duplicate groups exist, and a unique index cannot be created over rows that violate it — duplicates -> index refused -> dedup unenforced -> more duplicates. That deadlock is resolved by scripts/land-023-memory-dedup.sh (per the operator's per-group decision about which row survives), NOT by this file. The script keeps its original 023 name because the operator's command habit is built on it; its MIG= path points at this 025 file and every message it prints names 025. On an empty or already-clean database it applies and a second apply performs no catalog write (CREATE UNIQUE INDEX IF NOT EXISTS). Canonical order 015 -> 025, independent of 020-023. Registered by disp-p-zIkNv1Z1jbUQk4voEfr."
+  "026_topic_close.sql|RENUMBERED from 024 on 2026-10-30 — 024 was registered NOWHERE in this script (the defect this entry closes) and 023 was already taken by 023_gate_criterion.sql, so it takes the slot after 025_memory_dedup.sql; filename and self-references only, no SQL object renamed, no dependency changed. WHAT IT DOES: adds the close path open_topic never had — topics.status gains 'closed' and 'merged' in its CHECK, a new topics.closed_at column with the pairing CHECK topics_closed_at_matches_status (present exactly when status is not open), and canonical_events_event_type_vocab widened by +TopicClosed. POST-SEED: topics is created by 010 (POST-SEED) and no seed writes topics rows. THE EVENT LIST IN THIS FILE WAS DEFECTIVE AND WAS FIXED 2026-10-30 (history, kept because it is the reason the list is now verified rather than assumed): the original widening carried a stale 26-value list that omitted the 8 dispatch/acceptance types the live database carries (SeatDispatchIssued, SeatDispatchDelivered, SeatDispatchCompleted, SeatDispatchFailed, SeatDispatchRetried, SeatDispatchCancelled, AcceptanceGranted, AcceptanceRejected — 1371 live rows measured 2026-10-30) and named four values that exist nowhere (DispatchEnqueued, DispatchStatusChanged, AcceptanceDecided). Because a widening is DROP+ADD of the COMPLETE list, that list would have REPLACED the correct one. Measured on a scratch database, both directions: on a database WITH data PostgreSQL refuses it — 'check constraint canonical_events_event_type_vocab of relation canonical_events is violated by some row', transaction rolls back, so it is a no-op failure; on an EMPTY database it succeeds and silently strands every dispatch event, which is the dangerous direction because it looks like success. FIXED by writing the real 30-value list plus TopicClosed (the same complete-list discipline 019/020 follow), cross-checked against live's CHECK and against the pinned Rust EventType::ALL. Re-verified after the fix on a scratch database carrying dispatch rows: applies cleanly (exit 0), the resulting list is 31 values, all 6 SeatDispatch types survive, no pre-existing row is lost, a second apply performs zero catalog write, and the topics close path plus its pairing CHECK reject in both directions. Verdict ev-5hJw9hwiEaHjp-TH7BKOI. The file is now safe to apply. Canonical order 019 -> 026. Registered by disp-p-zIkNv1Z1jbUQk4voEfr, defect found and fixed in the same dispatch, re-verified by Flux."
 )
 
 # --- Completeness guard ------------------------------------------------------
@@ -137,7 +183,11 @@ apply_group() {
     if [ -f "$path" ]; then
       echo "  $path"
       echo "      why: $reason"
-      psql_f "$path"
+      if [ "$DRY" = "1" ]; then
+        echo "      WOULD APPLY (dry run — nothing written)"
+      else
+        psql_f "$path"
+      fi
     else
       # Listed but absent: expected when this script runs on a branch that does
       # not carry the migration yet. Announced, never silent.
@@ -146,17 +196,31 @@ apply_group() {
   done
 }
 
-echo "apply-db: target=$DATABASE_URL"
+if [ "$DRY" = "0" ] && ! command -v psql >/dev/null 2>&1; then
+  echo "apply-db: psql not found on PATH — cannot apply." >&2
+  echo "  On this project postgres runs in a container, so psql exists only inside it:" >&2
+  echo "    podman exec -e PGPASSWORD=... seatloom-postgres psql -U seatloom -d <db> -f <file>" >&2
+  echo "  This script does not shell into the container for you — apply each file" >&2
+  echo "  with the command above, in the order printed below." >&2
+  exit 127
+fi
 
 apply_group "pre-seed schema (seed writes columns these create)" \
   ${PRE_SEED_SCHEMA[@]+"${PRE_SEED_SCHEMA[@]}"}
 
-echo "--- seed (001-004) ---"
+echo "--- seed (001-005) ---"
 for f in "$SEED_DIR"/*.sql; do
-  [ -f "$f" ] && { echo "  $f"; psql_f "$f"; }
+  if [ -f "$f" ]; then
+    echo "  $f"
+    if [ "$DRY" = "1" ]; then echo "      WOULD APPLY (dry run — nothing written)"; else psql_f "$f"; fi
+  fi
 done
 
 apply_group "post-seed schema (constrains columns the seed does not provide)" \
   ${POST_SEED_SCHEMA[@]+"${POST_SEED_SCHEMA[@]}"}
 
-echo "apply-db: done."
+if [ "$DRY" = "1" ]; then
+  echo "apply-db: dry run complete. NOTHING WAS WRITTEN. Re-run with --apply to apply."
+else
+  echo "apply-db: done."
+fi

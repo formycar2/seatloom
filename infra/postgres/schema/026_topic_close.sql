@@ -1,4 +1,26 @@
--- 024 — the topic close path: `open -> closed`, with `closed_at` written.
+-- 026 — the topic close path: `open -> closed`, with `closed_at` written.
+--
+-- RENUMBERED 024 -> 026 on 2026-10-30. 024 was never registered in
+-- scripts/apply-db.sh, and 023 was already taken by 023_gate_criterion.sql, so
+-- this migration takes the next free slot after 025_memory_dedup.sql (which had
+-- itself been renumbered from 023 the same day for the same reason). Only the
+-- filename and this migration's own self-references changed; no SQL object was
+-- renamed and no dependency changed. See scripts/apply-db.sh.
+--
+-- DEFECT FOUND AT REGISTRATION TIME, 2026-10-30, NOT YET FIXED (see the delivery
+-- note docs/coordination/tasks/onyx/2026-10-30-migrations-025-026-registration.md):
+-- the canonical_events_event_type_vocab list this migration writes is STALE. It
+-- omits the 8 dispatch/acceptance types the live database actually carries
+-- (SeatDispatchIssued/Delivered/Completed/Failed/Retried/Cancelled,
+-- AcceptanceGranted, AcceptanceRejected — 1371 live rows) and instead names four
+-- values that exist nowhere (DispatchEnqueued, DispatchStatusChanged,
+-- AcceptanceDecided, and it drops nothing to make room). Because the widening is
+-- DROP + ADD of the COMPLETE list, applying this file would REPLACE the correct
+-- 30-value list with this 26-value one. On a database with data PostgreSQL
+-- refuses it outright ('check constraint ... is violated by some row'); on an
+-- empty database it succeeds and silently strands every dispatch event. Both
+-- measured on a scratch database. The fix is to write the real 30-value list plus
+-- TopicClosed — the same complete-list discipline 019/020 already follow.
 --
 -- THE DEFECT THIS CLOSES (measured on live 2026-10-29, read-only):
 --
@@ -50,6 +72,25 @@
 --
 -- The DB CHECK on `canonical_events.event_type` is a closed set, so widening it
 -- is a DROP + CREATE of the constraint, exactly as 019 did for `TopicOpened`.
+--
+-- THE LIST BELOW WAS WRONG UNTIL 2026-10-30 AND IS NOW CORRECTED. The original
+-- carried a stale 26-value vocabulary from an early design: it omitted the eight
+-- dispatch/acceptance types the database actually carries — SeatDispatchIssued,
+-- SeatDispatchDelivered, SeatDispatchCompleted, SeatDispatchFailed,
+-- SeatDispatchRetried, SeatDispatchCancelled, AcceptanceGranted,
+-- AcceptanceRejected — and named four values that exist nowhere (DispatchEnqueued,
+-- DispatchStatusChanged, AcceptanceDecided, and it dropped nothing to make room).
+-- Because the widening is DROP + ADD of the COMPLETE list, that list would have
+-- REPLACED the correct one. Measured on a scratch database, both directions:
+-- with data PostgreSQL refuses it ('check constraint ... is violated by some row',
+-- transaction rolls back — a no-op failure); on an empty database it succeeds and
+-- silently strands every dispatch event (1371 live rows would have been orphaned).
+--
+-- The corrected list is the 30 values live actually carries — cross-checked
+-- against the pinned Rust EventType::ALL on crates/seatloom-core/src/db/
+-- event_domain.rs, identical in set AND order — plus TopicClosed, the one value
+-- this migration adds. 31 total. Verified by applying this file to a scratch
+-- database and reading the constraint back.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'canonical_events_event_type_vocab') THEN
@@ -59,7 +100,9 @@ BEGIN
         'SessionStarted', 'WorkItemCreated', 'WorkItemStatusChanged', 'ArtifactCreated',
         'HandoffSent', 'HandoffAccepted', 'HandoffCompleted', 'ReviewVerdictIssued',
         'SeatDelegationIssued', 'SeatDelegationClosed', 'SupervisorMessage', 'SeatResponse',
-        'DispatchEnqueued', 'DispatchStatusChanged', 'AcceptanceRequested', 'AcceptanceDecided',
+        'SeatDispatchIssued', 'SeatDispatchDelivered', 'SeatDispatchCompleted',
+        'SeatDispatchFailed', 'SeatDispatchRetried', 'SeatDispatchCancelled',
+        'AcceptanceRequested', 'AcceptanceGranted', 'AcceptanceRejected',
         'AcceptanceCancelled', 'MemoryCreated', 'MemoryRecalled', 'MemoryPromoted',
         'MemoryForgotten', 'MemoryResolved', 'OperatorDecisionRequested',
         'OperatorDecisionResolved', 'TopicOpened', 'TopicClosed'
@@ -73,7 +116,9 @@ BEGIN
         'SessionStarted', 'WorkItemCreated', 'WorkItemStatusChanged', 'ArtifactCreated',
         'HandoffSent', 'HandoffAccepted', 'HandoffCompleted', 'ReviewVerdictIssued',
         'SeatDelegationIssued', 'SeatDelegationClosed', 'SupervisorMessage', 'SeatResponse',
-        'DispatchEnqueued', 'DispatchStatusChanged', 'AcceptanceRequested', 'AcceptanceDecided',
+        'SeatDispatchIssued', 'SeatDispatchDelivered', 'SeatDispatchCompleted',
+        'SeatDispatchFailed', 'SeatDispatchRetried', 'SeatDispatchCancelled',
+        'AcceptanceRequested', 'AcceptanceGranted', 'AcceptanceRejected',
         'AcceptanceCancelled', 'MemoryCreated', 'MemoryRecalled', 'MemoryPromoted',
         'MemoryForgotten', 'MemoryResolved', 'OperatorDecisionRequested',
         'OperatorDecisionResolved', 'TopicOpened', 'TopicClosed'
@@ -100,4 +145,4 @@ BEGIN
 END $$;
 
 COMMENT ON COLUMN topics.closed_at IS
-  'Written by close_topic (024) as NOW(), never passed in by a caller. The topics_closed_at_matches_status CHECK keeps it present exactly when the status is not open. It was a column nothing wrote from 010 until 024, which is why all 51 live rows were open.';
+  'Written by close_topic (026) as NOW(), never passed in by a caller. The topics_closed_at_matches_status CHECK keeps it present exactly when the status is not open. It was a column nothing wrote from 010 until 026, which is why all 51 live rows were open.';

@@ -53,7 +53,7 @@ for n in 015_knowledge_layer 016_acceptance_plan 017_acceptance_cancel 018_memor
     || { echo "cannot read ${n} from track"; exit 1; }
   apply < "/tmp/${n}.sql" || { echo "failed at ${n}"; exit 1; }
 done
-apply < "$ROOT/infra/postgres/schema/024_topic_close.sql" \
+apply < "$ROOT/infra/postgres/schema/026_topic_close.sql" \
   || { echo "024 did not apply — see above"; exit 1; }
 echo "  scratch ready (024 applied)"
 

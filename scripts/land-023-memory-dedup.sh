@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
-# Land the memory-dedup guard (023) on the live database.
+# Land the memory-dedup guard on the live database.
+#
+# NOTE ON THE FILENAME. This script keeps its original name, land-023, because the
+# operator's command habit is already built on it. The migration it applies is
+# infra/postgres/schema/025_memory_dedup.sql — renumbered from 023 on 2026-10-30
+# when a second migration was found already occupying 023. The MIG= path below is
+# the authority; every message this script prints names 025, the file it runs.
 #
 # WHY THIS NEEDS THE OPERATOR. The guard is written, tested and proven, but it
 # CANNOT land on its own, and the reason is a real deadlock rather than paperwork:
 #
-#   023 creates a UNIQUE INDEX. A unique index cannot be created while duplicate
-#   rows exist. Live has 5 groups of 2 rows (measured 2026-10-30, grouped on the
-#   index's REAL key: coalesce(l2_file_path,''), coalesce(l2_line_start::text,''),
-#   coalesce(l2_line_end::text,''), l0_summary).
-#   CORRECTED: I first reported 6 groups with a worst case of four rows. That was
-#   my own grouping error - I grouped on four columns but SELECTed and reported
-#   only three, so three groups sharing one file printed as three copies of the
-#   same six rows and I read it as one group of six. Corrected the same day in
-#   ev-correction-duplicate-group-count. Group and report on the SAME columns.
-#   So:
+#   025 creates a UNIQUE INDEX. A unique index cannot be created while duplicate
+#   rows exist. Live has 5 groups of 2 rows, 10 rows in total (measured
+#   2026-10-30, grouped on the index's REAL key: coalesce(l2_file_path,''),
+#   coalesce(l2_line_start::text,''), coalesce(l2_line_end::text,''),
+#   l0_summary). So:
 #
 #     duplicates exist  ->  index refused  ->  dedup not enforced  ->  more duplicates
 #
-#   023's own guard refuses loudly and NAMES the rows rather than half-applying,
+#   THE GROUPING KEY IS THE INDEX'S OWN KEY, AND GETTING IT WRONG INFLATES THE COUNT.
+#   It is (l2_file_path, l2_line_start, l2_line_end, l0_summary), each coalesced
+#   — NOT (project_id, topic_id, kind, l2_file_path, l2_line_start). Grouping on the
+#   wrong set gives 15 groups; grouping on the index's real key gives 5. A row that
+#   does not violate the index is not a duplicate this migration can refuse, so the
+#   wider grouping describes a problem the index does not have.
+#
+#   AND GROUP ON THE COLUMNS YOU REPORT. Aegis's original "6 groups, one with four
+#   rows" came from grouping on four columns while selecting and printing three:
+#   three groups sharing one file printed as three copies of the same six rows,
+#   which reads as one group of six. The count was wrong, not the rows. Group on
+#   the key, print the key, and never widen one without the other.
+#
+#   025's own guard refuses loudly and NAMES the rows rather than half-applying,
 #   which is correct, and which is also why nothing has silently progressed.
 #
-# Breaking the deadlock means deleting or merging 6 groups of rows in the live
+# Breaking the deadlock means deleting or merging 5 groups of rows in the live
 # database. That is a live-DB write, which Aegis is permission-blocked from and
 # which no seat should decide either: which of two rows is the real one is a
 # judgement about recorded facts, not a mechanical dedup.
@@ -31,7 +45,7 @@
 #
 # Usage:
 #   bash scripts/land-023-memory-dedup.sh              # report only
-#   bash scripts/land-023-memory-dedup.sh --apply      # resolve, then land 023
+#   bash scripts/land-023-memory-dedup.sh --apply      # resolve, then land 025
 #
 # The migration itself is on packet/nimbus/project-scoped-reads and is NOT on
 # track yet, so this script takes it from that branch by explicit ref. If it has
@@ -44,23 +58,35 @@ cd "$(dirname "$0")/.." || exit 2
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
-BRANCH="packet/nimbus/project-scoped-reads"
-MIG="infra/postgres/schema/023_memory_dedup.sql"
+# The migration was renumbered 023 -> 025 on 2026-10-30 by Onyx, on branch
+# packet/onyx/topic-opened-019, after a second migration was found already
+# occupying 023. It therefore lives on Onyx's branch until that branch is
+# integrated, so BOTH packet branches are checked. track/infra-foundation is
+# still preferred, and its absence is reported rather than guessed at.
+BRANCHES="packet/onyx/topic-opened-019 packet/nimbus/project-scoped-reads"
+MIG="infra/postgres/schema/025_memory_dedup.sql"
 
 say() { printf '%s\n' "$*"; }
 
 # --- where is the migration? ------------------------------------------------
 if git cat-file -e "track/infra-foundation:$MIG" 2>/dev/null; then
   SRC="track/infra-foundation:$MIG"
-  say "migration 023 is ON TRACK ($SRC)"
-elif git cat-file -e "$BRANCH:$MIG" 2>/dev/null; then
-  SRC="$BRANCH:$MIG"
-  say "migration 023 is on $BRANCH only — NOT on track."
-  say "  Landing it on live before it is on track means live runs code the"
-  say "  integration branch does not have. Consider merging the branch first."
+  say "migration 025 is ON TRACK ($SRC)"
 else
-  say "FAIL: cannot find $MIG on track or on $BRANCH" >&2
-  exit 2
+  SRC=""
+  for b in $BRANCHES; do
+    if git cat-file -e "$b:$MIG" 2>/dev/null; then
+      SRC="$b:$MIG"
+      say "migration 025 is on $b only — NOT on track."
+      say "  Landing it on live before it is on track means live runs code the"
+      say "  integration branch does not have. Consider merging the branch first."
+      break
+    fi
+  done
+  if [ -z "$SRC" ]; then
+    say "FAIL: cannot find $MIG on track or on any of: $BRANCHES" >&2
+    exit 2
+  fi
 fi
 
 # --- is it already landed? --------------------------------------------------
@@ -113,7 +139,7 @@ groups=$(podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' 
   order by 5 desc;")
 
 if [ -z "$groups" ]; then
-  say "  none — the deadlock is not present. Landing 023 should just work."
+  say "  none — the deadlock is not present. Landing 025 should just work."
 else
   n=0
   while IFS='|' read -r f s e sum c sample; do
@@ -181,7 +207,7 @@ say "survivors:$survivors"
 say ""
 say "Not yet applied. The delete and the migration are the last two steps and"
 say "they need a second confirmation, because this is the live ledger."
-printf 'type YES to delete the non-surviving rows and land 023: '
+printf 'type YES to delete the non-surviving rows and land 025: '
 read -r confirm
 [ "$confirm" = "YES" ] || { say "aborted, nothing written"; exit 1; }
 
@@ -205,7 +231,7 @@ WHERE id IN (
 SQL
 
 say ""
-say "landing 023…"
+say "landing 025…"
 git show "$SRC" | podman exec -i seatloom-postgres psql -U seatloom -d seatloom -f - 2>&1 | sed 's/^/  /'
 
 idx=$(podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -c \
