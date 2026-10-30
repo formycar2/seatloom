@@ -41,12 +41,6 @@ export type Provenance =
 export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
 
 /**
- * Tabs whose content is mirrored from a live tmux pane. Everything not listed
- * here is seed- or fixture-backed until its capture path lands.
- */
-export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions', 'dispatches']);
-
-/**
  * Tabs whose rows come from the canonical ledger, read for real.
  *
  * 2026-10-16: the timeline was NOT in this set and NOT in LIVE_TABS, so
@@ -102,6 +96,23 @@ export const LIVE_TAB_BACKING: Readonly<Record<string, 'tmux' | 'database'>> = {
 };
 
 /**
+ * Tabs whose content is mirrored from a live tmux pane. Everything not listed
+ * here is seed- or fixture-backed until its capture path lands.
+ *
+ * 2026-10-30: this used to be a hand-written `new Set([...])` — a SECOND list of
+ * tab names, next to `LIVE_TAB_BACKING`. The two drifted immediately once six tabs
+ * were added to BACKING, and nothing watched the direction they had already
+ * drifted in. Worse, the branch that consulted this set
+ * (`if (LIVE_TABS.has(tab)) return 'live'`) became unreachable the moment BACKING
+ * covered the same tabs, and deleting it left 23 tests green.
+ *
+ * So it is now DERIVED from the one list that decides anything. There is exactly
+ * one place to add a tab, and this set cannot disagree with it by construction.
+ * A reader auditing provenance sees one gate list, not three.
+ */
+export const LIVE_TABS: ReadonlySet<string> = new Set(Object.keys(LIVE_TAB_BACKING));
+
+/**
  * Provenance of a tab. `backendHydrated` comes from useDataStore and tells us
  * whether the Postgres read actually succeeded. `discovery` is the live seat
  * discovery status from useLiveSessionsStore.
@@ -138,7 +149,15 @@ export function provenanceForTab(
     // `backendHydrated`, so a failed read still wore a green LIVE badge.
     return backendHydrated ? 'live' : 'fixture';
   }
-  if (LIVE_TABS.has(tab)) return 'live';
+  // 2026-10-30: `if (LIVE_TABS.has(tab)) return 'live';` used to sit here.
+  // It became unreachable the moment LIVE_TAB_BACKING covered the same tabs —
+  // every member of LIVE_TABS is caught by the mirror branch above or the database
+  // branch above that — and deleting it left 23 tests green. A gate that reads as
+  // a live rule but can never run is worse than no gate: a reader auditing
+  // provenance counts three gates and reasonably assumes the third is reachable.
+  //
+  // It is gone, and LIVE_TABS is now derived from LIVE_TAB_BACKING rather than
+  // hand-maintained beside it, so there is nothing left to drift.
   if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
   return backendHydrated ? 'seed' : 'fixture';
 }

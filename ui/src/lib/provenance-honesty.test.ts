@@ -106,6 +106,33 @@ describe('the LIVE badge depends on the read backing the tab', () => {
     expect(provenanceForTab('live-seats', true, 'failed')).toBe('discovery-failed');
   });
 
+  it('exactly ONE list decides a tab backing, and the derived set cannot disagree with it', () => {
+    // 2026-10-30. There used to be TWO hand-maintained lists of tab names:
+    // LIVE_TABS and LIVE_TAB_BACKING. They drifted the moment six tabs were added
+    // to BACKING, and nothing watched the direction they had already drifted in —
+    // adding to either alone was caught, but the two moving apart was not. A trap
+    // with a green suite on top: the next person to add a tab had two lists to
+    // update, only one enforced, and the unenforced one fed a branch that had
+    // become unreachable.
+    //
+    // LIVE_TABS is now DERIVED from LIVE_TAB_BACKING, so drift is impossible by
+    // construction. This test pins that fact rather than re-checking the contents,
+    // because the contents are already pinned by the exact-set assertion below.
+    //
+    // What it guards is the construction: if someone reintroduces a second list,
+    // these stop being the same object and this goes red.
+    expect(LIVE_TABS.size).toBe(Object.keys(LIVE_TAB_BACKING).length);
+    for (const tab of Object.keys(LIVE_TAB_BACKING)) {
+      expect(LIVE_TABS.has(tab), `${tab} is in BACKING but not in the derived set`).toBe(true);
+    }
+    for (const tab of LIVE_TABS) {
+      expect(
+        LIVE_TAB_BACKING[tab],
+        `${tab} is in the derived set but declares no backing`,
+      ).toBeDefined();
+    }
+  });
+
   it('every LIVE_TABS entry declares what backs it — no tab claims LIVE on a tab name', () => {
     for (const tab of LIVE_TABS) {
       expect(LIVE_TAB_BACKING[tab], tab).toBeDefined();
