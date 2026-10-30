@@ -328,6 +328,25 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
     expect(screen.queryByText('产出物')).toBeNull();
     expect(screen.queryByText(/Playbook & 治理文档/)).toBeNull();
+
+    // AND the restore must not have persisted anything.
+    //
+    // The ruling's second half: persistence moved into operator input, so the
+    // restore — the one tab change with no operator input — must not write. This
+    // is the assertion for the direction nobody tested, and it is where the
+    // round-6 pollution lived: the write effect persisted the cold-start default
+    // over the operator's real saved tab.
+    //
+    // Mutation this kills: route the restore through `chooseTab`. With that, the
+    // default is written to disk and the saved 'artifacts' is destroyed.
+    const writes = appStoreWrites.values.length;
+    expect(writes).toBeGreaterThan(0); // the test's own setup persisted, so there is a baseline
+    const tabsWrittenSince = writtenTabsFor(RECORDED_PROJECT)
+      .slice(writes)
+      .filter((t) => t !== undefined);
+    expect(tabsWrittenSince).toEqual([]);
+    // ...and the operator's saved tab is still on disk, untouched.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
   });
 
   it('switching projects inside a session still restores THAT project\u2019s tab', async () => {
@@ -456,6 +475,63 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(readStoredAppStore().activeProjectId).toBe(FIRST_REAL_PROJECT));
     expect(writtenProjectIds().at(-1)).toBe(FIRST_REAL_PROJECT);
     expect(writtenProjectIds()).not.toContain(OLD_LAUNCH_DEFAULT);
+  });
+
+  it('an operator-driven tab change IS persisted — the wrapper is not decorative', async () => {
+    // The ruling moved persistence from an effect into operator input. That makes
+    // the write reachable only through `chooseTab`, which makes "did anything
+    // actually persist?" the question the suite has to answer — and this is the
+    // direction nobody had tested.
+    //
+    // Mutation this kills: make chooseTab NOT call updateProjectUIState. Without
+    // this test that mutation is invisible — the suite stays green while the
+    // operator's position is silently never saved again, which is the same class
+    // of failure as the round-6 pollution, in the opposite direction.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+
+    // The cold start added no write of its own. `writtenTabsFor` reports a
+    // snapshot taken at every write, and the test's own `setState` in beforeEach
+    // persists too — so the baseline is measured here, after the mount settles,
+    // and the assertion is that nothing was ADDED to it by the launch.
+    const writesAfterColdStart = appStoreWrites.values.length;
+    expect(writesAfterColdStart).toBeGreaterThan(0);
+
+    // Now the operator navigates, through the nav rail — the same path he uses.
+    // 'workitems' is chosen because it is neither the cold-start default nor the
+    // saved 'artifacts', so "the write happened" and "nothing happened" are
+    // different observations.
+    // The nav rail's own button. Matched by title because the rail is collapsed in
+    // jsdom (the compact/tablet breakpoints collapse it), which leaves the label
+    // only as an accessible name on the button.
+    fireEvent.click(screen.getByTitle('工作项'));
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+
+    // It reached the disk, for the project he was in — and it is a NEW write, not
+    // one of the baseline ones.
+    expect(appStoreWrites.values.length).toBeGreaterThan(writesAfterColdStart);
+    const written = writtenTabsFor(RECORDED_PROJECT)
+      .slice(writesAfterColdStart)
+      .filter((t) => t !== undefined);
+    expect(written).toContain('workitems');
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('workitems');
+
+    // ...and a later launch reads it back. The project memory survives a restart,
+    // which is the whole point of persisting it.
+    await relaunch();
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('workitems');
   });
 
   it('a second launch lands back on the same project AND the same tab', async () => {

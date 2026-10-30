@@ -498,31 +498,61 @@ const App: React.FC = () => {
     setLoadedUIProjectId(activeProjectId);
   }, [activeProjectId, restoredPosition]);
 
+  // Remember which project the operator is in. This is NOT the UI position: it is
+  // which project the next launch returns to, and it is written here rather than
+  // in `chooseTab` because a project SWITCH must also be remembered, and the
+  // switch path does not go through a tab change.
+  //
+  // Kept separate from the tab persistence on purpose. The ruling removed the
+  // effect-driven TAB write; it did not ask for the project id to stop being
+  // remembered, and without it a launch could not return to where the operator
+  // was.
   useEffect(() => {
     if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;
-    if (activeProjectId && activeProjectId !== 'all-projects' && activeTab !== 'all-projects') {
-      updateProjectUIState(activeProjectId, {
-        activeTab,
-        selectedObjectId: selectedObject?.id || null,
-        selectedObjectType: selectedObject?.type || null,
-      });
-      // Remember which project the operator is in, so the next launch returns here.
+    if (activeProjectId && activeProjectId !== 'all-projects') {
       setActiveProjectId(activeProjectId);
     }
-  }, [
-    restoredPosition,
-    loadedUIProjectId,
-    activeTab,
-    selectedObject,
-    activeProjectId,
-    updateProjectUIState,
-    setActiveProjectId,
-  ]);
+  }, [restoredPosition, loadedUIProjectId, activeProjectId, setActiveProjectId]);
+
+  // ─── Persisting the UI position ───
+  //
+  // RULED 2026-10-29 (Lyra): the UI position is persisted from OPERATOR INPUT, not
+  // from an effect.
+  //
+  // The effect-driven write could not tell "restored" from "chosen": both produce
+  // the same `activeTab` value, so every gate I tried either left the cold-start
+  // default being persisted over the operator's real saved tab (the round-6
+  // pollution, which came back and was caught by Lyra's mutation 2), or swallowed
+  // the operator's legitimate writes. Five attempts traded one for the other.
+  //
+  // The information that distinguishes them exists only at the call site, so the
+  // write belongs there. ONE wrapper, used by every operator-driven tab change:
+  // eight scattered `updateProjectUIState` calls would be eight chances to forget
+  // one, and forgetting one is silent position loss — the same class of bug that
+  // took ten rounds to find.
+  //
+  // The restore at the tab effect above deliberately does NOT go through this.
+  // It is the only tab change with no operator input, and it must not persist.
+  const chooseTab = useCallback(
+    (tab: Tab) => {
+      setActiveTab(tab);
+      if (activeProjectId && activeProjectId !== 'all-projects' && tab !== 'all-projects') {
+        updateProjectUIState(activeProjectId, {
+          activeTab: tab,
+          selectedObjectId: selectedObject?.id || null,
+          selectedObjectType: selectedObject?.type || null,
+        });
+        // Remember which project the operator is in, so the next launch returns here.
+        setActiveProjectId(activeProjectId);
+      }
+    },
+    [activeProjectId, selectedObject, updateProjectUIState, setActiveProjectId],
+  );
 
   // ─── Project switching ───
   const handleProjectSwitchRequest = (id: string) => {
     if (id === 'all-projects') {
-      setActiveTab('all-projects');
+      chooseTab('all-projects');
       return;
     }
     const currentData = activeProjectId ? projectData[activeProjectId] : null;
@@ -547,7 +577,7 @@ const App: React.FC = () => {
     setActiveProject(id);
     setPendingProjectId(null);
     setProtectionType(null);
-    if (activeTab === 'all-projects') setActiveTab('dashboard');
+    if (activeTab === 'all-projects') chooseTab('dashboard');
   };
 
   // ─── Object selection ───
@@ -631,7 +661,7 @@ const App: React.FC = () => {
   const handleConfirmProposal = (workItem: any) => {
     addWorkItem(workItem);
     setSelectedObject({ type: 'WorkItem', id: workItem.id });
-    setActiveTab('workitems');
+    chooseTab('workitems');
     setActiveForm('none');
   };
 
@@ -715,7 +745,7 @@ const App: React.FC = () => {
       return (
         <SupervisionDashboard
           onNavigateToInbox={() => {
-            setActiveTab('inbox');
+            chooseTab('inbox');
             setSelectedObject(null);
           }}
           onSelectInboxItem={handleInboxSelect}
@@ -819,7 +849,7 @@ const App: React.FC = () => {
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {
-          setActiveTab(tab as Tab);
+          chooseTab(tab as Tab);
           setSelectedObject(null);
           setActiveForm('none');
         }}
@@ -844,7 +874,7 @@ const App: React.FC = () => {
             activeTab === 'live-seats'
               ? undefined
               : () => {
-                  setActiveTab('live-seats');
+                  chooseTab('live-seats');
                   setSelectedObject(null);
                   setActiveForm('none');
                 }
@@ -937,7 +967,7 @@ const App: React.FC = () => {
           count={reconcileIssueCount || 0}
           onClose={() => setShowReconcileSummary(false)}
           onViewInbox={() => {
-            setActiveTab('inbox');
+            chooseTab('inbox');
             setShowReconcileSummary(false);
           }}
         />
