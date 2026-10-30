@@ -875,3 +875,77 @@ remotes for most of that.
 HEARTBEAT documents plus the ruling that made the above possible — 482+87 insertions, zero deletions, no
 conflicts. Until it lands, five of seven seats still have no standing duty the waker can see, and I
 verified that again this round in the waker log.
+
+---
+
+## 2026-10-30 evening · Lyra — the standing-duty ask is now ONE COMMAND, and it was a bad ask until now
+
+### The correction
+
+Two sections above ask you to **merge** `packet/lyra/standing-duty-docs-only` into track. **That was the
+wrong verb, and it is why the ask sat for two days.** I checked how documentation actually reaches track:
+
+```
+4591237 Xiaolong Zhang  docs(knowledge): I shipped a fals...     <- landed AEGIS-HEARTBEAT.md
+8a2d733  Xiaolong Zhang  (70 insertions)                          <- landed LYRA-HEARTBEAT.md
+8804c69 Xiaolong Zhang  ops(aegis): supervisor-lane docs          <- landed supervisor-lane docs
+```
+
+**Every one a direct commit. Not one a merge of a packet branch.** So I was asking for an action shape you
+never use, for a six-file pure addition. That is on me.
+
+### What to run
+
+```bash
+bash scripts/land-standing-duty-docs.sh
+```
+
+It is on `packet/lyra/milestone-summary` and follows the `land-knowledge-live.sh` precedent — an auditable,
+repeatable script, because a seat must not run a live action itself.
+
+**It touches only documents.** No code, no database, no card, no merge. **It needs no restart** —
+`has_heartbeat_doc` is called every sweep and not cached, which is the whole point of the convention.
+
+### What it does, in order, and every step can fail
+
+| Step | What it proves |
+|---|---|
+| 1 | branch is `track/infra-foundation`; no uncommitted **tracked** changes; the source branch exists and **is a descendant of the current tip**; all six files exist on the source and **do not exist on track** — so this is provably a pure addition |
+| 2 | extracts each file and compares `git hash-object` against the source blob — identical, not "copied" |
+| 3 | appends the grandfather entry, then **compares the original 207 lines byte for byte** to prove it is only an append |
+| 4 | runs `verify-docs.sh` and prints its output verbatim on failure |
+| 5 | **compiles the waker's own `heartbeat_doc_path()` and runs it** — all seven seats must resolve |
+| 6 | shows the staged diff, then requires you to type `YES` |
+
+### Verified by dry run and by mutation, not by reading it
+
+Dry run against a scratch at the track tip: **six hashes matched, 207 lines preserved, gate exit 0, all
+seven seats FOUND, 569 insertions**, and nothing committed when answered no.
+
+Mutation: dropped `ONYX-HEARTBEAT.md` from a copy of the source branch — **step 1 refused** with "the source
+branch has no ONYX-HEARTBEAT.md." The check fails in the direction it claims to.
+
+**Running it also caught two bugs in my own script:** it wrote intermediates to a `/tmp` path that was
+already a directory, so `rustc` refused and the strongest check silently fell back to a weaker one; and it
+deleted the files it was about to count, printing a blank line count. Both were found by running it.
+
+### Why it is worth one command from you
+
+```
+heartbeat nudges in the waker log: 90
+  for seat-lyra-001: 90
+  for the other five seats: 0
+```
+
+Five seats — mira, nimbus, flux, onyx, vela — have no `<SEAT>-HEARTBEAT.md`, so **the waker never calls them
+when the queue is empty.** The documents were written on 10-28, committed, and pushed to two remotes, and
+delivered nothing: the process that consumes them reads a relative path against the primary checkout.
+**A governance artifact is not delivered when it is committed; it is delivered when the consuming process can
+read it.**
+
+### The second command, and it is the one that turns the line green
+
+The UI work is done and verified at **375/375 across 31 files** on `packet/mira/knowledge-panel`, and the
+card `acc-disp-faEWBt8kSKgv-6pJs_Rqw` is **pending** and now bound to a verdict that measures the current
+branch tip. Track is still red at 2 failed / 370 passed. **That is a merge decision, and the card is the
+only thing in front of you for it.**
