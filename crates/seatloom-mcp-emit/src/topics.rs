@@ -19,6 +19,12 @@ use seatloom_core::db::SeatloomDb;
 
 use crate::dispatch::{resolve_project, resolve_seat, DispatchRejection};
 
+/// `close_topic` — close a recall scope (024).
+#[derive(Debug, Deserialize)]
+pub struct CloseTopicArgs {
+    pub topic_id: String,
+}
+
 /// `open_topic` — open (idempotently) a recall scope.
 #[derive(Debug, Deserialize)]
 pub struct OpenTopicArgs {
@@ -59,6 +65,19 @@ pub enum TopicRejection {
     ProjectMissing {
         project_id: String,
     },
+    /// `024`: the topic names no row. Closing an unknown id is a refusal, not a
+    /// no-op — a no-op would let a caller believe a scope it never created is
+    /// now closed.
+    TopicMissing {
+        topic_id: String,
+    },
+    /// `024`: the topic is not `open`. Reported separately from `TopicMissing`
+    /// because the caller's next action differs: one is a typo, the other is a
+    /// double close.
+    NotOpen {
+        topic_id: String,
+        status: String,
+    },
     Db(String),
 }
 
@@ -94,14 +113,37 @@ impl std::fmt::Display for TopicRejection {
                     "project {project_id:?} names no project — a scope is never fabricated"
                 )
             }
-            TopicRejection::Db(e) => write!(f, "open_topic rejected: {e}"),
+            TopicRejection::TopicMissing { topic_id } => write!(
+                f,
+                "topic {topic_id:?} names no topic — closing an unknown scope is refused, \
+                 never a no-op"
+            ),
+            TopicRejection::NotOpen { topic_id, status } => write!(
+                f,
+                "topic {topic_id:?} is {status:?}, not open — a close moves open -> closed and \
+                 nothing else. Its memories are unaffected either way: a recall scope is a \
+                 finding aid, not an access control."
+            ),
+            TopicRejection::Db(e) => write!(f, "topic rejected: {e}"),
         }
     }
 }
 
 impl From<DbError> for TopicRejection {
     fn from(e: DbError) -> Self {
-        TopicRejection::Db(e.to_string())
+        // The 024 refusals are mapped, not flattened into `Db`: a caller that
+        // gets "topic rejected: topic \"x\" is \"closed\", not open" can act, while
+        // "topic rejected: postgres error" tells it nothing. Every other DbError
+        // still falls through to the generic arm — an unmapped error must stay
+        // visible as what it is rather than be guessed into a typed shape.
+        match e {
+            DbError::TopicNotFound { id } => TopicRejection::TopicMissing { topic_id: id },
+            DbError::TopicNotOpen { id, status } => TopicRejection::NotOpen {
+                topic_id: id,
+                status,
+            },
+            other => TopicRejection::Db(other.to_string()),
+        }
     }
 }
 
@@ -196,6 +238,36 @@ pub async fn open_topic(db: &SeatloomDb, args: OpenTopicArgs) -> Result<String, 
     }
 }
 
+/// `close_topic(topic_id)` — the 024 closure path.
+///
+/// NOT idempotent, and deliberately so. `open_topic` is idempotent because
+/// re-opening an existing row is not a transition. A close IS a transition, and a
+/// second close is a refusal that names the current state — answering "already
+/// closed" as success would let a caller believe it had just changed something.
+///
+/// The memories are untouched, and that is the ruling rather than an omission:
+/// `get_topic_memories` and the tree reads do not filter on topic status, so a
+/// closed scope keeps answering exactly as before. Closing a recall scope is not
+/// hiding its evidence.
+///
+/// `closed_by` is resolved from `SEATLOOM_ACTOR_REF` server-side, the same rule
+/// `open_topic` follows — never a parameter.
+pub async fn close_topic(db: &SeatloomDb, args: CloseTopicArgs) -> Result<String, TopicRejection> {
+    let identity = resolve_seat()?;
+    let topic_id = non_empty(&args.topic_id, "topic_id")?;
+
+    let row = db.close_topic(&topic_id, &identity.actor_ref).await?;
+
+    // The message names what changed and, because it is the question that
+    // matters, what did NOT: the memories are untouched and still readable.
+    Ok(format!(
+        "closed topic {} in project {} (closed by {}) — status is now {}, one TopicClosed event \
+         appended. Its memories are untouched and still readable: closing a recall scope is not \
+         hiding its evidence.",
+        row.id, row.project_id, identity.actor_ref, row.status
+    ))
+}
+
 /// A required non-blank string field, trimmed.
 fn non_empty(value: &str, field: &'static str) -> Result<String, TopicRejection> {
     let trimmed = value.trim();
@@ -208,6 +280,35 @@ fn non_empty(value: &str, field: &'static str) -> Result<String, TopicRejection>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 024 refusals name the state, and the two "topic is wrong" cases are
+    /// DISTINCT variants rather than one. Collapsing them would make "already
+    /// closed" look like "never existed", and the caller's next action differs:
+    /// one is a double close, the other is a typo.
+    #[test]
+    fn close_refusals_distinguish_missing_from_not_open() {
+        let missing = TopicRejection::TopicMissing {
+            topic_id: "t".to_string(),
+        }
+        .to_string();
+        let not_open = TopicRejection::NotOpen {
+            topic_id: "t".to_string(),
+            status: "closed".to_string(),
+        }
+        .to_string();
+        assert!(missing.contains("names no topic"), "{missing}");
+        assert!(not_open.contains("not open"), "{not_open}");
+        assert_ne!(
+            missing, not_open,
+            "the two refusals must not be the same sentence"
+        );
+        // And the not-open message answers the question that matters, so a caller
+        // does not have to guess whether closing hid the memories.
+        assert!(
+            not_open.contains("finding aid"),
+            "the refusal should say the memories are unaffected: {not_open}"
+        );
+    }
 
     /// The refusals name the rule, so a caller can fix the call without
     /// guessing — and none of them is a raw database error.

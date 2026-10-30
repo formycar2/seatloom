@@ -108,6 +108,18 @@ pub enum EventType {
     // (open|closed|merged) and its own actor (`opened_by`), so it gets its own
     // transition, exactly as 012 gave `dispatch` and 014 gave `acceptance`.
     TopicOpened, // (none) -> open; actor = the seat that opened it
+    // (024, topic closure) a topic is CLOSED — open -> closed. The lifecycle
+    // `open|closed|merged` was declared in 010 and the CHECK has enforced it
+    // since; until now `closed` and `merged` were unreachable, because nothing
+    // wrote them. A vocabulary the database enforces but no path can reach is
+    // the "the feature exists but there is no path to it" shape — the same shape
+    // the operator has objected to repeatedly.
+    //
+    // `merged` is deliberately NOT added as a transition: merging two recall
+    // scopes has to decide what happens to every memory under both, and that is
+    // a product decision, not a state change. The CHECK keeps `merged` legal for
+    // the day it is designed; this enum does not advertise it.
+    TopicClosed, // open -> closed; actor = the seat that closed it
 }
 
 /// How an object relates to an event (`event_object_refs.role`) — `010:232-236`.
@@ -182,7 +194,7 @@ const REF_TYPE_EXPECTED: &str = "workitem, session, handoff, artifact, document,
 impl EventType {
     /// Every admitted value, in `010` CHECK order. Used by the exhaustiveness
     /// test that pins this enum against the migration.
-    pub const ALL: [EventType; 30] = [
+    pub const ALL: [EventType; 31] = [
         EventType::SessionStarted,
         EventType::WorkItemCreated,
         EventType::WorkItemStatusChanged,
@@ -213,6 +225,7 @@ impl EventType {
         EventType::OperatorDecisionRequested,
         EventType::OperatorDecisionResolved,
         EventType::TopicOpened,
+        EventType::TopicClosed,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -247,6 +260,7 @@ impl EventType {
             EventType::OperatorDecisionRequested => "OperatorDecisionRequested",
             EventType::OperatorDecisionResolved => "OperatorDecisionResolved",
             EventType::TopicOpened => "TopicOpened",
+            EventType::TopicClosed => "TopicClosed",
         }
     }
 }
@@ -286,6 +300,7 @@ impl FromStr for EventType {
             "OperatorDecisionRequested" => Ok(EventType::OperatorDecisionRequested),
             "OperatorDecisionResolved" => Ok(EventType::OperatorDecisionResolved),
             "TopicOpened" => Ok(EventType::TopicOpened),
+            "TopicClosed" => Ok(EventType::TopicClosed),
             _ => Err(ParseValueError {
                 domain: "EventType",
                 value: s.to_string(),
@@ -511,6 +526,7 @@ mod tests {
                 "OperatorDecisionResolved",
                 // 019 (topic creation): a topic is opened
                 "TopicOpened",
+                "TopicClosed",
             ],
             "must equal 010:141-159 + 012 + 013 + 014 + 017 + 015 + 018 + 019's canonical_events_event_type_vocab"
         );

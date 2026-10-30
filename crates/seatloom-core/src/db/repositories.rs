@@ -100,6 +100,35 @@ const SESSION_WORK_SELECT: &str = "SELECT \
         END AS join_state \
        FROM v_memory_session_join v \
        JOIN memories m ON m.id = v.memory_id";
+/// `023`: the dedup predicate, as ONE named constant the guard and its
+/// regression test both read.
+///
+/// WHY A CONSTANT AND NOT AN INLINE STRING. The first version of the guard had
+/// this SQL inline and the test asserted `src.contains("<the same predicate>")`.
+/// That test was vacuous: the literal it searched for was written INSIDE the
+/// test, so `contains` matched the test's own copy and was satisfied whatever
+/// the guard did. Flux measured it — mutating `IS NOT DISTINCT FROM` to `=` broke
+/// NULL safety and BOTH the proof and the Rust test still passed.
+///
+/// With the predicate named here, the guard can only use it by referring to it,
+/// and the test refers to the same name. A rename is a COMPILE error; a
+/// corruption of the text is a TEST failure. Neither is silent.
+///
+/// The four columns, and why each is compared the way it is:
+///   * `l2_file_path` through COALESCE — it is NULL for a document-kind pointer;
+///   * the two line ranges through `IS NOT DISTINCT FROM` — three of the four
+///     live duplicate groups carry NO line range, and `= NULL` matches nothing,
+///     so a plain-equality predicate would miss exactly the groups that need
+///     catching. THIS IS THE ONE THE OLD TEST COULD NOT SEE;
+///   * `l0_summary` through plain equality — it is NOT NULL.
+///
+/// `title` is deliberately absent: it changes, and a key that moves with a
+/// rename lets the same memory back in. Vela's 2026-10-11 probe proved it.
+const DEDUP_KEY_PREDICATE: &str = "coalesce(l2_file_path, '') = coalesce($1, '') \
+                    AND l2_line_start IS NOT DISTINCT FROM $2 \
+                    AND l2_line_end IS NOT DISTINCT FROM $3 \
+                    AND l0_summary = $4";
+
 impl SeatloomDb {
     pub fn new(pool: Pool) -> Self {
         Self { pool }
@@ -1263,6 +1292,49 @@ impl SeatloomDb {
     ) -> Result<(), DbError> {
         let mut client = self.pool.get().await.map_err(DbError::Pool)?;
         let tx = client.transaction().await?;
+        // `023`: refuse a repeat write BEFORE inserting, inside the same
+        // transaction, so the check and the insert can never disagree.
+        //
+        // The key is the evidence pointer plus the substance: (l2_file_path,
+        // l2_line_start, l2_line_end, l0_summary). `title` is excluded on
+        // purpose — a key that moves with a rename lets the same memory back in,
+        // which is how Vela's 2026-10-11 idempotency probe got a second row out
+        // of a write whose only difference was a title suffix.
+        //
+        // NULL-safe: three of the four duplicate groups on live carry NO line
+        // range at all, and `= NULL` matches nothing, so a plain equality
+        // predicate would miss exactly the groups that need catching.
+        //
+        // Measured on live before writing this: the key catches all 4 true
+        // duplicate groups (8 rows) and produces ZERO false positives on the
+        // legitimate rows that share a pointer — the four distinct memories
+        // citing ONYX-2026-10-14 lines 1-326 share the pointer AND the
+        // source_ref, and differ only in l0_summary, so they are not duplicates.
+        let existing = tx
+            .query_opt(
+                // `created_at` is rendered to text in SQL. Reading it as a
+                // `chrono::DateTime` would be the typed way, but the refusal only
+                // needs it for a human message, and `Row::get::<String>` on a
+                // timestamptz PANICS — which this guard did on its first real run,
+                // turning a clean refusal into a process abort.
+                &[
+                    "SELECT id, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') FROM memories WHERE ",
+                    DEDUP_KEY_PREDICATE,
+                    " LIMIT 1",
+                ]
+                .concat(),
+                &[&l2_file_path, &l2_line_start, &l2_line_end, &l0_summary],
+            )
+            .await?;
+        if let Some(row) = existing {
+            return Err(DbError::MemoryDuplicate {
+                existing_id: row.get(0),
+                created_at: row.get(1),
+                l2_file_path: l2_file_path.map(str::to_string),
+                l2_line_start,
+                l2_line_end,
+            });
+        }
         tx.execute(
             "INSERT INTO memories \
                (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
@@ -1602,6 +1674,114 @@ impl SeatloomDb {
         let row = row_to_topic(&row);
         tx.commit().await?;
         Ok((row, true))
+    }
+
+    /// `close_topic` — the 024 closure path: `open -> closed` +
+    /// `TopicClosed` in ONE transaction.
+    ///
+    /// THE RULING THIS IMPLEMENTS (dispatch disp-TbGRGr5cvpJFgCeaayu7S). The
+    /// question was "should a topic be closeable, and by whom". Answer: **yes,
+    /// by the seat that owns the recall scope, and only from `open`.** The
+    /// evidence for that ruling rather than the alternative ("topics are
+    /// permanent, remove the unreachable states"):
+    ///
+    ///   * 010 declares the lifecycle `open|closed|merged` and the CHECK has
+    ///     enforced it since, with `closed_at` sitting unwritten. A vocabulary the
+    ///     database enforces but no path can reach is the "the feature exists but
+    ///     there is no path to it" shape — the operator has objected to that shape
+    ///     repeatedly (dead buttons, states the product claims but cannot reach).
+    ///   * The user-visible cost was already measured: the acceptance card for
+    ///     019 tells the operator that three of the 51 topics are `open`. With all
+    ///     51 open, the word "open" carries no information and a live topic cannot
+    ///     be told from a finished one.
+    ///   * Removing the states instead would delete a declared lifecycle from a
+    ///     shipped schema, which is a bigger act than giving it a path.
+    ///
+    /// WHAT HAPPENS TO A CLOSED TOPIC'S MEMORIES — the question that matters, and
+    /// the answer is **nothing**. A close changes the topic's own status and
+    /// nothing else: `get_topic_memories` and the tree reads do NOT filter on
+    /// topic status (measured — no query in the codebase has a `t.status =`
+    /// predicate), so a closed topic keeps answering exactly as before. That is
+    /// deliberate: a recall scope is a finding aid, not an access control, and
+    /// hiding finished work's evidence behind a status change would make the
+    /// record less auditable, not more.
+    ///
+    /// `merged` is NOT a transition here. Merging two recall scopes has to decide
+    /// what happens to every memory under both, which is a product decision, not a
+    /// state change.
+    ///
+    /// GUARDS, in the same discipline as every other write path here:
+    ///   * `open -> closed` only. A closed topic is not re-closable, and a second
+    ///     call is a refusal that names the current state rather than a no-op.
+    ///   * The topic must EXIST. Closing an unknown id is a refusal.
+    ///   * `closed_at` is written by the database (`NOW()`), never passed in, so
+    ///     the timestamp cannot be invented by the caller.
+    ///   * The event and the row move in ONE transaction: there is no state where
+    ///     the ledger says closed and the row says open.
+    pub async fn close_topic(&self, topic_id: &str, closed_by: &str) -> Result<TopicRow, DbError> {
+        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+        let tx = client.transaction().await?;
+
+        // Existence and current state in one read, BEFORE any write. A topic that
+        // is not there is a refusal; a topic that is already closed is a different
+        // refusal. Collapsing the two would make "already closed" look like
+        // "never existed".
+        let current = tx
+            .query_opt(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                   FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        let Some(row) = current else {
+            return Err(DbError::TopicNotFound {
+                id: topic_id.to_string(),
+            });
+        };
+        let status: String = row.get(3);
+        if status != "open" {
+            return Err(DbError::TopicNotOpen {
+                id: topic_id.to_string(),
+                status,
+            });
+        }
+
+        tx.execute(
+            "UPDATE topics SET status = 'closed', closed_at = NOW() WHERE id = $1",
+            &[&topic_id],
+        )
+        .await?;
+
+        let draft = EventDraft {
+            event_id: format!("ev-{}", nanoid::nanoid!()),
+            event_type: EventType::TopicClosed,
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            actor_ref: closed_by.to_string(),
+            project_id: row.get(1),
+            turn_seq: None,
+            payload: serde_json::json!({
+                "topic_id": topic_id,
+                "title": row.get::<_, String>(2),
+                "previous_status": "open",
+            }),
+            refs: vec![
+                ObjectRefDraft::subject(RefType::Topic, topic_id),
+                ObjectRefDraft::new(RefType::Seat, closed_by, RefRole::Actor),
+            ],
+        };
+        append_event_in_tx(&tx, &draft).await?;
+
+        let row = tx
+            .query_one(
+                "SELECT id, project_id, title, status, parent_topic_id \
+                   FROM topics WHERE id = $1",
+                &[&topic_id],
+            )
+            .await?;
+        let row = row_to_topic(&row);
+        tx.commit().await?;
+        Ok(row)
     }
 
     /// `resolve` — the G3 closure path (018): `active -> resolved` +
@@ -4096,10 +4276,52 @@ pub enum DbError {
         "memory {id:?} is already in tier {tier:?} — promote needs a target tier that differs"
     )]
     MemoryNoTierChange { id: String, tier: String },
+    /// `024`: the topic id names no row. Closing an unknown id is a refusal, not
+    /// a no-op — a no-op would let a caller believe a scope it never created is
+    /// now closed.
+    #[error("topic {id:?} not found")]
+    TopicNotFound { id: String },
+    /// `024`: the topic is not `open`, so there is no `open -> closed` transition
+    /// to make. Reported separately from `TopicNotFound` because the caller's
+    /// next action differs: one is a typo, the other is a double close.
+    #[error(
+        "topic {id:?} is {status:?}, not open — a close moves open -> closed and nothing else"
+    )]
+    TopicNotOpen { id: String, status: String },
     /// `020`: the decision id names no row. A read of a mistyped id must say so,
     /// not render an empty obligation.
     #[error("operator decision {id:?} not found")]
     OperatorDecisionNotFound { id: String },
+    /// `023`: a memory that already exists. The dedup key is
+    /// `(l2_file_path, l2_line_start, l2_line_end, l0_summary)` — the evidence
+    /// pointer plus what the record actually says.
+    ///
+    /// WHY THIS IS A REFUSAL AND NOT AN UPSERT. A repeat `remember` is either a
+    /// retry of a write that landed (in which case the second write is a
+    /// duplicate and the id of the row that already exists is the useful
+    /// answer) or a genuinely new record that happens to cite the same lines
+    /// (in which case the substance differs and the key does not collide).
+    /// Silently updating would rewrite a recorded fact — the same reason
+    /// 013/014 refuse to roll a terminal row back — and silently inserting is
+    /// the defect this closes: measured on live, a retry-shaped probe created a
+    /// second row with no error and no warning.
+    ///
+    /// `title` is deliberately NOT in the key: it changes, and a key that moves
+    /// with a rename lets the same memory back in. Vela's 2026-10-11 probe
+    /// proved exactly that — she altered the title and the write went through.
+    #[error(
+        "memory already exists at {l2_file_path:?} lines {l2_line_start:?}-{l2_line_end:?} \
+         with this l0_summary (row {existing_id:?}, created {created_at:?}) — a repeat write is \
+         refused, never duplicated. If this is a retry, the row is already there; if it is a \
+         genuinely new record, change its l0_summary or its evidence pointer."
+    )]
+    MemoryDuplicate {
+        existing_id: String,
+        created_at: String,
+        l2_file_path: Option<String>,
+        l2_line_start: Option<i32>,
+        l2_line_end: Option<i32>,
+    },
     /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
     /// same reason 013/014 refuse to roll a terminal row back: the row is a
     /// projection of the append-only ledger, and re-deciding would rewrite a
@@ -4417,5 +4639,123 @@ mod tests {
         check_seat_domains("seat-unrecorded", None, None).expect("NULL columns are legitimate");
         check_session_domains("ses-unrecorded", None, "ClaudeCode")
             .expect("NULL harness is legitimate");
+    }
+
+    // ── 023: the dedup key, pinned as source text ───────────────────────────
+    //
+    // The guard itself needs a database and is proven end-to-end by
+    // `crates/seatloom-mcp-emit/proof/memory_dedup_proof.sh` (7 points, all
+    // against a scratch). What is pinned HERE is the part that needs no
+    // database and that a future edit would silently break: the key.
+    //
+    // A source-text test is weaker than a behaviour test and is labelled as such.
+    // It is here because the alternative is nothing, and "nothing" is what let
+    // the write path ship with no dedup at all for twelve days.
+
+    /// The dedup key is asserted against `DEDUP_KEY_PREDICATE` — the SAME named
+    /// constant the guard reads — not against a copy of its text.
+    ///
+    /// THIS IS THE FIX FOR A VACUOUS TEST. The previous version did
+    /// `src.contains("l2_line_start IS NOT DISTINCT FROM $2")`, and that literal
+    /// was written inside the test itself, so `contains` matched the test's own
+    /// copy and passed whatever the guard did. Flux measured it: mutating the
+    /// guard's NULL-safe comparison to plain `=` broke the SQL layer and BOTH the
+    /// proof and this test stayed green. A check that cannot fail on the thing it
+    /// claims to check is worse than no check.
+    ///
+    /// Method chosen: **named constants** (option 1 in the dispatch), not a
+    /// per-predicate reverse check in the proof script. Reasons: a rename becomes
+    /// a compile error rather than a silent pass; there is exactly one copy of
+    /// the predicate to corrupt, so one mutation proves all four predicates at
+    /// once; and the proof script keeps its behavioural role, which the index
+    /// layer makes awkward to isolate (Flux's own note: to test one layer you
+    /// have to account for the other).
+    ///
+    /// What this still does NOT do: prove the predicate is CORRECT SQL, or that
+    /// the index agrees with it. That is the proof script's job, and it is a
+    /// separate job.
+    #[test]
+    fn the_dedup_key_is_the_pointer_plus_the_substance_and_not_the_title() {
+        // The four predicates, read from the constant the GUARD uses.
+        let key = super::DEDUP_KEY_PREDICATE;
+        for predicate in [
+            "coalesce(l2_file_path, '') = coalesce($1, '')",
+            "l2_line_start IS NOT DISTINCT FROM $2",
+            "l2_line_end IS NOT DISTINCT FROM $3",
+            "l0_summary = $4",
+        ] {
+            assert!(
+                key.contains(predicate),
+                "the dedup key must contain: {predicate}"
+            );
+        }
+
+        // The title must NOT be in the key. This is the assertion that catches a
+        // key written with `AND title = $5` — a key that moves with a rename lets
+        // the same memory back in.
+        //
+        // Checked against the CONSTANT, not against the source file: searching
+        // the file matches the comments that explain why the title is excluded,
+        // and a check that cannot tell the key from the comment about the key
+        // fails on correct code.
+        for column in ["title", "tags", "l2_body_digest", "kind", "confidence"] {
+            assert!(
+                !key.contains(column),
+                "{column} must NOT be in the dedup key — a key that moves with a rename or a retag lets the same memory back in"
+            );
+        }
+
+        // And the guard must actually USE the constant. Without this, the constant
+        // could be correct while the guard keeps its own inline copy — the exact
+        // shape of the original bug, one level up.
+        let src = include_str!("repositories.rs");
+        let guard = src
+            .split("refuse a repeat write BEFORE inserting")
+            .nth(1)
+            .expect("the guard must exist");
+        assert!(
+            guard.contains("DEDUP_KEY_PREDICATE"),
+            "the guard must read DEDUP_KEY_PREDICATE, not its own inline copy of the predicate"
+        );
+        // Exactly ONE copy of the predicate may exist OUTSIDE the test module:
+        // the constant's own definition. A second one is the bug returning.
+        //
+        // The count is taken on the code BEFORE `#[cfg(test)]`, because this
+        // test's own assertions necessarily contain the string it checks for —
+        // counting the whole file counts the checker and fails on correct code.
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("there is code before the test module");
+        let prod_copies = prod.matches("l2_line_start IS NOT DISTINCT FROM").count();
+        assert_eq!(
+            prod_copies, 1,
+            "the NULL-safe comparison must appear exactly once in production code \
+             (in the constant). {prod_copies} copies means someone re-inlined it — \
+             that is how the vacuous test came back the first time."
+        );
+    }
+
+    /// The line-range comparison must be NULL-safe, because three of the four
+    /// live duplicate groups carry NO line range and `= NULL` matches nothing.
+    #[test]
+    fn the_line_range_comparison_is_null_safe() {
+        let src = include_str!("repositories.rs");
+        assert!(
+            src.contains("l2_line_start IS NOT DISTINCT FROM"),
+            "the line range must be compared with IS NOT DISTINCT FROM, not `=`: `= NULL` matches nothing, so a plain-equality guard would miss exactly the groups that need catching"
+        );
+    }
+
+    /// A refused duplicate must not be reported as a generic database error.
+    /// The first version of the guard panicked instead (`Row::get::<String>` on a
+    /// timestamptz), which turned a clean refusal into a process abort.
+    #[test]
+    fn a_duplicate_is_a_typed_refusal_not_a_generic_db_error() {
+        let src = include_str!("repositories.rs");
+        assert!(
+            src.contains("to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')"),
+            "created_at must be rendered in SQL: reading a timestamptz as a String PANICS, and the first version of this guard did exactly that"
+        );
     }
 }
