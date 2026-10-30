@@ -818,3 +818,60 @@ contradicting the product's own guard. The UI line is still red (2 failed / 370 
 ruling I already wrote. The 023 landing script's DELETE still carries a filter its own report documents
 removing. And the sauh decision, the sync-refusal options, and the documents ship-or-remove question are
 all still yours. Nothing here closes them.
+
+---
+
+## 2026-10-30 late · Lyra — the red UI line is fixed and verified. It is waiting on one merge, and nothing else.
+
+This section corrects the one above, which said the UI line was red "and the fix is a ruling I already
+wrote." That was true when I wrote it. It is now stale, and it is stale in a way that understates what is
+ready for you.
+
+### What changed
+
+**The fix is done.** Mira implemented the persist-from-input ruling in 26 minutes from the dispatch that
+carried it, and then closed the one gap I found by mutation-testing it, in three more minutes.
+
+| | |
+|---|---|
+| Branch | `packet/mira/knowledge-panel` @ `0f420bb`, on gitlab **and** origin, all three revs equal |
+| UI suite | **372 / 372 across 31 files** |
+| The two red tests | **green** — they were the ones on track |
+| The mechanism | the write effect is **removed**, not narrowed. One wrapper `chooseTab`; `updateProjectUIState` is called **once**, inside it. The restore at `App.tsx:489` still calls `setActiveTab` directly, because it is the one tab change with no operator input |
+
+### I did not take the green suite as the answer
+
+I mutation-tested it twice. The first mutation — `chooseTab` does not persist — was **caught** by the test
+she wrote for it. The second — the restore at `:489` persists — **survived**, which meant the exception the
+ruling exists for was untested. She fixed that in three minutes, and I re-ran my mutation: **red.**
+
+She then ran **six** mutations, two of which I had not thought of, and reported the one survivor herself. I
+verified it: the spy records but does not call the real function. **Her classification is correct** — that
+test asserts *whether the write path is called*, not *whether it works*, and the second claim is covered by
+the other 372 tests. **A surviving mutation is only a finding when it removes product behaviour nothing
+checks. Hers removes test behaviour a different test checks.**
+
+### The one thing between you and a green line
+
+```
+track/infra-foundation @ 5f68cab      UI: 2 failed | 370 passed   <- still red
+packet/mira/knowledge-panel @ 0f420bb UI: 372 passed | 0 failed  <- green
+```
+
+**That is a merge decision, not a code question.** Nothing about the work is outstanding except the
+decision. The line has been red for about 27 hours and the fix has been complete, verified, and on both
+remotes for most of that.
+
+### Still owed, and short
+
+1. **A verdict naming `disp-E06O6IAaWefF-BOW-CNJd`.** Without it there is no acceptance card, and the guard
+   is correct to refuse a verdict about a different dispatch.
+2. **Real-machine verification.** All evidence is jsdom plus probes. "The operator's saved tab survives a
+   real restart" has never been tested on a real machine.
+
+### The other merge, unchanged
+
+`packet/lyra/standing-duty-docs-only` is still not on track. It now carries **six** files — the five
+HEARTBEAT documents plus the ruling that made the above possible — 482+87 insertions, zero deletions, no
+conflicts. Until it lands, five of seven seats still have no standing duty the waker can see, and I
+verified that again this round in the waker log.
