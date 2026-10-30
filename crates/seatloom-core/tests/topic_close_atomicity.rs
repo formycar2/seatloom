@@ -129,24 +129,39 @@ async fn reset(pool: &Pool, project: &str) {
     ] {
         let _ = c.execute(leftover, &[]).await;
     }
-    let stale: Vec<String> = c
+    // BOTH tables, not just `topics`. The first version of this cleanup only knew
+    // about the first test's trigger; when the third test was added its trigger
+    // lands on `canonical_events`, and a crashed run of THAT one poisoned every
+    // later run with "tca: event append refused" inside `open_topic`. Hit it while
+    // verifying the mutation below — which is the whole point of the cleanup.
+    let stale: Vec<(String, String)> = c
         .query(
-            "SELECT tgname FROM pg_trigger \
-              WHERE tgrelid = 'topics'::regclass AND NOT tgisinternal \
-                AND tgname LIKE 'tca_%'",
+            "SELECT tgname, tgrelid::regclass::text FROM pg_trigger \
+              WHERE NOT tgisinternal AND tgname LIKE 'tca_%'",
             &[],
         )
         .await
-        .map(|rows| rows.iter().map(|r| r.get::<_, String>(0)).collect())
+        .map(|rows| {
+            rows.iter()
+                .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
+                .collect()
+        })
         .unwrap_or_default();
-    for name in stale {
+    for (name, table) in stale {
         let _ = c
-            .execute(&format!("DROP TRIGGER IF EXISTS {name} ON topics"), &[])
+            .execute(&format!("DROP TRIGGER IF EXISTS {name} ON {table}"), &[])
             .await;
-        let fname = name.replace("tca_guard_", "tca_fail_");
-        let _ = c
-            .execute(&format!("DROP FUNCTION IF EXISTS {fname}()"), &[])
-            .await;
+        // The function name is derived from the trigger name by convention
+        // (tca_guard_<tag> / tca_fail_<tag>, tca_event_guard_<tag> /
+        // tca_reject_event_<tag>), so try every prefix this suite uses.
+        for fname in [
+            name.replace("tca_guard_", "tca_fail_"),
+            name.replace("tca_event_guard_", "tca_reject_event_"),
+        ] {
+            let _ = c
+                .execute(&format!("DROP FUNCTION IF EXISTS {fname}()"), &[])
+                .await;
+        }
     }
     for sql in [
         format!("DELETE FROM event_object_refs WHERE event_id IN (SELECT id FROM canonical_events WHERE project_id='{project}')"),
@@ -459,6 +474,36 @@ async fn a_failure_in_the_second_half_alone_leaves_neither_behind() {
         )
         .await
         .expect("trigger");
+
+        // THE SYMMETRIC ASSERTION, and the reason this test exists at all.
+        //
+        // NOT DEFERRED is not a setup detail — it is what makes this test a
+        // DIFFERENT test from the first one. The first fails the transaction at
+        // COMMIT, after both statements have run; this one must refuse the event
+        // append at the INSERT, so the UPDATE has already succeeded and the
+        // failure lands on the second half alone. Make it DEFERRABLE and the two
+        // tests collapse into the same shape — and, measured, all three still
+        // pass, because the assertions only look at the final state.
+        //
+        // I wrote NOT DEFERRABLE to separate the scenarios and then did not
+        // assert it, which is the identical mistake I made on the first test's
+        // DEFERRED: a property stated in a comment and not in an assertion.
+        // Flux found it by mutating exactly this line and watching it stay green.
+        let defer = c
+            .query_one(
+                "SELECT tgdeferrable, tginitdeferred FROM pg_trigger \
+                  WHERE tgname = $1 \
+                    AND tgrelid = 'canonical_events'::regclass",
+                &[&format!("tca_event_guard_{tag}")],
+            )
+            .await
+            .expect("trigger row");
+        assert!(
+            !defer.get::<_, bool>(0) && !defer.get::<_, bool>(1),
+            "the event-side trigger must be NOT DEFERRABLE — otherwise it fires \
+             at COMMIT like the first test's, this stops being the 'second half \
+             fails alone' case, and the two tests measure the same thing"
+        );
     }
 
     let result = db.close_topic(&topic_id, "seat:nimbus-001").await;
