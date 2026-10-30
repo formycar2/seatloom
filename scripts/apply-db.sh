@@ -48,11 +48,60 @@
 #
 # Usage: DATABASE_URL=postgresql://user:pass@host:port/db scripts/apply-db.sh
 # Needs: psql on PATH. Exit nonzero on first SQL error.
-
+#
+# DRY-RUN BY DEFAULT. This script writes to a database. Running it with no
+# argument APPLIES to whatever DATABASE_URL names, and the default is live. That
+# is how it nearly went wrong once already: it was invoked as `apply-db.sh --help`
+# (it has no --help handling), the default URL pointed at live, localhost:5432 was
+# reachable, and the only thing that stopped it was that psql was not on PATH —
+# not a guard, not a prompt, not a dry-run default. So now there is one.
+#
+#   scripts/apply-db.sh              # DRY RUN: prints the plan, writes nothing
+#   scripts/apply-db.sh --apply      # actually applies
+#
+# Naming the database explicitly still counts as explicit, because you typed it.
+# Passing --apply is what says you meant to write.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 : "${DATABASE_URL:=postgresql://seatloom:seatloom@localhost:5432/seatloom}"
+
+# --- mode: dry-run unless --apply --------------------------------------------
+# The failure this guards against is documented in the header. The check is that
+# --apply was PASSED, not that the URL looks safe: an operator who exported
+# DATABASE_URL for a scratch database has already made a deliberate choice, and
+# demanding --apply there too would be the boy who cried wolf.
+APPLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) APPLY=1 ;;
+    *) printf 'apply-db: unknown argument: %s\n' "$arg" >&2
+       printf 'usage: [DATABASE_URL=...] %s [--apply]\n' "$0" >&2
+       exit 2 ;;
+  esac
+done
+
+if [ "$APPLY" = "1" ]; then
+  DRY=0
+  echo "apply-db: APPLY — this will write to $DATABASE_URL"
+else
+  DRY=1
+  echo "apply-db: DRY RUN — no database will be written."
+  echo "apply-db: target=$DATABASE_URL"
+  echo "apply-db: pass --apply to actually apply."
+fi
+
+# A missing psql must fail LOUDLY and BEFORE the plan is printed, because a
+# half-printed plan reads like a half-applied migration.
+if ! command -v psql >/dev/null 2>&1; then
+  echo "apply-db: psql not found on PATH." >&2
+  echo "  On this project postgres runs in a container, so psql exists only inside it:" >&2
+  echo "    podman exec -e PGPASSWORD=... seatloom-postgres psql -U seatloom -d <db> -f <file>" >&2
+  echo "  This script does not shell into the container for you — apply each file" >&2
+  echo "  with the command above, in the order this script prints." >&2
+  exit 127
+fi
+
 SCHEMA_DIR="infra/postgres/schema"
 SEED_DIR="infra/postgres/seed"
 
@@ -139,7 +188,11 @@ apply_group() {
     if [ -f "$path" ]; then
       echo "  $path"
       echo "      why: $reason"
-      psql_f "$path"
+      if [ "$DRY" = "1" ]; then
+        echo "      WOULD APPLY (dry run — nothing written)"
+      else
+        psql_f "$path"
+      fi
     else
       # Listed but absent: expected when this script runs on a branch that does
       # not carry the migration yet. Announced, never silent.
@@ -148,17 +201,22 @@ apply_group() {
   done
 }
 
-echo "apply-db: target=$DATABASE_URL"
-
 apply_group "pre-seed schema (seed writes columns these create)" \
   ${PRE_SEED_SCHEMA[@]+"${PRE_SEED_SCHEMA[@]}"}
 
-echo "--- seed (001-004) ---"
+echo "--- seed (001-005) ---"
 for f in "$SEED_DIR"/*.sql; do
-  [ -f "$f" ] && { echo "  $f"; psql_f "$f"; }
+  if [ -f "$f" ]; then
+    echo "  $f"
+    if [ "$DRY" = "1" ]; then echo "      WOULD APPLY (dry run — nothing written)"; else psql_f "$f"; fi
+  fi
 done
 
 apply_group "post-seed schema (constrains columns the seed does not provide)" \
   ${POST_SEED_SCHEMA[@]+"${POST_SEED_SCHEMA[@]}"}
 
-echo "apply-db: done."
+if [ "$DRY" = "1" ]; then
+  echo "apply-db: dry run complete. NOTHING WAS WRITTEN. Re-run with --apply to apply."
+else
+  echo "apply-db: done."
+fi
