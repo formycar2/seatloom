@@ -119,8 +119,8 @@ IF/ELSE 两个分支都改了(原稿两处都是错清单)。
 - POST-SEED(和 015/018 同规则:索引的是 memories 的列,015 才建它,种子不写 memories)
 - 规范顺序 `015 -> 025`,与 020-023 无关
 - **明确写了它会拒**:"live 上实测有 5 组重复,唯一索引建不起来 ——
-  重复→索引被拒→去重不生效→更多重复。这个死结由 `scripts/land-025-memory-dedup.sh`
-  按操作者逐组决定哪行存活来解,**不是这个文件能解的**"
+  重复→索引被拒→去重不生效→更多重复。这个死结由 `scripts/land-023-memory-dedup.sh`
+  (文件名保留 023,内部已指向 025)按操作者逐组决定哪行存活来解,**不是这个文件能解的**"
 
 **026**:
 - POST-SEED(topics 由 010 建,种子不写 topics)
@@ -133,8 +133,10 @@ IF/ELSE 两个分支都改了(原稿两处都是错清单)。
 ## 4. 给张先生的命令(我不跑,因为 live 写操作在我权限之上)
 
 ```bash
-# 025 —— 会失败,而且失败就是答案:它列出的 5 组重复需要你逐组决定哪行存活
-bash scripts/land-025-memory-dedup.sh
+# 025 —— 会失败,而且失败就是答案:它列出的重复组需要你逐组决定哪行存活
+# ⚠️ 脚本名仍是 land-023-memory-dedup.sh(023 是它立项时的迁移号)。我没改文件名 ——
+#    改名会破坏你已有的调用习惯;它内部的 MIG= 已指向 025_memory_dedup.sql。
+bash scripts/land-023-memory-dedup.sh
 
 # 026 —— 等 Flux 重新验绿之后再 apply(它的值域清单被我改过)
 podman exec -i -e PGPASSWORD=seatloom seatloom-postgres \
