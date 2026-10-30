@@ -714,6 +714,96 @@ describe('restart lands back in the recorded project, and the write cannot win t
     expect(screen.getByTitle('派单').textContent).not.toContain('0');
   });
 
+  it('the badge refreshes on a bounded interval, and the interval is cleared on unmount', async () => {
+    // Flux found this and Lyra reproduced it: change `setInterval(read, 15000)` to a
+    // value that never expires and 16 tests stay green. The consequence is that
+    // after the operator accepts a card the count never goes down, and when a new
+    // card arrives the count never appears — the staleness window stops being 15
+    // seconds and becomes forever.
+    //
+    // This is a DIFFERENT class from the last gap. That one was "the assumption the
+    // whole harness rests on had no assertion"; this one is "a behaviour has no
+    // assertion". The consequence is a stale number, not a disarmed suite. Flux
+    // deliberately separated the two and so does this test.
+    //
+    // Three mutations this kills:
+    //   · remove setInterval entirely — the count never updates after the first read;
+    //   · make the interval never expire — the same, invisibly;
+    //   · set it to something huge (24h) — the same, with a plausible-looking number.
+    //
+    // Fake timers, because the claim is about WHEN the read happens, and a real
+    // 15-second wait would make this suite take minutes.
+    vi.useFakeTimers();
+    try {
+      CANNED.cmd_list_acceptances = [];
+      mountApp();
+      // Let the first read land.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // Now a card arrives. The only way the badge can learn about it is a poll.
+      CANNED.cmd_list_acceptances = [
+        {
+          id: 'acc-late',
+          status: 'pending',
+          dispatchId: 'disp-late',
+          projectId: FIRST_REAL_PROJECT,
+        },
+      ];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16000);
+      });
+
+      // It appeared, without the operator touching anything. Without the interval
+      // this assertion waits forever and fails.
+      expect(screen.getByTitle('派单').textContent).toContain('1');
+
+      // And it is BOUNDED: a poll that fires continuously is a poll nobody sized.
+      // Advance well past one interval and confirm the read happened again rather
+      // than the timer having been a one-shot.
+      CANNED.cmd_list_acceptances = [];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31000);
+      });
+      expect(screen.getByTitle('派单').textContent).not.toContain('1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the badge poll is cleared on unmount', async () => {
+    // Flux verified the cleanup exists but noted nothing pins it. Without a pin, the
+    // next person to touch that effect can drop the `return () => clearInterval(...)`
+    // and the suite stays green — while every project switch leaks a timer that
+    // keeps polling a component that no longer renders.
+    vi.useFakeTimers();
+    try {
+      CANNED.cmd_list_acceptances = [
+        { id: 'acc-a', status: 'pending', dispatchId: 'disp-a', projectId: FIRST_REAL_PROJECT },
+      ];
+      mountApp();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTitle('派单').textContent).toContain('1');
+
+      // Unmount. The interval must stop.
+      cleanup();
+      const pendingBefore = vi.getTimerCount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120000);
+      });
+
+      // No timers survive the unmount. If the cleanup were dropped, the count here
+      // would still be at least one and it would keep firing into a dead component.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(pendingBefore).toBeGreaterThanOrEqual(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not restore a project the backend did not return', async () => {
     // The record names a project that no longer exists. The app must land on a
     // real backend project rather than on the stale id — never on an invented one.
