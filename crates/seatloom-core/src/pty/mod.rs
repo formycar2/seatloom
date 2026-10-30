@@ -90,15 +90,33 @@ pub enum PtyEvent {
 /// would break the control chords and the autocomplete dropdown. So the wrap is
 /// applied only to payloads that are a paste.
 ///
-/// THE RULE. xterm's `prepareTextForTerminal` turns every `\n` into `\r`, so a
-/// multi-line paste arrives carrying `\r` separators AND other bytes. A lone
-/// Enter is exactly `\r` and nothing else, and Ctrl+C is a single `\x03` with
-/// no newline at all — neither matches, and both stay on the raw path where they
-/// behave exactly as before.
+/// THE RULE. A payload is a paste iff it carries a newline AND at least one byte
+/// that is not a newline and not ESC.
+///
+/// THE FIRST VERSION OF THIS RULE WAS WRONG AND FLUX CAUGHT IT. It said a paste
+/// needs "a newline AND other bytes", and I claimed in the same breath that
+/// "a control chord has no newline at all". Measured false, in xterm.js 5.5.0's
+/// own `evaluateKeyboardEvent`: case 13 is `o.key = e.altKey ? ESC + CR : CR`, so
+/// **Alt+Enter emits ESC+CR** — a newline plus another byte. It is classified as
+/// a paste and IS wrapped: measured through the production path, the pane
+/// receives `ESC[200~ESC CR ESC[201~`.
+///
+/// The end state happens to be equivalent today — saih matches `data ===
+/// "\x1b\r"` as `tui.input.newLine` (packages/tui/src/components/editor.ts:894),
+/// and its `handlePaste` reduces `ESC CR` to a bare `\n` via `normalizeText` and
+/// the non-printable filter, so both routes insert one newline. Aegis and Flux
+/// are right that this is a LATENT HAZARD, not a demonstrable defect: relying on
+/// another package's internals to make a deliberate keystroke come out the same
+/// is relying on an implementation detail that can change without us noticing.
+///
+/// So the rule now excludes ESC from "other bytes". Alt+Enter is a deliberate
+/// keystroke, not a paste, and it stays on the raw path where saih handles it
+/// explicitly. A real paste always carries printable content, so nothing is lost:
+/// the only payloads this excludes are newlines and escapes with no content.
 pub fn is_multiline_paste(bytes: &[u8]) -> bool {
     let has_newline = bytes.iter().any(|&b| b == b'\r' || b == b'\n');
-    let has_other = bytes.iter().any(|&b| b != b'\r' && b != b'\n');
-    has_newline && has_other
+    let has_content = bytes.iter().any(|&b| b != b'\r' && b != b'\n' && b != 0x1b);
+    has_newline && has_content
 }
 /// Handle to an attached tmux mirror session. Clone is cheap (Arc-based).
 #[derive(Clone)]

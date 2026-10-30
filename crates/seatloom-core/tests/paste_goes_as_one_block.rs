@@ -48,6 +48,31 @@
 
 use seatloom_core::pty::{is_multiline_paste, LaunchOptions, PtySession};
 use std::process::Command;
+use std::sync::Mutex;
+
+/// The tests that touch tmux must not run concurrently.
+///
+/// WHY. `PtySession::write` loads into the FIXED named buffer `seatloom` and then
+/// pastes it, as one `tmux` invocation (`load-buffer -b seatloom - ; paste-buffer
+/// -b seatloom -t <target>`). The product's doc claims the `;` chaining
+/// "prevents interleave between concurrent write() calls on the tmux socket".
+///
+/// MEASURED FALSE, and found the hard way: this suite failed roughly one run in
+/// six, with the Alt+Enter test receiving `ESC CR a` — an `a` it never wrote.
+/// The `a` came from the keystroke test running at the same moment. The `;`
+/// chains two commands inside ONE invocation, so it cannot interleave with
+/// itself; but the BUFFER is shared by every PtySession on the tmux server, so
+/// two different sessions' invocations interleave freely:
+///
+///   A: load-buffer -b seatloom (A's bytes)
+///   B: load-buffer -b seatloom (B's bytes — overwrites A's)
+///   A: paste-buffer -b seatloom -t A:0   <-- delivers B's bytes to A's pane
+///
+/// That is a real product defect: two seats typing at once can cross-deliver
+/// each other's input. It is out of scope for the paste dispatch and is recorded
+/// here rather than fixed silently. The mutex keeps this suite honest about what
+/// it measures — the paste wrap — instead of flaking on that separate bug.
+static TMUX_LOCK: Mutex<()> = Mutex::new(());
 
 fn tmux(args: &[&str]) -> String {
     let out = Command::new("tmux").args(args).output().expect("tmux");
@@ -62,6 +87,11 @@ fn declaring_logger(dir: &str, outfile: &str, tag: &str) -> String {
     // The file is written after EVERY chunk, not on exit. The logger starts
     // waiting the moment the pane is created — long before the test's writes
     // happen — so an on-exit write would be read as "" by the test.
+    // ISIG is cleared in the script below, and that is load-bearing: leaving
+    // it set lets the tty line discipline intercept 0x03 and raise SIGINT
+    // before `read()` sees the byte — which is how I once convinced myself
+    // that `paste-buffer` drops Ctrl+C. A raw reader that is not truly raw
+    // is not an instrument.
     let py = format!(
         "import sys, os, termios, select, time, signal\n\
          signal.signal(signal.SIGINT, signal.SIG_IGN)\n\
@@ -69,7 +99,7 @@ fn declaring_logger(dir: &str, outfile: &str, tag: &str) -> String {
          fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)\n\
          raw = termios.tcgetattr(fd)\n\
          raw[0] &= ~(termios.ICRNL|termios.INLCR|termios.IGNCR)\n\
-         raw[3] &= ~(termios.ECHO|termios.ICANON)\n\
+         raw[3] &= ~(termios.ECHO|termios.ICANON|termios.ISIG)\n\
          termios.tcsetattr(fd, termios.TCSANOW, raw)\n\
          buf = b''\n\
          deadline = time.time() + 30\n\
@@ -190,12 +220,13 @@ fn fresh_session(session: &str, outfile: &str) {
 
 #[test]
 fn a_multiline_paste_through_write_reaches_the_pane_as_one_bracketed_paste() {
+    let _guard = TMUX_LOCK.lock().unwrap();
     let dir = "/tmp/seatloom-pastelogger";
     std::fs::create_dir_all(dir).unwrap();
     let session = format!("pl-fix-{}", std::process::id());
     let outfile = format!("{dir}/{session}.out");
     fresh_session(&session, &outfile);
-    let handle = attach(&format!("paste-{}", std::process::id()), &session);
+    let handle = attach(&format!("paste-multiline-{}", std::process::id()), &session);
 
     // What xterm's real paste handler delivers for a three-line paste: the whole
     // block, with every \n already converted to \r by prepareTextForTerminal.
@@ -224,27 +255,19 @@ fn a_multiline_paste_through_write_reaches_the_pane_as_one_bracketed_paste() {
 
 #[test]
 fn the_keystroke_path_is_unchanged_by_the_paste_wrap() {
+    let _guard = TMUX_LOCK.lock().unwrap();
     // The other half, and the reason the wrap is conditional: saih's handlePaste
     // STRIPS non-printables except newlines, so wrapping Ctrl+C would swallow
-    // it, and it also calls cancelAutocomplete(). Keystrokes must be untouched.
-    //
-    // A PRE-EXISTING DEFECT, measured, not hidden: tmux's `paste-buffer` DROPS a
-    // lone 0x03. Verified directly — writing only `\x03` through
-    // `load-buffer -` + `paste-buffer` delivers nothing to the pane, while
-    // `A\x03B` delivers `A` then `B`. That is tmux's behaviour on the raw path
-    // and it predates this change: `is_multiline_paste(&[0x03])` is false, so the
-    // args built are byte-identical to what this function built before. This
-    // test asserts the paste wrap does not make it WORSE, and records that it is
-    // already broken rather than asserting a passing lie.
+    // the interrupt, and it also calls cancelAutocomplete(). Keystrokes must be
+    // untouched.
     let dir = "/tmp/seatloom-pastelogger";
     std::fs::create_dir_all(dir).unwrap();
     let session = format!("pl-keys-{}", std::process::id());
     let outfile = format!("{dir}/{session}.out");
     fresh_session(&session, &outfile);
-    let handle = attach(&format!("paste-{}", std::process::id()), &session);
+    let handle = attach(&format!("paste-keystroke-{}", std::process::id()), &session);
 
-    // A lone Enter, then a printable char, then a two-char typed word — the
-    // ordinary typing path, plus the Enter that submits.
+    // The ordinary typing path, plus the Enter that submits.
     handle.write(b"\r").expect("enter");
     handle.write(b"a").expect("a");
     handle.write(b"bc").expect("bc");
@@ -277,6 +300,101 @@ fn the_keystroke_path_is_unchanged_by_the_paste_wrap() {
     );
 }
 
+/// Ctrl+C arrives verbatim, and is NOT wrapped.
+///
+/// I PREVIOUSLY CLAIMED THE OPPOSITE, AND I WAS WRONG. My commit reported a
+/// "pre-existing defect" that tmux's `paste-buffer` drops a lone 0x03, and I
+/// recorded it in a comment rather than testing it. Flux could not reproduce it,
+/// and when I re-ran it I found out why: **my own harness was broken.** The
+/// reader cleared `ICANON`/`ECHO` but left `ISIG` set, so the tty line
+/// discipline consumed the 0x03 and signalled the reader before `read()` ever
+/// saw it. With `ISIG` cleared too — which is what a truly raw reader does —
+/// `load-buffer` + `paste-buffer` delivers 0x03 verbatim, and `A`, 0x03, `B`
+/// delivers `A 0x03 B`. There was never a drop to find.
+///
+/// The lesson worth keeping: a measurement taken through a broken instrument is
+/// not a measurement, and I reported it as a fact rather than checking the
+/// instrument first. This test now writes 0x03 for real and asserts it arrives,
+/// so the property is pinned instead of being described in prose.
+#[test]
+fn ctrl_c_arrives_verbatim_and_is_not_wrapped() {
+    let _guard = TMUX_LOCK.lock().unwrap();
+    let dir = "/tmp/seatloom-pastelogger";
+    std::fs::create_dir_all(dir).unwrap();
+    let session = format!("pl-ctrlc-{}", std::process::id());
+    let outfile = format!("{dir}/{session}.out");
+    fresh_session(&session, &outfile);
+    let handle = attach(&format!("paste-ctrlc-{}", std::process::id()), &session);
+
+    handle.write(&[0x03]).expect("ctrl-c");
+    handle.write(b"x").expect("x");
+    std::thread::sleep(std::time::Duration::from_millis(4_500));
+
+    let got = read_received(&session);
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+
+    assert_eq!(
+        got,
+        vec![0x03, b'x'],
+        "Ctrl+C must arrive verbatim; got {:?}",
+        String::from_utf8_lossy(&got)
+    );
+    assert!(
+        !got.windows(6).any(|w| w == b"\x1b[200~"),
+        "Ctrl+C must not be wrapped — handlePaste would strip it"
+    );
+    assert!(
+        !is_multiline_paste(&[0x03]),
+        "Ctrl+C has no newline and must stay a keystroke"
+    );
+}
+
+#[test]
+fn alt_enter_is_not_wrapped_even_though_it_looks_like_a_paste() {
+    let _guard = TMUX_LOCK.lock().unwrap();
+    // Flux's catch, made behavioural. xterm's `evaluateKeyboardEvent` case 13 is
+    // `o.key = e.altKey ? ESC + CR : CR`, so Alt+Enter emits ESC+CR — a newline
+    // plus another byte — and the FIRST version of `is_multiline_paste` matched
+    // it and wrapped it. Measured through the production path, the pane received
+    // `ESC[200~ESC CR ESC[201~`.
+    //
+    // It is not a demonstrable defect today, and Flux was careful about that:
+    // saih matches `data === "\x1b\r"` as `tui.input.newLine` (editor.ts:894)
+    // AND its `handlePaste` reduces `ESC CR` to a bare `\n`, so both routes
+    // reach the same end state. But that equivalence is an implementation detail
+    // of another package, and relying on it means a change there silently
+    // changes our behaviour. So the classifier excludes ESC, and this test
+    // drives the real bytes through the real `write()` to prove it.
+    let dir = "/tmp/seatloom-pastelogger";
+    std::fs::create_dir_all(dir).unwrap();
+    let session = format!("pl-altent-{}", std::process::id());
+    let outfile = format!("{dir}/{session}.out");
+    fresh_session(&session, &outfile);
+    let handle = attach(&format!("paste-altent-{}", std::process::id()), &session);
+
+    handle.write(b"\x1b\r").expect("alt+enter");
+    handle.write(b"z").expect("z");
+    std::thread::sleep(std::time::Duration::from_millis(4_500));
+
+    let got = read_received(&session);
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+
+    assert_eq!(
+        got,
+        vec![0x1b, b'\r', b'z'],
+        "Alt+Enter must arrive verbatim and UNWRAPPED; got {:?}",
+        String::from_utf8_lossy(&got)
+    );
+    assert!(
+        !got.windows(6).any(|w| w == b"\x1b[200~"),
+        "Alt+Enter must not be wrapped — saih handles ESC+CR itself as a new line"
+    );
+}
+
 #[test]
 fn the_classifier_separates_a_paste_from_a_keystroke() {
     // The rule, pinned so the conditional wrap cannot silently widen: a paste
@@ -296,6 +414,14 @@ fn the_classifier_separates_a_paste_from_a_keystroke() {
     assert!(
         !is_multiline_paste(b"\r"),
         "a lone Enter is a keystroke — wrapping it would put every submit through handlePaste"
+    );
+    assert!(
+        !is_multiline_paste(b"\x1b\r"),
+        "Alt+Enter is ESC+CR (xterm evaluateKeyboardEvent case 13). It is a deliberate keystroke that saih matches as tui.input.newLine, not a paste — the first version of this rule wrapped it, and Flux caught that"
+    );
+    assert!(
+        !is_multiline_paste(b"\x1b\n\x1b"),
+        "escapes and newlines with no content are not a paste"
     );
     assert!(
         !is_multiline_paste(&[0x03]),
