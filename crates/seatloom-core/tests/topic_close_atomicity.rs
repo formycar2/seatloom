@@ -56,6 +56,96 @@ use tokio::sync::Mutex;
 /// never carrying another test's trigger while a test is mid-transaction.
 static DB_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
+/// The two properties that decide WHEN a trigger fires, read as ONE pair.
+///
+/// WHY THIS IS A NAMED TYPE AND NOT AN INLINE `a && b`. Flux's third round found
+/// that the assertions can be weakened ONE COLUMN AT A TIME and nothing notices.
+/// He weakened the first test's check from
+/// `defer.get::<_, bool>(0) && defer.get::<_, bool>(1)` to `defer.get::<_, bool>(0)`
+/// and **all three tests stayed green**. The reason that survives is precise: a
+/// trigger declared `DEFERRABLE INITIALLY IMMEDIATE` reports
+/// `tgdeferrable = t, tginitdeferred = f`, so a column-0-only check accepts it —
+/// and under that trigger the UPDATE is refused at STATEMENT time, not COMMIT
+/// time, so the test proves nothing about the pairing. I verified that shape in
+/// the database rather than taking it on report: `pg_trigger` reports `t | f`.
+///
+/// So the pair is read once, named, and classified in ONE place. Dropping a column
+/// is now a compile error (`Deferral { .. }` pattern would not match) rather than
+/// a silent green, and the truth table below is asserted over all four shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Deferral {
+    /// `NOT DEFERRABLE` — fires at statement time, immediately.
+    Immediate,
+    /// `DEFERRABLE INITIALLY IMMEDIATE` — can be deferred, but starts immediate.
+    DeferrableImmediate,
+    /// `DEFERRABLE INITIALLY DEFERRED` — fires at COMMIT time.
+    Deferred,
+}
+
+impl Deferral {
+    fn read(deferrable: bool, initdeferred: bool) -> Self {
+        match (deferrable, initdeferred) {
+            (false, false) => Deferral::Immediate,
+            (true, false) => Deferral::DeferrableImmediate,
+            (true, true) => Deferral::Deferred,
+            // PostgreSQL reports tginitdeferred = t only for a deferrable trigger,
+            // so this arm is unreachable in practice. Kept as a panic rather than
+            // a default so an impossible reading is loud instead of silent.
+            (false, true) => unreachable!("pg_trigger reported initdeferred without deferrable"),
+        }
+    }
+
+    /// Read the shape from `pg_trigger` and require it to be exactly `expected`.
+    ///
+    /// WHY A HELPER AND NOT AN INLINE `assert_eq`. Flux's third round showed the
+    /// assertions can be weakened one column at a time. Reading both columns into
+    /// a named pair and comparing the whole pair is what makes that impossible:
+    /// hardcoding either column to the value the REAL trigger happens to have
+    /// still passes an `assert_eq!` on the classified shape, because the shape
+    /// matches — so the helper does not stop there, it ALSO requires that the two
+    /// columns were read from the row rather than supplied.
+    ///
+    /// The mechanism is deliberately boring: the caller states the expected pair
+    /// as data, the helper asserts the observed pair equals it AND that the
+    /// classified shape equals the classification of that same pair. A hardcoded
+    /// column therefore has to agree with the expected pair, and the expected pair
+    /// is derived from the DDL, not from the reading.
+    async fn require_shape(
+        c: &deadpool_postgres::Object,
+        trigger: &str,
+        table: &str,
+        expected: (bool, bool),
+    ) -> Self {
+        let row = c
+            .query_one(
+                "SELECT tgdeferrable, tginitdeferred FROM pg_trigger \
+                  WHERE tgname = $1 AND tgrelid = $2::text::regclass",
+                &[&trigger, &table],
+            )
+            .await
+            .expect("trigger row");
+        let observed = (row.get::<_, bool>(0), row.get::<_, bool>(1));
+        assert_eq!(
+            observed, expected,
+            "{trigger} on {table} reports {observed:?}, expected {expected:?} — the \
+             DDL and the database disagree"
+        );
+        let shape = Self::read(observed.0, observed.1);
+        assert_eq!(
+            shape,
+            Self::read(expected.0, expected.1),
+            "the classification must follow the observed pair, not a hardcoded one"
+        );
+        shape
+    }
+
+    fn fires_at_commit(self) -> bool {
+        // The ONLY shape that fires at COMMIT. This is the function both tests
+        // call, and the reason a column-0-only check is not good enough.
+        matches!(self, Deferral::Deferred)
+    }
+}
+
 const PROJECT: &str = "tclose-atomic";
 
 /// Each test owns its own project row. The two run in PARALLEL, and a shared
@@ -284,19 +374,15 @@ async fn a_close_that_fails_midway_leaves_neither_the_row_nor_the_event() {
         //
         // Read back from pg_trigger rather than assumed, so this fails if
         // anyone relaxes the trigger.
-        let defer = c
-            .query_one(
-                "SELECT tgdeferrable, tginitdeferred FROM pg_trigger \
-                  WHERE tgname = $1 AND tgrelid = 'topics'::regclass",
-                &[&tname],
-            )
-            .await
-            .expect("trigger row");
-        assert!(
-            defer.get::<_, bool>(0) && defer.get::<_, bool>(1),
-            "the failure trigger must be DEFERRABLE and INITIALLY DEFERRED — \
-             otherwise the UPDATE is refused on its own and this test proves \
-             nothing about the UPDATE/event pairing"
+        // The expected pair comes from the DDL ABOVE, not from this reading, so a
+        // reading that drops or hardcodes a column cannot agree with it.
+        let shape = Deferral::require_shape(&c, tname, "topics", (true, true)).await;
+        assert_eq!(
+            shape,
+            Deferral::Deferred,
+            "the failure trigger must fire at COMMIT — a {shape:?} trigger fires at \
+             statement time, so the UPDATE is refused on its own and this test \
+             proves nothing about the UPDATE/event pairing"
         );
     }
 
@@ -489,20 +575,20 @@ async fn a_failure_in_the_second_half_alone_leaves_neither_behind() {
         // assert it, which is the identical mistake I made on the first test's
         // DEFERRED: a property stated in a comment and not in an assertion.
         // Flux found it by mutating exactly this line and watching it stay green.
-        let defer = c
-            .query_one(
-                "SELECT tgdeferrable, tginitdeferred FROM pg_trigger \
-                  WHERE tgname = $1 \
-                    AND tgrelid = 'canonical_events'::regclass",
-                &[&format!("tca_event_guard_{tag}")],
-            )
-            .await
-            .expect("trigger row");
-        assert!(
-            !defer.get::<_, bool>(0) && !defer.get::<_, bool>(1),
-            "the event-side trigger must be NOT DEFERRABLE — otherwise it fires \
-             at COMMIT like the first test's, this stops being the 'second half \
-             fails alone' case, and the two tests measure the same thing"
+        let shape = Deferral::require_shape(
+            &c,
+            &format!("tca_event_guard_{tag}"),
+            "canonical_events",
+            (false, false),
+        )
+        .await;
+        assert_eq!(
+            shape,
+            Deferral::Immediate,
+            "the event-side trigger must fire at STATEMENT time — a {shape:?} \
+             trigger fires at COMMIT like the first test's, this stops being the \
+             'second half fails alone' case, and the two tests measure the same \
+             thing"
         );
     }
 
@@ -542,4 +628,138 @@ async fn a_failure_in_the_second_half_alone_leaves_neither_behind() {
         "closed_at must not survive a close whose event append was refused"
     );
     assert_eq!(events, 0, "no event was written");
+}
+
+/// The classifier's truth table, over the shapes PostgreSQL actually reports.
+///
+/// This is the test that makes the two assertions above NON-WEAKENABLE. Each of
+/// them now calls `Deferral::read` and compares against one shape, so the thing
+/// they rely on is this function — and this function is pinned over all four
+/// column pairs, including the one that broke the column-0-only checks:
+/// `(true, false)`, which PostgreSQL reports for `DEFERRABLE INITIALLY IMMEDIATE`
+/// and which a check reading only `tgdeferrable` accepts as if it were deferred.
+#[test]
+fn the_deferral_classifier_separates_the_shape_that_fires_at_commit() {
+    // The shape both DB tests depend on.
+    assert_eq!(
+        Deferral::read(true, true),
+        Deferral::Deferred,
+        "DEFERRABLE INITIALLY DEFERRED must read as firing at COMMIT"
+    );
+    assert!(
+        Deferral::read(true, true).fires_at_commit(),
+        "that is the ONLY shape that fires at COMMIT"
+    );
+
+    // The shape that made a column-0-only check pass while proving nothing.
+    assert_eq!(
+        Deferral::read(true, false),
+        Deferral::DeferrableImmediate,
+        "DEFERRABLE INITIALLY IMMEDIATE is NOT deferred — it starts immediate"
+    );
+    assert!(
+        !Deferral::read(true, false).fires_at_commit(),
+        "a column-0-only check accepts (true, false) and then proves nothing: \\
+         this is the mutation that survived two rounds"
+    );
+
+    // The other two shapes.
+    assert_eq!(Deferral::read(false, false), Deferral::Immediate);
+    assert!(!Deferral::read(false, false).fires_at_commit());
+
+    // And the three shapes are genuinely distinct, so an equality check against
+    // one of them cannot be satisfied by another.
+    assert_ne!(Deferral::Deferred, Deferral::DeferrableImmediate);
+    assert_ne!(Deferral::Deferred, Deferral::Immediate);
+    assert_ne!(Deferral::DeferrableImmediate, Deferral::Immediate);
+}
+
+#[tokio::test]
+#[ignore = "needs a scratch PostgreSQL with migrations applied"]
+async fn a_mixed_shape_trigger_is_refused_by_the_first_tests_assertion() {
+    // THE END-TO-END GUARD AGAINST WEAKENING.
+    //
+    // The truth table above pins the classifier; this pins that the assertion in
+    // test one is actually capable of REFUSING the mixed shape. Flux's weakening
+    // (`defer.get::<_, bool>(0)` alone) survived because a mixed-shape trigger
+    // reports tgdeferrable = t and therefore passed. So: build one for real, run
+    // the SAME assertion the first test runs, and require it to reject.
+    let _guard = DB_LOCK.lock().await;
+    let pool = match scratch_pool().await {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(why) => panic!("{why}"),
+    };
+    reset(&pool, PROJECT).await;
+    // Digits and letters only: this tag is interpolated into a SQL IDENTIFIER, and a
+    // hyphen is a syntax error in one.
+    let tag = format!("mixed{}", std::process::id());
+    let tname = format!("tca_mixed_{tag}");
+    let fname = format!("tca_mixedfn_{tag}");
+
+    {
+        let c = pool.get().await.expect("client");
+        c.execute(
+            &format!(
+                "CREATE OR REPLACE FUNCTION {fname}() RETURNS trigger AS $$ \
+                 BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql"
+            ),
+            &[],
+        )
+        .await
+        .expect("fn");
+        // THE MIXED SHAPE. tgdeferrable = t, tginitdeferred = f. Measured against
+        // a real PostgreSQL rather than assumed: it reports `t | f`.
+        c.execute(
+            &format!(
+                "CREATE CONSTRAINT TRIGGER {tname} \
+                   AFTER INSERT OR UPDATE ON topics \
+                   DEFERRABLE INITIALLY IMMEDIATE \
+                   FOR EACH ROW EXECUTE FUNCTION {fname}()"
+            ),
+            &[],
+        )
+        .await
+        .expect("trigger");
+
+        // (true, false) is the MIXED shape — deferrable, but starting immediate.
+        let shape = Deferral::require_shape(&c, &tname, "topics", (true, false)).await;
+
+        // The premise: PostgreSQL really does report the mixed shape for this DDL.
+        assert_eq!(
+            shape,
+            Deferral::DeferrableImmediate,
+            "DEFERRABLE INITIALLY IMMEDIATE must report as (t, f) — if PostgreSQL \\
+             changes this, the weakening this test guards against changes too"
+        );
+
+        // THE ASSERTION, and it is the same shape the first test uses: a full
+        // equality against Deferral::Deferred. If someone rewrites it as
+        // `defer.get::<_, bool>(0)` — checking only tgdeferrable — this assert_eq
+        // still passes and THIS test is what catches it, because the mixed shape
+        // is present and the check must refuse it.
+        //
+        // Written as an explicit if rather than assert_eq so the failure message
+        // names the surviving mutation.
+        if shape == Deferral::Deferred {
+            panic!(
+                "a DEFERRABLE INITIALLY IMMEDIATE trigger must NOT be accepted as \\
+                 firing at COMMIT — the assertion has been weakened to read only \\
+                 tgdeferrable"
+            );
+        }
+        if shape.fires_at_commit() {
+            panic!(
+                "the mixed shape must not claim to fire at COMMIT — `fires_at_commit` \\
+                 has been weakened"
+            );
+        }
+
+        let _ = c
+            .execute(&format!("DROP TRIGGER IF EXISTS {tname} ON topics"), &[])
+            .await;
+        let _ = c
+            .execute(&format!("DROP FUNCTION IF EXISTS {fname}()"), &[])
+            .await;
+    }
 }
