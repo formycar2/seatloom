@@ -75,11 +75,30 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
   fi
 
   # 2. The payload names findings. A finding is content in a finding_* field.
+  #
+  #    BUT NOT EVERY FINDING IS A DEFECT IN THE WORK. Flux's re-verification of
+  #    026_topic_close recorded a finding whose own text ends "Documentation, not
+  #    behaviour; the guard passes and the file is correct" - a verifier noting a
+  #    stale registration comment. That is an honest annotation, not a reason to
+  #    withhold the operator's Accept, and flagging it as a named defect would have
+  #    had me tell him a passing card was broken. Twice now a keyword rule has
+  #    produced exactly that kind of false alarm.
+  #
+  #    So: a finding that DISCLAIMS itself is not a defect. Look for the verifier
+  #    explicitly downgrading it before treating it as one.
   for f in "$f1" "$f2" "$f3"; do
-    if [ -n "$f" ]; then
-      reasons="${reasons}names a finding: $(printf '%s' "$f" | cut -c1-120)|"
-      break
-    fi
+    [ -n "$f" ] || continue
+    flow=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
+    case "$flow" in
+      *"documentation, not behaviour"*|*"not a defect"*|*"cosmetic"*|*"stale comment"*|\
+      *"stale documentation"*|*"does not affect"*|*"no behavioural impact"*|*"informational"*)
+        # Self-disclaimed. Record it as a note, not a reason to refuse.
+        ;;
+      *)
+        reasons="${reasons}names a finding: $(printf '%s' "$f" | cut -c1-120)|"
+        break
+        ;;
+    esac
   done
 
   # 3. The honest summary says the thing does not work. These phrases are the
