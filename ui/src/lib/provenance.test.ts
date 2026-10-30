@@ -50,7 +50,16 @@ describe('provenanceForTab — live mirror refuses a false LIVE badge (HOLD-3)',
   });
 
   it('leaves every non-mirror surface exactly as before', () => {
-    expect(provenanceForTab('inbox', true)).toBe('seed');
+    // 2026-10-30: this asserted `provenanceForTab('inbox', true) === 'seed'`, on the
+    // premise that a store-fed tab is a lower tier than a database-backed one.
+    // Measured false — hydrateProjectData fills the store from api.listSeats /
+    // listWorkitems / listHandoffs / listArtifacts / listSessions / listEvents /
+    // listDocuments, all real Postgres reads, and inboxItems is built from that
+    // data. inbox is live when hydrated, fixture when it is not.
+    //
+    // What this test still guards is the mirror's own exclusivity: adding tabs to
+    // the database-backed set must not change the mirror's three discovery states.
+    expect(provenanceForTab('inbox', true)).toBe('live');
     expect(provenanceForTab('inbox', false)).toBe('fixture');
     expect(provenanceForTab('sessions', true, 'empty')).toBe('live');
   });

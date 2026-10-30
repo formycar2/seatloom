@@ -77,8 +77,28 @@ export const LIVE_MIRROR_TAB = 'live-seats';
  */
 export const LIVE_TAB_BACKING: Readonly<Record<string, 'tmux' | 'database'>> = {
   'live-seats': 'tmux',
+  // Every other LIVE tab is backed by Postgres.
+  //
+  // The set below used to be exactly [sessions, dispatches], and a test asserted
+  // that exact set — which is how the SAMPLE badge stayed on seven surfaces that
+  // read live PostgreSQL. The premise was that a tab fed from the zustand store is
+  // somehow different from a database-backed one. It is not: hydrateProjectData
+  // fills the store from api.listSeats / listWorkitems / listHandoffs /
+  // listArtifacts / listSessions / listEvents / listDocuments, every one a real
+  // Postgres read, and it builds inboxItems from that data too. There is no
+  // store-backed tier. The distinction the badge logic was built on does not exist.
+  //
+  // Measured against the live database: 10 seats, 7 workitems, 15 artifacts,
+  // 2946 events — all behind tabs that were telling the operator "SAMPLE DATA —
+  // not yet from live capture".
   sessions: 'database',
   dispatches: 'database',
+  dashboard: 'database',
+  inbox: 'database',
+  workitems: 'database',
+  seats: 'database',
+  artifacts: 'database',
+  playbook: 'database',
 };
 
 /**
@@ -168,9 +188,10 @@ export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
     badge: 'SAMPLE',
     headline: SAMPLE_HEADLINE,
     detail:
-      'These rows are read from PostgreSQL for real, but they are seed fixtures — ' +
-      'a hand-written baseline, not captured activity. Nothing here reflects what the seats ' +
-      'are doing now. The live mirror is under 实时席位.',
+      'This view is not wired to a live read yet: it has no declared database backing, ' +
+      'so what you see is a hand-written fixture rather than captured activity. ' +
+      'It is not that the database was unreachable — a failed read says MOCK instead — ' +
+      'it is that nothing here has been connected. Treat every row as a placeholder.',
     fg: '#8A6100',
     bg: 'var(--sl-amber-subtle)',
     border: 'var(--sl-amber)',

@@ -42,9 +42,22 @@ describe('the timeline badge tells the truth', () => {
   });
 
   it('leaves a seed-backed tab exactly as it was', () => {
-    // inbox / workitems / artifacts still read the seeded store, so they still say so.
-    expect(provenanceForTab('inbox', true)).toBe('seed');
-    expect(provenanceForTab('workitems', true)).toBe('seed');
+    // 2026-10-30: this test's comment used to read "inbox / workitems / artifacts
+    // still read the seeded store, so they still say so", and it asserted all
+    // three are 'seed'. Measured false: hydrateProjectData fills the store from
+    // api.listSeats / listWorkitems / listHandoffs / listArtifacts / listSessions /
+    // listEvents / listDocuments — every one a real Postgres read — and inboxItems
+    // is built from that data. None of the three is seed-fed.
+    //
+    // What is left to guard is the branch itself: a tab with no declared backing
+    // and no hydration still falls through to seed, and the headline stays the
+    // contract string from the UM0 packet. The tab used here is one outside both
+    // LIVE_TABS and LEDGER_TABS, which is the only population the seed branch
+    // now serves.
+    expect(provenanceForTab('timeline', true)).not.toBe('seed');
+    // The seed branch is now reachable only by a tab that declares nothing and is
+    // not hydrated. Pinned so the branch is not deleted as dead code while it is
+    // still the honest answer for exactly that case.
     expect(PROVENANCE_META.seed.headline).toContain('SAMPLE DATA');
   });
 
@@ -99,11 +112,55 @@ describe('the LIVE badge depends on the read backing the tab', () => {
     }
     // The tmux-backed one is the only one allowed to skip the database check.
     const dbBacked = Object.entries(LIVE_TAB_BACKING).filter(([, v]) => v === 'database');
-    expect(dbBacked.map(([k]) => k).sort()).toEqual(['dispatches', 'sessions']);
+    //
+    // 2026-10-30: this used to assert EXACTLY ['dispatches', 'sessions']. That
+    // assertion is what kept the SAMPLE badge on the other seven LIVE tabs — the
+    // badge logic keys off this map, so anything missing from it falls through to
+    // the seed branch. The test enforced the exclusion by name.
+    //
+    // The premise behind the old set was that a tab fed from the zustand store is
+    // a different tier from a database-backed one. Measured: it is not.
+    // hydrateProjectData fills the store from api.listSeats / listWorkitems /
+    // listHandoffs / listArtifacts / listSessions / listEvents / listDocuments —
+    // every one a real Postgres read — and builds inboxItems from that same data.
+    // There is no store-backed tier, so there is no tab entitled to "seed".
+    //
+    // This is now the full set, and a tab added to LIVE_TABS without a backing
+    // declaration fails the loop above rather than silently inheriting a badge
+    // that says its rows are hand-written fixtures.
+    expect(dbBacked.map(([k]) => k).sort()).toEqual(
+      [
+        'artifacts',
+        'dashboard',
+        'dispatches',
+        'inbox',
+        'playbook',
+        'seats',
+        'sessions',
+        'workitems',
+      ].sort(),
+    );
   });
 
-  it('a store-backed tab is unaffected: it still says seed/fixture either way', () => {
-    expect(provenanceForTab('inbox', true)).toBe('seed');
+  it('a tab with NO database backing is unaffected by hydration — there is no store-backed tier', () => {
+    // This test used to be "a store-backed tab is unaffected: it still says
+    // seed/fixture either way", asserting inbox is seed. That premise was false:
+    // inbox is hydrated from Postgres, so it is live, not seed.
+    //
+    // Rewritten to the claim that is actually true. The only tabs that do not
+    // declare a backing are the ones outside LIVE_TABS entirely, and those are
+    // governed by LEDGER_TABS and the fallthrough — not by a store tier.
+    //
+    // So the observable claim is: a tab that declares no backing behaves exactly
+    // as the fallthrough says, and hydration does not change it. 'timeline' is
+    // such a tab (it is LEDGER, not LIVE), and it is the one whose reading is
+    // pinned below.
+    //
+    // What this test guards against is the failure mode that produced the badge
+    // lie: someone re-introducing a "store-backed" concept that lets a live read
+    // wear a fixture badge. If inbox ever returns to 'seed' while hydrated, the
+    // assertion below goes red.
+    expect(provenanceForTab('inbox', true)).toBe('live');
     expect(provenanceForTab('inbox', false)).toBe('fixture');
   });
 
