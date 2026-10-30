@@ -55,6 +55,24 @@
      `round(extract(epoch from (now()-started_at))/60)`,减法在库内完成。
      别拿库的时间戳去跟宿主机 `date` 比(podman 虚拟机时钟会在宿主机休眠后停摆,
      实测慢过 137 分钟,那样算出来的"挂了 10 小时"是假的)。
+   - 🔴🔴 **测量前先打印分支,和权威来源对一次。2026-10-29 我一天内测错三次代码。**
+     **权威来源是卡上/派单上写的分支名,不是我猜的目录名。**
+     ```bash
+     cd <worktree> && git branch --show-current    # 必须等于要测的分支,不等就停
+     ```
+     三次实测教训:
+     1. 在主检出跑 Mira 的测试得 `2 failed | 8 passed` —— 那是 track 的 `App.tsx`,
+        她分支上是 **10 passed**。
+     2. 报"有缺陷的修复被合并了" —— 那张卡绑定的是另一个 verdict,干净。
+     3. 报"Nimbus 的修复丢失了" —— 我站在 `seatloom-worktrees/nimbus`,它在
+        `packet/nimbus/session-work-readmodel`;**正确分支在 `nimbus-psr`**。
+        `git worktree add` 报 "already used by worktree at nimbus-psr" 才救了我。
+     **目录名不是分支名。** `worktrees/<name>` 的 `<name>` 是给人看的。
+     `git worktree list` 才是权威。
+     🔴 **越是不好的结果,越要先确认测量对象** —— 好消息测错了会自我矛盾,
+        坏消息不会。今天三次全是坏结果,所以每一次看起来都"合理"。
+     🔴 在别人分支上做变异,恢复后必须证明干净:
+        `git diff --stat` 空 + 相关测试全绿 + 关键符号 `grep -c` 数回原值。
    - 进程活着是存活信号,**不是进度信号**。账本最后一条事件的时间比面板可靠:
      `canonical_events` 空白 17 小时而面板显示"6/6 在线"真的发生过。
    - ⚠️ `pgrep -P` 在 macOS 上会**漏子进程**,不漏的时候才准。2026-10-12 实测:
@@ -66,6 +84,17 @@
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
    - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      它查每张 pending 卡的分支是否还包含它的 base。
+   - **verdict 自己有没有说这份活是坏的**:`bash scripts/check-verdict-defects.sh`
+     🔴 2026-10-29 补。前四项检查**没有一个读过 verdict 的 payload** ——
+     `check-verdict-refs.sh` 只读 `payload->>'dispatch_id'`,问的是"指对派单了吗",
+     不问"这份 verdict 说了什么"。于是写着 **"THE FIX DOES NOT WORK"** 的 verdict
+     和一份干净通过的 verdict,在我所有控制眼里一模一样。
+     现在这个脚本读 `the_honest_summary` / `what_i_did_not_verify` / `finding_*`,
+     抓四类:verdict 不是 pass、payload 有点名的 finding、
+     honest summary 里出现"does not work / is unpinned / not covered / failing / defect"、
+     以及**完全没有 summary 和 finding**(那和"我没看"分不出来)。
+     判据写在文件头注释里,因为它就是为那一次事故建的。
+   - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      `fleet-status.sh` 原来只查 base 分支**存在**,于是 23 张全点不动的卡被打成
      "✅ 可以点" —— 张先生点任何一张都收到拒绝,而他不知道为什么。
      🔴 **2026-10-29 11:28:这个脚本又一次说了反话,这次是它自己的运行条件骗它。**
@@ -140,6 +169,30 @@
 
 2. **有派给我的活就领**:派给 `seat-aegis-001` 的 `ready` 单,`get_next_dispatch` 领来做。
    空闲是免费的,堵住不是。
+
+2e. **派验绿单时,必须把「verdict 怎么命名实现派单」写清 —— 2026-10-29 补,
+    今天我在这里连错三次,烧掉三件 failed 派单和一次假警报。**
+    门的判据(`dispatch.rs` Guard 2)是**两条通道任一即可**,代码注释写得很清楚:
+    verdict 命名一件派单,要么 `payload->>'dispatch_id'`(live 上 27/30),
+    **要么一条 `event_object_refs` 行 `ref_type='dispatch'` 且 `ref_id` 指向它(5/30)**。
+    `role` **不在判据里** —— `subject` 只是诚实标注,`context` 同样过门。
+    历史上 56 个 verdict 的 subject 指向验单自己,其中 40 个已被接受的卡引用过,
+    说明第二条通道一直在正常使用。
+
+    🔴 我今天的错:验单里写"Your verdict must name THIS dispatch id in
+       `payload.dispatch_id`" —— 他照做,指向验单自己。**我从没告诉他还有第二条通道,
+       也从没给过他实现派单的 id。** 结果三件开卡单被门拒,而正确解法是补 ref。
+
+    **派验绿单必写**:
+    ```json
+    {"implementation_dispatch": "<被验的实现派单 id,从账本拷,不要手打>",
+     "verdict_must_name_it_via": "payload.dispatch_id = <实现派单 id> AND/OR
+        event_object_refs(event_id=<verdict id>, ref_type='dispatch',
+        ref_id=<实现派单 id>, role='subject')"}
+    ```
+    🔴 **实现派单 id 从账本拷。** 今天我第三件还指错了单元(说成记忆去重那件,
+       实际验的是去重**测试**),Nimbus 两种配对都实测被拒、报上来才发现。
+       **一个 typo 的 id 会造出一张指向空气的卡。**
 
 2c. **查"验绿了但没人验收"的活 —— 这一步 2026-10-29 补,和 2b 是同一个病的另一半。**
     🔴 实例:2026-10-29 01:00 逐件查 `ReviewVerdictIssued`,发现 **10 件 implementation 类

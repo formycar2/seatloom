@@ -41,15 +41,33 @@ while IFS='|' read -r card dref vref ev_ok names; do
     printf '  BAD  %s\n' "$card"
     printf '       dispatch=%s verdict_ref=%s\n' "$dref" "$vref"
     [ "$ev_ok" = "t" ] || printf '       the verdict event does not exist (or is not ReviewVerdictIssued)\n'
-    [ "$names" = "t" ] || printf '       the verdict does not name THIS dispatch - it names %s\n' \
+    [ "$names" = "t" ] || printf '       the verdict does not name THIS dispatch by EITHER channel - payload.dispatch_id=%s and no event_object_refs row with ref_type=dispatch points here\n' \
       "$(db "select coalesce(payload->>'dispatch_id','(nothing)') from canonical_events where id='$vref'")"
   fi
 done <<< "$(db "
   select a.id, a.dispatch_id, a.flux_verdict_ref,
     exists(select 1 from canonical_events e
             where e.id=a.flux_verdict_ref and e.event_type='ReviewVerdictIssued') as event_ok,
-    exists(select 1 from canonical_events e join dispatches d on d.id = e.payload->>'dispatch_id'
-            where e.id=a.flux_verdict_ref and d.id = a.dispatch_id) as names_this_dispatch
+    -- THE GATE'S OWN CRITERION, NOT A STRICTER ONE. dispatch.rs Guard 2 accepts a
+    -- verdict for a dispatch iff it NAMES it, and it names it in EITHER of two
+    -- ways Flux actually writes: payload->>'dispatch_id' OR an event_object_refs
+    -- row with ref_type='dispatch' and that ref_id. It is a DISJUNCTION. role is
+    -- not part of the predicate at all - 'subject' is an honest label, 'context'
+    -- passes the gate just as well.
+    --
+    -- This script previously checked only payload.dispatch_id, which made it
+    -- STRICTER than the gate, and it therefore reported BAD for two cards that
+    -- the gate will accept. Measured on live 2026-10-29 23:00: Flux had added the
+    -- ref rows for both, the gate accepts both, and this script called both BAD.
+    -- A check that is stricter than the thing it checks is not conservative - it
+    -- is wrong, and it burns the operator's trust in every FAIL it prints.
+    (
+      exists(select 1 from canonical_events e join dispatches d on d.id = e.payload->>'dispatch_id'
+              where e.id=a.flux_verdict_ref and d.id = a.dispatch_id)
+      OR
+      exists(select 1 from event_object_refs r
+              where r.event_id=a.flux_verdict_ref and r.ref_type='dispatch' and r.ref_id=a.dispatch_id)
+    ) as names_this_dispatch
   from acceptances a where a.status='pending' order by a.id;")"
 
 echo "  good=$good bad=$bad"
