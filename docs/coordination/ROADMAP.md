@@ -749,3 +749,72 @@ Everything in sections 1–4 above is still open. Nothing in this section closes
 sauh decision is still yours, the sync-refusal options are still unruled, and
 `packet/lyra/milestone-summary` is still not on track — which means the five standing-duty documents are
 still invisible to the waker, and the fleet still goes quiet when the queue empties.
+
+---
+
+## 2026-10-30 midday · Lyra — the standing-duty ask is now one small merge, and I should have made it small two days ago
+
+### The change
+
+The ask has been "merge `packet/lyra/milestone-summary` into track." **That was a bad ask and I made it
+for two days.** The branch is 110 commits ahead of track and carries the verdict-ref checker, which
+conflicts with track — so you were being asked to make one decision that covered a documentation delivery
+and a code change, with a conflict in the way.
+
+**I have split it.** `packet/lyra/standing-duty-docs-only` is a new branch cut from track's current tip
+containing exactly this:
+
+```
+ .gitlab/docs-grandfather.txt                     |  16 ++++
+ docs/coordination/tasks/flux/FLUX-HEARTBEAT.md   |  96 +++++++++++++
+ docs/coordination/tasks/mira/MIRA-HEARTBEAT.md   |  86 +++++++++++
+ docs/coordination/tasks/nimbus/NIMBUS-HEARTBEAT.md | 87 ++++++++++
+ docs/coordination/tasks/onyx/ONYX-HEARTBEAT.md   |  94 ++++++++++++
+ docs/coordination/tasks/vela/VELA-HEARTBEAT.md   | 103 +++++++++++++
+ 6 files changed, 482 insertions(+)
+```
+
+**482 insertions, zero deletions, no conflicts.** The five documents do not exist on track, so they are
+pure adds. The checker is deliberately not on this branch — it stays a separate decision, and it should
+be.
+
+### What it fixes, measured rather than asserted
+
+The waker calls a seat with no ready dispatch **only if that seat has a heartbeat document**. I verified
+in the waker's log:
+
+```
+heartbeat nudges in the log: 79
+  for seat-lyra-001: 79
+  for the other five seats: 0
+```
+
+So the five documents I wrote, committed, and pushed to two remotes have delivered **nothing** for two
+days — the process that consumes them reads a relative path against a checkout that does not have them.
+**A governance artifact is not delivered when it is committed; it is delivered when the consuming process
+can read it.** That is the lesson and it is the whole reason this branch exists.
+
+I verified the new branch rather than assuming it works: compiled the waker's own `heartbeat_doc_path()`
+standalone and ran it against this tree — **all seven seats resolve** (lyra, aegis, mira, nimbus, flux,
+onyx, vela all FOUND). The docs gate exits 0. The five waker heartbeat tests pass 5/5.
+
+### Why the grandfather entry is part of the delivery, not an afterthought
+
+The gate's filename rule (§4) and the waker's filename requirement cannot both be satisfied by one file.
+Only one is load-bearing: **without `HEARTBEAT.md` the seat is never called at all when the queue is
+empty**, which is exactly the defect this convention exists to close. The two pre-existing heartbeats
+(AEGIS, LYRA) already pass the gate, so the naming rule is the debt and not the mechanism. The entry
+records that reasoning in the file itself, so the next reader does not have to rediscover it.
+
+### What you are being asked for
+
+**One merge: `packet/lyra/standing-duty-docs-only` → `track/infra-foundation`.** It is documentation, it
+conflicts with nothing, and it is what makes the other five seats answerable when their queues empty.
+
+### What is still open, unchanged
+
+The verdict-ref checker stays a separate decision and I still want it — it is the only component
+contradicting the product's own guard. The UI line is still red (2 failed / 370 passed) and the fix is a
+ruling I already wrote. The 023 landing script's DELETE still carries a filter its own report documents
+removing. And the sauh decision, the sync-refusal options, and the documents ship-or-remove question are
+all still yours. Nothing here closes them.
