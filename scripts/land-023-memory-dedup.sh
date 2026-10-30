@@ -38,7 +38,7 @@ APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
 BRANCH="packet/nimbus/project-scoped-reads"
-MIG="infra/postgres/schema/023_memory_dedup.sql"
+MIG="infra/postgres/schema/025_memory_dedup.sql"
 
 say() { printf '%s\n' "$*"; }
 

@@ -1,4 +1,12 @@
--- 023 — `remember` refuses a repeat write instead of duplicating it.
+-- 025 — `remember` refuses a repeat write instead of duplicating it.
+--
+-- RENUMBERED 023 -> 025 on 2026-10-30. Two migrations had independently landed as
+-- 023: this one, and 023_gate_criterion.sql (which had itself been renumbered from
+-- 020 the day before because track carried its own 020_operator_decisions.sql).
+-- 023_gate_criterion was already registered in scripts/apply-db.sh and its header
+-- records why it moved, so it keeps 023 and this one takes the next free slot.
+-- Only the filename and this migration's own self-references changed; no SQL
+-- object was renamed and no dependency changed. See scripts/apply-db.sh.
 --
 -- THE DEFECT, MEASURED ON LIVE 2026-10-29 (read-only), NOT INFERRED:
 --
@@ -79,7 +87,7 @@ BEGIN
     -- placeholder, and "group(s)" made psql count four placeholders while three
     -- arguments were supplied.
     RAISE EXCEPTION
-      '023 cannot apply: % memory duplicate groups remain. The application-level guard in insert_memory stops NEW duplicates; repairing the EXISTING rows is a live-database act that needs the operator''s decision, not this migration.',
+      '025 cannot apply: % memory duplicate groups remain. The application-level guard in insert_memory stops NEW duplicates; repairing the EXISTING rows is a live-database act that needs the operator''s decision, not this migration.',
       n;
   END IF;
 END $$;

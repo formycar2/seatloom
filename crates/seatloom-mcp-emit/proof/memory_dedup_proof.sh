@@ -61,7 +61,7 @@ for n in 015_knowledge_layer 016_acceptance_plan 017_acceptance_cancel 018_memor
     || { echo "cannot read ${n} from track"; exit 1; }
   apply < "/tmp/${n}.sql" || { echo "failed at ${n}"; exit 1; }
 done
-apply < "$ROOT/infra/postgres/schema/023_memory_dedup.sql" \
+apply < "$ROOT/infra/postgres/schema/025_memory_dedup.sql" \
   || { echo "023 did not apply — see above (it refuses while duplicates remain)"; exit 1; }
 
 U="postgresql://seatloom:seatloom@localhost:5432/${SCRATCH}"
