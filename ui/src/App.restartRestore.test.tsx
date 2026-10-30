@@ -592,6 +592,33 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(readStoredAppStore().activeProjectId).toBe(FIRST_REAL_PROJECT));
     expect(writtenProjectIds().at(-1)).toBe(FIRST_REAL_PROJECT);
     expect(writtenProjectIds()).not.toContain(OLD_LAUNCH_DEFAULT);
+
+    // AND the operator is TOLD it happened.
+    //
+    // A silent fallback fixes the data and hides the event, which is the same
+    // failure one level down. Measured on the real machine: the active project was
+    // `project_delivery`, which has no row in projects at all — a directory-style
+    // prefix that used to be a project and is now a namespace. Every
+    // project-scoped read therefore returned nothing, and the empty state is
+    // honest about the read: hydrateProjectData builds the list fresh from real
+    // data. So the operator reads "my work is all done" when the real state is
+    // "you are looking at a project that is not in the database", and the work is
+    // sitting in seatloom.
+    //
+    // The notice must name BOTH ids. "The project you were in no longer exists"
+    // without naming it leaves him unable to tell whether it is about the project
+    // he cares about.
+    //
+    // Mutation this kills: drop the setDroppedProject call. The fallback above
+    // still passes — the app still lands on a real project — so without this
+    // assertion the correction is invisible.
+    // Matched by its own text, not by role: `role="status"` is used by several
+    // surfaces (the provenance banner among them), and a role query here found
+    // more than one.
+    const notice = await screen.findByText(/已不存在/);
+    const noticeText = notice.closest('[role="status"]')?.textContent ?? notice.textContent;
+    expect(noticeText).toContain('deleted-project');
+    expect(noticeText).toContain(FIRST_REAL_PROJECT);
   });
 
   it('an operator-driven tab change IS persisted — the wrapper is not decorative', async () => {

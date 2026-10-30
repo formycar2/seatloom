@@ -33,6 +33,7 @@ import { IMErrorBoundary } from './supervisor/IMErrorBoundary';
 import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
+import { TriangleAlert } from 'lucide-react';
 import SwitchProtectionDialog from './components/SwitchProtectionDialog';
 import { useDataStore } from './stores/useDataStore';
 import { useAppStore } from './stores/useAppStore';
@@ -103,9 +104,17 @@ const App: React.FC = () => {
     if (!backendHydrated) return; // do not guess before the read lands
     const ids = new Set(projectDataOrderRef.current);
     if (!ids.has(persistedProjectId ?? '')) {
-      // The backend has already selected the first real project, or null.
-      coldStartSkip.current = useDataStore.getState().activeProjectId;
+      // The record names a project the backend did not return. Fall back to one
+      // that exists — the data store has already selected the first real project
+      // during hydration — and TELL the operator, because a silent correction is
+      // indistinguishable from "your list is empty because there is nothing in
+      // it", and those two readings demand opposite actions from him.
+      const fellBackTo = useDataStore.getState().activeProjectId;
+      coldStartSkip.current = fellBackTo;
       if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
+      if (persistedProjectId && fellBackTo && fellBackTo !== persistedProjectId) {
+        setDroppedProject({ missing: persistedProjectId, switchedTo: fellBackTo });
+      }
       setRestoredPosition(true);
       return;
     }
@@ -149,6 +158,20 @@ const App: React.FC = () => {
   const [loadedUIProjectId, setLoadedUIProjectId] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
+  // The persisted project id that named no project the backend returned, and the
+  // one we fell back to. Held so the operator can be TOLD, not just silently
+  // moved.
+  //
+  // A silent fallback fixes the data and hides the event, which is the same
+  // failure one level down: the operator reads an empty list as "my work is all
+  // done" when the real state is "you are looking at a project that is not in the
+  // database". Measured — his active project was project_delivery, which has no
+  // row in projects at all, so every project-scoped read returned nothing while
+  // the real work sat in seatloom.
+  const [droppedProject, setDroppedProject] = useState<{
+    missing: string;
+    switchedTo: string | null;
+  } | null>(null);
   const [showSupervisorIM, setShowSupervisorIM] = useState(
     () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
@@ -960,6 +983,39 @@ const App: React.FC = () => {
           }}
           onClose={() => setProtectionType(null)}
         />
+      )}
+
+      {droppedProject && (
+        <div
+          role="status"
+          className="fixed top-16 right-4 z-[60] animate-in slide-in-from-right duration-300"
+        >
+          <div className="bg-card border border-amber-500/40 rounded-xl shadow-2xl overflow-hidden min-w-[320px]">
+            <div className="p-4 flex items-start gap-3 bg-amber-500/5">
+              <div className="p-2 bg-amber-500/10 rounded-lg text-amber-600 shrink-0">
+                <TriangleAlert size={18} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-bold text-foreground">已切换项目</h4>
+                {/* Names BOTH ids. "The project you were last in no longer
+                    exists" without naming it leaves the operator unable to tell
+                    whether this is about the project he cares about. */}
+                <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+                  你上次所在的项目 <code className="font-mono">{droppedProject.missing}</code>{' '}
+                  已不存在, 已切换到{' '}
+                  <code className="font-mono">{droppedProject.switchedTo ?? '无项目'}</code>
+                  。如果这里显示的工作项比你预期的少,原因是这个,不是工作已经做完。
+                </p>
+                <button
+                  onClick={() => setDroppedProject(null)}
+                  className="text-xs font-semibold text-amber-700 hover:underline mt-2"
+                >
+                  知道了
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {showReconcileSummary && activeTab !== 'all-projects' && (
