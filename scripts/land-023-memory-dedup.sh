@@ -11,8 +11,10 @@
 # CANNOT land on its own, and the reason is a real deadlock rather than paperwork:
 #
 #   025 creates a UNIQUE INDEX. A unique index cannot be created while duplicate
-#   rows exist. Measured on live 2026-10-30: 5 duplicate groups, 10 rows, at most
-#   2 rows per group. So:
+#   rows exist. Live has 5 groups of 2 rows, 10 rows in total (measured
+#   2026-10-30, grouped on the index's REAL key: coalesce(l2_file_path,''),
+#   coalesce(l2_line_start::text,''), coalesce(l2_line_end::text,''),
+#   l0_summary). So:
 #
 #     duplicates exist  ->  index refused  ->  dedup not enforced  ->  more duplicates
 #
@@ -22,6 +24,12 @@
 #   wrong set gives 15 groups; grouping on the index's real key gives 5. A row that
 #   does not violate the index is not a duplicate this migration can refuse, so the
 #   wider grouping describes a problem the index does not have.
+#
+#   AND GROUP ON THE COLUMNS YOU REPORT. Aegis's original "6 groups, one with four
+#   rows" came from grouping on four columns while selecting and printing three:
+#   three groups sharing one file printed as three copies of the same six rows,
+#   which reads as one group of six. The count was wrong, not the rows. Group on
+#   the key, print the key, and never widen one without the other.
 #
 #   025's own guard refuses loudly and NAMES the rows rather than half-applying,
 #   which is correct, and which is also why nothing has silently progressed.
@@ -99,11 +107,17 @@ say "== duplicate groups on live (what blocks the index) =="
 # one file printed as three copies of the same six rows, which reads as one
 # group of six. It is five groups of two. Print the key exactly as it is grouped
 # on, or the report misdescribes what it found.
+# NO "where l2_file_path is not null" FILTER. The index key is coalesce(...), so
+# rows with a NULL file path participate in uniqueness too - two NULL-path rows
+# sharing an l0_summary would collide on ('', '', '', summary) and block the
+# index, and a query that filters them out would not show them. Live happens to
+# have zero NULL-path rows today (measured 2026-10-30), so the filter was
+# harmless in practice; removing it makes the report match the index's actual
+# key rather than a subset of it.
 groups=$(podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "
   select coalesce(l2_file_path,'(null)'), coalesce(l2_line_start::text,'(null)'),
          coalesce(l2_line_end::text,'(null)'), l0_summary, count(*), min(id)
   from memories
-  where l2_file_path is not null
   group by 1,2,3,4
   having count(*) > 1
   order by 5 desc;")
@@ -118,6 +132,8 @@ else
     say "  group $n: $c rows — $f lines $s-$e"
     say "    substance: $sum"
     say "    rows:"
+    # The predicate below matches a NULL path with coalesce on both sides, so it
+    # finds the NULL-path group the report now shows. It does not filter them out.
     podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c "
       select id, title, kind, confidence, status, to_char(created_at,'MM-DD HH24:MI')
       from memories
@@ -193,7 +209,6 @@ WHERE id IN (
              ORDER BY created_at
            ) AS rn
     FROM memories
-    WHERE l2_file_path IS NOT NULL
   ) d
   WHERE rn > 1
 ) AND id NOT IN ($(echo "$survivors" | tr ' ' ','));
