@@ -47,7 +47,15 @@ fi
 echo "基线(CI 同款) = $(git rev-parse --short "$BASE")"
 echo
 
-CHANGED="$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- docs 2>/dev/null)"
+CHANGED="$( {
+  git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- docs 2>/dev/null
+  git diff --name-only --diff-filter=ACMR -- docs 2>/dev/null
+  # 未跟踪的新文件也要算进来。闸门自己的 CHANGED 有这一条
+  # (git ls-files --others),我第一版没有,于是刚写完还没提交的文档
+  # 每次都漏掉,下一轮心跳又报同样的违规 ——
+  # 而那正是我刚花一整轮修的东西。
+  git ls-files --others --exclude-standard -- docs 2>/dev/null
+} | grep -E '\.md$' | sort -u )"
 if [ -z "$CHANGED" ]; then
   echo "没有改过的文档。"
   exit 0
