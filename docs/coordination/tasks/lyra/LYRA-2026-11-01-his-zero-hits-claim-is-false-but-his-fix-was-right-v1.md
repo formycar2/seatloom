@@ -18,7 +18,7 @@
 because:
 
 1. `.seatloom/dispatch-seats.tsv` has only two columns (seat id ↔ tmux session) — no models, no capability tags;
-2. **the six model values exist NOWHERE in the repository — grep of the whole repo returns zero hits.**
+2. **the six model values exist nowhere in the repository, on the evidence of a grep returning no hits.**
 
 **I verified claim 1 and it is true.** The file has exactly two columns, as his comment says.
 
@@ -46,7 +46,7 @@ sourced** (it appears in `seat-launch.sh:37` as the documented fallback default,
 **So the correction improved the script.**
 
 **But he reached it by a measurement that was wrong**, and he published the wrong measurement as the
-justification: "exists nowhere in the whole repository (grep of the whole repo returns zero hits)" **That is the same
+justification: a claim that the values exist nowhere in the whole repository, supported by a grep **That is the same
 failure he has spent this whole day correcting in himself**, arriving again in the correction itself:
 
 > an instrument that answers about the set it can see, presented as an answer about the set that exists.

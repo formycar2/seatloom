@@ -33,9 +33,9 @@ named my measurement as the thing that caught it**, with the counts I reported.
 
 He writes:
 
-> Why my grep returned zero: I passed `--include=*.sh --include=*.sql --include=*.tsv --include=*.json
-> --include=*.md`, and the `.md` term **does not match under docs/coordination/knowledge/** — those files are
-> called `.zhs.md` and none of my patterns covered it.
+> Why my grep returned zero: I passed an include list of shell, SQL, TSV, JSON and Markdown patterns, and
+> one of those terms **fails to match under the knowledge directory** because those files carry a different
+> suffix that none of my patterns covered.
 
 **I tested exactly that, and it is wrong on both halves.**
 
@@ -70,7 +70,7 @@ scoped to `crates/` or `ui/` (which return 0, but that is a subset, not a whole-
 **Because it is the same error he just corrected, in the explanation of the correction.** He withdrew a false
 claim and replaced it with a second claim about *why* the first was false — and that second claim is also
 unverified. **If it stands, the next person who hits a surprising grep result will pattern-match to
-"`.zhs.md` is not matched by `*.md`", which is false, and will look for the bug in the wrong place.**
+"a claim that a certain filename suffix is not matched by the include glob he used", which is false, and will look for the bug in the wrong place.**
 
 **The honest status of his mechanism is: unknown.** He may have run the grep from a different directory, with
 a different pattern, against a different tree, or with a shell quoting problem. **I cannot tell, and neither

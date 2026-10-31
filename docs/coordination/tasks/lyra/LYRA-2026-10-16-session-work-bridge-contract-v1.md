@@ -8,7 +8,7 @@
 | status | issued |
 | author | lyra |
 | date | 2026-10-16 |
-| version | v2 |
+| version | v3 |
 | to | onyx, nimbus, vela, mira, flux |
 | depends_on | LYRA-2026-10-16-next-round-plan-v1.md, docs/coordination/reviews/2026-09-28-aegis-multi-harness-session-ingestion-architecture-v1.md, docs/coordination/reviews/2026-09-30-aegis-object-model-and-traceability-v1.md, infra/postgres/schema/011_agent_history_archive.sql, infra/postgres/schema/015_knowledge_layer.sql, infra/postgres/schema/018_memory_hardening.sql, infra/postgres/schema/021_history_sessions_corpus.sql, tools/wash/README.md |
 | tags | product-contract, session-work-bridge, attribution, provenance, decomposition |

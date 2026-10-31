@@ -19,7 +19,7 @@
 > about were not the same.** My command searched `stepplan-wash-**anthropic**`, while my conclusion was written
 > about `stepplan-wash/**step-5-preview**` and `stepplan/**step-5-preview**`. Three different strings. Searching A
 > and then concluding about B is the source of all this confusion — and last round I invented a tidier story
-> about `.zhs.md` not matching.
+> about a filename suffix not being matched.
 first was a false claim about the repository. The second was a false claim about *why* the first was false.
 This one is a false claim about *what he searched* — and it explains the whole chain, because a grep for one
 token genuinely can return zero while the token he wrote conclusions about is everywhere.
