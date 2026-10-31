@@ -102,7 +102,7 @@ fi
 #
 # 保护办法:给每个「带着独有内容」的悬空提交打一个本地标签(orphan-<sha>),再打进 bundle。
 # 本地标签不推就不会外泄,所以这不是写共享状态。
-REACHABLE="$(git for-each-ref --format='%(refname)' refs/heads refs/tags refs/remotes)"
+REACHABLE="$(git for-each-ref --format='%(refname)' refs/heads refs/tags refs/remotes | grep -v '^refs/tags/orphan-')"
 # 🔴 19:00 我第一版只查了 4 个 ref(HEAD、track、flux、mira),
 # 于是报出「32 个悬空提交带着独有内容」,还举了血缘读模型当例子。
 # **假。** 那个提交 reachable from refs/heads/packet/nimbus/gate-vs-announcement ——
@@ -129,7 +129,10 @@ while IFS= read -r c; do
     fi
     orphans+=("$tag")
   fi
-done < <(git fsck --no-reflogs --unreachable 2>/dev/null | awk '/unreachable commit/{print $3}')
+done < <({
+  git fsck --no-reflogs --unreachable 2>/dev/null | awk '/unreachable commit/{print $3}'
+  git tag -l 'orphan-*' | sed 's/^orphan-//'
+} | sort -u)
 
 if [ "${#orphans[@]}" -gt 0 ]; then
   echo "⚠️  发现 ${#orphans[@]} 个悬空提交,带着任何分支/远端/bundle 里都没有的内容。"
@@ -147,7 +150,12 @@ if [ "${#orphans[@]}" -gt 0 ]; then
   echo
 fi
 
-if ! git bundle create "$OUT" "${at_risk[@]}" "${orphans[@]}" 2>&1 | tail -3; then
+bundle_args=("${at_risk[@]}")
+if [ "${#orphans[@]}" -gt 0 ]; then
+  bundle_args+=("${orphans[@]}")
+fi
+
+if ! git bundle create "$OUT" "${bundle_args[@]}" 2>&1 | tail -3; then
   echo "❌ bundle 创建失败"
   exit 1
 fi
