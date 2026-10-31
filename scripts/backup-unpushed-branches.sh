@@ -81,7 +81,73 @@ fi
 
 # --all 会连已经推齐的分支一起打。这里显式列出有风险的那些,
 # 这样 bundle 小而准,而且 verify 的输出能直接对着上面的清单看。
-if ! git bundle create "$OUT" "${at_risk[@]}" 2>&1 | tail -3; then
+#
+# 🔴 第三类风险:悬空提交(orphan)。2026-10-31 19:00 补。
+#
+# 前两类是「分支只在本地」和「未提交的改动」。还有第三类:
+# **提交存在于 .git 里,但没有任何分支、标签、远端指向它** ——
+# 分支被删了、rebase 前的旧版本、stash drop 之后的残留。
+#
+# 实测这个仓库有 **214 个不可达提交,其中 32 个带着别处没有的内容**,包括:
+#   - 血缘读模型(11 个文件,10-16)
+#   - 「卡在谁身上」的依赖 DTO(10-16)
+#   - 五份站岗文档(10-30)
+#   - Lyra 的 land-standing-duty-docs.sh(10-30)
+# 它们在**任何分支、任何标签、任何远端、任何 bundle 里都不存在**,
+# 只以悬空对象的形式活在这一个 clone 的 .git 里。
+# git gc 一到(默认 90 天,或任何人跑 git gc --prune=now)就没了。
+#
+# **这和刚发生的那次数据销毁是同一类:东西只存在于一个地方。**
+# 而这次更隐蔽 —— 分支不在至少 fleet-status 会显示,悬空提交没有任何一处会显示。
+#
+# 保护办法:给每个「带着独有内容」的悬空提交打一个本地标签(orphan-<sha>),再打进 bundle。
+# 本地标签不推就不会外泄,所以这不是写共享状态。
+REACHABLE="$(git for-each-ref --format='%(refname)' refs/heads refs/tags refs/remotes)"
+# 🔴 19:00 我第一版只查了 4 个 ref(HEAD、track、flux、mira),
+# 于是报出「32 个悬空提交带着独有内容」,还举了血缘读模型当例子。
+# **假。** 那个提交 reachable from refs/heads/packet/nimbus/gate-vs-announcement ——
+# 一个我没查的分支。查全之后真实数字是 **3**,而它们带的全是
+# __pycache__/.pyc、.scratch/ 探针、.pi/mcp.json —— 没有一件真活。
+#
+# 「独有」这个词必须对**所有** ref 成立,不然它就是「对我查过的那几个 ref 独有」。
+# 这是今天「一个仪器只回答它看得见的集合,却被当成关于存在的集合的答案」的又一例。
+orphans=()
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  # 只保护「有独有内容」的:它改过的文件里,至少一个在任何可达 ref 里都不存在。
+  # 不这么做就会给 193 个提交打 193 个标签,而其中绝大多数只是历史中间态。
+  if git show --name-only --format='' "$c" 2>/dev/null | while IFS= read -r f; do
+       [ -n "$f" ] || continue
+       for r in $REACHABLE; do
+         git cat-file -e "$r:$f" 2>/dev/null && continue 2
+       done
+       echo "UNIQ"
+     done | grep -q UNIQ; then
+    tag="orphan-$c"
+    if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+      git tag "$tag" "$c" >/dev/null 2>&1 || continue
+    fi
+    orphans+=("$tag")
+  fi
+done < <(git fsck --no-reflogs --unreachable 2>/dev/null | awk '/unreachable commit/{print $3}')
+
+if [ "${#orphans[@]}" -gt 0 ]; then
+  echo "⚠️  发现 ${#orphans[@]} 个悬空提交,带着任何分支/远端/bundle 里都没有的内容。"
+  echo "    它们只以悬空对象的形式活在这一个 clone 里,git gc 一到就没了。"
+  echo "    已打本地标签 orphan-<sha> 并随本次 bundle 一起备份。"
+  echo "    本地标签不推就不会外泄,所以这不是写共享状态。"
+  echo
+  # 打印前 10 个,够判断严重程度,又不会刷屏。
+  for t in "${orphans[@]:0:10}"; do
+    printf "    %-14s %s %s\n" "${t#orphan-}" \
+      "$(git log -1 --format='%ad' --date=format:'%m-%d' "$t")" \
+      "$(git log -1 --format='%s' "$t" | cut -c1-52)"
+  done
+  [ "${#orphans[@]}" -gt 10 ] && echo "    ...另有 $(( ${#orphans[@]} - 10 )) 个"
+  echo
+fi
+
+if ! git bundle create "$OUT" "${at_risk[@]}" "${orphans[@]}" 2>&1 | tail -3; then
   echo "❌ bundle 创建失败"
   exit 1
 fi
