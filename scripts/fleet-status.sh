@@ -131,7 +131,21 @@ if [ "$dec_readable" != "1" ]; then
 fi
 if [ -z "$cards_n" ]; then
   :  # 已经明说读不到了,不要再补一个「(没有)」
-elif [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)"; else
+elif [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then
+  # 0 张可能是真的没有,也可能是全被清空了。2026-10-31 是后者:
+  # 5 张待验收卡连记录一起没了。说清是哪种,不要说「(没有)」。
+  # 判据不是「事件数」—— 事故后 Lyra 自己发了一条 ArtifactCreated,
+  # 所以 canonical_events 有 1 行,不是 0。真正的判据是**有没有接受记录**:
+  # 一个健康的账本不可能 0 张已接受的卡。
+  _acc=$(PSQL "select count(*) from acceptances where status='accepted'" 2>/dev/null)
+  if [ "${_acc:-0}" = "0" ]; then
+    echo "  ⚠️ 0 张 —— 但账本也是空的(库 10-31 00:34 被清空后重建)。"
+    echo "     这 5 张卡连记录一起没了:首屏默认页 ×2、主题能关闭、待验收卡计数、SAMPLE 徽章。"
+    echo "     代码都在 git 上(46 个提交),要重开卡,不是从零开始。"
+  else
+    echo "  (没有)"
+  fi
+else
   for id in $(PSQL "select id from acceptances where status='pending'"); do
     br=$(PSQL "select coalesce(branch,'?') from acceptances where id='$id'")
     base=$(PSQL "select coalesce(base,'?') from acceptances where id='$id'")
@@ -178,6 +192,22 @@ echo
 # ── 真的需要人 ────────────────────────────────────────────────
 echo "── 真的需要人介入 ──"
 need=0
+# 席位没注册 = 任何派给它的单都插不进去(target_seat_id 有 FK 到 seats)。
+# 2026-10-31 事故后 schema 重建只留下 4 个外部项目席位,五个核心席位不在表里,
+# 于是整个舰队无法再被派活,而面板从 tmux 读,照样显示「在线 6/6」。
+# 一个查进程、一个查账本,两者都绿才真的是绿的。
+_seat_n=$(PSQL "select count(*) from seats" 2>/dev/null)
+_core_n=0
+for _s in seat-mira-001 seat-nimbus-001 seat-flux-001 seat-onyx-001 seat-lyra-001 seat-vela-001; do
+  [ "$(PSQL "select count(*) from seats where id='$_s'" 2>/dev/null)" = "1" ] && _core_n=$((_core_n+1))
+done
+if [ "${_core_n:-0}" -lt 6 ]; then
+  echo "  • 🔴 六个核心席位只有 ${_core_n:-0} 个注册在 seats 表里(共 ${_seat_n:-?} 行)。"
+  echo "      target_seat_id 有 FK 到 seats(id),所以派给未注册席位的单插不进去。"
+  echo "      面板显示『在线 6/6』是从 tmux 读的,和账本是两回事。"
+  echo "      修:bash scripts/register-fleet-seats.sh  (写 live 库,要你执行)"
+  need=1
+fi
 # 账本不在,是这里最要紧的一件事,必须排在第一行。2026-10-31 它没在这一节里,
 # 于是快照打印"没有需要你动手的事",而整个账本刚被清空。
 if [ "$cards_readable" != "1" ]; then
@@ -223,7 +253,15 @@ fi
 mig=$(PSQL "select max(substring(f from '[0-9]+')) from (select unnest(array['x']) f) t" >/dev/null 2>&1; ls "$REPO"/infra/postgres/schema/*.sql 2>/dev/null | tail -1 | sed 's#.*/##;s/_.*//')
 printf "  代码里的最新表结构   %s\n" "${mig:-读不到}"
 if [ "$(PSQL "select count(*) from pg_tables where tablename='memories'")" = "1" ]; then
-  printf "  记忆功能             已上线(%s 条记忆)\n" "$(PSQL "select count(*) from memories")"
+  _mem=$(PSQL "select count(*) from memories")
+  # 2026-10-31:库被清空后重建。schema 回来了,数据没有。
+  # 「已上线(0 条记忆」读起来像「还没开始记」,而事实是「记过 452 条,然后没了」。
+  # 这两种含义对张先生完全不同,所以 0 要说清是哪种 0。
+  if [ "${_mem:-0}" = "0" ]; then
+    printf "  记忆功能             ⚠️ 表在,0 条记忆 —— 库在 10-31 00:34 被清空后重建,452 条没了\n"
+  else
+    printf "  记忆功能             已上线(%s 条记忆)\n" "$_mem"
+  fi
 else
   # 不写「还没建」—— 那次的事实是「建过,然后被清空了」。这两个说法对听者的
   # 含义完全相反,而我差点让产品说错这一个。
@@ -336,7 +374,11 @@ echo
 # 而 0 会把「表没了」显示成「一件都没做完过」。宁可留洞,不要给一个假的 0。
 _done="$(PSQL "select count(*) from dispatches where status='done'" 2>/dev/null)"
 if printf '%s' "$_done" | grep -qE '^[0-9]+$'; then
-  printf "  累计完成派单         %s 件\n" "$_done"
+  if [ "$_done" = "0" ]; then
+    printf "  累计完成派单         0 件 —— 库被清空后重建,约 400 件派单记录没了\n"
+  else
+    printf "  累计完成派单         %s 件\n" "$_done"
+  fi
 else
   printf "  累计完成派单         读不到(dispatches 表不在 live 库里)\n"
 fi
