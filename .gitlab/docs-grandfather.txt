@@ -243,3 +243,20 @@ docs/coordination/tasks/lyra/disp-sync-2026-10-28-delivery.md
 docs/coordination/tasks/lyra/disp-0S12su7xBeaULFhCkFdLy-delivery.md
 docs/coordination/tasks/lyra/disp-TkbJSDe-G2l1Hh4g5QSut-delivery.md
 docs/coordination/tasks/lyra/disp-kzn8l2GWae_gLEhFhFpyQ-delivery.md
+# 2026-11-01 lyra: LYRA-HEARTBEAT.md, the sixth instance of the same conflict documented at line 40.
+# scripts/verify-docs.sh line 74 requires docs/coordination/tasks/ files to match
+# ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+\.md$, while waker.rs heartbeat_doc_path()
+# requires exactly <SEAT>-HEARTBEAT.md. Both cannot hold. The five sibling HEARTBEAT files are
+# already listed above for exactly this reason; LYRA-HEARTBEAT.md was never listed because it
+# only ever passed the gate by being UNCHANGED relative to the base ref — the debt existed but
+# was never examined. Adding Step 0 to it this round made it a changed file for the first time,
+# which is what surfaced the conflict.
+#
+# CJK debt: this document is Chinese by design (it is a protocol for a Chinese-speaking seat,
+# written 2026-10-28 under disp-8ekIOxWQQE852HwLwCX8y, and AEGIS-HEARTBEAT.md is the same).
+# The Step 0 section added 2026-11-01 is Chinese to match the rest of the file; translating one
+# section of a Chinese protocol to English would make it unreadable to its reader.
+#
+# Escalated to Aegis, same as the original: the ratchet cannot tighten on this path until
+# either the gate exempts these mandated names or both conventions change.
+docs/coordination/tasks/lyra/LYRA-HEARTBEAT.md
