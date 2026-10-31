@@ -185,9 +185,22 @@ while IFS= read -r f; do
   # 两次都让前一步的工夫归零,而两次在干跑里都看不出来,
   # 只有跑完再跑一遍闸门才看得见。
   # 所以现在用两个变量:base 只管主名,zhs 单独记着,最后统一接上。
+  #
+  # 🔴 而 16:00 又抓到第三次,这次是我的**验法是错的**,不是脚本。
+  # 我在临时仓库里验「X.zhs-v1.md 能不能过闸门」,只测了 §4 的正则
+  # (`.+` 贪婪匹配,所以 .zhs 在中间它也认),就写了「三种输入都验过」。
+  # 真的闸门还跑 §10:文件名必须以 .zhs.md **结尾**。
+  # X.zhs-v1.md 于是被报「含中文」。
+  # **拿闸门的一条规则冒充整个闸门,是最像验过了的一种没验。**
+  # 所以 -v1 必须插在 .zhs **前面**:X.zhs → X-v1.zhs,而不是 X.zhs-v1。
   if [ "$template" = "T3" ]; then
     if ! printf '%s' "$base" | grep -qE '^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+$'; then
-      newbase="${base}-v1"
+      if [ "$already_zhs" = "1" ]; then
+        # 名字本来以 .zhs 结尾:把 -v1 插到它前面。
+        newbase="${base%.zhs}-v1.zhs"
+      else
+        newbase="${base}-v1"
+      fi
       newf="$(dirname "$f")/$newbase.md"
       echo "        rename → $newbase.md (§4)"
       if [ "$APPLY" = "1" ]; then
