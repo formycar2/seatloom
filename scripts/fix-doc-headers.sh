@@ -154,6 +154,15 @@ while IFS= read -r f; do
   # 之间的判断,用中文才写得准。所以走 .zhs.md 这条路,
   # 而不是把中文删掉换成英文 —— 那等于为了让检查过,把内容变得他看不懂。
   zhs=0
+  # already_zhs 记的是**改名之前**名字里有没有 .zhs。
+  # §4 会把名字改成 X.zhs-v1,那时它不再以 .zhs 结尾,
+  # 所以最后一步不能靠改名后的名字判断 —— 我第一版那么写,
+  # 结果一个本来就叫 .zhs.md 的文件被接了两次后缀。
+  # 判断必须用改动前的状态,而改动前的状态只会在这里原样存在。
+  already_zhs=0
+  if printf '%s' "$base" | grep -q '\.zhs$'; then
+    already_zhs=1
+  fi
   if ! printf '%s' "$base" | grep -q '\.zhs$'; then
     if python3 -c "import sys,re; sys.exit(0 if re.search('[一-鿿]', open(sys.argv[1],encoding='utf-8').read()) else 1)" "$f" 2>/dev/null; then
       zhs=1
@@ -202,7 +211,19 @@ while IFS= read -r f; do
   # 最后统一接 .zhs。中文的任务文档要同时满足 §10 和 §4,
   # 而闸门的 §4 正则只认 .md 结尾 —— 它自己没有为 .zhs 开口子,
   # 这是个真问题,但改闸门不是这一轮的事。
-  if [ "$zhs" = "1" ]; then
+  #
+  # 只在后缀还不在的时候接。我第一版无条件接,于是**一个本来就叫
+  # .zhs.md 的文件会被接两次**:X.zhs.md → §4 加 -v1 → X.zhs-v1.md
+  # → 再接 .zhs → X.zhs-v1.zhs.md,而 §4 正则只认 .md 结尾,于是
+  # 它又不合规了。这个 bug 是我在临时仓库里复现 Lyra 的变异时撞见的 ——
+  # 她 mutation-tested 我的修复(三个方向,证明那一行是承重的),
+  # 而我自己复现时用了不同的探针文件名,撞出了另一个洞。
+  # **同一个工具,换一个输入就露出下一个洞。**
+  # 只在「本来没有 .zhs、而且内容是中文」时才接。
+  # 用 already_zhs(改动前的状态),不用当前 $base ——
+  # §4 已经把它改成 X.zhs-v1,那时它不以 .zhs 结尾,
+  # 照当前名字判断就会把一个本来就合规的文件再接一次后缀。
+  if [ "$zhs" = "1" ] && [ "$already_zhs" = "0" ]; then
     newf="${f%.md}.zhs.md"
     echo "        rename → $(basename "$newf") (§10 中文文档)"
     if [ "$APPLY" = "1" ]; then
