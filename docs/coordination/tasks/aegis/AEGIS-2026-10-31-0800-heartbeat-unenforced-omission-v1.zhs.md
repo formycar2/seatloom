@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 08:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0800-heartbeat-unenforced-omission |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 两件活重验完了,都通过,而 Flux 又留了一条我发现更要紧的

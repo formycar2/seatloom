@@ -10,6 +10,17 @@ tags: [acceptance-gate, false-clean, integrity, heartbeat-2c]
 
 # 一次「接受」把 15 个提交带上 track,而只有 2 张卡看着它
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | an_accepted_merge_can_carry_commits_no_card_ever_gated |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-30 |
+| version | v1 |
+| tags | track |
 心跳第 2c 步(查"verdict pass 但没人验收")抓到四件**做完了、验绿了、
 从没被要求操作者验收**的活。其中一件查下去,发现比"没开卡"更严重:
 

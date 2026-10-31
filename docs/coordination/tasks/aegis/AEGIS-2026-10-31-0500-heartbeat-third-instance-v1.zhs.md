@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 05:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0500-heartbeat-third-instance |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 三件验绿单回来了,两件 pass,而 Flux 又抓到两条真的

@@ -70,12 +70,37 @@ check_file() {
        fi ;;
   esac
 
+  # §4 的第三种形状:常驻规程文档(席位心跳协议)没有日期,因为它不该有 ——
+  # 它是**同一份文档的持续修订**,不是 10-31 这一版、10-30 那一版那样的交付物。
+  # 实测 AEGIS-HEARTBEAT.md 和 LYRA-HEARTBEAT.md 都不在豁免名单里,
+  # 也就是两个席位的心跳协议**从来就不可能通过这个闸门**。
+  #
+  # 豁免必须按「没有日期段」判,不能按文件名里有 HEARTBEAT 判。
+  # 我第一版写的是 *HEARTBEAT*.md,变异测试救了它:把 .zhs 容忍度删掉,
+  # 闸门照样 0 违规 —— 因为我的心跳交付文件名里也带 heartbeat,
+  # 16 份全被这条豁免吃掉了,§4 一次都没在它们身上跑过。
+  # 一条把该查的 16 个文件一起吃掉的豁免,比没有豁免更糟:
+  # 它让「我修了闸门」看起来成功了。
+  # 真正的区分是有没有 YYYY-MM-DD:规程文档没有,交付物有。
+  standing=0
+  case "$base" in
+    *HEARTBEAT*.md|*HEARTBEAT*.zhs.md)
+      printf '%s' "$base" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || standing=1 ;;
+  esac
+  if [ "$standing" = "1" ]; then
+    :
+  else
+  # 这里必须按 $f(完整路径)分发,不能按 $base。
+  # 我改成 $base 之后,§4 一条都没跑过而闸门照样全绿 ——
+  # 因为 basename 永远匹配不上 docs/coordination/tasks/* 这种路径模式。
+  # 变异测试(删掉 .zhs 容忍度)第二次存活,才把它揪出来。
   case "$f" in
-    docs/coordination/tasks/*)      [[ "$base" =~ ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+\.md$ ]] || echo "$f: task filename must be ROLE-YYYY-MM-DD-<topic>-vN.md (§4)" ;;
+    docs/coordination/tasks/*)      [[ "$base" =~ ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+(\.zhs)?\.md$ ]] || echo "$f: task filename must be ROLE-YYYY-MM-DD-<topic>-vN.md (§4)" ;;
     docs/coordination/reviews/*)    [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-.+\.md$ ]] || echo "$f: review filename must be YYYY-MM-DD-<topic>.md (§4)" ;;
     docs/coordination/acceptance/*) [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-.+\.md$ ]] || echo "$f: acceptance filename must be YYYY-MM-DD-<topic>.md (§4)" ;;
     docs/coordination/memory/*)     [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$ ]] || echo "$f: memory filename must be YYYY-MM-DD.md (§4)" ;;
   esac
+  fi
 }
 
 all_docs() { { git ls-files -- docs; git ls-files --others --exclude-standard -- docs; } | grep -E '\.md$'; }

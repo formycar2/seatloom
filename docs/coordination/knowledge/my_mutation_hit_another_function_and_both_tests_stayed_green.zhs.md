@@ -10,6 +10,17 @@ tags: [mutation-testing, false-positive, verification]
 
 # 变异打到了别的函数,测试全绿,而绿的不是我想测的那个东西
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | my_mutation_hit_another_function_and_both_tests_stayed_green |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Nimbus 给 `close_topic` 补了原子性测试(两个集成测试,deferred 约束触发器)。
 我要变异验证它,第二个变异是「删掉事件 append、保留 UPDATE」。
 

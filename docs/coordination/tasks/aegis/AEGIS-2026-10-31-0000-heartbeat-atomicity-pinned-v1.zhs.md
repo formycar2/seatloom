@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 00:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0000-heartbeat-atomicity-pinned |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 我独立验了 Nimbus 补的原子性测试,它真的钉住了

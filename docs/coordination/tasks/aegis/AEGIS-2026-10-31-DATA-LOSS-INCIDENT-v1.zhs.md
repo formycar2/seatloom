@@ -1,5 +1,16 @@
 # 🔴 数据丢失事件报告 — live 数据库 seatloom 被清空
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-DATA-LOSS-INCIDENT |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | seatloom |
 **时间**:2026-10-31 09:00 心跳发现
 **最后成功写入**:2026-10-31 00:11:52 UTC
 **发现时状态**:`seatloom` 库里 `public` schema **0 张表**

@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-30 18:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-30-1800-heartbeat-un-gated-merges |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-30 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 1. 修好了我自己三个检查里的一个假阴性(`check-verdict-defects.sh`)

@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-30 23:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-30-2300-heartbeat-atomicity-gap |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-30 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 派了一件活,针对唯一一张真正不过关的卡

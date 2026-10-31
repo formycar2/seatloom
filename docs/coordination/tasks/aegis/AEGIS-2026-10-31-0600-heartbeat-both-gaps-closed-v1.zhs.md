@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 06:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0600-heartbeat-both-gaps-closed |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 上一轮我抓到的两个洞,两个席位都补上了,我逐条复现过

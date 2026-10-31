@@ -10,6 +10,17 @@ tags: [product, honesty, tests, false-clean]
 
 # 修好一个被强制的排除之后,剩下的是一个未被强制的遗漏,而方向一样
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | an_unenforced_omission_and_an_enforced_exclusion_fail_the_same_way |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 SAMPLE 徽章那个缺陷的原貌:一个测试**按名字规定**数据库支撑的页签
 恰好是 `[sessions, dispatches]`,于是七个真读 Postgres 的页签
 被按在「SAMPLE DATA — not yet from live capture」上。

@@ -10,6 +10,17 @@ tags: [git, remotes, integrity, policy]
 
 # 两个远端,而没有任何规矩说该推哪个
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | two_remotes_and_no_rule_about_which_one_to_push_to |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 这个仓库有两个远端:
 
 - `origin` = github.com/formycar2/seatloom.git

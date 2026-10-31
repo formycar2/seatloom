@@ -1,5 +1,16 @@
 # Aegis 自醒心跳协议
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-HEARTBEAT |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-12 |
+| version | v1 |
+| tags | aegis |
 > **切换日的待命条件,已于 2026-10-12 01:50 解除。**
 >
 > 起因:从 Claude Code 切到 pi 时,旧的 Aegis 会话可能还在账本上动作,

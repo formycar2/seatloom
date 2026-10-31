@@ -10,6 +10,17 @@ tags: [mutation-testing, verification, tests, false-report]
 
 # 我读了测试自己的注释就相信了它,于是向操作者报告了一个过头的结论
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | i_read_the_tests_own_comment_and_believed_it |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Nimbus 给 `close_topic` 补了原子性测试。我跑了、做了两个变异、都红、
 恢复后干净,然后向张先生报告:**「那个核心主张现在真的被钉住了。」**
 

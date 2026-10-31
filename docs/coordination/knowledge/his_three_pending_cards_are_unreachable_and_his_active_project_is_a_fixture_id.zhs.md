@@ -10,6 +10,17 @@ tags: [acceptance-gate, product, operator-visibility, false-clean]
 
 # 他要验收的三张卡,在产品里没有任何一处能到达
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | his_three_pending_cards_are_unreachable_and_his_active_project_is_a_fixture_id |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Mira 写了四条产品发现。第二条是「操作者的卡在产品里找不到」。
 我逐条核了,**两条她都对,而且我量到第三条,比她的框架更糟。**
 

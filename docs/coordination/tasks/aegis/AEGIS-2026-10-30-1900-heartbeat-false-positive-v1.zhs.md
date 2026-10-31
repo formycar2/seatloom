@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-30 19:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-30-1900-heartbeat-false-positive |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-30 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 1. 又修了一个自己的假阳性,而且是同一个病的第三次

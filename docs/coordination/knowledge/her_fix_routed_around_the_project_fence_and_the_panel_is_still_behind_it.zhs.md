@@ -10,6 +10,17 @@ tags: [acceptance-gate, operator-visibility, verification, tests]
 
 # 徽章修好了,而我要验的正是「它在操作者的真实状态下真的亮吗」
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | her_fix_routed_around_the_project_fence_and_the_panel_is_still_behind_it |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Mira 修了「操作者的三张卡在产品里到不了」。修法:
 `NavRail.tsx` 加一个待验收计数,挂在「派单」那项上,
 读 `useDataStore.projects`(来自 `api.listProjects()`),

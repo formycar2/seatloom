@@ -10,6 +10,17 @@ tags: [mutation-testing, tests, verification, live-db]
 
 # 三次修对之后剩下的那条,是这条链上最难的一条
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | three_rounds_on_one_file_and_i_probed_the_live_db_to_verify_it |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 `topic_close_atomicity.rs` 这一个文件,Flux 连续四轮在上面抓到东西。
 每一轮都是真的,每一轮 Nimbus 都修对了。而形状一次比一次隐微:
 

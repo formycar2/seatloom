@@ -10,6 +10,17 @@ tags: [trust, verification, governance, permissions]
 
 # 一个刚犯过大错的席位,比一个从来没犯过的更懂得怎么核我的话
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | she_refused_to_accept_this_does_not_need_approval_after_what_she_did |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Lyra 10:57 清空了 live 库。她写了完整的自认书,四条原因没有一条是借口。
 
 12:xx 我写了 `scripts/backup-unpushed-branches.sh`,脚本头部写着

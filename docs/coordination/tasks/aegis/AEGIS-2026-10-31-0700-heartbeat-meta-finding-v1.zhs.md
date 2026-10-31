@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 07:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0700-heartbeat-meta-finding |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 你的待验收卡从 3 张变成 4 张

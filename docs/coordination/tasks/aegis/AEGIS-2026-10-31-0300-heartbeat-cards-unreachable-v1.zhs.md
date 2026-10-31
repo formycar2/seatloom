@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 03:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0300-heartbeat-cards-unreachable |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 我量到一件比之前所有发现都更要紧的事:你的三张待验收卡,在产品里根本到不了

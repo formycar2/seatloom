@@ -10,6 +10,17 @@ tags: [data-loss, incident, false-clean, checks, live-db]
 
 # 我所有的检查问的都是「有多少」,而一个不存在的表和一个空的表给出同一个数字
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | i_guarded_against_absent_files_and_empty_queries_but_not_an_absent_database |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 2026-10-31 09:00,`fleet-status.sh` 显示「记忆功能 ❌ 未上线」。我去查:
 `seatloom` 库 `public` schema **0 张表**。整个账本没了。
 

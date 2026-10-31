@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 12:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-1200-heartbeat-git-is-now-the-only-record |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 这一轮我做不了派活,所以做了防下一次丢失
 
 **六个核心席位只有 1 个注册在账本里。** 派单的 `target_seat_id` 有外键指向席位表,

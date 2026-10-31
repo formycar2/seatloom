@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 04:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-0400-heartbeat-badge-fixed-path-not |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 变了什么
 
 ### 你的三张卡在产品里到不了 —— 那件事,她修好了,我验过了

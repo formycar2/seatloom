@@ -10,6 +10,17 @@ tags: [checks, false-positive, mutation-testing, field-names]
 
 # 修假阳性的过程本身会造假阳性,而变异测试抓不到
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | fixing_a_false_positive_can_create_two_more_and_mutations_will_not_see_them |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-30 |
+| version | v1 |
+| tags | delivery |
 19:00 那一轮,`check-verdict-defects.sh` 判 `ev-15UEVJ08G4I0anhIpCjUJ`
 「没有摘要也没有 finding,和'我没看'分不出来」。那份 verdict 带着
 `evidence`、三个变异各带结果、四个方向已回答、四条 `not_verified`、

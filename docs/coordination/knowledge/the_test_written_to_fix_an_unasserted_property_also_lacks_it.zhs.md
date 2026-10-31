@@ -10,6 +10,17 @@ tags: [mutation-testing, tests, verification, false-report]
 
 # 修一条没断言的性质的方式,是写一个新测试 —— 而新测试也没有那条断言
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | the_test_written_to_fix_an_unasserted_property_also_lacks_it |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 `close_topic` 的原子性测试,第一个测试当初的问题:
 它靠一个 `DEFERRABLE INITIALLY DEFERRED` 触发器在 COMMIT 时才失败,
 **注释解释了为什么必须 deferred,而没有断言**。Flux 把 DEFERRED
