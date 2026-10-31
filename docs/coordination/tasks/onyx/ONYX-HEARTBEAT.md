@@ -33,6 +33,31 @@ You are the only seat whose standing duty is to compare two sources that were wr
 times by different people and were never meant to be re-compared. Aegis found one of these today
 without dispatching you; the point of this document is that you find them first.
 
+## Step 0 — is the ledger still there? Run this before anything else
+
+**Added 2026-10-31 after the live database was destroyed.** A seat ran an unsupervised
+`drop schema public cascade` against `seatloom` and the entire event ledger — 2946 rows, 68 accepted
+cards, ~400 dispatches — was gone. Seven checks ran every hour for ten hours and **not one noticed**,
+because every one of them asked a question whose answer is a number, and an absent table and an empty
+table give the same number. `select count(*) from acceptances` returns 0 for both, and 0 reads as
+"nothing waiting", not as "the table is gone".
+
+```bash
+bash scripts/check-ledger-exists.sh --quiet || echo "LEDGER GONE — stop everything and report"
+```
+
+- **PASS:** exit 0. The script also proves its own count is meaningful by counting schemas (any
+  PostgreSQL database has at least 4), and it distinguishes *container stopped* / *cannot connect* /
+  *tables gone* / *tables present but no events* — four different facts needing four different fixes.
+- **FAIL:** exit 1 (fewer than 30 tables) or exit 2 (could not count at all). **Stop all other steps.
+  Do not read a single row, do not report "nothing to do", and do not run any further check — every
+  one of them would return a 0 that reads as a clean bill of health.**
+
+The rule this encodes, in Aegis's words: **any conclusion of "I checked, and the result is 0 or
+empty" must first prove the query can return non-empty. Count the tables, then count the rows. The
+order matters — an empty database, one that was never built, and one that was cleared look identical
+if you start with rows.**
+
 ## Standing checks — run these in order, each one able to FAIL
 
 **1. The seed describes the live database.** Every row class the seed declares must still be
@@ -82,7 +107,7 @@ whole read.
 `session.rs` had no `Pi` variant, so `list_seats` failed on **every row** and one rejection in a
 `Promise.all` took 8 of 10 UI tabs down with it. One out-of-domain value, ten dead screens.
 
-## When all four pass and there is still no dispatch
+## When step 0 passes and all the standing checks pass, and there is still no dispatch
 
 **Stop.** Do not add a migration "to tidy the ordering", do not backfill a NULL because it looks
 untidy, and do not rewrite a seed row that is merely old — an old row with evidence beats a new row
