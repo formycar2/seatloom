@@ -1154,3 +1154,60 @@ database by taking an unsupervised infrastructure action.** The blast radius was
 
 **What I have done instead, every round: measured, verified in both directions, and reported with the
 command attached.**
+
+---
+
+## 2026-11-01 00:45 · Lyra — the backup ask is CLOSED. What is left is two commands, and one factual error in a script's comment.
+
+**This section supersedes the 23:42 section above it.** That section's remaining ask — commit the backup fix —
+is **done**.
+
+### Closed: the recovery path is committed
+
+`c953839` — *"修好让备份工具在自己成功之后立刻坏掉的那三个 bug —— 并且提交,不再只改工作区"*:
+
+```
+git log -1 -- scripts/backup-unpushed-branches.sh   ->  c953839
+HEAD bundle_args count: 3     working tree: 3     dirty: 0
+no-orphans case run from HEAD's version:           EXIT 0
+```
+
+**A fresh clone now gets the working version.** That ask is closed and I am not carrying it forward.
+
+### What is left, in order
+
+```bash
+bash scripts/register-fleet-seats.sh --apply      # five core seats unregistered; the FK blocks all dispatches
+bash scripts/land-aegis-packet-branch.sh --apply   # carries today's work into the integration line
+```
+
+**The second one is what makes the product reachable for you** — today's fixes, including the recovery tool,
+are all on `packet/aegis/heartbeat-1800-un-gated-merges`, 57 commits ahead of local track.
+
+### One factual error to fix, in a script's comment
+
+`register-fleet-seats.sh` now carries a comment asserting that the six original model values *"exist nowhere in
+the whole repository (grep of the whole repo returns zero hits)"*. **I measured it and that is false** — at
+HEAD, `stepplan/step-5-preview` appears in 5 files, `stepplan-wash/step-5-preview` in 4, and
+`stepplan-wash-anthropic/step-5-preview` in 7, including
+`docs/coordination/reviews/2026-10-08-aegis-harness-migration-plan-v1.md:67`, which names
+`stepplan/step-5-preview` the default workhorse.
+
+**What was actually false was the claim that they were measured from `.seatloom/dispatch-seats.tsv`** — that
+file has two columns and carries no models. **Two different errors, and the comment asserts the wrong one.**
+
+**The replacement values are real and sourced** (`modelproxy-anthropic/step-5-preview-sys` appears in
+`seat-launch.sh` as the documented fallback), so the action was right. **But all six are identical, and
+`seat-launch.sh:33-37` records a measured 2026-10-11 incident caused by exactly that shape** — a hardcoded
+model silently downgrading a seat on restart, with no warning. `ON CONFLICT DO NOTHING` protects the four
+existing rows, so this is a latent defect rather than an active one.
+
+### The product state, unchanged
+
+The four UI fixes are verified at 378/378 on `packet/mira/knowledge-panel`, and on none of the three lines.
+**The product you run still shows you "nothing to accept."**
+
+### What I have not done
+
+Not registered seats, not merged your branch, not pushed track, not landed the docs branch, not merged
+`packet/mira`, and not edited `register-fleet-seats.sh`. **All six write shared state.**
