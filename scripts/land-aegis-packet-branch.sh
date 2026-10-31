@@ -123,8 +123,9 @@ if [ "$APPLY" = "0" ]; then
   echo
   echo "将执行:"
   # 用 $ahead 和 $behind_origin,不写死 —— 上面刚算过。
-  echo "  git merge --ff-only $BRANCH        # 把 $ahead 个提交带进集成线"
-  echo "  git push origin $TRACK             # 推到 origin(现在落后 $behind_origin 个)"
+  echo "  1. git merge --ff-only $BRANCH    # 把 $ahead 个提交带进集成线"
+  echo "  2. git push -u origin $BRANCH      # 这个分支在 origin 上不存在,先推它"
+  echo "  3. git push origin $TRACK          # 再推集成线(现在落后 $behind_origin 个)"
   echo
   echo "确认无误就跑:  bash scripts/land-aegis-packet-branch.sh --apply"
   exit 0
@@ -140,13 +141,29 @@ echo "  ✓ 已快进合并"
 
 echo
 echo "── 推送 ──"
+# 推两件,顺序有原因:
+#   1. 分支本身 —— Lyra 23:42 指出:这个修复只在工作区里、没有提交时,
+#      「能用的恢复工具只存在于一个地方:这台机器的工作区」
+#      (她原话)。实测这个分支在 origin 上**根本不存在**,
+#      53 个提交全在这一台机器上。
+#   2. 集成线 —— 它落后 origin 897 个提交。
+# 先推分支再推集成线:分支是集成线的来源,分支不在远端,
+# 集成线推上去也没有可回溯的上下文。
+if git push -u origin "$BRANCH"; then
+  echo "  ✓ 分支已推到 origin(此前这个分支在 origin 上不存在)"
+else
+  echo "❌ 分支推送失败。集成线推送已跳过 —— 分支是它的来源。" >&2
+  echo "   重试:git push -u origin $BRANCH" >&2
+  exit 1
+fi
+
 if git push origin "$TRACK"; then
-  echo "  ✓ 已推到 origin"
+  echo "  ✓ 集成线已推到 origin"
   echo
   echo "现在 origin 上的集成线和本地一致了。"
   echo "核对:git rev-list --count origin/$TRACK..$TRACK  应该输出 0"
 else
-  echo "❌ 推送失败(网络或权限)。合并已经在本地完成,重试推送即可:" >&2
+  echo "❌ 集成线推送失败(网络或权限)。合并已经在本地完成,重试即可:" >&2
   echo "    git push origin $TRACK" >&2
   exit 1
 fi
