@@ -46,3 +46,7 @@ saih/
 
 # Backups made by saih/prepare-seat-switch.sh when patching seat scripts
 *.pre-saih.bak
+
+# 本地 git 备份(bundle)。它们是这个项目唯一的冗余副本,不该进版本库自己,
+# 但也不该被当成可以随便删的临时文件 —— 生成方式见 scripts/backup-unpushed-branches.sh
+backups/*.bundle
