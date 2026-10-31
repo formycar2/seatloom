@@ -88,6 +88,7 @@ while IFS= read -r f; do
   case "$f" in
     docs/coordination/tasks/*)     template="T3"; subtype="task_delivery"; status="delivered" ;;
     docs/coordination/acceptance/*) template="T5"; subtype="acceptance_note"; status="accepted" ;;
+    docs/coordination/salvage/*)    template="T7"; subtype="salvage";         status="recorded" ;;
     *)                             template="T7"; subtype="knowledge";      status="recorded" ;;
   esac
 
