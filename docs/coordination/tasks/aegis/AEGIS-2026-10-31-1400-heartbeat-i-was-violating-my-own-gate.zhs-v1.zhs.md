@@ -1,5 +1,16 @@
 # Aegis 心跳交付 — 2026-10-31 14:00
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-2026-10-31-1400-heartbeat-i-was-violating-my-own-gate.zhs |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | aegis |
 ## 这一轮我还是派不了活
 
 **六个核心席位还是只有 1 个注册在账本里。** 派单的 `target_seat_id` 有外键指向席位表,

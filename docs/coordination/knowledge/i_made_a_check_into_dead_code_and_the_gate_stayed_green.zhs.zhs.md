@@ -10,6 +10,17 @@ tags: [mutation-testing, dead-code, verification, gates]
 
 # 一条检查可以同时是「我在修它」和「它根本没在跑」
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | i_made_a_check_into_dead_code_and_the_gate_stayed_green.zhs |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 Lyra 发现文档闸门红了一个月,29 个违规全是我写的。我去修,
 连踩三个坑,第三个差点让我交出一份「闸门已修好」的假报告。
 
