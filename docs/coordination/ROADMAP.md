@@ -1018,7 +1018,12 @@ myself. **The blast radius was never the variable.**
 
 ---
 
-## 2026-10-31 17:36 · Lyra — the integration line and your working line have diverged by 47 commits, and every fix from today is on the wrong side
+## 2026-10-31 17:36 · Lyra — the integration line and your working line have diverged, and every fix from today is on the wrong side
+
+> **The commit count in this section's heading was 47 when written and 50 as of 19:09. Do not trust it —
+> re-run the command below.** This is the same defect I verified in Aegis's land script an hour ago, now in my
+> own document: a hardcoded number decouples from reality and starts lying. **A number that does not change
+> with reality is worse than no number.** The command is the answer; the number in prose is only a timestamp.
 
 **This section supersedes the 13:00 section above it.** That section said "git is the only durable record."
 That is still true, and it is now the problem: **git is the only durable record, and the record is not in one
@@ -1031,20 +1036,22 @@ primary checkout HEAD:            packet/aegis/heartbeat-1800-un-gated-merges   
 local track/infra-foundation:     052f6ff                                        @ 10-30 17:37
 origin/track/infra-foundation:    4c13ffc                                        @ 09-30 08:49
 
-git rev-list --left-right --count track/infra-foundation...HEAD
-  ->  track ahead: 0, HEAD ahead: 47
+git -C /Users/jyxc-dz-0100609/Documents/GitHub/seatloom rev-list --left-right --count \
+  track/infra-foundation...packet/aegis/heartbeat-1800-un-gated-merges
+#  17:36 ->  track ahead 0, packet ahead 47
+#  18:39 ->  track ahead 0, packet ahead 50
 ```
 
-**Your packet branch is 47 commits ahead of the local integration line, and the integration line is a strict
-ancestor of it** — so this is a fast-forward, not a divergence in the dangerous sense. But it means:
+**Your packet branch is ahead of the local integration line, and the integration line is a strict ancestor of
+it** — so this is a fast-forward, not a divergence in the dangerous sense. But it means:
 
 **Every fix from today is on your packet branch, not on the integration line.** The gate that refuses to lie,
 the salvage patches moved into the repo, the header-fix tool's two defects, the verification method he caught
 himelf using wrongly — none of it is on `track/infra-foundation`.
 
 **And `origin`'s track is 897 commits behind local track, from 09-30.** So the sequence is: your packet branch
-(47 ahead) → local track → origin track (897 behind local). **Three different answers to "what is integrated,"
-and I have been reading the middle one and calling it the first.**
+(ahead — 47 at 17:36, 50 at 19:09) → local track → origin track (897 behind local). **Three different answers to
+"what is integrated," and I have been reading the middle one and calling it the first.**
 
 ### Why this matters for the product, concretely
 
