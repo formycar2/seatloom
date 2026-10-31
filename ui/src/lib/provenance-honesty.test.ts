@@ -191,6 +191,43 @@ describe('the LIVE badge depends on the read backing the tab', () => {
     expect(provenanceForTab('inbox', false)).toBe('fixture');
   });
 
+  it('an UNDECLARED tab says nobody declared it — never that its rows are hand-written', async () => {
+    // Flux found this on the SAMPLE-badge rework and Lyra reproduced it: add a tab
+    // to NavRail without declaring its backing anywhere and 382 tests stay green.
+    //
+    // His framing, which is the precise one: the derivation fix closed the drift
+    // BETWEEN the two lists. It added nothing that catches a tab in NEITHER. The
+    // original defect was an ENFORCED EXCLUSION — an assertion that the set was
+    // exactly [sessions, dispatches], which pinned seven live tabs to SAMPLE. That
+    // is gone. What is left is an UNENFORCED OMISSION, and it fails silently in the
+    // same direction for the same reason. He called it narrower; the direction is
+    // identical.
+    //
+    // Measured before changing anything: provenanceForTab('brandnew', true,
+    // 'ready') returned 'seed' — a tab with a fully hydrated backend behind it
+    // telling the operator "these rows are a hand-written baseline, not captured
+    // activity".
+    //
+    // Why it matters more than one wrong badge: this is the DEFAULT. Nobody has to
+    // write a wrong assertion; someone only has to add a tab and forget the second
+    // place. This product has been criticised repeatedly for looking wired up while
+    // nothing is called — a new tab defaulting to "my data is fake" is another
+    // entrance to exactly that shape.
+    //
+    // Mutation this kills: remove the `not-declared` return and let an undeclared
+    // tab fall through to seed again.
+    expect(provenanceForTab('brandnew', true, 'ok')).toBe('not-declared');
+    // Not conditional on hydration: the point is that nothing was declared, which
+    // is true whether or not the backend answered.
+    expect(provenanceForTab('brandnew', false)).toBe('not-declared');
+
+    // And the wording must not claim the rows are fixtures. 'SAMPLE DATA — not yet
+    // from live capture' is a claim about the DATA; this state is a claim about the
+    // DECLARATION, and conflating them is the whole defect.
+    expect(PROVENANCE_META['not-declared'].headline).not.toContain('SAMPLE');
+    expect(PROVENANCE_META['not-declared'].headline).toContain('来源');
+  });
+
   it('the timeline keeps its ledger reading', () => {
     expect(provenanceForTab('timeline', true)).toBe('ledger');
     expect(provenanceForTab('timeline', false)).toBe('fixture');

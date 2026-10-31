@@ -197,6 +197,13 @@ const NavRail: React.FC<NavRailProps> = ({ activeTab, onTabChange, onSelectProje
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
+              // The tab id, on the element. The label is translated and the rail is
+              // collapsed at several breakpoints, so neither is a stable handle for
+              // "which tab is this". This is what lets a test walk the real nav and
+              // check each entry declares its data backing — the mutation "add a
+              // tab and forget the second place" has to fail somewhere, and without
+              // a stable id it fails nowhere.
+              data-tab-id={item.id}
               title={effectiveCollapsed ? item.label : undefined}
               className={`
                 w-full flex items-center gap-2.5 rounded-md transition-all duration-150 relative

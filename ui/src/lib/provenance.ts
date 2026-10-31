@@ -25,6 +25,8 @@ export type Provenance =
   | 'live'
   /** The canonical ledger, read for real — not a tmux mirror, and not a fixture. */
   | 'ledger'
+  /** A tab whose backing was never declared. NOT the same as seed — see below. */
+  | 'not-declared'
   | 'seed'
   | 'fixture'
   | 'no-live'
@@ -159,8 +161,31 @@ export function provenanceForTab(
   // It is gone, and LIVE_TABS is now derived from LIVE_TAB_BACKING rather than
   // hand-maintained beside it, so there is nothing left to drift.
   if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
-  return backendHydrated ? 'seed' : 'fixture';
+  // A tab that declares NO backing is not a tab whose rows are hand-written
+  // fixtures. It is a tab nobody has said anything about, and the honest answer to
+  // "where does this data come from?" is "nobody has declared it yet".
+  //
+  // This used to fall through to `seed`, which claims the opposite: that the rows
+  // ARE a hand-written baseline. Measured: provenanceForTab('brandnew', true,
+  // 'ready') returned 'seed' — a brand-new tab with a fully hydrated backend behind
+  // it told the operator "these rows are a hand-written baseline, not captured
+  // activity". That is the same false-lie direction the whole module exists to
+  // kill, and it needs nobody to write a wrong assertion: it only needs someone to
+  // add a tab and forget the second place.
+  //
+  // It is a DEFAULT, which is what makes it worse than a one-off mistake.
+  return 'not-declared';
 }
+
+// Flux's M-1: deleting the seed branch left 24 tests green, and his reading was
+// that dead code describing a correct state is better than no code — wait until
+// the state actually arrives. He is right about `seed`, and that is why the seed
+// meta below survives: when a genuinely seed-fed surface lands, the wording
+// already exists and is already correct.
+//
+// What is gone is the FALL-THROUGH that let an undeclared tab borrow that
+// wording. An unreachable branch and a reachable branch nobody reaches yet are
+// not the same thing, and only the second one is honest.
 
 export interface ProvenanceMeta {
   /** Short badge text. */
@@ -202,6 +227,18 @@ export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
     fg: 'var(--sl-green)',
     bg: 'var(--sl-green-subtle)',
     border: 'var(--sl-green)',
+  },
+  'not-declared': {
+    badge: '未声明',
+    headline: '这个视图的来源还没有人声明',
+    detail:
+      '没有任何名单说明这一页的数据从哪里来 —— 不是数据库,不是 tmux 镜像,也不是 ' +
+      '手工基线。这是「没人说过」,不是「这是假数据」。如果你是新加了这一页, ' +
+      '请在 LIVE_TAB_BACKING 里声明它读什么;在声明之前,请不要把这里显示的任何 ' +
+      '行当成实时数据,也不要把它们当成示例数据 —— 它们的来源是未知的。',
+    fg: 'var(--sl-amber-subtle)',
+    bg: 'var(--sl-amber-subtle)',
+    border: 'var(--sl-amber)',
   },
   seed: {
     badge: 'SAMPLE',

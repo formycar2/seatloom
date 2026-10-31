@@ -149,6 +149,7 @@ vi.mock('../app-v2/panel/SessionTerminal', () => ({
 
 import App from './App';
 import { useAppStore } from './stores/useAppStore';
+import { provenanceForTab } from './lib/provenance';
 import { SEED_PROJECTS_FOR_TESTS, useDataStore } from './stores/useDataStore';
 
 // The store's own launch value, captured at import time — before any test in this
@@ -802,6 +803,46 @@ describe('restart lands back in the recorded project, and the write cannot win t
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('every nav tab declares its backing — a new tab cannot default to "hand-written samples"', async () => {
+    // The last unenforced omission on this chain.
+    //
+    // Flux's framing, quoted because it is the precise one: the derivation fix
+    // closed the drift BETWEEN the two lists; it added nothing that catches a tab
+    // in NEITHER. The original defect was an ENFORCED EXCLUSION (an assertion that
+    // the set was exactly [sessions, dispatches], pinning seven live tabs to
+    // SAMPLE). That is gone. What is left is an UNENFORCED OMISSION failing
+    // silently in the same direction. He called it narrower; the direction is
+    // identical.
+    //
+    // Lyra measured it: add a tab to NavRail without declaring its backing and 382
+    // tests stay green. provenanceForTab('brandnew', true, 'ok') returned 'seed' —
+    // a fully hydrated backend behind a tab telling the operator its rows are a
+    // hand-written baseline.
+    //
+    // This walks the REAL nav rail, read out of the DOM. A hardcoded list of tab
+    // names here would be the exact property of the original assertion that
+    // enforced the exclusion: a test that has to be edited whenever a tab is added
+    // is a test that will be edited to pass. Reading the nav means ADDING a tab is
+    // what makes this demand a declaration.
+    //
+    // Mutation this kills: add an entry to NavRail's navItems without declaring it
+    // in LIVE_TAB_BACKING or LEDGER_TABS.
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().backendHydrated).toBe(true));
+
+    // Every nav button carries its tab id as the accessible name (the rail is
+    // collapsed at this breakpoint, so the label lives in `title`). Read them all
+    // rather than naming them here.
+    const navButtons = Array.from(document.querySelectorAll('nav button[data-tab-id]'));
+    const tabIds = navButtons.map((b) => b.getAttribute('data-tab-id')).filter(Boolean);
+    expect(tabIds.length).toBeGreaterThan(0);
+
+    const undeclared = tabIds.filter(
+      (id) => provenanceForTab(id as string, true, 'ok') === 'not-declared',
+    );
+    expect(undeclared, `nav tabs with no declared backing: ${undeclared.join(', ')}`).toEqual([]);
   });
 
   it('does not restore a project the backend did not return', async () => {
