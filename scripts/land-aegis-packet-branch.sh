@@ -61,6 +61,12 @@ fi
 # 那时候该停下来问,而不是合。
 if git merge-base --is-ancestor "$TRACK" "$BRANCH"; then
   ahead=$(git rev-list --count "$TRACK".."$BRANCH")
+  # origin 落后多少也一起算出来,后面干跑提示要用。
+  # 不写死:17:00 我写死 897,18:00 就已经不是那个数了。
+  behind_origin=0
+  if git rev-parse --verify -q "origin/$TRACK" >/dev/null 2>&1; then
+    behind_origin=$(git rev-list --count "origin/$TRACK".."$BRANCH")
+  fi
   echo "  ✓ 可以快进:$BRANCH 领先 $TRACK $ahead 个提交,无冲突可能。"
 else
   echo "  ❌ 不是快进 —— $TRACK 上有 $BRANCH 没有的提交。" >&2
@@ -69,7 +75,10 @@ else
 fi
 echo
 
-# 这 45 个提交里有什么。合之前必须能说清,不能只说「44 个提交」。
+# 这批提交里有什么。合之前必须能说清,不能只说一个数字 ——
+# 数字每天都会变(17:00 我写死「45」,18:00 已经是 47),
+# 而写死的数字会和现实脱钩,然后开始骗人。
+# **一个不会跟着现实变的数字,比没有数字更糟。**
 echo "── 将要进入集成线的内容 ──"
 git diff --stat "$TRACK".."$BRANCH" | tail -1 | sed 's/^/  /'
 echo "  按目录:"
@@ -92,8 +101,9 @@ if [ "$APPLY" = "0" ]; then
   echo "── 干跑结束 ──"
   echo
   echo "将执行:"
-  echo "  git merge --ff-only $BRANCH        # 把 45 个提交带进集成线"
-  echo "  git push origin $TRACK             # 推到 origin(现在落后 897 个)"
+  # 用 $ahead 和 $behind_origin,不写死 —— 上面刚算过。
+  echo "  git merge --ff-only $BRANCH        # 把 $ahead 个提交带进集成线"
+  echo "  git push origin $TRACK             # 推到 origin(现在落后 $behind_origin 个)"
   echo
   echo "确认无误就跑:  bash scripts/land-aegis-packet-branch.sh --apply"
   exit 0
