@@ -23,6 +23,31 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# 🔴 这一条是 2026-10-31 补的,因为它在一小时内骗倒了两个人。
+#
+# 上面那行 cd 会把工作目录改成「脚本所在目录的上一级」。
+# 如果脚本被拷贝到别处(临时仓库的根目录、/tmp、别人的机器),
+# 它就 cd 到一个不是 git 仓库的地方,于是:
+#   git rev-parse 失败 → 基线退化成空树(4b825dc...)
+#   → git diff 什么也没有 → 打印「没有改过的文档」→ **退出码 0**
+#
+# 一个看不见自己仓库的闸门,报告的是成功。
+# 2026-10-31 15:00 我和 Lyra 先后踩到:她为了变异测试这个闸门,
+# 把 verify-docs.sh 拷到临时仓库根目录而不是 scripts/ 下,
+# 闸门 cd 到 /tmp,输出「nothing to check vs 4b825dc」——
+# 空树的哈希就摆在输出里,而她(和我)都读过去了。
+#
+# 她记下了那条分辨:「nothing to check」不是「all conform」。
+# 一个说「我看了,什么都没找到」,一个说「我看了,一切正常」。
+# 而这里更该做的是让前者根本不可能发生:先证明自己在仓库里。
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "verify-docs: ❌ 当前目录不是 git 仓库: $(pwd)" >&2
+  echo "  这个脚本靠 cd \"\$(dirname \$0)/..\" 找仓库根。它被拷贝到别处了。" >&2
+  echo "  在看不见仓库的情况下,它会把基线退化成空树、报告『没有改过的文档』并退出 0 ——" >&2
+  echo "  那是一个看不见仓库的闸门在报告成功。" >&2
+  exit 2
+fi
+
 GRANDFATHER=".gitlab/docs-grandfather.txt"
 
 tpl_dir() {
