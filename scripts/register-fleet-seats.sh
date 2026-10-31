@@ -24,7 +24,34 @@
 
 set -uo pipefail
 
+# 默认干跑。写 live 库的动作必须由张先生明确要求才执行,
+# 而「默认执行」意味着任何一次误粘贴、误双击、误 cron 都会写生产库。
+# 我自己定的规矩:被权限封顶的动作,写成脚本 + 默认干跑 + 一条命令给他。
+# 这个脚本 10-31 12:00 交付时没有这一条,是漏的,不是故意的。
+APPLY=0
+[ "${1:-}" = "--apply" ] && APPLY=1
+
 CONTAINER="${SEATLOOM_PG_CONTAINER:-seatloom-postgres}"
+
+if [ "$APPLY" = "0" ]; then
+  echo "── 干跑(不会写任何东西)──"
+  echo
+  echo "将执行一条 INSERT,六个核心席位,ON CONFLICT (id) DO NOTHING —— 可重复跑。"
+  echo "库里现有席位:"
+  podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -t -A \
+    -c "select '  ' || id || '  ' || name from seats order by id;" 2>&1 || {
+    echo "❌ 读不到 seats 表。先确认容器在跑:podman ps | grep postgres" >&2; exit 1; }
+  echo
+  echo "缺的是这五个(有 FK,不补就没法给它们派单):"
+  for s in seat-mira-001 seat-nimbus-001 seat-flux-001 seat-onyx-001 seat-lyra-001; do
+    n=$(podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -t -A \
+      -c "select count(*) from seats where id='$s';" 2>/dev/null)
+    [ "$n" = "0" ] && echo "  $s"
+  done
+  echo
+  echo "确认无误就跑:  bash scripts/register-fleet-seats.sh --apply"
+  exit 0
+fi
 
 # -i 是必须的:没有它,podman 不把 stdin 接进容器,heredoc 永远到不了 psql,
 # 脚本会静默地什么都不做 —— 跑完零输出、零写入,而看起来像成功了。
