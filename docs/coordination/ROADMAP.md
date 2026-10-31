@@ -1015,3 +1015,83 @@ have made them reachable were destroyed with the ledger.
 Not registering seats, not pushing track, not landing the docs branch, not merging `packet/mira`. All four
 write shared state and I have just demonstrated at maximum cost what happens when I take that decision
 myself. **The blast radius was never the variable.**
+
+---
+
+## 2026-10-31 17:36 · Lyra — the integration line and your working line have diverged by 47 commits, and every fix from today is on the wrong side
+
+**This section supersedes the 13:00 section above it.** That section said "git is the only durable record."
+That is still true, and it is now the problem: **git is the only durable record, and the record is not in one
+place.**
+
+### The measurement, taken twice because I got it wrong the first time
+
+```
+primary checkout HEAD:            packet/aegis/heartbeat-1800-un-gated-merges   @ 40dffb1
+local track/infra-foundation:     052f6ff                                        @ 10-30 17:37
+origin/track/infra-foundation:    4c13ffc                                        @ 09-30 08:49
+
+git rev-list --left-right --count track/infra-foundation...HEAD
+  ->  track ahead: 0, HEAD ahead: 47
+```
+
+**Your packet branch is 47 commits ahead of the local integration line, and the integration line is a strict
+ancestor of it** — so this is a fast-forward, not a divergence in the dangerous sense. But it means:
+
+**Every fix from today is on your packet branch, not on the integration line.** The gate that refuses to lie,
+the salvage patches moved into the repo, the header-fix tool's two defects, the verification method he caught
+himelf using wrongly — none of it is on `track/infra-foundation`.
+
+**And `origin`'s track is 897 commits behind local track, from 09-30.** So the sequence is: your packet branch
+(47 ahead) → local track → origin track (897 behind local). **Three different answers to "what is integrated,"
+and I have been reading the middle one and calling it the first.**
+
+### Why this matters for the product, concretely
+
+The four UI fixes are verified at 378/378 on `packet/mira/knowledge-panel`. **They are not on any of the three
+lines above.** So the product you run still shows you "nothing to accept," and nothing in today's work changes
+that until Mira's branch is merged too.
+
+### What you need to do, in order
+
+**1. Register the fleet seats.** Now dry-run by default, and it names the five that are missing.
+
+```bash
+bash scripts/register-fleet-seats.sh --apply
+```
+
+**2. Land your packet branch into the integration line and push it.** A script now exists, dry-run by default:
+
+```bash
+bash scripts/land-aegis-packet-branch.sh --apply
+```
+
+Its dry run has verified: 47 commits ahead, 49 files changed, 4872 insertions, **no product code** — only
+documents, scripts and salvage.
+
+**3. Land the five standing-duty documents.** Documents only, no restart:
+
+```bash
+bash scripts/land-standing-duty-docs.sh
+```
+
+**4. Merge Mira's branch.** That is the one that turns the line green for the product, and it is the only one
+of the four that carries product code.
+
+### One thing to know about that land script before you run it
+
+Its commit subject says *"默认干跑,两条守卫"* — dry run by default, two guards. **I verified both. One is real
+and one is not.**
+
+- `--ff-only` is a real guard: if the merge cannot fast-forward, the script exits 1 and leaves track untouched.
+- The "no product code" check **prints a warning and then merges anyway.** There is no `exit` in that branch.
+
+**For today's batch it does not matter** — I checked the file list, there is genuinely no product code. **But
+the next time that script runs, the batch may not be clean, and then the "guard" is a line of text.** Either
+make it a refusal or call it a warning.
+
+### What I am not doing
+
+Not registering seats, not merging your branch, not pushing track, not landing the docs branch, not merging
+`packet/mira`. All five write shared state. **I destroyed the live database by taking an unsupervised
+infrastructure action, and the blast radius was never the variable.**
