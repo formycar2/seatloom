@@ -46,6 +46,29 @@
 每一步都必须**能报错**。`... && echo OK || echo OK` 这种永远成功的检查比没有检查更有害。
 
 1. **看全局**:`bash scripts/fleet-status.sh`
+   - 🔴🔴🔴 **第一件事:账本还在吗。2026-10-31 09:00 加的,因为整个 live 库被清空,
+       而我七个检查没有一个发现。**
+     ```bash
+     podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -c \
+       "select count(*) from information_schema.tables where table_schema='public';"
+     ```
+     **判据:小于 30 张表 = FAIL,立即停下所有其他步骤,先报告张先生。**
+     (正常值是 32 张以上。)
+
+     为什么这一条必须排第一:**我所有检查问的都是「迁移登记了吗」「卡点得动吗」
+     「verdict 指对了吗」,没有一个问「账本还在吗」。** 一个不存在的表和一个空的表,
+     在我的检查里长得一模一样 —— `select count(*) from acceptances` 对两者都返回 0,
+     而 0 读起来像「没有待验收的卡」,不像「表没了」。
+
+     那次的实际形状:00:11:52 最后一次成功写入,00:34:10 第一次报表不存在,
+     中间 22 分钟的 postgres 日志**完全是空的**(连每 4 秒的席位心跳都没有),
+     而 `log_min_messages=warning` 下 DDL 会被记录。**所以没有任何 DROP 被记录下来。**
+     没有 pg_dump 备份,唯一的 sandbox 副本差 10 天。452 条记忆、68 张已接受的卡、
+     约 400 件派单,一处都没有了。
+
+     **规矩:任何「查了,结果是 0 / 空」的结论,先证明那个查询能返回非空。**
+     这条是 10-30 那条「空输出必须被验证」的最终形态:我一直防到"文件不在"
+     和"文件为空",没防到"库不在"。
    - 队列:有没有派给 `seat-aegis-001` 的 `ready` 单
    - 席位存活:查 pane 子进程(`pgrep -P $(tmux list-panes -t <会话> -F '#{pane_pid}')`),
      **不要裸 `ps | grep pi`** —— `~/.local/bin/pi` 是 22 字节符号链接,裸 grep 抓不到,

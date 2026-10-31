@@ -44,8 +44,26 @@ ready_n=$(PSQL "select count(*) from dispatches where status='ready'")
 blocked_n=$(PSQL "select count(*) from dispatches where status='blocked'")
 # 020: 等你拍板的件数现在有两类,分开数。验收卡 + 只有操作者能裁的事。
 # 合成一个数字会把两件不同的事说成一件 —— 而张先生要回答的是"有几件在等我"。
-cards_n=$(PSQL "select count(*) from acceptances where status='pending'")
-dec_n=$(PSQL "select count(*) from operator_decisions where status='pending' and decider='human:supervisor'")
+#
+# 账本不在时,这两个数是空字符串而不是 0。「(没有)」和「读不到」必须分开 ——
+# 2026-10-31 整个 live 库被清空,这一节因此打印「(没有)」,而他名下其实压着
+# 5 张待验收卡。一个沉默的 0 比一个明说的空更危险。
+#
+# 这里只数,不打印。打印在下面的「等你拍板」一节,因为它属于那一节的话。
+# 在结论行里提前打印,会把一条属于「等你拍板」的消息扔到快照最上面,
+# 读起来像另一件事。
+cards_n=$(PSQL "select count(*) from acceptances where status='pending'" 2>/dev/null)
+cards_readable=1
+if ! printf '%s' "$cards_n" | grep -qE '^[0-9]+$'; then
+  cards_n=""
+  cards_readable=0
+fi
+dec_n=$(PSQL "select count(*) from operator_decisions where status='pending' and decider='human:supervisor'" 2>/dev/null)
+dec_readable=1
+if ! printf '%s' "$dec_n" | grep -qE '^[0-9]+$'; then
+  dec_n=""
+  dec_readable=0
+fi
 if [ "${busy_n:-0}" -gt 0 ]; then
   echo "▶ 项目在推进中:${busy_n} 个席位在干活,${ready_n} 件排队。"
 elif [ "${ready_n:-0}" -gt 0 ]; then
@@ -53,7 +71,12 @@ elif [ "${ready_n:-0}" -gt 0 ]; then
 elif [ "${blocked_n:-0}" -gt 0 ]; then
   echo "⏸ 全部停在依赖上:${blocked_n} 件在等前置条件完成。"
 else
-  echo "⏸ 全队空闲,队列是空的。"
+  # 读不到队列表时,"队列是空的"是一句谎。说读不到。
+  if ! printf '%s' "${ready_n:-}" | grep -qE '^[0-9]+$'; then
+    echo "⏸ 读不到队列(dispatches 表不在 live 库里)—— 这一项没被检查,不是'空的'"
+  else
+    echo "⏸ 全队空闲,队列是空的。"
+  fi
 fi
 # 等他的事单独一句:活可以全空,但他名下仍可能压着没裁的事 ——
 # 那正是 020 之前看不见的东西。
@@ -91,17 +114,24 @@ echo "── 等你拍板 ──"
 # 没有任何一处能回答"现在有几件事在等他"。失败模式是静默遗漏。
 # 现在两类分开数、分开列,并且标明哪类是验收、哪类是裁定 ——
 # 合并成一张表会让这个数字变错,而那正是 020 要修的问题。
-cards_n=$(PSQL "select count(*) from acceptances where status='pending'")
-dec_n=$(PSQL "select count(*) from operator_decisions where status='pending' and decider='human:supervisor'")
-# 表可能还没建到库里(迁移由张先生执行)。表不存在时这个数是空的,
-# 必须说出来,不能当成 0 —— 一个沉默的 0 和一个真实的 0 不是一回事。
-dec_table=$(PSQL "select count(*) from pg_tables where tablename='operator_decisions'")
-if [ "${dec_table:-0}" != "1" ]; then
-  echo "  ⚠️ 读不到裁定清单(operator_decisions 表还没建)—— 这一项没被检查,不是'没有'"
+# 表可能还没建到库里(迁移由张先生执行),也可能建过然后被清空。
+# 这两种事实对听者的含义相反,所以话说得不一样:读不到就说读不到,
+# 不说"还没建"。而无论是哪一种,都不能当成 0 —— 一个沉默的 0 和一个
+# 真实的 0 不是一回事。
+if [ "$cards_readable" != "1" ]; then
+  echo "  🔴 读不到验收卡清单(acceptances 表不在 live 库里)—— 这一项没被检查,不是'没有'"
+  echo "     他名下可能压着待验收的卡,而这里一条也列不出来。"
+  echo "     先跑:bash scripts/check-ledger-exists.sh"
+  need=1
+fi
+if [ "$dec_readable" != "1" ]; then
+  echo "  ⚠️ 读不到裁定清单(operator_decisions 表不在 live 库里)—— 这一项没被检查,不是'没有'"
   echo "     修:bash scripts/apply-schema-to-live.sh"
   need=1
 fi
-if [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)"; else
+if [ -z "$cards_n" ]; then
+  :  # 已经明说读不到了,不要再补一个「(没有)」
+elif [ "${cards_n:-0}" = "0" ] && [ "${dec_n:-0}" = "0" ]; then echo "  (没有)"; else
   for id in $(PSQL "select id from acceptances where status='pending'"); do
     br=$(PSQL "select coalesce(branch,'?') from acceptances where id='$id'")
     base=$(PSQL "select coalesce(base,'?') from acceptances where id='$id'")
@@ -148,6 +178,14 @@ echo
 # ── 真的需要人 ────────────────────────────────────────────────
 echo "── 真的需要人介入 ──"
 need=0
+# 账本不在,是这里最要紧的一件事,必须排在第一行。2026-10-31 它没在这一节里,
+# 于是快照打印"没有需要你动手的事",而整个账本刚被清空。
+if [ "$cards_readable" != "1" ]; then
+  echo "  • 🔴 live 库里 public schema 的表少于 30 张 —— 账本不在。"
+  echo "      下面的每个数字都在读不存在的表,每个 0 都不是『没有』。"
+  echo "      先跑:bash scripts/check-ledger-exists.sh"
+  need=1
+fi
 if [ "$alive" != "$total" ]; then echo "  • 有席位掉线(见上)—— 修:bash scripts/seat-launch.sh --all --force"; need=1; fi
 # waker 是一个 Rust 常驻守护进程(src/bin/waker.rs),不是一个 tmux 会话。
 # 原来这里查 `tmux has-session -t seatloom-waker`,而那个会话在 2026-10-28 16:00
@@ -168,12 +206,28 @@ echo
 
 # ── 底座 ──────────────────────────────────────────────────────
 echo "── 底座 ──"
+
+# 🔴 第一件事:账本还在吗。2026-10-31 加的 —— 那天整个 live 库被清空,
+#    而我七个每小时跑一次的检查没有一个发现,因为它们问的都是「有多少」,
+#    而一个不存在的表和一个空的表给出同一个数字:0。0 读起来像「没事可做」,
+#    不像「全没了」。这一条必须在任何计数之前,并且必须能 FAIL。
+if bash "$REPO/scripts/check-ledger-exists.sh" --quiet; then
+  :
+else
+  echo "  🔴 账本不在:live 库里 public schema 的表少于 30 张。"
+  echo "     下面所有的数字(待验收几张、记忆几条、派单几件)都是在读不存在的表,"
+  echo "     每一个 0 都不是『没有』,是『读不到』。**先看这个,别先看别的。**"
+  echo "     定位:bash scripts/check-ledger-exists.sh"
+fi
+
 mig=$(PSQL "select max(substring(f from '[0-9]+')) from (select unnest(array['x']) f) t" >/dev/null 2>&1; ls "$REPO"/infra/postgres/schema/*.sql 2>/dev/null | tail -1 | sed 's#.*/##;s/_.*//')
 printf "  代码里的最新表结构   %s\n" "${mig:-读不到}"
 if [ "$(PSQL "select count(*) from pg_tables where tablename='memories'")" = "1" ]; then
   printf "  记忆功能             已上线(%s 条记忆)\n" "$(PSQL "select count(*) from memories")"
 else
-  printf "  记忆功能             ❌ 未上线(memories 表还没建到数据库里)\n"
+  # 不写「还没建」—— 那次的事实是「建过,然后被清空了」。这两个说法对听者的
+  # 含义完全相反,而我差点让产品说错这一个。
+  printf "  记忆功能             ❌ 读不到(memories 表不在 live 库里)\n"
 fi
 # 同上:查进程。pgrep -f 的模式是 'seatloom-waker',会同时匹配到
 # target/*/seatloom-waker 和包名 crate seatloom-mcp-emit 的路径,所以还要再确认
@@ -278,4 +332,11 @@ else
   fi
 fi
 echo
-printf "  累计完成派单         %s 件\n" "$(PSQL "select count(*) from dispatches where status='done'")"
+# 一个空字符串不是 0。「累计完成派单        件」中间那个洞,是这张表不在的信号,
+# 而 0 会把「表没了」显示成「一件都没做完过」。宁可留洞,不要给一个假的 0。
+_done="$(PSQL "select count(*) from dispatches where status='done'" 2>/dev/null)"
+if printf '%s' "$_done" | grep -qE '^[0-9]+$'; then
+  printf "  累计完成派单         %s 件\n" "$_done"
+else
+  printf "  累计完成派单         读不到(dispatches 表不在 live 库里)\n"
+fi
