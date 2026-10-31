@@ -1,5 +1,16 @@
 # 未提交工作的抢救存档
 
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | salvage |
+| id | salvage-README |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | salvage, uncommitted, integrity |
+
 **2026-10-31 15:00 建。** live 库被清空之后,git 提交成了这个项目唯一耐久的记录,
 而**未提交的工作是第二脆弱的** —— 它不在任何提交里,`git bundle` 也不包含它
 (bundle 记的是 commit,未提交的改动按定义不是 commit)。

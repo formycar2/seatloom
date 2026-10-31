@@ -75,6 +75,16 @@ skipped=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
 
+  # 只处理文档。.patch 是机器产物,不是文档 ——
+  # 我 15:00 那一版把两个 .patch 也改名加了头,因为它们 diff 里的
+  # 上下文行含中文。补丁文件的**名字和内容都必须一个字节都不能动**,
+  # 否则 git apply 就贴不回去了。抢救一份工作的产物被自己改坏,
+  # 比没有这份产物更糟。
+  case "$f" in
+    *.md) : ;;
+    *) continue ;;
+  esac
+
   # 已经有全部 8 个字段的,不动。
   if grep -qE '^\| *template *\|' "$f" && grep -qE '^\| *subtype *\|' "$f" \
      && grep -qE '^\| *id *\|' "$f" && grep -qE '^\| *status *\|' "$f" \
