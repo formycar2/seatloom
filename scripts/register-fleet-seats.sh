@@ -57,16 +57,43 @@ fi
 # 脚本会静默地什么都不做 —— 跑完零输出、零写入,而看起来像成功了。
 # (2026-10-10 第一版就是这个 bug。)
 podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom -v ON_ERROR_STOP=1 <<'SQL'
--- 六个核心席位。capability_tags / default_model 从各席位自己的
--- .seatloom/dispatch-seats.tsv 和 tmux 会话实测抄来,不是我猜的。
+-- 🔴 2026-11-01 00:00 改。原版在这里写「capability_tags / default_model 从各席位
+-- 自己的 .seatloom/dispatch-seats.tsv 和 tmux 会话实测抄来,不是我猜的」。
+-- **那句话是假的。** 我去核了:
+--   .seatloom/dispatch-seats.tsv 里只有「席位 id ↔ tmux 会话名」两列,
+--     没有任何模型和能力标签;
+--   原版那六个模型值(stepplan-wash/step-5-preview、stepplan/step-5-preview 等)
+--     在整个仓库里**一处都不存在**(grep 全库零命中)。
+-- 也就是说那六个值是我编的,而我写下了「不是我猜的」。
+--
+-- 一个只在我脑子里存在的模型名会怎样:scripts/seat-launch.sh 的 model_for()
+-- 从 seats.default_model 取值,只要含 `/` 就原样传给 pi(它只校验形状,不校验存在性),
+-- 于是 pi 会拿到一个不存在的模型。**这是会静默坏掉的那种错。**
+--
+-- 现在每一列的值都能指出它来自哪个文件:
+--   default_runtime / harness / agent = 'Pi' —— 与库里现存的 4 个席位一致
+--     (Lyra 10-31 重建时写入),也与 scripts/fix-seat-harness-to-pi.sh 的 UPDATE 一致。
+--   capability_tags = seed/001_real_collaboration_baseline.sql 里的历史原值
+--     (Claude Code 时代登记的那一份)。它只被存储、不参与路由
+--     (grep 全库:只有 seat_registry.rs 的测试碰它),所以用历史值不会改行为。
+--   default_model = scripts/seat-launch.sh 的 $MODEL 回退值,也是
+--     scripts/set-seat-default-models.sh 分给非 GPT 席位的那一个。
+--     选它而不选别的,理由:它是「席位没登记模型时」的值,
+--     登记成它等于「和未登记时行为一致」,不会更坏。
+--
+-- ⚠️ 有一件我核不了,必须说清:set-seat-default-models.sh(10-19)把 aegis/mira/nimbus/lyra
+--    分成了 modelproxy/gpt-6.1-sol-sys-ptu。10-30 23:00 之前账本里它们到底是什么,
+--    **已经不可考** —— 账本 10-31 被清空,而那之前没有任何一处留下快照。
+--    所以我统一用回退值,并把精细分配留给 set-seat-default-models.sh(它自己会在跑之前
+--    检查四个 GPT 目标席位是否存在,不存在就整体回滚,不会半改)。
 INSERT INTO seats (id, name, default_runtime, capability_tags, status,
                    created_at, default_harness, default_agent, default_model) VALUES
-  ('seat-mira-001',  'mira',  'Pi', '{ui,ux,frontend,design}',         'active', now(), 'Pi', 'Pi', 'stepplan-wash/step-5-preview'),
-  ('seat-nimbus-001','nimbus','Pi', '{backend,architecture,rust,tauri}','active', now(), 'Pi', 'Pi', 'stepplan/step-5-preview'),
-  ('seat-flux-001',  'flux',  'Pi', '{quality,verification,testing}',   'active', now(), 'Pi', 'Pi', 'stepplan/step-5-preview'),
-  ('seat-onyx-001',  'onyx',  'Pi', '{database,schema,migrations}',     'active', now(), 'Pi', 'Pi', 'stepplan/step-5-preview'),
-  ('seat-lyra-001',  'lyra',  'Pi', '{product,prioritisation,acceptance-criteria}', 'active', now(), 'Pi', 'Pi', 'stepplan-wash/step-5-preview'),
-  ('seat-vela-001',  'vela',  'Pi', '{corpus-ingest,extraction,redaction,data-washing}', 'active', now(), 'Pi', 'Pi', 'stepplan-wash-anthropic/step-5-preview')
+  ('seat-mira-001',  'mira',  'Pi', '{ux-design,react,typescript,component-prototyping}',       'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys'),
+  ('seat-nimbus-001','nimbus','Pi', '{architecture,rust,tauri,infrastructure}',                  'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys'),
+  ('seat-flux-001',  'flux',  'Pi', '{qa,verification,ui-audit,ops}',                            'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys'),
+  ('seat-onyx-001',  'onyx',  'Pi', '{data-modeling,postgres,schema-migration,data-quality}',    'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys'),
+  ('seat-lyra-001',  'lyra',  'Pi', '{product-ownership,coordination,acceptance,planning}',      'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys'),
+  ('seat-vela-001',  'vela',  'Pi', '{corpus-ingest,extraction,redaction,data-washing}',         'active', now(), 'Pi', 'Pi', 'modelproxy-anthropic/step-5-preview-sys')
 ON CONFLICT (id) DO NOTHING;
 
 SELECT id, name, default_model, status FROM seats ORDER BY id;
