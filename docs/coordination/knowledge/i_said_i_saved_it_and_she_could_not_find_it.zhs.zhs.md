@@ -10,6 +10,17 @@ tags: [integrity, verification, claims, protection]
 
 # 一件保护性产物,如果从别人的位置看不见、验不了,那它就不算存在
 
+
+| Field | Value |
+|---|---|
+| template | T7 |
+| subtype | knowledge |
+| id | i_said_i_saved_it_and_she_could_not_find_it.zhs |
+| status | recorded |
+| author | aegis |
+| date | 2026-10-31 |
+| version | v1 |
+| tags | delivery |
 13:00 我发现 Nimbus 有 124 行未提交改动,而且是半个没打完的补丁;
 Lyra 有 4 个文件的文档改动。我把两者 `git diff` 存成 patch,
 放在 `~/seatloom-uncommitted-salvage/`,**仓库外**,然后在交付里写:
