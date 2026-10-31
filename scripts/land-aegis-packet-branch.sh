@@ -87,11 +87,32 @@ git diff --name-only "$TRACK".."$BRANCH" | sed 's|/[^/]*$||' | sort | uniq -c | 
 echo
 
 # 有没有产品代码。今天这批全是文档、脚本、存档,没有 crates/ 和 ui/。
-# 这一条是断言:如果哪天它不再是纯文档,这里必须喊。
+#
+# 🔴 这一条 17:00 写成「打印警告然后照样合」,而我在交付里叫它「守卫」。
+# Lyra 验出来:「--ff-only 是真守卫,合并不了它退出 1 且不动 track;
+# 而这个『没有产品代码』检查**只是打印一行字,然后照样合** —— 那个分支里没有 exit。
+# 下次这批不干净的时候,这个『守卫』就是一行文字。
+# 要么让它变成拒绝,要么叫它警告。」
+#
+# **她说得对,而这是今天同一个形状的第 N 次:我说它是检查,它其实不能失败。**
+# 一个不能阻止任何事的检查,比没有检查更糟 —— 它让「我看过了」变成一句幻觉。
+#
+# 现在它是真拒绝。要强行合产品代码,必须显式给 --allow-product-code,
+# 而责任在使用那个开关的人。
+has_product=0
 if git diff --name-only "$TRACK".."$BRANCH" | grep -qE '^(crates|ui|src-tauri)/'; then
-  echo "  ⚠️  这批改动里有产品代码(crates/ ui/ src-tauri/)。"
-  echo "     按你定的规矩,产品代码要有验收卡才进集成线。先确认这件事。"
+  has_product=1
+  echo "  ⚠️  这批改动里有产品代码(crates/ ui/ src-tauri/):"
+  git diff --name-only "$TRACK".."$BRANCH" | grep -E '^(crates|ui|src-tauri)/' | sed 's/^/       /'
   echo
+  echo "     按你定的规矩,产品代码要有验收卡才进集成线。"
+  echo "     确认那张卡存在、你点了接受,再加 --allow-product-code 重跑。"
+  echo
+  if [ "${ALLOW_PRODUCT_CODE:-0}" != "1" ]; then
+    echo "❌ 拒绝合并:这一批带产品代码,而我没有看到 --allow-product-code。" >&2
+    exit 1
+  fi
+  echo "  !! --allow-product-code 已给,继续。责任在使用这个开关的人。"
 else
   echo "  ✓ 没有产品代码 —— 只有文档、脚本、存档。"
   echo
