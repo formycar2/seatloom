@@ -147,18 +147,76 @@
 
 | 优先级 | 网关模型 ID | AA 对应 | 指数 | 协议 | 实测 |
 |---|---|---|---|---|---|
-| **1** | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 32 | chat / claude_native | ✅ bash 工具 + 真实 MCP |
-| **2** | `glm-5.3` | GLM-5.3 (max) | 32 | chat / claude_native | ✅ bash 工具 + 真实 MCP |
-| **3** | `mimo-v2.6-pro:cloudsway` | MiMo-V2.6-Pro | 30 | chat | ✅ bash 工具 + 真实 MCP |
-| **4** | `glm-5.3-flash:mindracode-offical` | GLM-5.3-Flash | 28 | chat / responses | ✅ bash 工具 + 真实 MCP |
+| **1** | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 32 | **anthropic** | ✅ bash 工具 + 真实 MCP |
+| **2** | `glm-5.3` | GLM-5.3 (max) | 32 | **anthropic** | ✅ bash 工具 + 真实 MCP |
+| **3** | `mimo-v2.6-pro:cloudsway` | MiMo-V2.6-Pro | 30 | **anthropic** | ✅ bash 工具 + 真实 MCP |
+| **4** | `glm-5.3-flash:mindracode-offical` | GLM-5.3-Flash | 28 | **anthropic** | ✅ bash 工具 + 真实 MCP |
 
-**落选:`minimax-m3.1-flash:cloudsway`**
+## 协议选择:Anthropic messages 明显优于 OpenAI completions
 
-AA 指数 29、成本 $0.49,本应入选。**但 HTTP 层完全正常(工具调用能返回
-`tool_calls`),saih 里两种协议(openai-completions / openai-responses)都不返回任何输出。**
+**同一个大 prompt(~3.2K token)连打两次,看第二次的计费输入:**
 
-这不是模型问题,是 saih 侧的 bug,尚未定位。**在查清前不要进 chain** ——
-一个静默无返回的 chain 成员会让 fallback 看起来成功了,实际任务空转。
+| 模型 | O 计费 | **A 计费** | 节省 | 备注 |
+|---|---|---|---|---|
+| `minimax-m3.1-flash:cloudsway` | 3416 | **1** | 3416x | 极致 |
+| `deepseek-v4.1-flash` | 3258 | **186** | 17.5x | 显著 |
+| `mimo-v2.6-pro:cloudsway` | 3221 | **2585** | 1.2x | 略省 |
+| `glm-5.3` | 3226 | **3226** | 1.0x | **无差异** |
+
+**结论:能用 Anthropic 就用 Anthropic。** 它在 3/4 上显著更省,最坏情况持平。
+七个候选模型(`deepseek-v4.1-flash`、`glm-5.3`、`mimo-v2.6-pro:cloudsway`、
+`glm-5.3-flash`、`minimax-m3.1-flash`、`step-5-preview-sys`、`deepseek-v4.1-flash-sys`)
+**全部支持 `claude_native`**,没有理由用 OpenAI 协议。
+
+### 为什么差距这么大
+
+Anthropic 的缓存是**结构化**的:system + messages 前缀命中后,
+`input_tokens` 直接等于未命中部分(第二次 deepseek 只剩 186)。
+
+OpenAI 兼容层虽然也返回 `cached_tokens`(3072),
+但 `prompt_tokens` 仍然按全量计(3258)—— **缓存命中了,账还是按全量算**。
+
+### 已在 saih 里切过去的五个
+
+`~/.saih/agent/models.json` 的 `modelproxy` 下,这些已改成 `anthropic-messages`,
+并加 model 级 `baseUrl` 覆盖(去掉 `/v1`,因为 Anthropic 端点是 `/v1/messages`,
+而 provider baseUrl 是 `.../v1`,不覆盖会拼成 `/v1/v1/messages`):
+
+| 模型 | api | baseUrl |
+|---|---|---|
+| `deepseek-v4.1-flash` | anthropic-messages | `https://mp.z01.normandyfunc.com` |
+| `glm-5.3` | anthropic-messages | 同上 |
+| `mimo-v2.6-pro:cloudsway` | anthropic-messages | 同上 |
+| `glm-5.3-flash:mindracode-offical` | anthropic-messages | 同上 |
+| `minimax-m3.1-flash:cloudsway` | anthropic-messages | 同上 |
+
+备份:`~/.saih/agent/models.json.bak-mm-anthropic`、`.bak-aacand`
+
+### ⚠️ minimax 在 saih 里被 OOM 杀掉,未解决
+
+**HTTP 层完全正常** —— 我用裸请求打 `/v1/messages`,它返回:
+
+```json
+{"content":[{"type":"thinking","signature":"06646f22…",
+             "thinking":"We need respond only OK…"},
+            {"type":"text","text":"OK"}],
+ "stop_reason":"end_turn"}
+```
+
+**但 saih 调它,3/3 都是 `exit=137`(SIGKILL),且进程在 400ms 内就消失** ——
+不是渐进内存增长,是启动即被杀。同样条件下 `glm-5.3` 立刻成功返回 `OK`。
+
+已排除的因素:
+
+- 不是内存不足(glm-5.3 紧接着成功)
+- 不是协议(anthropic / openai-completions / openai-responses 三种都试过)
+- 不是模型不可用(裸请求正常)
+
+**它和别的模型的差别:thinking block 带 `signature` 字段**(mimo/deepseek 的
+thinking 没有)。怀疑 saih 处理 `signature` 时有 bug,但未定位。
+
+**在查清前不要让 minimax 进 chain** —— 静默失败的 chain 成员会让 fallback
+看起来成功,任务实际空转。
 
 ### 为什么 `deepseek-v4.1-flash` 排第一
 
