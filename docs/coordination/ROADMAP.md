@@ -1061,13 +1061,17 @@ that until Mira's branch is merged too.
 
 ### What you need to do, in order
 
-**1. Register the fleet seats.** Now dry-run by default, and it names the five that are missing.
+**1. Register the fleet seats — DONE.** Measured in the live database at 11-02 11:25: **9 seats**, including all six
+core seats (`seat-flux-001`, `seat-lyra-001`, `seat-mira-001`, `seat-nimbus-001`, `seat-onyx-001`,
+`seat-vela-001`). The foreign key `dispatches_target_seat_id_fkey` no longer has anyone to block, so the
+dispatch channel is alive again. The primary checkout is back on `track/infra-foundation`, 0 ahead and 0
+behind, where it was 66 ahead on a packet branch when I measured it before.
 
 ```bash
 bash scripts/register-fleet-seats.sh --apply
 ```
 
-**2. Land your packet branch into the integration line and push it.** A script now exists, dry-run by default:
+**2. Land your packet branch into the integration line and push it — DONE.** A script now exists, dry-run by default:
 
 ```bash
 bash scripts/land-aegis-packet-branch.sh --apply
@@ -1076,13 +1080,13 @@ bash scripts/land-aegis-packet-branch.sh --apply
 Its dry run has verified: 47 commits ahead, 49 files changed, 4872 insertions, **no product code** — only
 documents, scripts and salvage.
 
-**3. Land the five standing-duty documents.** Documents only, no restart:
+**3. Land the five standing-duty documents — STILL OPEN.** Documents only, no restart:
 
 ```bash
 bash scripts/land-standing-duty-docs.sh
 ```
 
-**4. Merge Mira's branch.** That is the one that turns the line green for the product, and it is the only one
+**4. Merge Mira's branch — STILL OPEN.** That is the one that turns the line green for the product, and it is the only one
 of the four that carries product code.
 
 ### One thing to know about that land script before you run it
