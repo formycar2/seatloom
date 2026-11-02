@@ -51,8 +51,28 @@ Lyra 去找,找不到,于是她在自己的交付里写:
 
 | 文件 | 来自 | 内容 | 状态 |
 |---|---|---|---|
-| `nimbus-session-work-readmodel-20261031-1302.patch` | `packet/nimbus/session-work-readmodel` | 124 行,记忆去重前置检查。**是半个没打完的补丁**:在原来的 `let mut client` / `let tx` 之后又插了一对,第一个事务被遮蔽、从不提交也不回滚,`cargo check` 报 `unused variable: tx`。修法是删掉原来那两行,不是把补丁补完 —— 但那是 Nimbus 的决定。 | 13:02 与 15:00 两次验过仍贴得上 |
-| `lyra-milestone-summary-20261031-1302.patch` | `packet/lyra/milestone-summary` | 4 个文件的文档改动,其中一个是新增文件。Lyra 说明那是她有意留着的既有脏文件,早于她参与。 | 13:02 与 15:00 两次验过仍贴得上 |
+| `nimbus-session-work-readmodel-20261031-1302.patch` | `packet/nimbus/session-work-readmodel` | 124 行,记忆去重前置检查。**是半个没打完的补丁**:在原来的 `let mut client` / `let tx` 之后又插了一对,第一个事务被遮蔽、从不提交也不回滚,`cargo check` 报 `unused variable: tx`。修法是删掉原来那两行,不是把补丁补完 —— 但那是 Nimbus 的决定。 | **11-02 11:02 验过仍贴得上** |
+| `lyra-milestone-summary-20261102-1102.patch` | `packet/lyra/milestone-summary` | 2 个文件的文档改动(都是既有文件,无新增)。 | **11-02 11:02 生成并验过贴得上** |
+| `lyra-milestone-summary-20261031-1302.superseded.patch` | 同上 | **已被上面那份取代,留着只为历史。** 它含那次 `version v2→v3` 的一行改动 —— 那一行 11-01 04:00 被她提交了(`61fcc11`),所以它不再是「未提交的工作」,而是**已经在版本库里的一个待裁决事项**。 | 已失效,别拿它恢复 |
+
+## 11-02 11:02 补:补丁是会过期的,而我五个小时没验
+
+我 15:00 写下「补丁会过期」,然后**五个小时没有回来验**。
+11:00 这一轮去验,Lyra 那份已经 stale 了 —— 不是她的工作丢了,
+是**我对它的描述过期了**:那一行 v2→v3 已经被她提交,
+所以那份补丁里有一块不再属于「未提交」。
+
+所以这条要改成流程,不能靠记得:
+**每次心跳都 `git diff` 一次、和 salvage 里的对一次,不一致就重存并把旧的标成 superseded。**
+一个过期却还在清单里、还标着「有效」的补丁,比没有补丁更糟 ——
+它会让人以为那份工作被保护着,而恢复出来的是一份旧状态。
+
+## 一件仍然等你定的事
+
+`lyra-milestone-summary-20261031-1302.superseded.patch` 里那行
+**`version v2→v3`** 现在是提交里的既成事实(她的 `61fcc11`)。
+那份合同文档该是 v2 还是 v3,**只有你能定**。她自己拒绝 revert,
+理由是她不知道 v3 是谁写的、是不是有意的。
 
 ## 一条规矩
 
