@@ -1121,6 +1121,14 @@ Dry-run by default, verified in both directions on a sandbox database, idempoten
 every existing row alone (`ON CONFLICT DO NOTHING`). It writes the live ledger, so it is yours to run.
 Evidence: `LYRA-2026-11-02-the-gate-is-red-and-the-ui-shows-one-seat-of-eight-v1.md`.
 
+🔴 **This ask is not runnable as written, and I only found out tonight.** `scripts/bind-seatloom-seats.sh` is
+**untracked** — `git log --all` on it returns nothing, it has never been committed anywhere, and it exists only
+in the primary checkout's working tree. **A fresh clone does not have it, and `bash` on the command above
+returns "No such file or directory."** So the ask is two steps: **Aegis commits the script to track**, then you
+run it. I measured the dry-run in the one checkout where the file exists and concluded the ask was actionable;
+that is the same failure I have spent this stretch documenting, committed in the artifact I wrote for you.
+Evidence: `LYRA-2026-11-02-my-own-ask-points-at-an-unclonable-script-v1.md`.
+
 ```bash
 bash scripts/land-aegis-packet-branch.sh --apply
 ```
@@ -1132,7 +1140,8 @@ documents, scripts and salvage.
 restart. Re-measured 11-02: the script is not on track, its source branch is behind track (74 at 13:58; its own
 guard refuses), and my local copy of that branch is one commit behind the version that carries Step 0. So:
 rebase `packet/lyra/standing-duty-docs-only` onto current track **from origin's `7e06738`**, land
-`scripts/land-standing-duty-docs.sh` (it lives only on my branch), then:
+`scripts/land-standing-duty-docs.sh` (it lives only on `packet/lyra/milestone-summary`, itself unmerged and 429
+commits behind track — so it is untracked from track's point of view too), then:
 
 ```bash
 bash scripts/land-standing-duty-docs.sh
