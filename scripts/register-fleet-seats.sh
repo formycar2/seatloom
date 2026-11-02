@@ -116,7 +116,28 @@ podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -U seatloom -d seatloom 
 --     (Claude Code 时代登记的那一份)。它只被存储、不参与路由
 --     (grep 全库:只有 seat_registry.rs 的测试碰它),所以用历史值不会改行为。
 --   default_model = 'stepplan/step-5-preview',五个核心席位**逐个相同**。
---     出处:docs/coordination/reviews/2026-10-08-aegis-harness-migration-plan-v1.md §4
+--
+--     🔴🔴 2026-11-02 11:20 补:这个值**有冲突,而我在写它的时候没看到冲突。**
+--
+--     我的出处(10-08 的迁移计划)比张先生 10-16 的要求**更早**:
+--        10-08 我的计划:Default workhorse = stepplan/step-5-preview(unlimited)
+--        10-16 张先生要求:pi 启动默认 = modelproxy-anthropic/step-5-preview-sys
+--        (knowledge/pi_default_model_needs_default_provider_too.md:21 原话)
+--     而 11-02 02:43 的启动记录实测:五个核心席位全在
+--        modelproxy-anthropic/step-5-preview-sys —— **就是今天早上。**
+--
+--     三个证据里有两个指向 modelproxy-anthropic,只有我的 10-08 出处指向 stepplan。
+--     我把一份**被后来的要求覆盖掉的**计划当成了权威来源,还写着「出处」。
+--     **出处真实存在不等于出处有效 —— 一个有日期的出处如果更早,
+--     它记录的是当时的决定,不是现在的决定。**
+--
+--     这不再是阻断(两个都是合法的 provider/model 格式,两个 provider 都配着,
+--     seat-launch.sh 都会接受),但它会**静默改变席位的计费与行为**:
+--     下一次启动五个核心席位会从 modelproxy-anthropic 落到 stepplan。
+--     该用哪个只有张先生能定,所以脚本保持现在的值不改,
+--     但把冲突写在这里,不再让人以为「出处」就是全部事实。
+--
+--     原始出处:docs/coordination/reviews/2026-10-08-aegis-harness-migration-plan-v1.md §4
 --     「Default workhorse: stepplan/step-5-preview (unlimited — no credit burn).
 --      Routine seat work.」,而且它是线上实际回退链的第一环
 --     (knowledge/a_seat_that_cannot_reach_the_model_looks_online_forever.md:24
