@@ -141,6 +141,13 @@
      - 要确认某个 pid 的父进程,用 `ps -o pid=,ppid= -ax | awk '$2==<pid>'`
      - 我的 `scripts/fleet-process-census.sh` 在 pgrep 返回空时报 ❌ 而不是静默跳过,
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
+    - 🔴 **抢救存档还是不是当前状态**:`bash scripts/check-salvage-fresh.sh`
+      2026-11-02 11:00 补。10-31 15:00 我写下「这些补丁会过期」,
+      然后**五个小时没回来验**。等我去验,Lyra 那份已经 stale 了 ——
+      不是她的工作丢了,是**我对它的描述过期了**。
+      一个过期却还标着「有效」的补丁,比没有补丁更糟:
+      它会让人以为那份工作被保护着,而恢复出来的是一份旧状态。
+      这条必须是一个会运行的检查,不能靠我记得 —— 我刚才就没记得。
    - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      它查每张 pending 卡的分支是否还包含它的 base。
    - **verdict 自己有没有说这份活是坏的**:`bash scripts/check-verdict-defects.sh`
