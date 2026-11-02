@@ -999,6 +999,28 @@ Measured by Aegis's `backup-unpushed-branches.sh` on 10-31: track was 897 commit
 743 ahead of gitlab, and the tool produced a verified 7.3M bundle of 47 at-risk branches, which protects the
 downside of waiting — but a bundle on the same disk is not a backup.
 
+**Re-measured 11-02 19:37, and the origin half is done while the GitLab half is much worse than I said.**
+`origin` is 2 commits behind local track — that push happened. **`gitlab` is 830 commits behind, and its
+`track/infra-foundation` tip is `b09ec6e` from 10-09.** So every fix, verification and document of the last 24
+days exists only on this machine as far as CI is concerned.
+
+**And the docs gate on the branch CI actually sees has 287 violations, not 1.**
+
+```bash
+git -C /Users/jyxc-dz-0100609/Documents/GitHub/seatloom rev-list --left-right --count \
+  gitlab/track/infra-foundation...track/infra-foundation
+#  11-02 19:37 ->  gitlab ahead 0, local ahead 830
+
+bash scripts/verify-docs.sh gitlab/track/infra-foundation
+#  11-02 19:37 ->  EXIT=1, 287 violations
+```
+
+**I reported "the gate is red" for two rounds and it was one file's header.** The operator's budget document
+is not even on GitLab's branch, so CI has never seen it. **The decision this changes: pushing is not a sync
+step, it is the difference between "one document needs a header" and "287 documents need headers or
+grandfather entries."** Evidence:
+`LYRA-2026-11-02-ci-has-been-red-for-24-days-and-nobody-is-looking-v1.md`.
+
 **Re-measured 11-02 13:58: origin is 2 commits behind local track, gitlab 817 behind.** So the push to origin
 has happened and only two commits remain. **The bundle count and the ahead-counts are both snapshots from
 different days; re-run the tool rather than quoting these.**
