@@ -20,6 +20,11 @@
 
 set -u
 
+# 分支名要在这里就取出来,不能等到后面 —— 第二条规则(05:00 / 06:00)
+# 要靠它推「这是谁的席位」。我第一版把它留在原来的位置(文件后半段),
+# 于是第二条规则读到一个空变量,在 set -u 下直接崩。
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
+
 # ---------------------------------------------------------------------------
 # 2026-11-01 04:00 补第二条规则。Lyra 04:00 挣来的:
 #   她用 git add -A(一个目录 glob)代替点名文件,把两份她本轮没碰的文件扫了
@@ -40,6 +45,19 @@ set -u
 #
 # 这个检查不猜作者,只报事实:暂存区里有没有**我没碰过的其他目录的脏文件**。
 # 判据用「不在暂存区里、但在工作区里被修改」——那是 glob 最容易顺手带走的东西。
+# 🔴🔴 06:00 修订。Lyra 06:00 量出来:我上一版把「自己的目录」写死成 aegis,
+# 于是**另外五个核心席位连提交自己的工作都被拒**。她的实测:
+#   aegis 自己的文件                          → 放行 exit 0
+#   lyra/mira/nimbus/onyx/vela 自己的文件      → 全部拒绝 exit 1
+# 她的结论:「一个要求五个席位用 --no-verify 才能干活的守卫不是守卫,是收费站。」
+# 而她的原话更准:「**五个被拦,一个放行,而放行的那一个是作者。**」
+#
+# 她给那个版本起了名字,我要照着改:**作者特权**。
+# 我写这条规则时脑子里只有自己,于是把自己的目录设成唯一例外。
+# 这正是我这一整天在记的那一族 —— 一个关于集合的规则,只覆盖了集合里我自己那一个。
+#
+# 修法(她给的,而且她说这不是她的决定):从**分支名**推席位,不写死作者。
+# 同一个文件 24 行之后已经在取 branch 了,复用它。
 staged_elsewhere=""
 # 判据必须是「暂存区里有什么」(git diff --cached --name-only),
 # 不是 git status --porcelain。我第一版用后者,在自己的临时仓库里测出来
@@ -49,14 +67,39 @@ staged_elsewhere=""
 # 一个 glob 犯罪的后果,恰好让针对 glob 的检查失效。
 #
 # 只查 tasks/<其他席位>/ —— 按人划分,最不会误伤。knowledge/ 和 scripts/ 是共享的,
-# 不在这里拦(拦了会误伤我每一轮都要改的那些)。
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  case "$path" in
-    docs/coordination/tasks/aegis/*) continue ;;
-    docs/coordination/tasks/*/*) staged_elsewhere="${staged_elsewhere}  ${path}\n" ;;
-  esac
-done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+# 不在这里拦(拦了会误伤每一轮都要改的那些)。
+#
+# 「自己的席位」从分支名推:packet/<seat>/... → <seat>。
+# 推不出来(在 track 上、在 detached HEAD 上、分支名不认识)时,**不拦** ——
+# 那时没有依据说某个目录是谁的,而一个没有依据的拒绝比放行更糟:
+# 它会在集成线上拦住所有席位的合并,而合并本来就是要跨目录的。
+# 「自己的席位」从分支名推:packet/<seat>/... → <seat>。
+# 推不出来(在 track 上、在 detached HEAD 上、分支名不认识)时,这条规则**整体不生效**。
+#
+# 🔴 为什么必须整体不生效,而不是「放不过就拒绝」:我第一版写成
+#      docs/coordination/tasks/${SEAT}/*) [ -n "$SEAT" ] && continue ;;
+#    看起来 SEAT 为空时那一条不匹配、于是走第二条「别的席位」→ 全部拒绝。
+#    实测确认:在 track 上提交会把**每一个**席位的文件都判成「别人的」。
+#    而 track 是集成线,合并本来就要跨目录 —— 那会让所有合并都被这条守卫拦死。
+#    **一个没有依据时选择拒绝的守卫,会在最需要放行的地方拦死一切。**
+SEAT=""
+case "$branch" in
+  packet/*/*) SEAT="${branch#packet/}"; SEAT="${SEAT%%/*}" ;;
+esac
+
+# 推不出席位就不拦:没有依据说这个目录是谁的。
+if [ -z "$SEAT" ]; then
+  : # 规则不适用,继续往下(卡片检查仍然跑)
+else
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      # 自己席位的目录,放行。
+      docs/coordination/tasks/${SEAT}/*) continue ;;
+      docs/coordination/tasks/*/*) staged_elsewhere="${staged_elsewhere}  ${path}\n" ;;
+    esac
+  done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+fi
 
 if [ -n "$staged_elsewhere" ]; then
   echo "pre-commit: REFUSED - 暂存区或工作区里有其他席位的文件。" >&2
@@ -77,7 +120,6 @@ echo "pre-commit: OK - all pending cards will still contain this commit" >&2
 echo "pre-commit: OK - 没有其他席位的文件被 glob 带走" >&2
 exit 0
 
-branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
 [ -n "$branch" ] || exit 0
 
 if [ "$branch" != "track/infra-foundation" ]; then

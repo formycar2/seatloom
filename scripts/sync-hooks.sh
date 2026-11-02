@@ -112,6 +112,12 @@ mkdir -p "$probe"
 (
   cd "$probe" || exit 1
   git init -q .
+  # 🔴 探针必须在一条 packet/<seat>/ 分支上。
+  # 06:00 改成从分支名推席位之后,规则在推不出席位的分支上**整体不生效** ——
+  # 而新 git init 出来的仓库默认在 master/main 上,那正是推不出席位的情况。
+  # 我改完钩子没改探针,于是自检的第一方向量到「拒绝别人的文件: exit 0」,
+  # 看起来像守卫坏了,其实是探针没给它一个能推席位的分支。
+  git checkout -q -b packet/probe/self-test
   # 🔴 必须把刚装好的钩子拷进这个探针仓库。
   # 我第一版没拷,于是在一个**根本没有钩子**的新仓库里跑,
   # 量到「拒绝别人的文件: exit 0」还以为是自己装错了。
@@ -132,10 +138,14 @@ mkdir -p "$probe"
   # 一个探针的残留会让下一个探针测到上一个探针的东西。
   git reset -q
   rm -f docs/coordination/tasks/mira/probe.md
-  mkdir -p docs/coordination/tasks/aegis
-  echo "mine" > docs/coordination/tasks/aegis/mine.md
+  # 自己的目录必须和分支推出的席位一致(分支是 packet/probe/...,席位是 probe)。
+  # 我第一版在这里写死 aegis,而分支给的是 probe,于是「我自己的文件」也被判成
+  # 别人的 —— 量到「放行我自己的文件: exit 1」。
+  # **探针自己的两个半边必须互相一致,否则它测的是它自己的不一致。**
+  mkdir -p docs/coordination/tasks/probe
+  echo "mine" > docs/coordination/tasks/probe/mine.md
   # 只点名我自己的文件,不用 -A —— 那正是这条规则本身。
-  git add docs/coordination/tasks/aegis/mine.md
+  git add docs/coordination/tasks/probe/mine.md
   git -c user.email=probe@probe -c user.name=probe commit -qm probe2 >/dev/null 2>&1
   echo "  放行我自己的文件: exit $? (要 0)"
 )
