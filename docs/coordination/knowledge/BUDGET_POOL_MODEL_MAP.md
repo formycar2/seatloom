@@ -211,7 +211,7 @@ OpenAI 兼容层虽然也返回 `cached_tokens`(3072),
 
 备份:`~/.saih/agent/models.json.bak-mm-anthropic`、`.bak-aacand`、`.bak-mpa-merge`
 
-### ⚠️ minimax 在 saih 里被 OOM 杀掉,未解决
+### ⚠️ minimax / kimi-k3 在 saih 里被 OOM 杀掉,已移除
 
 **HTTP 层完全正常** —— 我用裸请求打 `/v1/messages`,它返回:
 
@@ -234,8 +234,28 @@ OpenAI 兼容层虽然也返回 `cached_tokens`(3072),
 **它和别的模型的差别:thinking block 带 `signature` 字段**(mimo/deepseek 的
 thinking 没有)。怀疑 saih 处理 `signature` 时有 bug,但未定位。
 
-**在查清前不要让 minimax 进 chain** —— 静默失败的 chain 成员会让 fallback
-看起来成功,任务实际空转。
+**张先生 2026-11-02 决定:移除。** 已从 `models.json` 删除。
+
+#### kimi-k3 也是同一个症状(所以一起移除)
+
+网关上 `kimi-k3`、`kimi-k3:aliyun` 都支持 `claude_native`,裸请求正常返回
+`text='OK'`,**但 saih 里 3/3 都是 `exit=137`(SIGKILL/OOM)**,同样条件下
+`glm-5.3` 立刻成功。
+
+| 模型 | thinking 有 signature | saih |
+|---|---|---|
+| `glm-5.3` | 无 | ✅ 正常 |
+| `mimo-v2.6-pro:cloudsway` | 无 | ✅ 正常 |
+| `deepseek-v4.1-flash` | 无 | ✅ 正常 |
+| `kimi-k3` | **无** | ❌ OOM |
+| `kimi-k3:aliyun` | 有 | ❌ OOM |
+| `minimax-m3.1-flash:cloudsway` | 有 | ❌ OOM |
+
+**注意 `kimi-k3` 没有 signature 也 OOM** —— 所以「signature 导致」的猜测是错的,
+两个模型的共同点还没找到。已移除,不再追。
+
+**教训:网关上能调通 ≠ saih 里能用。** 每个候选都必须用 saih 本身跑一次,
+不能只看裸 HTTP 请求成功。
 
 ### 为什么 `deepseek-v4.1-flash` 排第一
 
