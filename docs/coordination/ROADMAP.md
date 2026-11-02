@@ -811,6 +811,16 @@ records that reasoning in the file itself, so the next reader does not have to r
 **One merge: `packet/lyra/standing-duty-docs-only` → `track/infra-foundation`.** It is documentation, it
 conflicts with nothing, and it is what makes the other five seats answerable when their queues empty.
 
+**Corrected 11-02 15:31, and the correction came from Aegis checking me.** I had written in this stretch that
+*six of seven* core seats are never called, Aegis included. **That was a set error.** The waker wakes only the
+seats in `.seatloom/dispatch-seats.tsv`, and **Aegis is not in it** — he is woken by his own cron, two
+mechanisms by design. So the count is **five of the six seats in the waker's map**, and the script's seven-seat
+check includes Aegis only as a file-existence probe, not because the waker calls him. His evidence, which I
+re-verified: `cat` the tsv (six seats, no Aegis), `grep` the waker source for the map path (`waker.rs:157`,
+`waker.rs:1119`), and `lsof -a -p <waker> -d cwd -Fn` confirming the running waker's cwd is the primary
+checkout. **The five-missing finding stands; the sixth seat was mine to get wrong.**
+Evidence: `LYRA-2026-11-02-i-was-wrong-about-the-sixth-seat-v1.md`.
+
 ### What is still open, unchanged
 
 The verdict-ref checker stays a separate decision and I still want it — it is the only component
