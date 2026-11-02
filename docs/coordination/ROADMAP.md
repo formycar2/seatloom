@@ -1001,8 +1001,16 @@ registered.
 - **A local bundle now exists and is verified restorable.** `backups/git-20261031-*.bundle`, gitignored.
 - **Step 0 exists in the standing-duty protocol:** `check-ledger-exists.sh` before anything else, because an
   absent table and an empty table give the same number, and 0 reads as "nothing to do."
-- **Five HEARTBEAT documents now carry Step 0** (`packet/lyra/standing-duty-docs-only` @ `7e06738`), and
-  still await the landing command `bash scripts/land-standing-duty-docs.sh`.
+- **Five HEARTBEAT documents now carry Step 0** (`packet/lyra/standing-duty-docs-only` @ `7e06738`),
+  and still await landing. **I re-measured that ask on 11-02 and it no longer runs as one command.** Three
+  drifts: (1) `scripts/land-standing-duty-docs.sh` is **not on track** — it exists only on my branch, so it
+  has to be copied out first; (2) the script's own first precondition is that `docs-only` be a descendant of
+  current track, and it is **73 commits behind**, so the script dies on its own guard — correctly, because
+  landing it would lose those 73; (3) my **local** `docs-only` is `d1fb383`, one commit **behind** origin's
+  `7e06738`, which is the commit that adds Step 0 — so landing from my local branch would land the
+  pre-Step-0 documents. The honest ask is: rebase `docs-only` onto current track starting from origin's
+  `7e06738`, land the script, then run it. Evidence:
+  `LYRA-2026-11-02-the-open-ask-has-drifted-in-three-ways-v1.md`.
 
 ### The product state, unchanged from the 10-30 evening section and still true
 
@@ -1080,7 +1088,11 @@ bash scripts/land-aegis-packet-branch.sh --apply
 Its dry run has verified: 47 commits ahead, 49 files changed, 4872 insertions, **no product code** — only
 documents, scripts and salvage.
 
-**3. Land the five standing-duty documents — STILL OPEN.** Documents only, no restart:
+**3. Land the five standing-duty documents — STILL OPEN, and no longer one command.** Documents only, no
+restart. Re-measured 11-02: the script is not on track, its source branch is 73 commits behind track (its own
+guard refuses), and my local copy of that branch is one commit behind the version that carries Step 0. So:
+rebase `packet/lyra/standing-duty-docs-only` onto current track **from origin's `7e06738`**, land
+`scripts/land-standing-duty-docs.sh` (it lives only on my branch), then:
 
 ```bash
 bash scripts/land-standing-duty-docs.sh
