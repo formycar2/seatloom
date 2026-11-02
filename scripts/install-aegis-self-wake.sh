@@ -61,9 +61,14 @@ if [ -s "$LOG" ]; then
 else say "  日志                  (还没有)"; fi
 say ""
 
+# Validate the instruction's target, not just delivery to tmux. POKED does not
+# prove the agent can read the named file. Run here, never inside cron (TCC).
+target_ok=1
+python3 "$REPO/scripts/check-aegis-wake-target.py" "$SRC" || target_ok=0
 if [ "$CHECK_ONLY" = "1" ]; then
+  python3 "$REPO/scripts/check-aegis-wake-target.py" "$DEST" || target_ok=0
   # --check 也要能报错:任何一项不合格就非零退出
-  ok=1
+  ok="$target_ok"
   [ -r "$DEST" ] || ok=0
   cmp -s "$SRC" "$DEST" 2>/dev/null || ok=0
   [ "$cur" = "$CRON_LINE" ] || ok=0
@@ -72,6 +77,8 @@ if [ "$CHECK_ONLY" = "1" ]; then
   [ "$ok" = "1" ] && say "✅ 自醒健康" || say "❌ 自醒不健康 —— 跑 bash scripts/install-aegis-self-wake.sh 修"
   [ "$ok" = "1" ] && exit 0 || exit 1
 fi
+
+[ "$target_ok" = "1" ] || { say "❌ 心跳指令引用无效 —— 不安装"; exit 1; }
 
 # ── 一:拷贝到 TCC 不拦的位置 ───────────────────────────────────────
 line; say "一 — 装副本到 $DEST"; line
@@ -140,4 +147,4 @@ say ""
 line
 say "✅ 自醒装好了。判据:crontab 读回一致 + 裸环境实跑 + 日志长出 POKED。"
 say "   以后随时可以跑 bash scripts/install-aegis-self-wake.sh --check 自己核。"
-say "   心跳协议在 docs/coordination/tasks/aegis/AEGIS-HEARTBEAT.md(改它不用重装)。"
+say "   心跳协议在 docs/coordination/tasks/aegis/AEGIS-HEARTBEAT-v1.zhs.md(改正文不用重装;改路径须重装)。"
