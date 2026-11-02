@@ -145,12 +145,14 @@
 张先生要求:**AA 榜单上聪明的国模 + 价格不要太贵**。三项都要满足,
 「榜单高」但网关没有、或网关有了但 saih 调不动,都不算。
 
-| 优先级 | 网关模型 ID | AA 对应 | 指数 | 协议 | 实测 |
-|---|---|---|---|---|---|
-| **1** | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 32 | **anthropic** | ✅ bash 工具 + 真实 MCP |
-| **2** | `glm-5.3` | GLM-5.3 (max) | 32 | **anthropic** | ✅ bash 工具 + 真实 MCP |
-| **3** | `mimo-v2.6-pro:cloudsway` | MiMo-V2.6-Pro | 30 | **anthropic** | ✅ bash 工具 + 真实 MCP |
-| **4** | `glm-5.3-flash:mindracode-offical` | GLM-5.3-Flash | 28 | **anthropic** | ✅ bash 工具 + 真实 MCP |
+| 优先级 | 网关模型 ID | AA 对应 | 指数 | 实测 |
+|---|---|---|---|---|
+| **1** | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 32 | ✅ bash 工具 + 真实 MCP |
+| **2** | `glm-5.3` | GLM-5.3 (max) | 32 | ✅ bash 工具 + 真实 MCP |
+| **3** | `mimo-v2.6-pro:cloudsway` | MiMo-V2.6-Pro | 30 | ✅ bash 工具 + 真实 MCP |
+| **4** | `glm-5.3-flash:mindracode-offical` | GLM-5.3-Flash | 28 | ✅ bash 工具 + 真实 MCP |
+
+**全部走 `modelproxy-anthropic` provider**(`anthropic-messages`),不用逐个配覆盖。
 
 ## 协议选择:Anthropic messages 明显优于 OpenAI completions
 
@@ -229,14 +231,64 @@ thinking 没有)。怀疑 saih 处理 `signature` 时有 bug,但未定位。
 
 **它是目前唯一「聪明 + 免费」的组合。**
 
-### 未确认
+### 未确认:这四个走哪个池
 
-**上面四个走的是哪个池?** 它们不是 `-sys` 后缀,所以不一定落在
-`coding-deepseek-v4.1f`。张先生说 ToB-Infra「可以用的模型有很多」,
-推测这四个走 ToB-Infra,但**需要查 access-logs 或试跑后看池余额变动才能确认**。
+它们不是 `-sys` 后缀,所以不一定落在 `coding-deepseek-v4.1f`。
+张先生口头结论是**走 ToB-Infra 资源组**,本文档作者做了 double check,
+但**以现有权限无法直接证实**。
 
-按 AA 定价估算:`deepseek-v4.1-flash` 跑一轮 Intelligence Index 约 $521,
-席位日常用量远低于此,ToB-Infra 的 ¥2384 余量够用。
+#### 已排除的途径
+
+| 途径 | 结果 |
+|---|---|
+`/desk/v2/audit/access-logs`(请求记录) | **403** `Insufficient privilege` —— 接口存在,但 `mp_member` 角色看不了 |
+`/desk/v2/tenant/budget-pool-route-rules`(路由规则) | **403** `Budget role required` |
+`/desk/v2/model-resource-pools` | **403** |
+`/desk/v2/resource-channels` | **403** |
+`/desk/v2/statistics/available-models` | ✅ 200,但只有 `model`/`display_name`/`last_used` 三个字段,**无池信息** |
+
+**cookie 是有效的**(解出 `zhangxiaolong@stepfun.com`,tid 1100,exp 2026-11-07),
+401 全部变成 403 —— 是角色权限不够,不是认证失败。
+
+#### 探针法的结果
+
+打了三个模型,每个 3 次 × ~20 万 token,唯一前缀避开 prompt cache:
+
+| 模型 | 合计计费 input |
+|---|---|
+| `glm-5.3` | 629,436 |
+| `deepseek-v4.1-flash` | 636,277 |
+| `mimo-v2.6-pro:cloudsway` | 635,599 |
+
+**这三个数字本身不指向任何池** —— 要等预算页读数变化才能归因。
+如果 ToB-Infra 增加约 ¥2–3 而 `coding-deepseek-v4.1f` 不动,则张先生的结论成立。
+
+#### `X-Mp-Model-Label` 给的是上游供应商,不是池
+
+响应头暴露了这个字段,但它描述的是**上游厂商**,与预算池是两件事:
+
+| 模型 | provider | real_model |
+|---|---|---|
+| `glm-5.3` | 华怡 | glm-5.3 |
+| `mimo-v2.6-pro:cloudsway` | AR-Service | mimo-v2.6-pro:cloudsway |
+| `glm-5.3-flash:mindracode-offical` | **深度编码** | glm-5.3-flash |
+| `minimax-m3.1-flash:cloudsway` | 小宿 | MaaS_Minimax_M3.1_flash_20261019 |
+| `deepseek-v4.1-flash` | **深度编码** | deepseek-v4-flash |
+| `deepseek-v4.1-flash-sys` | **深度编码** | deepseek-flash |
+| `step-5-preview-sys` | AR-Service | step-5-preview:stepfun-haiwai |
+| `claude-opus-5-5-sys` | AR-Service | claude-opus-5-5:cloudsway-bedrock-coding-2 |
+| `claude-fable-5-1-sys` | AR-Service | claude-fable-5-1:cloudsway-anthropic-coding |
+| `step-3.7-flash` | 阶跃星辰 | step-3.7-flash |
+
+**注意:用户明确说 `deepseek-v4.1-flash-sys` 走不限量的 `coding-deepseek-v4.1f` 池,
+而 `deepseek-v4.1-flash` 的上游也是 `深度编码`。**
+上游相同不等于池相同 —— 池是按路由规则切的,不是按上游切的。
+这正是为什么必须看 access-logs 才能定论。
+
+#### 要定论需要什么
+
+**一个有预算权限的账号打开 access-logs 页面,按模型名筛这四条。**
+`mp_member` 看不到。这不是技术障碍,是权限设计。
 
 
 张先生要求:**交互 harness 只有 saih,不直接启用 stepgo/stepcode。**
