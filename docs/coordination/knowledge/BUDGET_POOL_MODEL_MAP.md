@@ -112,7 +112,74 @@
 
 **`claude-fable-5.1` 是唯一值得盯的计费池** —— 预算只有 ¥100 却已用 13.2%。
 
-## 关于 stepcode-0903
+## ToB-Infra 上的国产优先模型(2026-11-02 选型)
+
+**来源:AA Intelligence Index v5(2026-10-29 改版后)+ modelproxy 网关实测。**
+
+### ⚠️ AA v5 改版后国产排名集体下滑
+
+新指数 60% 权重来自私有测试集,新增 FrontierCode 2.0 / Terminal-Bench-Science,
+并且把「科学推理」权重提高。**结果是国产开源模型排名大幅低于旧版。**
+引用榜单前需要说明是 v5,否则会高估国产模型。
+
+### 国产模型的真实位置
+
+| 模型 | 指数 | 每任务成本 | 厂商 | 权重 |
+|---|---|---|---|---|
+| Qwen3.8 Max (0902) | 34 | $10.02 | Alibaba | 闭源 |
+| **DeepSeek V4.1 Flash 1017 (max)** | **32** | **$0.60** | DeepSeek | MIT |
+| GLM-5.3 (max) | 32 | $5.01 | Z AI | 开源 |
+| MiMo-V2.6-Pro | 30 | $0.26 | Xiaomi | 开源 |
+| MiniMax-M3.1-Flash | 29 | $0.49 | MiniMax | 开源 |
+| Step 5 Preview | 29 | $2.35 | StepFun | 闭源 |
+| GLM-5.3-Flash | 28 | $0.58 | Z AI | 开源 |
+| MiMo-V2.6-Flash | 27 | $0.13 | Xiaomi | 开源 |
+| DeepSeek V4 Pro 0813 (max) | 23 | $1.77 | DeepSeek | — |
+| GLM-5.3 (low) | 23 | $1.57 | Z AI | 开源 |
+
+**注意:所有国产开源模型都低于 Anthropic 入门款 Claude Haiku 5.5(指数 36)。**
+闭源的 Kimi K3.1 Pro(46)、Qwen3.8 Max(34)是例外,但权重未开放。
+
+### 筛选结果:聪明 + 不贵 + 真能跑
+
+张先生要求:**AA 榜单上聪明的国模 + 价格不要太贵**。三项都要满足,
+「榜单高」但网关没有、或网关有了但 saih 调不动,都不算。
+
+| 优先级 | 网关模型 ID | AA 对应 | 指数 | 协议 | 实测 |
+|---|---|---|---|---|---|
+| **1** | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 32 | chat / claude_native | ✅ bash 工具 + 真实 MCP |
+| **2** | `glm-5.3` | GLM-5.3 (max) | 32 | chat / claude_native | ✅ bash 工具 + 真实 MCP |
+| **3** | `mimo-v2.6-pro:cloudsway` | MiMo-V2.6-Pro | 30 | chat | ✅ bash 工具 + 真实 MCP |
+| **4** | `glm-5.3-flash:mindracode-offical` | GLM-5.3-Flash | 28 | chat / responses | ✅ bash 工具 + 真实 MCP |
+
+**落选:`minimax-m3.1-flash:cloudsway`**
+
+AA 指数 29、成本 $0.49,本应入选。**但 HTTP 层完全正常(工具调用能返回
+`tool_calls`),saih 里两种协议(openai-completions / openai-responses)都不返回任何输出。**
+
+这不是模型问题,是 saih 侧的 bug,尚未定位。**在查清前不要进 chain** ——
+一个静默无返回的 chain 成员会让 fallback 看起来成功了,实际任务空转。
+
+### 为什么 `deepseek-v4.1-flash` 排第一
+
+它指数 32 和 `glm-5.3` 并列,但:
+
+1. **成本 $0.60 vs $5.01** —— 便宜 8 倍
+2. **它所在的 `coding-deepseek-v4.1f` 池是 unlimited 不计费**
+3. MIT 许可
+4. 1M 上下文
+
+**它是目前唯一「聪明 + 免费」的组合。**
+
+### 未确认
+
+**上面四个走的是哪个池?** 它们不是 `-sys` 后缀,所以不一定落在
+`coding-deepseek-v4.1f`。张先生说 ToB-Infra「可以用的模型有很多」,
+推测这四个走 ToB-Infra,但**需要查 access-logs 或试跑后看池余额变动才能确认**。
+
+按 AA 定价估算:`deepseek-v4.1-flash` 跑一轮 Intelligence Index 约 $521,
+席位日常用量远低于此,ToB-Infra 的 ¥2384 余量够用。
+
 
 张先生要求:**交互 harness 只有 saih,不直接启用 stepgo/stepcode。**
 
