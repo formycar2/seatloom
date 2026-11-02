@@ -985,9 +985,13 @@ with `dispatches_target_seat_id_fkey`; the identical insert succeeds once the se
 git push origin track/infra-foundation
 ```
 
-Measured by Aegis's `backup-unpushed-branches.sh`: **track is 897 commits ahead of origin and 743 ahead of
-gitlab.** I ran that tool and it produced a verified 7.3M bundle of 47 at-risk branches, which protects the
+Measured by Aegis's `backup-unpushed-branches.sh` on 10-31: track was 897 commits ahead of origin and
+743 ahead of gitlab, and the tool produced a verified 7.3M bundle of 47 at-risk branches, which protects the
 downside of waiting — but a bundle on the same disk is not a backup.
+
+**Re-measured 11-02 13:58: origin is 2 commits behind local track, gitlab 817 behind.** So the push to origin
+has happened and only two commits remain. **The bundle count and the ahead-counts are both snapshots from
+different days; re-run the tool rather than quoting these.**
 
 **3. Re-grant the cards that were destroyed with the ledger.** Five were pending at the moment of the wipe
 and their rows are gone. The code is on git (63 commits since the wipe, 47 of them not mine), so this is
@@ -1005,7 +1009,7 @@ registered.
   and still await landing. **I re-measured that ask on 11-02 and it no longer runs as one command.** Three
   drifts: (1) `scripts/land-standing-duty-docs.sh` is **not on track** — it exists only on my branch, so it
   has to be copied out first; (2) the script's own first precondition is that `docs-only` be a descendant of
-  current track, and it is **73 commits behind**, so the script dies on its own guard — correctly, because
+  current track, and it is behind (74 at 11-02 13:58), so the script dies on its own guard — correctly, because
   landing it would lose those 73; (3) my **local** `docs-only` is `d1fb383`, one commit **behind** origin's
   `7e06738`, which is the commit that adds Step 0 — so landing from my local branch would land the
   pre-Step-0 documents. The honest ask is: rebase `docs-only` onto current track starting from origin's
@@ -1057,9 +1061,22 @@ it** — so this is a fast-forward, not a divergence in the dangerous sense. But
 the salvage patches moved into the repo, the header-fix tool's two defects, the verification method he caught
 himelf using wrongly — none of it is on `track/infra-foundation`.
 
-**And `origin`'s track is 897 commits behind local track, from 09-30.** So the sequence is: your packet branch
-(ahead — 47 at 17:36, 50 at 19:09) → local track → origin track (897 behind local). **Three different answers to
-"what is integrated," and I have been reading the middle one and calling it the first.**
+**And `origin`'s track was 897 commits behind local track when I measured it on 10-31.** I re-measured
+on 11-02 13:58: **origin is 2 commits behind local track, and `gitlab` is 817 behind.** So the push happened,
+and the "three different answers to what is integrated" collapse I documented is now two, not three. **The
+number moved by 895 commits between two measurements, which is why this paragraph carries its measurement
+time instead of a bare figure.**
+
+```bash
+git -C /Users/jyxc-dz-0100609/Documents/GitHub/seatloom rev-list --left-right --count \
+  origin/track/infra-foundation...track/infra-foundation
+#  10-31 ~19:00 ->  origin ahead 0, track ahead 897
+#  11-02 13:58  ->  origin ahead 0, track ahead 2      (134789a, 145cede)
+
+git -C /Users/jyxc-dz-0100609/Documents/GitHub/seatloom rev-list --left-right --count \
+  gitlab/track/infra-foundation...track/infra-foundation
+#  11-02 13:58  ->  gitlab ahead 0, track ahead 817
+```
 
 ### Why this matters for the product, concretely
 
@@ -1089,7 +1106,7 @@ Its dry run has verified: 47 commits ahead, 49 files changed, 4872 insertions, *
 documents, scripts and salvage.
 
 **3. Land the five standing-duty documents — STILL OPEN, and no longer one command.** Documents only, no
-restart. Re-measured 11-02: the script is not on track, its source branch is 73 commits behind track (its own
+restart. Re-measured 11-02: the script is not on track, its source branch is behind track (74 at 13:58; its own
 guard refuses), and my local copy of that branch is one commit behind the version that carries Step 0. So:
 rebase `packet/lyra/standing-duty-docs-only` onto current track **from origin's `7e06738`**, land
 `scripts/land-standing-duty-docs.sh` (it lives only on my branch), then:
