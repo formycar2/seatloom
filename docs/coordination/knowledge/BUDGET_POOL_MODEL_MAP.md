@@ -61,8 +61,17 @@
 | `claude-opus-5-5-sys` | coding-opus-5.5 | ¥494.73 |
 | `claude-fable-5-1-sys` | coding-fable-5.1 | ¥86.83 |
 | `gpt-6-astra-sys` | coding-gpt-6-astra | ¥496.92 |
+| `glm-5.3` | **ToB-Infra** | ¥2384.19 |
+| `mimo-v2.6-pro:cloudsway` | **ToB-Infra** | ↑ 同池 |
+| `deepseek-v4.1-flash` | **ToB-Infra** | ↑ 同池 |
+| `glm-5.3-flash:mindracode-offical` | ToB-Infra(推断同族) | ↑ 同池 |
+| `minimax-m3.1-flash:cloudsway` | ToB-Infra(推断同族) | ↑ 同池 |
 
-**未确认:`大模型系统-ToB-Infra`(¥2384.19 剩余)对应哪个模型。** 张先生说回头给映射。
+**ToB-Infra 的三条(`glm-5.3` / `mimo` / `deepseek-v4.1-flash`)是张先生 2026-11-02
+从预算页确认的,不是推断。** 最后两条未单独确认,但与同族同上游,按同池处理;
+**用之前应再确认一次。**
+
+**仍未确认:ToB-Infra 里除了这些国模还有什么模型。** 张先生说「可以用的模型有很多」。
 
 ## 三个 provider 的真实区别
 
@@ -97,14 +106,17 @@
   "sp-personal/step-5-preview"                 ← 不走池
 ]
 
-第二跳选它不是因为"池最宽裕"(那是按错误数字算的),而是因为它**根本不计费**。
-这比"余量 ¥22854"强得多 —— 没有上限约束。
+第二跳选它不是因为「池最宽裕」(那是按错误数字算的),而是因为它**根本不计费**。
+这比「余量 ¥22854」强得多 —— 没有上限约束。
+
+**注意分界线是 `-sys` 后缀。** 带 `-sys` 的走专属池,不带的国模走 ToB-Infra 计费。
 
 ### 3. 计费模型里余量都还够,但别浪费
 
 | 模型 | 剩余 | 评价 |
 |---|---|---|
 | `gpt-6.1-sol-sys-ptu` | ¥1993.86 | 1M 上下文,余量最足 |
+| `glm-5.3` / `mimo` / `deepseek-v4.1-flash` | **ToB-Infra ¥2384.19** | 国模,约 ¥1.5/M token |
 | `claude-opus-5-5-sys` | ¥494.73 | 够用 |
 | `gpt-6-astra-sys` | ¥496.92 | 够用 |
 | `claude-fable-5-1-sys` | ¥86.83 | **最紧,13.2% 已用** |
@@ -180,19 +192,24 @@ OpenAI 兼容层虽然也返回 `cached_tokens`(3072),
 
 ### 已在 saih 里切过去的五个
 
-`~/.saih/agent/models.json` 的 `modelproxy` 下,这些已改成 `anthropic-messages`,
-并加 model 级 `baseUrl` 覆盖(去掉 `/v1`,因为 Anthropic 端点是 `/v1/messages`,
-而 provider baseUrl 是 `.../v1`,不覆盖会拼成 `/v1/v1/messages`):
+`~/.saih/agent/models.json` 里,这些已全部移到 **`modelproxy-anthropic`** provider,
+由 provider 统一提供 `anthropic-messages` + 正确的 baseUrl(不带 `/v1`),
+**不需要任何 per-model 覆盖**:
 
 | 模型 | api | baseUrl |
 |---|---|---|
-| `deepseek-v4.1-flash` | anthropic-messages | `https://mp.z01.normandyfunc.com` |
-| `glm-5.3` | anthropic-messages | 同上 |
-| `mimo-v2.6-pro:cloudsway` | anthropic-messages | 同上 |
-| `glm-5.3-flash:mindracode-offical` | anthropic-messages | 同上 |
-| `minimax-m3.1-flash:cloudsway` | anthropic-messages | 同上 |
+| `deepseek-v4.1-flash` | (继承 provider) | (继承 provider) |
+| `glm-5.3` | 同上 | 同上 |
+| `mimo-v2.6-pro:cloudsway` | 同上 | 同上 |
+| `glm-5.3-flash:mindracode-offical` | 同上 | 同上 |
+| `minimax-m3.1-flash:cloudsway` | 同上 | 同上 |
 
-备份:`~/.saih/agent/models.json.bak-mm-anthropic`、`.bak-aacand`
+> 张先生指出:「加一个 provider 叫 modelproxy-anthropic 就不用给每个模型自定义了」。
+> **这个 provider 本来就已经存在**(baseUrl 和 api 都对,key 与 `modelproxy` 同一个),
+> 本文档作者一开始却在 `modelproxy` 里逐个加 `api` + `baseUrl` 覆盖,绕了远路。
+> 已合并,per-model 覆盖数从 5 降到 0。
+
+备份:`~/.saih/agent/models.json.bak-mm-anthropic`、`.bak-aacand`、`.bak-mpa-merge`
 
 ### ⚠️ minimax 在 saih 里被 OOM 杀掉,未解决
 
@@ -225,34 +242,72 @@ thinking 没有)。怀疑 saih 处理 `signature` 时有 bug,但未定位。
 它指数 32 和 `glm-5.3` 并列,但:
 
 1. **成本 $0.60 vs $5.01** —— 便宜 8 倍
-2. **它所在的 `coding-deepseek-v4.1f` 池是 unlimited 不计费**
-3. MIT 许可
-4. 1M 上下文
+2. MIT 许可
+3. 1M 上下文
+4. Anthropic 协议下缓存效果好(第二次调用计费输入从 3258 降到 186)
 
-**它是目前唯一「聪明 + 免费」的组合。**
+> 🔴 **曾经写错:本文档作者一度以为它和 `deepseek-v4.1-flash-sys` 共用不限量的
+> `coding-deepseek-v4.1f` 池,理由是两者上游都是 `深度编码`。**
+> **张先生从预算页确认:这是错的。**
+> - `deepseek-v4.1-flash-sys`(带 `-sys`)→ **不限量池**
+> - `deepseek-v4.1-flash`(不带 `-sys`)→ **ToB-Infra,计费**
+>
+> 上游相同不等于池相同 —— 池按路由规则切。反证:`step-5-preview-sys`(不限量池)
+> 和 `claude-opus-5-5-sys`(¥500 池)上游都是 `AR-Service`。
+>
+> **所以这四个国模全部计费,没有一个免费。** 免费的是 `-sys` 系列。
 
-### 未确认:这四个走哪个池
+### 计费估算(重要,决定能不能给席位用)
 
-它们不是 `-sys` 后缀,所以不一定落在 `coding-deepseek-v4.1f`。
-张先生口头结论是**走 ToB-Infra 资源组**,本文档作者做了 double check,
-但**以现有权限无法直接证实**。
+ToB-Infra 剩 ¥2384.19。本文档作者的探针实测:
+三个模型各 3 次 × ~21 万 token = **约 190 万 input token,合计约 ¥2–3**。
 
-#### 已排除的途径
+反推:**ToB-Infra 约 ¥1.5 / 百万 token**。按此估算:
+
+| 用途 | 月 token 量 | 月成本 |
+|---|---|---|
+| 单个席位日常 | ~5M | ~¥8 |
+| 十个席位日常 | ~50M | ~¥75 |
+| 一个席位跑满 | ~500M | ~¥750 |
+
+**¥2384 够十个席位日常用约 2 年。** 但如果某个席位进入高频循环,会加速。
+
+> 这个 ¥1.5/M 是从 ¥2–3 / 1.9M token 反推的,误差可能不小。
+> 要精确值得再打一次已知量的探针并读余额。
+
+### ✅ 已确认:这四个走 ToB-Infra(张先生从预算页读出)
+
+| 模型 | 池 |
+|---|---|
+| `glm-5.3` | **大模型系统-ToB-Infra** |
+| `mimo-v2.6-pro:cloudsway` | **大模型系统-ToB-Infra** |
+| `deepseek-v4.1-flash` | **大模型系统-ToB-Infra** |
+| `deepseek-v4.1-flash-sys` | 大模型系统coding-deepseek-v4.1f(**不限量**) |
+
+**分界线就是 `-sys` 后缀**:带 `-sys` 走各自专属池(其中 deepseek 那个不限量),
+不带 `-sys` 的国模走 ToB-Infra 计费。
+
+#### 为什么作者没能自己查到(记下来,下次别白试)
+
+用张先生的 tenant-desk cookie 试了所有能想到的接口:
 
 | 途径 | 结果 |
 |---|---|
-`/desk/v2/audit/access-logs`(请求记录) | **403** `Insufficient privilege` —— 接口存在,但 `mp_member` 角色看不了 |
-`/desk/v2/tenant/budget-pool-route-rules`(路由规则) | **403** `Budget role required` |
-`/desk/v2/model-resource-pools` | **403** |
-`/desk/v2/resource-channels` | **403** |
-`/desk/v2/statistics/available-models` | ✅ 200,但只有 `model`/`display_name`/`last_used` 三个字段,**无池信息** |
+| `/desk/v2/audit/access-logs`(请求记录) | **403** `Insufficient privilege` |
+| `/desk/v2/tenant/budget-pool-route-rules` | **403** `Budget role required` |
+| `/desk/v2/model-resource-pools` | **403** |
+| `/desk/v2/resource-channels` | **403** |
+| `/desk/v2/statistics/available-models` | ✅ 200,但只有 `model`/`display_name`/`last_used`,**无池信息** |
 
-**cookie 是有效的**(解出 `zhangxiaolong@stepfun.com`,tid 1100,exp 2026-11-07),
-401 全部变成 403 —— 是角色权限不够,不是认证失败。
+**cookie 有效**(解出 `zhangxiaolong@stepfun.com`,tid 1100,exp 2026-11-07),
+401 全变 403 —— 是 `mp_member` 角色权限不够,不是认证失败。
 
-#### 探针法的结果
+**结论:池归属只能从预算页人工读,API 读不到。** 以后要确认池,
+直接请张先生读预算页,不要花时间试接口。
 
-打了三个模型,每个 3 次 × ~20 万 token,唯一前缀避开 prompt cache:
+#### 探针法仍然有用(用于量校准)
+
+打了三个模型,每个 3 次 × ~21 万 token,唯一前缀避开 prompt cache:
 
 | 模型 | 合计计费 input |
 |---|---|
@@ -260,8 +315,7 @@ thinking 没有)。怀疑 saih 处理 `signature` 时有 bug,但未定位。
 | `deepseek-v4.1-flash` | 636,277 |
 | `mimo-v2.6-pro:cloudsway` | 635,599 |
 
-**这三个数字本身不指向任何池** —— 要等预算页读数变化才能归因。
-如果 ToB-Infra 增加约 ¥2–3 而 `coding-deepseek-v4.1f` 不动,则张先生的结论成立。
+合计约 190 万 token,对应 ToB-Infra 增加约 ¥2–3 → **约 ¥1.5 / 百万 token**。
 
 #### `X-Mp-Model-Label` 给的是上游供应商,不是池
 
