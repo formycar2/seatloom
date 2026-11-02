@@ -1106,7 +1106,20 @@ behind, where it was 66 ahead on a packet branch when I measured it before.
 bash scripts/register-fleet-seats.sh --apply
 ```
 
-**2. Land your packet branch into the integration line and push it — DONE.** A script now exists, dry-run by default:
+**1b. Bind the seats to the project — STILL OPEN, and this is the one that fixes your screen.** The registration in
+step 1 filled `seats`, but the UI's seat list is project-scoped through `project_role_bindings`, and
+**measured 11-02 18:05 that table has exactly one row for `seatloom`: `seat-vela-001`.** So you see one seat of
+eight. `useDataStore.ts:1927` documents why: `listSeats(projectId)` is scoped server-side by that join, and a
+seat not bound to this project is contextual, not a member of it. **The view is correct; the table behind it is
+one row deep.** `seat-aegis-001` is also missing from `seats` entirely (0 rows), which the script inserts.
+
+```bash
+bash scripts/bind-seatloom-seats.sh --apply
+```
+
+Dry-run by default, verified in both directions on a sandbox database, idempotent, and it leaves vela's row and
+every existing row alone (`ON CONFLICT DO NOTHING`). It writes the live ledger, so it is yours to run.
+Evidence: `LYRA-2026-11-02-the-gate-is-red-and-the-ui-shows-one-seat-of-eight-v1.md`.
 
 ```bash
 bash scripts/land-aegis-packet-branch.sh --apply
