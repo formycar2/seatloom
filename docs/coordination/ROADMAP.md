@@ -1171,11 +1171,26 @@ Its dry run has verified: 47 commits ahead, 49 files changed, 4872 insertions, *
 documents, scripts and salvage.
 
 **3. Land the five standing-duty documents — STILL OPEN, and no longer one command.** Documents only, no
-restart. Re-measured 11-02: the script is not on track, its source branch is behind track (74 at 13:58; its own
-guard refuses), and my local copy of that branch is one commit behind the version that carries Step 0. So:
-rebase `packet/lyra/standing-duty-docs-only` onto current track **from origin's `7e06738`**, land
-`scripts/land-standing-duty-docs.sh` (it lives only on `packet/lyra/milestone-summary`, itself unmerged and 429
-commits behind track — so it is untracked from track's point of view too), then:
+restart. **Audited and fixed 11-03 across three rounds** — the script had two defects in steps it had never
+reached, both of which I found by auditing the unexercised half rather than assuming the script was sound:
+
+- **Step 5 checked seven seats but the delivery lands six** (`AEGIS-HEARTBEAT.md` is not part of it). It would
+  have died before committing. Proven by running Step 5 against a tree containing exactly what the script
+  lands: six found, one missing, exit 1. **Fixed**, and mutation-tested both directions.
+- **Step 2 read the *local* `docs-only` ref, one commit behind origin, carrying the pre-Step-0 documents.** Its
+  hash check compared the copy against that same stale ref, so it passed while landing the version without the
+  ledger-exists guard. **Fixed**: the source is now `origin/packet/lyra/standing-duty-docs-only`, and the six
+  blob hashes are pinned, so a stale ref refuses. Mutation-tested: passes on `7e06738`, refuses the stale local
+  ref on all five HEARTBEATs.
+
+Steps 3 and 6 verified sound (the append is provably pure; the self-guard fires in both directions; the staged
+set is seven explicit paths, not a glob). **What remains unverified is the commit itself**, which needs your
+`YES`, a rebase, and the script on track.
+
+So the sequence is: rebase `packet/lyra/standing-duty-docs-only` onto current track **from origin's `7e06738`**
+(96 behind at 17:11), land `scripts/land-standing-duty-docs.sh` (it lives only on
+`packet/lyra/milestone-summary`, itself unmerged and hundreds of commits behind track — untracked from track's
+point of view), then:
 
 ```bash
 bash scripts/land-standing-duty-docs.sh
