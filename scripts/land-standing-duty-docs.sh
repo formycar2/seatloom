@@ -37,7 +37,30 @@ cd "$REPO" || exit 1
 HBWORK="$(mktemp -d "${TMPDIR:-/tmp}/lyra-hb.XXXXXX")"
 trap 'rm -rf "$HBWORK"' EXIT
 
-SRC_BRANCH="packet/lyra/standing-duty-docs-only"
+# 🔴 2026-11-03 16:4x 修。原来是本地 ref `packet/lyra/standing-duty-docs-only`,
+# 而本地那份落后 origin 一个提交 —— 差的正好是把 Step 0 加进五份文档的那一个。
+# 实测(同一条 MIRA-HEARTBEAT.md):
+#   local  d1fb383 -> c3e16ee, check-ledger-exists 出现 0 次
+#   origin 7e06738 -> f97d2f2, check-ledger-exists 出现 1 次
+# 于是 git show "$SRC_BRANCH:$f" 取到的是**没有账本检查**的那一版,而第 2 段的
+# 哈希比对抓不到:WANT 和 GOT 都从同一个 $SRC_BRANCH 算,按构造相等。
+# **一个证明副本忠于源的检查,证明不了源是对的源。**
+# 现在:取 origin 的 ref;并且本地 ref 落后时**拒绝**,不静默用旧的那份。
+SRC_BRANCH="origin/packet/lyra/standing-duty-docs-only"
+LOCAL_BRANCH="packet/lyra/standing-duty-docs-only"
+# 这六个 blob 的哈希钉死来源:哪一个 ref 给不出这些哈希,就拒绝。
+# 一条按路径识别的交付,可以落地那些路径的任何版本;钉住内容才不会静默漂移。
+# 2026-11-03 16:4x 从 origin/packet/lyra/standing-duty-docs-only @ 7e06738 取。
+# 五个 HEARTBEAT 在本地旧 ref 上**每一个都不同**(实测 c3e16ee/cf89d59/d0b9e4e/
+# 2d3c988/5d81e7c),所以这个钉住对"用了旧 ref"是真的会失败。
+PINNED_BLOBS='
+docs/coordination/tasks/mira/MIRA-HEARTBEAT.md f97d2f2
+docs/coordination/tasks/nimbus/NIMBUS-HEARTBEAT.md afe2b72
+docs/coordination/tasks/flux/FLUX-HEARTBEAT.md c27ab2d
+docs/coordination/tasks/onyx/ONYX-HEARTBEAT.md 6017f22
+docs/coordination/tasks/vela/VELA-HEARTBEAT.md 1edf03f
+docs/coordination/tasks/lyra/LYRA-2026-10-29-persist-from-input-ruling-v1.md 1c5662a
+'
 DOCS=(
   "docs/coordination/tasks/mira/MIRA-HEARTBEAT.md"
   "docs/coordination/tasks/nimbus/NIMBUS-HEARTBEAT.md"
@@ -74,6 +97,17 @@ say "  源分支:$SRC_BRANCH @ $(git rev-parse --short "$SRC_BRANCH")"
 git merge-base --is-ancestor HEAD "$SRC_BRANCH" \
   || die "$SRC_BRANCH 不是当前 track 的后代 —— 落后了,先同步"
 say "  源分支是当前 track 的后代:是"
+
+# 🔴 钉住内容:源分支必须给出那六个 blob 的准确哈希。
+# 本地 ref 落后时它在前面就已经因为 is-ancestor 失败,但**万一**有人把本地 ref
+# 快进到别的内容、或者 origin 的 ref 被强推,这一步就是最后一道。
+# 它检查的是"这个源是哪一个版本",而不是"副本忠于源" —— 后者第 2 段做。
+while read -r pf ph; do
+  [ -n "$pf" ] || continue
+  gh="$(git rev-parse --short=7 "$SRC_BRANCH:$pf" 2>/dev/null)"
+  [ "$gh" = "$ph" ] || die "$pf 的内容不是预期的那一版:要 $ph,源给 $gh —— 停下人工看,别落地一个来路不明的版本"
+  say "  钉住 OK $(printf '%s' "$pf" | sed 's|.*/||')  $ph"
+done <<< "$PINNED_BLOBS"
 
 for f in "${DOCS[@]}"; do
   git cat-file -e "$SRC_BRANCH:$f" 2>/dev/null || die "源分支上没有 $f"
