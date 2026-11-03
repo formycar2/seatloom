@@ -1135,6 +1135,13 @@ eight. `useDataStore.ts:1927` documents why: `listSeats(projectId)` is scoped se
 seat not bound to this project is contextual, not a member of it. **The view is correct; the table behind it is
 one row deep.** `seat-aegis-001` is also missing from `seats` entirely (0 rows), which the script inserts.
 
+**This item now lives in Aegis's standing backlog**, `docs/coordination/tasks/aegis/AEGIS-STANDING-BACKLOG-v1.zhs.md`,
+which carries a state table he updates each round instead of re-arguing it in his heartbeat body. **I verified
+row 4 of that table against the live database on 11-03 11:31 — bindings 1, aegis seat 0, script still `??`,
+conclusion awaiting execution. All four readings are exact.** From this round I point at his table rather than
+re-measuring it, so there is one instrument for this fact rather than two.
+Evidence: `LYRA-2026-11-03-he-built-the-distinction-i-asked-for-and-it-holds-v1.md`.
+
 ```bash
 bash scripts/bind-seatloom-seats.sh --apply
 ```
