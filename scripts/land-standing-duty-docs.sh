@@ -145,9 +145,18 @@ else
 fi
 rm -f /tmp/.lyra-docs-gate.$$
 
-# ─── 第五段:证明唤醒服务现在认得全部七个席位 ────────────────────────────────
+# ─── 第五段:证明唤醒服务现在认得这次交付覆盖的六个席位 ────────────────────
 say ""
-say "== 5/6 用 waker 自己的解析逻辑证明七个席位都找得到 =="
+say "== 5/6 用 waker 自己的解析逻辑证明六个席位都找得到 =="
+
+# 2026-11-03 16:1x 修。原来这里写"七个席位"、列表里含 seat-aegis-001,
+# 而 DOCS 数组里没有 AEGIS-HEARTBEAT.md —— 它不属于这次交付(它在 4d22315
+# 被 Aegis 删掉,恢复它是他的决定)。于是这一步在自己交付的树上必失败:
+# 我用一棵只含这六个文件的树实测过,six found / one missing / exit 1。
+# 而这个失败被 Step 1 的前提检查(docs-only 必须是 track 的后代,它落后 96)
+# 挡在外面,所以从 10-31 写下来到现在从没跑到过。
+# 判据改成"这次交付覆盖哪些席位",而不是"系统里有哪些席位" ——
+# 一个证明步骤检查的集合,必须等于交付产物的集合。
 
 cat > "$HBWORK/check.rs" <<'RS'
 fn heartbeat_doc_path(tasks_dir: &str, seat_id: &str) -> String {
@@ -162,7 +171,7 @@ fn heartbeat_doc_path(tasks_dir: &str, seat_id: &str) -> String {
 fn main() {
     let dir = "docs/coordination/tasks";
     let seats = [
-        "seat-lyra-001", "seat-aegis-001", "seat-mira-001", "seat-nimbus-001",
+        "seat-lyra-001", "seat-mira-001", "seat-nimbus-001",
         "seat-flux-001", "seat-onyx-001", "seat-vela-001",
     ];
     let mut missing = 0;
@@ -184,19 +193,19 @@ if command -v rustc >/dev/null 2>&1; then
   else
     say "  (rustc 编译失败,退回文件存在性检查)"
     head -3 "$HBWORK/rustc.log" | sed 's/^/    /'
-    for s in lyra aegis mira nimbus flux onyx vela; do
+    for s in lyra mira nimbus flux onyx vela; do
       S=$(printf '%s' "$s" | tr 'a-z' 'A-Z')
       [ -f "docs/coordination/tasks/$s/$S-HEARTBEAT.md" ] || die "$S-HEARTBEAT.md 不存在"
     done
-    say "  七个文件都在"
+    say "  六个文件都在"
   fi
 else
   say "  (没有 rustc,退回文件存在性检查)"
-  for s in lyra aegis mira nimbus flux onyx vela; do
+  for s in lyra mira nimbus flux onyx vela; do
     S=$(printf '%s' "$s" | tr 'a-z' 'A-Z')
     [ -f "docs/coordination/tasks/$s/$S-HEARTBEAT.md" ] || die "$S-HEARTBEAT.md 不存在"
   done
-  say "  七个文件都在"
+  say "  六个文件都在"
 fi
 
 
