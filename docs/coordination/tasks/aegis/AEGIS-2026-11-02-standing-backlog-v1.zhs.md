@@ -20,7 +20,11 @@
 
 ---
 
-## 第 1 件：SeatLoom 项目下只有 vela 一个席位（活库数据缺陷）
+## 第 1 件：SeatLoom 项目下席位不全会显示少数席位（活库数据缺陷）
+
+> 🔴 **2026-11-03 13:00 已解决第一半。** 张先生执行了 `bind-seatloom-seats.sh --apply`，
+> 活库 `seatloom` 绑定从 1 行变 7 行，`seat-aegis-001` 进入 seats 表。
+> **但他在「实时席位」页仍看到 6 个而不是 7** —— 这是第二半，根因不同，见下。
 
 **现象**：张先生在 SeatLoom UI 的 SeatLoom 项目里只看到 vela。
 
@@ -39,7 +43,28 @@
 bash scripts/bind-seatloom-seats.sh --apply
 ```
 
-跑完 SeatLoom 项目下应出现 7 个席位，含 aegis。
+**2026-11-03 04:09 已执行。** 实测：绑定 7 行、aegis 在 seats 表、
+「席位」视图渲染 `seats.length` = 7。
+推送通道（notify-operator.sh 第 4 类扫描）随之安静 —— 这是该检查
+**真的能通过**的实证，不是永远报警的摆设。
+
+### 第二半：「实时席位」页仍显示 6，根因是会话命名，不是数据
+
+| 层 | 事实 |
+|---|---|
+| 「席位」视图 | 直接渲染 `seats.length` → **7** |
+| 「实时席位」视图 | `boundMirrorNames()` 把 tmux 会话与绑定席位按**名字**取交集 |
+| 会话发现 | `pty/mod.rs:383` 只返回名字以 `-seatloom` 结尾的会话 |
+| 实际会话名 | 六个席位是 `<Name>-<Role>-seatloom`，**aegis 是 `Aegis-Supervisor`，无后缀** |
+
+所以 `Aegis-Supervisor` 被滤掉 → 交集 6。
+**aegis 不在 `.seatloom/dispatch-seats.tsv` 是有意的**（他用独立 cron 自醒），
+但 `-seatloom` 后缀是**发现**约定，不是归属标记，两回事。
+
+**三个选项，等张先生定**（改会话名要同步改自醒脚本并重装，否则自醒立刻死）：
+1. 改会话名 `Aegis-Supervisor` → `Aegis-Supervisor-seatloom`（我建议，改动小可回滚）
+2. 放宽 `pty/mod.rs:383` 的发现规则（改产品代码，要重编译重装应用）
+3. 接受 6，在 UI 说明 aegis 走独立自醒、不占席位名额
 
 ### 状态
 
@@ -50,8 +75,9 @@ bash scripts/bind-seatloom-seats.sh --apply
 | 3 | 11-02 19:00 | 1 | 0 | 未 | 待执行 |
 | 4 | 11-03 11:00 | 1 | 0 | 未（`??`） | 待执行 |
 | 5 | 11-03 12:00 | 1 | 0 | 未（`??`） | 待执行 |
+| 6 | 11-03 13:00 | **7** | **1** | **已执行**（仍未跟踪入库） | 数据已修；会话命名待定 |
 
-**连续五轮未变。脚本等 `--apply`。**
+**顺带**：`scripts/bind-seatloom-seats.sh` 仍未跟踪入库。
 
 ---
 
