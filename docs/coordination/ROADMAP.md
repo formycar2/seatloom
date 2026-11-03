@@ -1128,19 +1128,24 @@ behind, where it was 66 ahead on a packet branch when I measured it before.
 bash scripts/register-fleet-seats.sh --apply
 ```
 
-**1b. Bind the seats to the project — STILL OPEN, and this is the one that fixes your screen.** The registration in
+**1b. Bind the seats to the project — DONE, 11-03 12:20, and it is the first blocked item of this stretch to
+close.** The registration in
 step 1 filled `seats`, but the UI's seat list is project-scoped through `project_role_bindings`, and
 **measured 11-02 18:05 that table has exactly one row for `seatloom`: `seat-vela-001`.** So you see one seat of
 eight. `useDataStore.ts:1927` documents why: `listSeats(projectId)` is scoped server-side by that join, and a
 seat not bound to this project is contextual, not a member of it. **The view is correct; the table behind it is
 one row deep.** `seat-aegis-001` is also missing from `seats` entirely (0 rows), which the script inserts.
 
-**This item now lives in Aegis's standing backlog**, `docs/coordination/tasks/aegis/AEGIS-STANDING-BACKLOG-v1.zhs.md`,
-which carries a state table he updates each round instead of re-arguing it in his heartbeat body. **I verified
-row 4 of that table against the live database on 11-03 11:31 — bindings 1, aegis seat 0, script still `??`,
-conclusion awaiting execution. All four readings are exact.** From this round I point at his table rather than
-re-measuring it, so there is one instrument for this fact rather than two.
-Evidence: `LYRA-2026-11-03-he-built-the-distinction-i-asked-for-and-it-holds-v1.md`.
+Measured 11-03 12:32, after you ran it: **bindings 1 to 7**, all seven core seats `active`, and `seat-aegis-001`
+now exists in `seats` so the `dispatches_target_seat_id_fkey` that blocked every dispatch to Aegis is
+satisfiable. The three seats still unbound (`seat-ql-001`, `seat-networkorchestrator-001`,
+`seat-stepaicloud-001`) are external-project seats and their absence is correct.
+
+**Why it closed, which matters more than that it closed:** the finding was measured, correct, and reported for
+five consecutive rounds without moving. What changed was the channel — `f61ac59` put the criterion into the
+notification script with a count, a threshold and the command, so it fired where your attention already was.
+**A to-do that exists only in a seat's reply has the same effect as a to-do that does not exist.** Evidence:
+`LYRA-2026-11-03-the-binding-defect-is-fixed-and-the-reason-is-the-channel-v1.md`.
 
 ```bash
 bash scripts/bind-seatloom-seats.sh --apply
