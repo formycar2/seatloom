@@ -378,6 +378,56 @@ describe('restart lands back in the recorded project, and the write cannot win t
     expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
   });
 
+  it('MEASURED: a cold launch with two projects holding different saved tabs opens on the dispatch tab', async () => {
+    // Lyra asked for this measurement explicitly: "launch the app cold with two
+    // projects holding different saved tabs and report which tab actually opens".
+    //
+    // It is worth its own test rather than a line in a delivery note, because it is
+    // the observation the whole mechanism exists to produce, and the two
+    // neighbouring tests each assert a DIFFERENT thing (one that the saved tab is
+    // not applied, one that it is applied on a switch). Neither of them states the
+    // plain answer to "which page do I see".
+    //
+    // The two saved tabs are chosen so all three possible answers are distinct
+    // observations: 'artifacts' would mean the restored project's memory won,
+    // 'workitems' would mean the data store's own pick won, and 'dispatches' means
+    // the cold-start default held. Only the third is the ruling.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          activeTab: 'workitems',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    // The project is restored first — that is the other half of the same ruling.
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+
+    // THE MEASUREMENT. Reported against what the app actually rendered rather than
+    // a tab id, because `activeTab` is component state: the dispatches page's own
+    // heading is the evidence, and neither saved tab's surface may be showing.
+    // Every tab's content is in the DOM at once, so the absence checks below are
+    // what make this a measurement of the SHOWING surface rather than of presence.
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
+    expect(screen.queryByText(/Active Task Ledger/)).toBeNull();
+    expect(screen.queryByText(/活跃工作项账本/)).toBeNull();
+
+    // And the restored project's memory is still intact — the ruling removes the
+    // APPLICATION of the saved tab on a cold start, not the memory itself.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
+  });
+
   it('switching projects inside a session still restores THAT project\u2019s tab', async () => {
     // The fix above must not delete the per-project tab memory: it is a real
     // feature the operator asked for. Same two saved tabs, but the restore is
