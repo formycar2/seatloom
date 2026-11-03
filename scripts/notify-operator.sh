@@ -168,6 +168,19 @@ if [ "${stale:-0}" -gt 0 ]; then
   if pop "有 $stale 张单躺了 30 分钟没人领" "waker 停了,单子推不下去。这是系统问题,不是你的事,告知你一声。" "stale-ready" ; then did=$((did+1)); fi
 fi
 
+# 4. SeatLoom 项目下看不到席位(2026-11-03 12:20 补。
+#    这件事在推送通道里从来没有过,而它直接挡着张先生看产品:UI 的 SeatLoom
+#    项目只显示 vela 一个席位。根因是 project_role_bindings 里 seatloom 项目
+#    只有 1 行绑定 —— seats 表没有 project_id 列,席位和项目的关系只存在于
+#    绑定表,所以补 seats 行不够。
+#    🔴 为什么必须进推送:这件事连续五轮只存在于我的心跳正文里,而他没有跑那条命令。\#    一个只写在我回复里的待办,和一个不存在的待办,在他眼前的效果是一样的。
+#    判据:seatloom 项目的绑定行数 < 7(aegis/lyra/mira/nimbus/flux/onyx + vela)。
+#    这个数会失败,不是永远通过:现在实测是 1。)
+binds="$(q "select count(*) from project_role_bindings where project_id='seatloom';" | tr -d ' ')"
+if [ "${binds:-0}" -lt 7 ]; then
+  if pop "SeatLoom 项目下只看到 ${binds} 个席位" "项目席位绑定没补全,UI 只显示 vela。跑:bash scripts/bind-seatloom-seats.sh --apply" "seatloom-seat-bindings"; then did=$((did+1)); fi
+fi
+
 say ""
 if [ "$did" = "0" ]; then say "  没有新事需要通知他(该弹的都弹过了)"; else say "  弹了 $did 条"; fi
 exit 0

@@ -58,7 +58,7 @@ old_reserve = c.get("reserveTokens", 16384)
 # 从 models.json 推 contextWindow:阈值 = contextWindow - reserveTokens。
 # 席位在用的三个模型窗口都是 1,000,000,这里取它们在用的最大值做估算。
 cw = 1000000
-mp = os.path.expanduser("~/.pi/agent/models.json")
+mp = os.path.expanduser("~/.saih/agent/models.json")
 try:
     md = json.load(open(mp))
     wins = [m.get("contextWindow", 0) for v in md.get("providers", {}).values()

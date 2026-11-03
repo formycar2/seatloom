@@ -57,6 +57,17 @@ db() {
 rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
                   translate(coalesce(e.payload->>'the_honest_summary',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'what_i_did_not_verify',''), chr(10)||chr(13), ' '),
+                  -- The OTHER fields a verifier has actually written its account
+                  -- in. evidence, directions, mutations, criteria,
+                  -- product_code_unchanged - none of them is the_honest_summary,
+                  -- and a verdict that writes only those is not a verdict that
+                  -- was skipped. Reading one spelling is how this check called a
+                  -- false defect at 19:00 on 2026-10-30.
+                  translate(coalesce(e.payload->>'evidence',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'directions',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'mutations',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'criteria',''), chr(10)||chr(13), ' '),
+                  translate(coalesce(e.payload->>'product_code_unchanged',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_1',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_2',''), chr(10)||chr(13), ' '),
                   translate(coalesce(e.payload->>'finding_3',''), chr(10)||chr(13), ' '),
@@ -89,7 +100,7 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
            select 'SENTINEL-CARD',
                   (select count(*)::text from acceptances a2
                     where a2.status = 'pending'),
-                  'pass', '', '', '', '', '', ''
+                  'pass', '', '', '', '', '', '', '', '', '', '', ''
            order by 1")
 
 # An empty result and a broken query look identical. I shipped that bug once
@@ -157,7 +168,7 @@ fi
 
 bad=0
 
-while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified f1 f2 f3 farr; do
+while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified evidence directions mutations criteria product_code f1 f2 f3 farr; do
   [ -n "$card" ] || continue
   reasons=""
 
@@ -235,11 +246,24 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
       ;;
   esac
 
-  # 4. A verdict with an empty summary is not a verdict I can rely on. Not a
-  #    defect in the work, but it is one in the record: I cannot tell a clean
+  # 4. A verdict with no account of what it did is not a verdict I can rely on.
+  #    Not a defect in the work, but one in the record: I cannot tell a clean
   #    pass from an unexamined one.
-  if [ -z "$summary" ] && [ -z "$f1" ] && [ -z "$f2" ] && [ -z "$f3" ] && [ -z "$farr" ]; then
-    reasons="${reasons}the verdict carries no summary and no findings - nothing to distinguish it from 'I did not look'|"
+  #
+  #    READ EVERY SPELLING, not the one I remember. At 19:00 today this check
+  #    called a false defect on ev-15UEVJ08G4I0anhIpCjUJ - a verdict carrying
+  #    evidence, three mutations each with its outcome, four directions answered,
+  #    and a not_verified list. It failed only because no field is literally
+  #    named the_honest_summary and no field is named findings: Flux wrote
+  #    directions instead. A field name I did not anticipate is the same as a
+  #    field that is not there - I wrote that lesson down this morning and then
+  #    rebuilt the same bug in the did-it-look test the same afternoon.
+  #    So the test asks whether ANY substantive account exists, across every
+  #    field a verifier has actually used.
+  if [ -z "$summary" ] && [ -z "$f1" ] && [ -z "$f2" ] && [ -z "$f3" ] && [ -z "$farr" ] \
+     && [ -z "$evidence" ] && [ -z "$directions" ] && [ -z "$mutations" ] \
+     && [ -z "$not_verified" ] && [ -z "$criteria" ] && [ -z "$product_code" ]; then
+    reasons="${reasons}the verdict carries no account of what it did - nothing to distinguish it from 'I did not look'|"
   fi
 
   if [ -n "$reasons" ]; then

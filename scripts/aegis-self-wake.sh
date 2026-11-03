@@ -20,7 +20,7 @@
 #
 # 🔴 它也刻意不读仓库里任何文件(连 cd 进仓库都没有):心跳协议是它读给我听的,
 #    不是 cron 读的。cron 读不到 ~/Documents,而这个脚本要在 cron 的上下文里活。
-#    心跳协议在 docs/coordination/tasks/aegis/AEGIS-HEARTBEAT.md,由我(agent)去读。
+#    心跳协议在 docs/coordination/tasks/aegis/AEGIS-HEARTBEAT-v1.zhs.md,由我(agent)去读。
 #
 # 它只做一件事:按 fleet waker 的既定通道(tmux send-keys)给 Aegis 的面板发一条
 # **短的**指令。不直接发长字符串 —— send-keys 长字面量会被截断,
@@ -42,7 +42,7 @@ SESS="Aegis-Supervisor"
 #    行首 `#` 让整行在 bash 和 zsh 里都是**注释**,无论后面是什么都不执行;
 #    而 pi 收到的只是一条以 # 开头的提示,无害。
 #    上面的 pane 守卫是第二道防线(只在 pane 跑着 agent 时才发),两道都要在。
-MSG="# Aegis 自醒心跳 — Read /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/docs/coordination/tasks/aegis/AEGIS-HEARTBEAT.md in full and act on it."
+MSG="# Aegis 自醒心跳 — Read /Users/jyxc-dz-0100609/Documents/GitHub/seatloom/docs/coordination/tasks/aegis/AEGIS-HEARTBEAT-v1.zhs.md in full and act on it."
 TS="$(date '+%Y-%m-%d %H:%M:%S')"
 
 log(){ printf '%s aegis-self-wake: %s\n' "$TS" "$*"; }

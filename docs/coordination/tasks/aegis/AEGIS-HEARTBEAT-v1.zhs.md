@@ -1,5 +1,16 @@
 # Aegis 自醒心跳协议
 
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task_delivery |
+| id | AEGIS-HEARTBEAT |
+| status | delivered |
+| author | aegis |
+| date | 2026-10-12 |
+| version | v1 |
+| tags | aegis |
 > **切换日的待命条件,已于 2026-10-12 01:50 解除。**
 >
 > 起因:从 Claude Code 切到 pi 时,旧的 Aegis 会话可能还在账本上动作,
@@ -46,6 +57,29 @@
 每一步都必须**能报错**。`... && echo OK || echo OK` 这种永远成功的检查比没有检查更有害。
 
 1. **看全局**:`bash scripts/fleet-status.sh`
+   - 🔴🔴🔴 **第一件事:账本还在吗。2026-10-31 09:00 加的,因为整个 live 库被清空,
+       而我七个检查没有一个发现。**
+     ```bash
+     podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -c \
+       "select count(*) from information_schema.tables where table_schema='public';"
+     ```
+     **判据:小于 30 张表 = FAIL,立即停下所有其他步骤,先报告张先生。**
+     (正常值是 32 张以上。)
+
+     为什么这一条必须排第一:**我所有检查问的都是「迁移登记了吗」「卡点得动吗」
+     「verdict 指对了吗」，没有首先检查账本是否存在。**
+     **表不存在时 SQL 会报错，并不是返回 0。** 检查若丢弃 stderr、忽略退出码，
+     才会把查询失败误读为空结果。先证明查询成功，再解释计数；禁止吞错报空。
+
+     那次的实际形状:00:11:52 最后一次成功写入,00:34:10 第一次报表不存在,
+     中间 22 分钟的 postgres 日志**完全是空的**(连每 4 秒的席位心跳都没有),
+     而 `log_min_messages=warning` 下 DDL 会被记录。**所以没有任何 DROP 被记录下来。**
+     没有 pg_dump 备份,唯一的 sandbox 副本差 10 天。452 条记忆、68 张已接受的卡、
+     约 400 件派单,一处都没有了。
+
+     **规矩:任何「查了,结果是 0 / 空」的结论,先证明那个查询能返回非空。**
+     这条是 10-30 那条「空输出必须被验证」的最终形态:我一直防到"文件不在"
+     和"文件为空",没防到"库不在"。
    - 队列:有没有派给 `seat-aegis-001` 的 `ready` 单
    - 席位存活:查 pane 子进程(`pgrep -P $(tmux list-panes -t <会话> -F '#{pane_pid}')`),
      **不要裸 `ps | grep pi`** —— `~/.local/bin/pi` 是 22 字节符号链接,裸 grep 抓不到,
@@ -107,6 +141,13 @@
      - 要确认某个 pid 的父进程,用 `ps -o pid=,ppid= -ax | awk '$2==<pid>'`
      - 我的 `scripts/fleet-process-census.sh` 在 pgrep 返回空时报 ❌ 而不是静默跳过,
        就是为了这个 —— 宁可吵一点,不要悄悄看漏
+    - 🔴 **抢救存档还是不是当前状态**:`bash scripts/check-salvage-fresh.sh`
+      2026-11-02 11:00 补。10-31 15:00 我写下「这些补丁会过期」,
+      然后**五个小时没回来验**。等我去验,Lyra 那份已经 stale 了 ——
+      不是她的工作丢了,是**我对它的描述过期了**。
+      一个过期却还标着「有效」的补丁,比没有补丁更糟:
+      它会让人以为那份工作被保护着,而恢复出来的是一份旧状态。
+      这条必须是一个会运行的检查,不能靠我记得 —— 我刚才就没记得。
    - **卡的点得动性**:`bash scripts/check-cards-clickable.sh`
      它查每张 pending 卡的分支是否还包含它的 base。
    - **verdict 自己有没有说这份活是坏的**:`bash scripts/check-verdict-defects.sh`

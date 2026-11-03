@@ -46,3 +46,11 @@ saih/
 
 # Backups made by saih/prepare-seat-switch.sh when patching seat scripts
 *.pre-saih.bak
+
+# 本地 git 备份(bundle)。它们是这个项目唯一的冗余副本,不该进版本库自己,
+# 但也不该被当成可以随便删的临时文件 —— 生成方式见 scripts/backup-unpushed-branches.sh
+backups/*.bundle
+
+# 2026-11-02: dsh-super-agent 参考代码 clone 在此,含嵌套 .git,
+# 曾导致 Aegis 的 git add -A 差点带进提交(Aegis 11:30 自报的同类坑)
+temp/

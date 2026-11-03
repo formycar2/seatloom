@@ -1,0 +1,167 @@
+diff --git a/crates/seatloom-core/src/db/repositories.rs b/crates/seatloom-core/src/db/repositories.rs
+index 2e020eb..19e5b35 100644
+--- a/crates/seatloom-core/src/db/repositories.rs
++++ b/crates/seatloom-core/src/db/repositories.rs
+@@ -1263,6 +1263,46 @@ impl SeatloomDb {
+     ) -> Result<(), DbError> {
+         let mut client = self.pool.get().await.map_err(DbError::Pool)?;
+         let tx = client.transaction().await?;
++        let mut client = self.pool.get().await.map_err(DbError::Pool)?;
++        let tx = client.transaction().await?;
++        // `023`: refuse a repeat write BEFORE inserting, inside the same
++        // transaction, so the check and the insert can never disagree.
++        //
++        // The key is the evidence pointer plus the substance: (l2_file_path,
++        // l2_line_start, l2_line_end, l0_summary). `title` is excluded on
++        // purpose — a key that moves with a rename lets the same memory back in,
++        // which is how Vela's 2026-10-11 idempotency probe got a second row out
++        // of a write whose only difference was a title suffix.
++        //
++        // NULL-safe: three of the four duplicate groups on live carry NO line
++        // range at all, and `= NULL` matches nothing, so a plain equality
++        // predicate would miss exactly the groups that need catching.
++        //
++        // Measured on live before writing this: the key catches all 4 true
++        // duplicate groups (8 rows) and produces ZERO false positives on the
++        // legitimate rows that share a pointer — the four distinct memories
++        // citing ONYX-2026-10-14 lines 1-326 share the pointer AND the
++        // source_ref, and differ only in l0_summary, so they are not duplicates.
++        let existing = tx
++            .query_opt(
++                "SELECT id, created_at FROM memories \
++                  WHERE coalesce(l2_file_path, '') = coalesce($1, '') \
++                    AND l2_line_start IS NOT DISTINCT FROM $2 \
++                    AND l2_line_end IS NOT DISTINCT FROM $3 \
++                    AND l0_summary = $4 \
++                  LIMIT 1",
++                &[&l2_file_path, &l2_line_start, &l2_line_end, &l0_summary],
++            )
++            .await?;
++        if let Some(row) = existing {
++            return Err(DbError::MemoryDuplicate {
++                existing_id: row.get(0),
++                created_at: row.get(1),
++                l2_file_path: l2_file_path.map(str::to_string),
++                l2_line_start,
++                l2_line_end,
++            });
++        }
+         tx.execute(
+             "INSERT INTO memories \
+                (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
+@@ -4100,6 +4140,36 @@ pub enum DbError {
+     /// not render an empty obligation.
+     #[error("operator decision {id:?} not found")]
+     OperatorDecisionNotFound { id: String },
++    /// `023`: a memory that already exists. The dedup key is
++    /// `(l2_file_path, l2_line_start, l2_line_end, l0_summary)` — the evidence
++    /// pointer plus what the record actually says.
++    ///
++    /// WHY THIS IS A REFUSAL AND NOT AN UPSERT. A repeat `remember` is either a
++    /// retry of a write that landed (in which case the second write is a
++    /// duplicate and the id of the row that already exists is the useful
++    /// answer) or a genuinely new record that happens to cite the same lines
++    /// (in which case the substance differs and the key does not collide).
++    /// Silently updating would rewrite a recorded fact — the same reason
++    /// 013/014 refuse to roll a terminal row back — and silently inserting is
++    /// the defect this closes: measured on live, a retry-shaped probe created a
++    /// second row with no error and no warning.
++    ///
++    /// `title` is deliberately NOT in the key: it changes, and a key that moves
++    /// with a rename lets the same memory back in. Vela's 2026-10-11 probe
++    /// proved exactly that — she altered the title and the write went through.
++    #[error(
++        "memory already exists at {l2_file_path:?} lines {l2_line_start:?}-{l2_line_end:?} \
++         with this l0_summary (row {existing_id:?}, created {created_at:?}) — a repeat write is \
++         refused, never duplicated. If this is a genuinely new record, change its \
++         l0_summary or its evidence pointer; if it is a retry, the row is already there."
++    )]
++    MemoryDuplicate {
++        existing_id: String,
++        created_at: String,
++        l2_file_path: Option<String>,
++        l2_line_start: Option<i32>,
++        l2_line_end: Option<i32>,
++    },
+     /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
+     /// same reason 013/014 refuse to roll a terminal row back: the row is a
+     /// projection of the append-only ledger, and re-deciding would rewrite a
+diff --git a/crates/seatloom-mcp-emit/src/memory.rs b/crates/seatloom-mcp-emit/src/memory.rs
+index 4e528ca..c40176b 100644
+--- a/crates/seatloom-mcp-emit/src/memory.rs
++++ b/crates/seatloom-mcp-emit/src/memory.rs
+@@ -166,6 +166,20 @@ pub enum MemoryRejection {
+     NotActive { memory_id: String },
+     /// `promote` named the tier the memory already has.
+     NoTierChange { memory_id: String, tier: String },
++    /// `023`: a memory with this evidence pointer and this substance already
++    /// exists. A repeat write is refused, never duplicated — the caller gets the
++    /// row that is already there so a retry is recognisable as a retry.
++    ///
++    /// WHY NOT AN UPSERT. Silently updating would rewrite a recorded fact, which
++    /// is the same reason 013/014 refuse to roll a terminal row back; silently
++    /// inserting is the defect this closes.
++    Duplicate {
++        existing_id: String,
++        created_at: String,
++        l2_file_path: Option<String>,
++        l2_line_start: Option<i32>,
++        l2_line_end: Option<i32>,
++    },
+     /// The recall page size exceeds the hard ceiling.
+     LimitTooLarge { limit: i64 },
+     /// A `relations` target names no memory.
+@@ -222,6 +236,30 @@ impl std::fmt::Display for MemoryRejection {
+             MemoryRejection::LimitTooLarge { limit } => {
+                 write!(f, "limit {limit} exceeds the hard ceiling {RECALL_LIMIT_MAX}")
+             }
++            MemoryRejection::Duplicate {
++                existing_id,
++                created_at,
++                l2_file_path,
++                l2_line_start,
++                l2_line_end,
++            } => {
++                let where_ = match l2_file_path {
++                    Some(p) => format!(
++                        "{p} lines {}-{}",
++                        l2_line_start.map_or("(none)".to_string(), |v| v.to_string()),
++                        l2_line_end.map_or("(none)".to_string(), |v| v.to_string())
++                    ),
++                    None => "(no l2 file path)".to_string(),
++                };
++                write!(
++                    f,
++                    "memory already exists at {where_} (row {existing_id}, created {created_at}) with \
++                     this l0_summary — a repeat write is refused, never duplicated. If this is a \
++                     retry, the row is already there; if it is a genuinely new record, change its \
++                     l0_summary or its evidence pointer, because the title is deliberately NOT \
++                     part of the key"
++                )
++            }
+             MemoryRejection::RelationTargetMissing { to_id } => write!(
+                 f,
+                 "relation target {to_id:?} names no memory — an edge to nothing is not an edge"
+@@ -283,6 +321,22 @@ impl From<DbError> for MemoryRejection {
+                 memory_id: id,
+                 tier,
+             },
++            // `023`: a repeat write is refused, and the caller is told WHICH row
++            // is already there and when it was created — the answer that makes a
++            // retry cheap to recognise as a retry.
++            DbError::MemoryDuplicate {
++                existing_id,
++                created_at,
++                l2_file_path,
++                l2_line_start,
++                l2_line_end,
++            } => MemoryRejection::Duplicate {
++                existing_id,
++                created_at,
++                l2_file_path,
++                l2_line_start,
++                l2_line_end,
++            },
+             other => MemoryRejection::Db(other.to_string()),
+         }
+     }

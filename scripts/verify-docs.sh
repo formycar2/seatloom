@@ -23,6 +23,31 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# 🔴 这一条是 2026-10-31 补的,因为它在一小时内骗倒了两个人。
+#
+# 上面那行 cd 会把工作目录改成「脚本所在目录的上一级」。
+# 如果脚本被拷贝到别处(临时仓库的根目录、/tmp、别人的机器),
+# 它就 cd 到一个不是 git 仓库的地方,于是:
+#   git rev-parse 失败 → 基线退化成空树(4b825dc...)
+#   → git diff 什么也没有 → 打印「没有改过的文档」→ **退出码 0**
+#
+# 一个看不见自己仓库的闸门,报告的是成功。
+# 2026-10-31 15:00 我和 Lyra 先后踩到:她为了变异测试这个闸门,
+# 把 verify-docs.sh 拷到临时仓库根目录而不是 scripts/ 下,
+# 闸门 cd 到 /tmp,输出「nothing to check vs 4b825dc」——
+# 空树的哈希就摆在输出里,而她(和我)都读过去了。
+#
+# 她记下了那条分辨:「nothing to check」不是「all conform」。
+# 一个说「我看了,什么都没找到」,一个说「我看了,一切正常」。
+# 而这里更该做的是让前者根本不可能发生:先证明自己在仓库里。
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "verify-docs: ❌ 当前目录不是 git 仓库: $(pwd)" >&2
+  echo "  这个脚本靠 cd \"\$(dirname \$0)/..\" 找仓库根。它被拷贝到别处了。" >&2
+  echo "  在看不见仓库的情况下,它会把基线退化成空树、报告『没有改过的文档』并退出 0 ——" >&2
+  echo "  那是一个看不见仓库的闸门在报告成功。" >&2
+  exit 2
+fi
+
 GRANDFATHER=".gitlab/docs-grandfather.txt"
 
 tpl_dir() {
@@ -70,12 +95,37 @@ check_file() {
        fi ;;
   esac
 
+  # §4 的第三种形状:常驻规程文档(席位心跳协议)没有日期,因为它不该有 ——
+  # 它是**同一份文档的持续修订**,不是 10-31 这一版、10-30 那一版那样的交付物。
+  # 实测 AEGIS-HEARTBEAT.md 和 LYRA-HEARTBEAT.md 都不在豁免名单里,
+  # 也就是两个席位的心跳协议**从来就不可能通过这个闸门**。
+  #
+  # 豁免必须按「没有日期段」判,不能按文件名里有 HEARTBEAT 判。
+  # 我第一版写的是 *HEARTBEAT*.md,变异测试救了它:把 .zhs 容忍度删掉,
+  # 闸门照样 0 违规 —— 因为我的心跳交付文件名里也带 heartbeat,
+  # 16 份全被这条豁免吃掉了,§4 一次都没在它们身上跑过。
+  # 一条把该查的 16 个文件一起吃掉的豁免,比没有豁免更糟:
+  # 它让「我修了闸门」看起来成功了。
+  # 真正的区分是有没有 YYYY-MM-DD:规程文档没有,交付物有。
+  standing=0
+  case "$base" in
+    *HEARTBEAT*.md|*HEARTBEAT*.zhs.md)
+      printf '%s' "$base" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || standing=1 ;;
+  esac
+  if [ "$standing" = "1" ]; then
+    :
+  else
+  # 这里必须按 $f(完整路径)分发,不能按 $base。
+  # 我改成 $base 之后,§4 一条都没跑过而闸门照样全绿 ——
+  # 因为 basename 永远匹配不上 docs/coordination/tasks/* 这种路径模式。
+  # 变异测试(删掉 .zhs 容忍度)第二次存活,才把它揪出来。
   case "$f" in
-    docs/coordination/tasks/*)      [[ "$base" =~ ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+\.md$ ]] || echo "$f: task filename must be ROLE-YYYY-MM-DD-<topic>-vN.md (§4)" ;;
+    docs/coordination/tasks/*)      [[ "$base" =~ ^[A-Z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-.+-v[0-9]+(\.zhs)?\.md$ ]] || echo "$f: task filename must be ROLE-YYYY-MM-DD-<topic>-vN.md (§4)" ;;
     docs/coordination/reviews/*)    [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-.+\.md$ ]] || echo "$f: review filename must be YYYY-MM-DD-<topic>.md (§4)" ;;
     docs/coordination/acceptance/*) [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-.+\.md$ ]] || echo "$f: acceptance filename must be YYYY-MM-DD-<topic>.md (§4)" ;;
     docs/coordination/memory/*)     [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$ ]] || echo "$f: memory filename must be YYYY-MM-DD.md (§4)" ;;
   esac
+  fi
 }
 
 all_docs() { { git ls-files -- docs; git ls-files --others --exclude-standard -- docs; } | grep -E '\.md$'; }
