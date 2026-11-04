@@ -489,10 +489,21 @@ describe("the inbox does not show another project's rows", () => {
         expect.anything(),
       ),
     );
-    // And the arity itself, stated so a reader does not have to infer it: five
-    // arguments today. If the command gains one, the assertion above fails on the
-    // count before it ever compares values — which is the point, and it is now
-    // written down instead of being a comment that claims the opposite.
+    // And the arity, stated so a reader does not have to count four
+    // `expect.anything()`s: five arguments today.
+    //
+    // 2026-11-04, second narrowing — this line is DOCUMENTARY, not DETECTIVE.
+    //
+    // Aegis measured it: delete this assertion and keep the mutation (a sixth
+    // parameter) and the file is still 2 red. The positional matcher above already
+    // fails on an extra argument, so this line adds no detection. My first version
+    // of this comment claimed it "fails on the count before it ever compares
+    // values" — that was still too strong, and it was the same mistake one comment
+    // up: stating a mechanism I had not measured.
+    //
+    // What it actually does is make "five arguments today" a readable fact instead
+    // of something inferred from a matcher list. That is worth a line. It is not a
+    // safety net, and it is now labelled as one thing rather than the other.
     expect(state.enqueue.mock.calls[0]).toHaveLength(5);
   });
 });
