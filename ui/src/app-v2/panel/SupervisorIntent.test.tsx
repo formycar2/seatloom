@@ -427,6 +427,43 @@ describe('SupervisorIntent', () => {
     ]);
   });
 
+  it('the project reaches planIntent AND enqueueDispatch — not a hardcoded one', async () => {
+    // The same gap Lyra found on the other call site, closed here.
+    //
+    // Every fixture in this file sets activeProjectId to 'seatloom', and no
+    // assertion names the project argument at all. So hardcoding
+    // `useDataStore.getState().activeProjectId ?? ''` to 'seatloom' would keep the
+    // whole file green — which is precisely the regression the project-scoping
+    // dispatch removed, one layer down.
+    //
+    // The consequence is the dispatch's own subject: a plan made while viewing
+    // project X gathered X's operator's intent against seatloom's facts, and the
+    // confirm step then wrote the dispatch under seatloom.
+    useDataStore.setState({
+      activeProjectId: 'ql_delivery',
+      backendHydrated: true,
+      projects: [{ id: 'ql_delivery', name: 'QL' }] as never,
+    });
+    state.planRaw = proposalJson();
+    state.enqueueId = 'disp-real-888';
+    mount();
+
+    typeAndSubmit('给 Nimbus 洽个活,把唤醒服务兑底接上');
+    await waitFor(() => expect(screen.getByText('确认并建卡')).toBeTruthy());
+
+    // The PLAN was about the project he is viewing. `planProjectCalls` is recorded
+    // by the mock for exactly this assertion — the intent alone would pass with
+    // any project, including a hardcoded one.
+    expect(state.planProjectCalls).toContain('ql_delivery');
+
+    fireEvent.click(screen.getByText('确认并建卡'));
+    await waitFor(() => expect(screen.getByText(/disp-real-888/)).toBeTruthy());
+
+    // And the WRITE was filed under it — project FIRST, exactly as the command
+    // now takes it.
+    expect(state.enqueueCalls[0][0]).toBe('ql_delivery');
+  });
+
   // 6. A rejection from plan_intent is shown verbatim, no dispatch id.
   it('a plan_intent rejection is shown verbatim and shows no dispatch id', async () => {
     state.planThrows = 'plan_intent rejected: project "seatloom" does not exist';

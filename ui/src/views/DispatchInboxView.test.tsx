@@ -434,4 +434,47 @@ describe("the inbox does not show another project's rows", () => {
     // fall back to its own default project.
     expect(state.listCalls).toContain('ql_delivery');
   });
+
+  it('it passes the active project to the WRITE — not a hardcoded one', async () => {
+    // The mirror of the read-path test above, and the gap Lyra found by mutating
+    // the call site.
+    //
+    // She replaced `const projectId = activeProjectId ?? ''` with
+    // `const projectId = 'seatloom'` — reintroducing exactly the hardcoded project
+    // this dispatch removed — and 14 tests stayed green. The only assertion on the
+    // enqueue call expected the literal 'seatloom', which is also what the hardcoded
+    // version passes, because that test runs with activeProjectId='seatloom'.
+    //
+    // So: same shape as the read case, non-seatloom project, and the project must
+    // arrive FIRST.
+    //
+    // The consequence when this regresses is the whole dispatch's subject: a
+    // dispatch created under project X is filed under seatloom, the list scoped to X
+    // refreshes to nothing, and nothing in the app says where the row went.
+    useDataStore.setState({ activeProjectId: 'ql_delivery', backendHydrated: true });
+    render(<DispatchInboxView />);
+    await screen.findByText('Alpha');
+
+    fireEvent.click(screen.getByRole('button', { name: '新建派单' }));
+    fireEvent.change(screen.getByPlaceholderText(TITLE_INPUT), { target: { value: '新任务' } });
+    fireEvent.change(screen.getByPlaceholderText(INSTR_INPUT), { target: { value: '指令' } });
+    fireEvent.change(screen.getAllByRole('combobox')[0], {
+      target: { value: 'seat-nimbus-001' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /派发/ }));
+
+    // FIRST argument, and it is the project the operator is viewing.
+    // `expect.anything()` for the trailing arguments so this asserts the PROJECT
+    // rather than the whole call shape — adding a parameter later must not turn a
+    // scoping check into noise.
+    await vi.waitFor(() =>
+      expect(state.enqueue).toHaveBeenCalledWith(
+        'ql_delivery',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    );
+  });
 });
