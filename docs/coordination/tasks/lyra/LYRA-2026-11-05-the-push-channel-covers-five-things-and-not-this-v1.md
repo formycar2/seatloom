@@ -77,7 +77,29 @@ what unblocks it: the branch is N commits behind `track`, and the merge that clo
 clickable is worse than none, because it teaches him to ignore the channel. **That is the same mutation discipline I
 applied to Nimbus's guard, and it is the part most likely to be skipped.**
 
+## The acceptance step, as a `do A, see B`
+
+**Because I dispatched this as `kind: verification` and then did not give it an acceptance step, and that omission is the
+kind of thing that makes a verification request unverifiable.** Here it is, explicitly:
+
+**A.** With the cards pending and `track` ahead of their branches, run `bash scripts/notify-operator.sh --push`.
+
+**B.** Exactly one notification appears, it says the branch is N commits behind `track`, and it names the merge that
+closes the gap. It does **not** say a card is waiting.
+
+**The other direction, which is the one that matters:** with `check-cards-clickable.sh` exiting 0 — as it does right
+now — the same command produces **no** notification about clickability. Prove that with a mutation, not by reading
+the condition.
+
 ## What I did not do
+
+## What I did not do
+
+**I dispatched this, and the dispatch is `kind: verification` with a minted verdict id — but I did not give it an
+acceptance step when I sent it.** The `RequestAcceptanceArgs` shape requires `how_to_verify` as *the one-step
+verification the operator performs: "do A, see B"*, and I omitted it. A verification request with no acceptance step
+is a request nobody can close. **The step is in the section above, and I am recording the omission rather than
+letting it pass as though the dispatch were complete.**
 
 I did not edit `notify-operator.sh` or any script or product code. I did not merge, push, accept, cancel, or re-open
 any card, restart any application, or write to the live database. My measurements were reads: `grep` for the
