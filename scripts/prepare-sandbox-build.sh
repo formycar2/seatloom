@@ -95,6 +95,16 @@ fi
 if [ -n "$DISPID" ] && [ -z "${BRANCH_FROM_LEDGER:-}" ]; then :; fi
 
 # ---- 在哪构建 ----
+# 🔴 2026-11-04 修:第二遍曾经是「任何能解析该 ref 的工作区就算匹配」。
+#    传入**提交哈希**时,第一遍(按分支名比 HEAD)永远不中,第二遍匹配第一个
+#    只是**包含**该对象的工作区 —— 而本脚本构建的是那个工作区检出中的树。
+#    结果:横幅打印「提交 9f29b06」(解析自参数),构建的是另一个落后 868 个
+#    提交、根本没有那个机制的工作区,退出码 0。Lyra 实测,Aegis 独立复现
+#    (选中 d2preview @ 608fc5f,`restoredPosition` 在其中 0 处,在 mira 9 处)。
+#    **一个装错代码的沙箱比没有沙箱更糟** —— 他会去验一份没有那个机制的东西,
+#    而且每一行输出都告诉他那就是他要的那一版。
+#    现在只认「这个 ref 就是该工作区检出的 HEAD」;对不上就停下来并指路,
+#    绝不悄悄构建另一棵树。构建前再硬核一次参数与检出是否同一棵树。
 if [ "$BRANCH" = "track/infra-foundation" ]; then
   WT="$REPO"
 else
@@ -104,20 +114,50 @@ else
     if [ "$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BRANCH" ]; then WT="${d%/}"; break; fi
   done
   if [ -z "$WT" ]; then
+    # 不猜。列出「包含这个 ref」的工作区,并说清每个检出在哪,让调用方自己选。
+    WANT="$(git -C "$REPO" rev-parse --verify "$BRANCH" 2>/dev/null || true)"
+    OTHERS=""
     for d in "$WROOT"/*/; do
       [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
-      git -C "$d" rev-parse --verify "$BRANCH" >/dev/null 2>&1 && { WT="${d%/}"; break; }
+      git -C "$d" rev-parse --verify "$BRANCH" >/dev/null 2>&1 || continue
+      NAME="$(basename "${d%/}")"
+      HEADREF="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      HEADSHA="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)"
+      if [ -n "$WANT" ] && [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" = "$WANT" ]; then
+        OTHERS="${OTHERS}\n     $NAME —— 检出正好在这个提交上(分支 $HEADREF),传这个分支名即可"
+      else
+        OTHERS="${OTHERS}\n     $NAME —— 检出在 $HEADSHA ($HEADREF),**不是**你要的"
+      fi
     done
+    say ""
+    say "❌ '$BRANCH' 不是任何工作区当前检出的分支。"
+    say ""
+    say "  本脚本构建的是**某个工作区检出中的那棵树**,它不会替你 checkout。"
+    say "  所以传进来的必须是那条工作区已经检出的分支名 ——"
+    say "  传提交哈希会构建另一棵树,而横幅还会印着你要的那个提交。"
+    if [ -n "$OTHERS" ]; then
+      say ""
+      say "  包含这个 ref 的工作区:"
+      printf '%b\n' "$OTHERS"
+    fi
+    say ""
+    say "  请改用上面列出的、确实被检出的分支名再跑。"
+    fail "不从工作区里猜。指定一条已检出的分支再跑。"
   fi
-  [ -n "$WT" ] || fail "找不到检出 $BRANCH 的工作区(在 $WROOT 下没有)"
 fi
+
+# 铁律:要构建的树,必须就是参数指定的那棵树。不一致就不构建。
+ASKED_SHA="$(git -C "$REPO" rev-parse --verify "$BRANCH" 2>/dev/null || true)"
+TREE_SHA="$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)"
+[ -n "$ASKED_SHA" ] || fail "解析不出 '$BRANCH' 这个 ref"
+[ "$ASKED_SHA" = "$TREE_SHA" ] || fail "要构建的树和参数指定的不是同一棵树(参数 ${ASKED_SHA:0:9},检出 ${TREE_SHA:0:9})—— 停,不构建"
 
 line
 if [ "$APPLY" = "1" ]; then say "沙箱构建 — 应用模式"; else say "沙箱构建 — 预演模式(不动任何东西)"; fi
 line
 say "  分支          : $BRANCH"
 say "  构建目录      : $WT"
-say "  提交          : $(git -C "$WT" rev-parse --short "$BRANCH" 2>/dev/null || echo '?')"
+say "  提交          : $(git -C "$WT" rev-parse --short HEAD 2>/dev/null || echo '?')(要构建的就是这一棵)"
 say "  主版(不动)    : $MAIN_APP"
 say "  沙箱(要装的)  : $SAND_APP"
 say "  沙箱键前缀    : $SANDBOX_KEY_PREFIX(避免和主版抢 localStorage)"
@@ -271,7 +311,7 @@ OPERATOR_REF="${SEATLOOM_OPERATOR_REF:-human:supervisor}"
 # 而不是让前端去猜或依赖 localStorage(那三个无命名空间的键会和主版互抢)。
 # 这些是只读变量,不给沙箱任何额外能力。
 SAND_BRANCH="$BRANCH"
-SAND_COMMIT="$(git -C "$WT" rev-parse --short "$BRANCH" 2>/dev/null || echo unknown)"
+SAND_COMMIT="$(git -C "$WT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 SAND_BUILT="$(date '+%Y-%m-%d %H:%M')"
 export SEATLOOM_SANDBOX=1
 export SEATLOOM_SANDBOX_BRANCH="$SAND_BRANCH"
@@ -306,5 +346,5 @@ if [ -z "$SANDBOX_DB" ]; then
   say "  ⚠️ 沙箱连的是同一个库。在沙箱里点「接受」会真的改账本。"
   say "     只想看不想改,就别在沙箱里点接受;或下次加 --sandbox-db 指定另一个库。"
 fi
-say "  这一份构建来自:$BRANCH @ $(git -C "$WT" rev-parse --short "$BRANCH")"
+say "  这一份构建来自:$BRANCH @ $(git -C "$WT" rev-parse --short HEAD)(检出树,已与参数核对一致)"
 exit 0
