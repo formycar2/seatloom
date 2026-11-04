@@ -86,6 +86,46 @@ pub async fn cmd_accept_delivery(
         .map_err(|e| e.to_string())?;
     verdict_gate_message(&facts, &row.acceptance.flux_verdict_ref)?;
 
+    // THE GUARD THAT WAS MISSING, and it is the one that protects against data
+    // loss. The deletion risk was previewed when the seat OPENED the card
+    // (`request_acceptance`, dispatch.rs) and never again — but the verdict IS
+    // re-checked here, because a verdict can be re-issued between the two
+    // moments, and the branch can change in the same window. A seat can commit
+    // to the delivery branch after the card is opened; the base can move. The
+    // preview computed at request time then describes a state that no longer
+    // exists, and Accept would delete files tracked on the base while the
+    // system's own gate says the click was fine.
+    //
+    // Checked at the moment of the merge, not at the moment of the request,
+    // because that is the only moment the merge actually happens.
+    let would_delete = seatloom_core::git::ops::merge_would_delete(
+        &state.repo_root,
+        &row.acceptance.branch,
+        &row.acceptance.base,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    // Subtract the operator-ruled deletions BEFORE deciding to refuse, using the
+    // SAME helper the card-opening gate uses — so a ruling honoured at one
+    // moment cannot be ignored at the other.
+    let undeleted = seatloom_core::git::ops::undeleted_deletions(would_delete);
+    if !undeleted.is_empty() {
+        // A refusal the operator cannot act on is not a refusal: name the paths,
+        // the branch and the base.
+        return Err(format!(
+            "接受被拒绝:合并 {} 到 {} 会删除基线仍跟踪的 {} 个文件:{}。\
+             这些删除没有对应的操作者裁定,所以这个合并不会被执⾏。",
+            row.acceptance.branch,
+            row.acceptance.base,
+            undeleted.len(),
+            undeleted
+                .iter()
+                .map(|p| format!("\n  - {p}"))
+                .collect::<Vec<_>>()
+                .join(""),
+        ));
+    }
+
     let merge_commit = merge_branch_into_base(
         &state.repo_root,
         &row.acceptance.branch,
