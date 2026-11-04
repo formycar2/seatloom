@@ -1325,3 +1325,85 @@ The four UI fixes are verified at 378/378 on `packet/mira/knowledge-panel`, and 
 
 Not registered seats, not merged your branch, not pushed track, not landed the docs branch, not merged
 `packet/mira`, and not edited `register-fleet-seats.sh`. **All six write shared state.**
+
+---
+
+## 2026-11-04 · Lyra — 路线图过期三天。这一节说清「下一件用户能感知的事」是什么,以及为什么不是别的
+
+**先说这一节为什么现在才写。** 张先生 10-16 说路线图「之后归你维护」,心跳第 3 条写「过期就是你的失职」。
+我分支上这份停在 11-01,而 track 上那份停在 10-16 —— 也就是说,**产品负责人维护的那份,落后了三天;
+而 track 上给人看的那份,落后了十九天。** 这一节补上,并给出下一轮的决定。
+
+### 一、我这几轮在干什么(不掩饰:在工具线上,不在产品线上)
+
+10-28 之后我大部分轮次在做验证链:修检查脚本、复现 Aegis 的工具缺陷、被账本事件计数量误导、
+把 Mira 的冷启动单做文件级裁定。这些是必要的,但它们**没有让用户多点得动任何东西**。
+按张先生定的排序判据(「一件活是让结构化界面更能用,还是让过渡态更好看?前者优先」),
+我这几天在做后者旁边的事。**这一节把线拉回产品。**
+
+### 二、量到的现状(今天 11:41,逐条测过,不是从旧快照抄的)
+
+| 事实 | 证据 |
+|---|---|
+| **冷启动的修复活在 Mira 分支上,track 上没有。** | `bd0cabb`(10-29 21:19)不是 track HEAD(`3a91ba3`)的祖先;是 mira HEAD(`9f29b06`)的祖先 |
+| **track 上有一版更早的、没改完的尝试。** | `fbc4bed`(10-29 11:02)引入 `coldStartProjectId` 方案,它自己的提交标题就写「改了,没改完」;`bd0cabb` 是它之后的第二轮 |
+| **track 上冷启动测试两个红,同一份测试在 mira 上 20 个全绿。** | `ui/src/App.restartRestore.test.tsx`:track `2 failed / 10`,mira `20 passed / 20` |
+| **两个红性质不同:一个是真机制缺陷,一个是我自己判过的 fixture 自相矛盾。** | 见下 |
+| **用户磁盘上的持久化状态证明缺陷是真的。** | `~/Library/WebKit/com.seatloom.app/.../localStorage.sqlite3`(11-02 11:19 写):`activeProjectId=seatloom`,`seatloom.activeTab=live-seats`。**按我自己的裁定,冷启动该落「派单」——而这份状态说,他今天退出重开,应用会打开在实时席位页** |
+| **现装主版二进制比 track 落后 6 天,且不含这套机制的任一半。** | 主版二进制构建于 10-28 22:16;track 上最后一次动 `ui/src` 是 10-29 13:18;主版里 `restoredPosition` 字符串出现 0 次 |
+| **沙箱库和 live 库的项目集合不一样。** | sandbox 有 `ql_delivery`,live 没有;live 有 `project_delivery/networkOrchestrator`、`project_delivery/stepaicloud`,sandbox 没有。**所以沙箱不等于用户环境,A-D 不能只在沙箱里做完** |
+
+### 三、那两个红,分清性质(这是我今天修正自己的地方)
+
+**红一 —— 真机制缺陷。** 冷启动该落在「派单」页。实测渲染出来的是 **workitems 页**
+(`Received` 里是 `活跃工作项账本` / `显示全部工作项`,只有 `WorkItemsView` 渲染这两句)。
+而 fixture 里只有 `FIRST_REAL_PROJECT`(`seatloom`)存着 `activeTab: 'workitems'` ——
+**所以 track 上的恢复逻辑把另一个项目的已存页签盖到了首屏上。** 这正是 `bd0cabb` 要修的:
+把 tab 恢复从项目恢复里拆出来,并且在 `setActiveProject` 之前就打标记
+(track 那版用的是 state,注释自己说「a ref was measured unreliable」)。
+
+**红二 —— fixture 自相矛盾,不是产品缺陷。** 同一个文件里,第二个测试的 fixture 写
+`FIRST_REAL_PROJECT` 的 `activeTab: 'dispatches'`,而注释说「已存页签是 live-seats」,
+断言却期望 workitems 标题。mira 那版把它改成 `'workitems'` 就过了。
+**这一条我说过「Lyra 多报了一半」,今天复核,这个判断不变。**
+
+### 四、下一轮的决定:一件事,做完用户点得动
+
+**决定:下一件交付给用户的事,是让「冷启动落在派单」这条真的到他屏幕上。**
+
+它满足张先生定的每一条判据:
+- **用户能感知**:他每次重开应用都会看到。**而且他磁盘上的状态已经证明现在看到的是错的。**
+- **不是过渡态**:这是结构化界面的首屏契约,不是镜像美化。
+- **验收能写成人话**:退出 → 重开 → 看到派单页(不是实时席位);切到别的项目再切回来 → 那个项目的页签回来;
+一个项目在库里不存在 → 应用说出来而不是静默换项目。
+
+**为什么不选别的(量过才排除的):**
+- **合 track → GitLab(839 落后、CI 红 24 天、287 violations)**:重要,但用户点不到它,且是操作者的动作。
+- **五份 HEARTBEAT 文档落 track**:同样是操作者的合并动作;`land-standing-duty-docs.sh` 仍卡在 rebase 96 落后。
+- **预算文档缺模板头**:一条 grandfather 就能关,不是产品。
+
+### 五、这件的三段话(给张先生)
+
+**变了什么**:冷启动落地点的修复已经存在于 Mira 的分支上(20 个测试全绿),track 上没有。
+我这几天把它量实了:两个红里一个是真缺陷、一个是测试自己写错;你机器上的持久化状态证明真缺陷是真的。
+
+**你会看到什么**:什么都不用你做。等这条合进去、你下一次拿到带它的构建,重开 SeatLoom 会落在派单页,
+不再落在你上次待的实时席位页。**注意:你现在装的这份是 10-28 构建的,无论合不合,它都不会变。**
+
+**需要你做什么**:两件事,都只能你做。
+1. **决定合不合 `packet/mira/knowledge-panel`**(它在 track 尖前 31 / 后 2)。合了,这个修复才进主线。
+2. **A-D 用户级验收要不要现在做**:要做得先构建一份带它的隔离版。**我量到构建脚本必须指向分支名、
+不能指向提交哈希** —— 传提交哈希它会静默构建另一棵树(这个缺陷 Aegis 已修 `fc6446a`,我复测过)。
+沙箱库还缺 live 有的两个项目,所以那一遍验完仍要你在主版上再点一次。
+
+### 六、这一轮我自己认的账
+
+**这一节本该 11-01 就写。** 我连续几轮在工具线上量得很细,却让路线图空着 —— 而路线图是张先生唯一
+不用问人就能看到「计划是什么」的地方。**量得细不等于在干活。**
+另外今天我自己出了一条假测量(说沙箱库里没有 `seatloom` 项目),Aegis 复测纠正,已出更正文件。
+**同一个毛病第三次:搜索落空,我把空结果当成事实写。** 记在这里,不只记在更正文件里。
+
+### What I have not done
+
+没有合 `packet/mira`、没有推 track、没有把五份 HEARTBEAT 文档落上 track、没有改 `register-fleet-seats.sh`
+的错误注释、没有重启操作者应用、没有动 live 库。**这些全都写共享状态。**
