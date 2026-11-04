@@ -82,6 +82,26 @@ pub struct EnqueueDependencyArg {
 #[tauri::command]
 pub async fn cmd_enqueue_dispatch(
     state: State<'_, AppState>,
+    // The project the dispatch belongs to. Required, not defaulted.
+    //
+    // It used to be absent here and the child was spawned with
+    // `SEATLOOM_PROJECT_ID = state.default_project_id` — a constant set once at
+    // startup (main.rs: `"seatloom"`). So every dispatch the operator created
+    // while viewing project X was filed under seatloom, and the list he was
+    // looking at read `cmd_list_dispatches({projectId: X})` and showed nothing.
+    // The form closed, the list refreshed, the page was empty, and nothing said
+    // where the row went.
+    //
+    // Measured blast radius: 40 projects live, 4 have a seat binding, and 3 of
+    // those are not seatloom. For each of those 3 the seat dropdown lists that
+    // project's one seat, so the operator is doing exactly the right thing and
+    // the row still lands elsewhere.
+    //
+    // `require_project_id` rather than a fallback, for the reason its own doc
+    // comment records: a fallback that silently substitutes another project's
+    // rows is worse than an error — the error says something is missing, the
+    // fallback says nothing at all.
+    project_id: Option<String>,
     target_seat_id: String,
     title: String,
     instructions: String,
@@ -90,6 +110,8 @@ pub async fn cmd_enqueue_dispatch(
 ) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
+
+    let project = crate::commands::require_project_id("cmd_enqueue_dispatch", project_id)?;
 
     // Forward the edges in the tool's own spelling. `Option` in, `Option` out:
     // an omitted list is omitted, never rewritten to `[]`, because the two mean
@@ -125,7 +147,7 @@ pub async fn cmd_enqueue_dispatch(
     let mut child = Command::new(&bin)
         .env("DATABASE_URL", &db_url)
         .env("SEATLOOM_ACTOR_REF", "human:supervisor")
-        .env("SEATLOOM_PROJECT_ID", &state.default_project_id)
+        .env("SEATLOOM_PROJECT_ID", &project)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -170,13 +192,25 @@ pub async fn cmd_enqueue_dispatch(
 /// path sets it: when the operator confirms, the write must be attributed to the
 /// person who asked, not to a seat.
 #[tauri::command]
-pub async fn cmd_plan_intent(state: State<'_, AppState>, intent: String) -> Result<String, String> {
+pub async fn cmd_plan_intent(
+    state: State<'_, AppState>,
+    // The project the plan is about. Required, for the same reason
+    // [`cmd_enqueue_dispatch`] requires it: the child used to be spawned with
+    // `SEATLOOM_PROJECT_ID = state.default_project_id`, so a plan made while
+    // viewing project X gathered X's operator's intent against seatloom's facts.
+    // `gather_intent_facts` is project-scoped, so the plan was about a project
+    // the operator was not looking at — and the confirm step then writes the
+    // dispatch under that project.
+    project_id: Option<String>,
+    intent: String,
+) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
     if intent.trim().is_empty() {
         return Err("plan_intent rejected: the intent is empty — there is nothing to plan".into());
     }
+    let project = crate::commands::require_project_id("cmd_plan_intent", project_id)?;
 
     let args = serde_json::json!({ "intent": intent });
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
@@ -194,7 +228,7 @@ pub async fn cmd_plan_intent(state: State<'_, AppState>, intent: String) -> Resu
     let mut child = Command::new(&bin)
         .env("DATABASE_URL", &db_url)
         .env("SEATLOOM_ACTOR_REF", "human:supervisor")
-        .env("SEATLOOM_PROJECT_ID", &state.default_project_id)
+        .env("SEATLOOM_PROJECT_ID", &project)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

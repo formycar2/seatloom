@@ -79,8 +79,9 @@ const contextLines = (() => {
 function loaderFromFixture(overrides: Partial<HistoryLoader> = {}): HistoryLoader {
   return {
     listProjects: async () => JSON.stringify(projects),
+
     listSessions: async (projectId: string) => JSON.stringify(sessionsByProject[projectId]),
-    getSessionTurns: async (harness: string, id: string) => {
+    getSessionTurns: async (_projectId: string, harness: string, id: string) => {
       const key = `${harness}:${id}`;
       const found =
         key === 'claude-code:621ae382-d6c1-4f0c-b3fa-7c1155a5ecb8'
@@ -450,7 +451,13 @@ describe('wiring honesty', () => {
     for (const token of forbidden) expect(src).not.toContain(token);
     expect(src).not.toMatch(/_REGISTERED\s*=\s*(true|false)/);
     // And the panel really goes through the api layer rather than invoke().
-    expect(src).toContain('api.listHistoryProjects()');
+    //
+    // Matched with a regex rather than an exact string, because the project id is
+    // now a parameter — `api.listHistoryProjects(projectId)`. The claim under
+    // test is "this goes through the api layer", not "this call has this exact
+    // shape"; pinning the shape would make the test fail for the wrong reason the
+    // next time a parameter is added, which is how a wiring check turns into noise.
+    expect(src).toMatch(/api\.listHistoryProjects\(/);
     expect(src).not.toContain("invoke('cmd_list_history_projects')");
   });
 });

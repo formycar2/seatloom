@@ -62,6 +62,9 @@ const state = vi.hoisted(() => ({
   enqueueId: 'disp-new-1',
   enqueueThrows: '' as string,
   planCalls: [] as string[],
+  // Every project the planner was asked about, in order. Asserted so a caller that
+  // forgets to pass it (or passes the wrong one) is visible.
+  planProjectCalls: [] as string[],
   enqueueCalls: [] as unknown[][],
 }));
 
@@ -88,8 +91,12 @@ vi.mock('../../lib/api', () => ({
     listCheckpoints: vi.fn(async () => state.checkpoints),
     getKnowledgeTree: vi.fn(async () => state.tree),
     getTopicMemories: vi.fn(async () => state.memories),
-    planIntent: vi.fn(async (intent: string) => {
+    // (projectId, intent) — the planner gathers facts scoped to a project, so it
+    // must be told which one the operator is looking at. The command used to take
+    // no project and the child fell back to a startup constant.
+    planIntent: vi.fn(async (projectId: string, intent: string) => {
       state.planCalls.push(intent);
+      state.planProjectCalls.push(projectId);
       if (state.planThrows) throw new Error(state.planThrows);
       return state.planRaw;
     }),
@@ -243,6 +250,7 @@ describe('SupervisorIntent', () => {
     state.enqueueId = 'disp-new-1';
     state.enqueueThrows = '';
     state.planCalls = [];
+    state.planProjectCalls = [];
     state.enqueueCalls = [];
   });
 
@@ -409,7 +417,10 @@ describe('SupervisorIntent', () => {
     await waitFor(() => expect(screen.getByText('确认并建卡')).toBeTruthy());
     fireEvent.click(screen.getByText('确认并建卡'));
     await waitFor(() => expect(screen.getByText(/disp-real-777/)).toBeTruthy());
+    // The project the operator is viewing comes FIRST. It used to be absent and
+    // the dispatch was filed under a startup constant instead.
     expect(state.enqueueCalls[0]).toEqual([
+      'seatloom',
       'seat-nimbus-001',
       '接唤醒服务兜底',
       '把唤醒服务硬底兜底接上',

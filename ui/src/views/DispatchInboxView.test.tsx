@@ -228,8 +228,21 @@ describe('DispatchInboxView', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /派发/ }));
 
+    // The project comes FIRST, and it is the one the operator is viewing.
+    //
+    // The command used to take no project and the child was spawned with a startup
+    // constant, so this dispatch would have been filed under seatloom while the
+    // operator was looking at this project's list — which reads
+    // cmd_list_dispatches scoped to this project and would therefore refresh to
+    // nothing, with nothing in the app saying where the row went.
     await vi.waitFor(() =>
-      expect(state.enqueue).toHaveBeenCalledWith('seat-nimbus-001', '新任务', '指令', 5),
+      expect(state.enqueue).toHaveBeenCalledWith(
+        'seatloom',
+        'seat-nimbus-001',
+        '新任务',
+        '指令',
+        5,
+      ),
     );
   });
 

@@ -70,9 +70,9 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface HistoryLoader {
-  listProjects: () => Promise<string>;
+  listProjects: (projectId: string) => Promise<string>;
   listSessions: (projectId: string) => Promise<string>;
-  getSessionTurns: (harness: string, id: string) => Promise<string>;
+  getSessionTurns: (projectId: string, harness: string, id: string) => Promise<string>;
   readContextSlice: (
     contextPath: string,
     lineStart: number,
@@ -86,17 +86,23 @@ export interface HistoryLoader {
    * in the archive) comes back as the tool's typed message, so this screen can
    * name what is missing instead of rendering an empty list.
    */
-  sessionWork: (harness: string, id: string) => Promise<string>;
+  // `projectId` because the bridge read resolves against that project's corpus.
+  // The command used to take no project and the child fell back to a startup
+  // constant, so a session read under project X answered with seatloom's rows.
+  sessionWork: (projectId: string, harness: string, id: string) => Promise<string>;
 }
 
 const liveLoader: HistoryLoader = {
-  listProjects: () => api.listHistoryProjects(),
+  // The list is global, but the child still needs a project in scope — so the
+  // caller passes the one it is viewing rather than letting a startup constant
+  // answer for it.
+  listProjects: (projectId) => api.listHistoryProjects(projectId),
   listSessions: (projectId) => api.listHistorySessions(projectId),
-  getSessionTurns: (harness, id) => api.getHistorySessionTurns(harness, id),
+  getSessionTurns: (projectId, harness, id) => api.getHistorySessionTurns(projectId, harness, id),
   readContextSlice: (contextPath, lineStart, lineEnd) =>
     api.readHistoryContextSlice(contextPath, lineStart, lineEnd),
   openPath: (path) => api.openLocalPath(path),
-  sessionWork: (harness, id) => invoke('cmd_session_work', { harness, id }),
+  sessionWork: (projectId, harness, id) => invoke('cmd_session_work', { projectId, harness, id }),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -534,7 +540,9 @@ export const HistorySessionList: React.FC<{
 const HistorySessionDetailView: React.FC<{
   detail: HistorySessionDetail;
   loader: HistoryLoader;
-}> = ({ detail, loader }) => {
+  /** The project this session was read under — every scoped read needs it. */
+  projectId: string;
+}> = ({ detail, loader, projectId }) => {
   const [lines, setLines] = useState<string[] | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
@@ -765,7 +773,12 @@ const HistorySessionDetailView: React.FC<{
           its empty-state branch on purpose: a session that distilled nothing is
           a real answer about this session, and it must be reachable whether or
           not the conversation itself could be read. */}
-      <SessionWorkSection harness={detail.harness} id={detail.id} loader={loader} />
+      <SessionWorkSection
+        projectId={projectId}
+        harness={detail.harness}
+        id={detail.id}
+        loader={loader}
+      />
     </div>
   );
 };
@@ -846,10 +859,11 @@ const kindLabel: Record<string, string> = {
 };
 
 const SessionWorkSection: React.FC<{
+  projectId: string;
   harness: string;
   id: string;
   loader: HistoryLoader;
-}> = ({ harness, id, loader }) => {
+}> = ({ projectId, harness, id, loader }) => {
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'error'; error: string }
@@ -860,7 +874,7 @@ const SessionWorkSection: React.FC<{
     let alive = true;
     setState({ kind: 'loading' });
     loader
-      .sessionWork(harness, id)
+      .sessionWork(projectId, harness, id)
       .then((text) => {
         if (!alive) return;
         try {
@@ -876,7 +890,10 @@ const SessionWorkSection: React.FC<{
     return () => {
       alive = false;
     };
-  }, [harness, id, loader]);
+    // `projectId` belongs here: the bridge read resolves against that project's
+    // corpus, so a project change must re-read. Leaving it out would keep showing
+    // the previous project's distilled records under a session from another one.
+  }, [projectId, harness, id, loader]);
 
   if (state.kind === 'loading') {
     return (
@@ -1070,11 +1087,14 @@ export const HistorySessionsPanel: React.FC<{ loader?: HistoryLoader }> = ({ loa
     setLoadingProjects(true);
     setProjectsError(null);
     load
-      .listProjects()
+      .listProjects(projectId ?? '')
       .then((text) => setProjects(JSON.parse(text) as HistoryProjectsPayload))
       .catch((e) => setProjectsError(String(e)))
       .finally(() => setLoadingProjects(false));
-  }, [load]);
+    // `projectId` belongs here: the child the command spawns needs a project in
+    // scope, and the list is scoped to it. Leaving it out would keep the previous
+    // project's list after a switch.
+  }, [load, projectId]);
 
   useEffect(reloadProjects, [reloadProjects]);
 
@@ -1113,7 +1133,7 @@ export const HistorySessionsPanel: React.FC<{ loader?: HistoryLoader }> = ({ loa
     setTurnsError(null);
     setTurns(null);
     load
-      .getSessionTurns(harness, id)
+      .getSessionTurns(projectId ?? '', harness, id)
       .then((text) => {
         if (alive) setTurns(JSON.parse(text) as HistoryTurnsPayload);
       })
@@ -1126,7 +1146,9 @@ export const HistorySessionsPanel: React.FC<{ loader?: HistoryLoader }> = ({ loa
     return () => {
       alive = false;
     };
-  }, [sessionKey, load]);
+    // `projectId` belongs here: a session's turns resolve against the corpus of
+    // the project they were read under.
+  }, [sessionKey, load, projectId]);
 
   const activeProject = useMemo(
     () => projects?.projects.find((p) => p.id === projectId) ?? null,
@@ -1241,7 +1263,11 @@ export const HistorySessionsPanel: React.FC<{ loader?: HistoryLoader }> = ({ loa
             ) : loadingTurns || !turns ? (
               <Loading what="正在读取这条会话……" />
             ) : (
-              <HistorySessionDetailView detail={turns.session} loader={load} />
+              <HistorySessionDetailView
+                detail={turns.session}
+                loader={load}
+                projectId={projectId ?? ''}
+              />
             )}
           </div>
         </div>

@@ -784,7 +784,7 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
     try {
       // The real call: api.planIntent → cmd_plan_intent → plan_intent (actor
       // human:supervisor). Reads only; returns the tool's pretty-JSON.
-      const raw = await api.planIntent(t);
+      const raw = await api.planIntent(useDataStore.getState().activeProjectId ?? '', t);
       const result = JSON.parse(raw) as IntentPlanResult;
       setPlan({ kind: 'result', result });
     } catch (err) {
@@ -814,6 +814,7 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
       // the wrapper cannot forward them, and a suggestion carrying an edge is
       // refused in the card above rather than silently dropped.
       const dispatchId = await api.enqueueDispatch(
+        useDataStore.getState().activeProjectId ?? '',
         p.ownership.seatId,
         p.proposedObject.title,
         p.proposedObject.payloadNote,
@@ -877,7 +878,7 @@ export const SupervisorIntent: React.FC<{ onRawSend: (text: string) => void }> =
         // 直接拿选项文字重新拆解,不再要一次手动提交。
         void (async () => {
           try {
-            const raw = await api.planIntent(label);
+            const raw = await api.planIntent(useDataStore.getState().activeProjectId ?? '', label);
             setPlan({ kind: 'result', result: JSON.parse(raw) as IntentPlanResult });
           } catch (err) {
             // 拒绝逐字 —— 理由,而不是一张空卡,更不是猜。

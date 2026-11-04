@@ -19,6 +19,14 @@ use tauri::State;
 async fn call_tool(
     state: &AppState,
     tool: &str,
+    // The project the read belongs to. Passed by the caller, which has it.
+    //
+    // The child used to be spawned with `SEATLOOM_PROJECT_ID =
+    // state.default_project_id`, so a session read under project X resolved
+    // against seatloom's corpus. A session that distilled work in X came back
+    // with seatloom's rows — or nothing, depending on which project happened to
+    // hold it — and the pane cannot tell the difference from the answer.
+    project_id: &str,
     arguments: serde_json::Value,
 ) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
@@ -40,7 +48,7 @@ async fn call_tool(
         .env("DATABASE_URL", &db_url)
         // The operator is who reads the bridge, so the actor is the operator.
         .env("SEATLOOM_ACTOR_REF", "human:supervisor")
-        .env("SEATLOOM_PROJECT_ID", &state.default_project_id)
+        .env("SEATLOOM_PROJECT_ID", project_id)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -80,12 +88,15 @@ async fn call_tool(
 #[tauri::command]
 pub async fn cmd_session_work(
     state: State<'_, AppState>,
+    project_id: Option<String>,
     harness: String,
     id: String,
 ) -> Result<String, String> {
+    let project = crate::commands::require_project_id("cmd_session_work", project_id)?;
     call_tool(
         &state,
         "session_work",
+        &project,
         serde_json::json!({ "harness": harness, "id": id }),
     )
     .await
@@ -99,11 +110,14 @@ pub async fn cmd_session_work(
 #[tauri::command]
 pub async fn cmd_memory_session(
     state: State<'_, AppState>,
+    project_id: Option<String>,
     memory_id: String,
 ) -> Result<String, String> {
+    let project = crate::commands::require_project_id("cmd_memory_session", project_id)?;
     call_tool(
         &state,
         "memory_session",
+        &project,
         serde_json::json!({ "memory_id": memory_id }),
     )
     .await
