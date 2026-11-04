@@ -47,6 +47,17 @@ pub struct RuntimeIdentityDto {
     pub commit: Option<String>,
     /// `SEATLOOM_SANDBOX_BUILT` — when it was built, as the installer formatted it.
     pub built_at: Option<String>,
+    /// `SEATLOOM_SANDBOX_DIRTY` — how many uncommitted changes this build carries.
+    ///
+    /// 🔴 2026-11-04 补。这条字段存在的唯一理由:沙箱构建工具允许 `--allow-dirty`
+    ///    明确地从带未提交改动的工作区构建。那种构建**不等于**上面那个提交,
+    ///    而横幅只印提交号。Lyra 量到 `SEATLOOM_SANDBOX_DIRTY` 有 0 个消费者 ——
+    ///    我导出了它,没有任何东西读它,于是「沙箱标识会写明它带未提交改动」
+    ///    这句承诺只活在运行终端里,不在操作者做决定时看的那块屏幕上。
+    ///
+    /// 三态,不是两态:`Some(0)` = 安装器查过,是干净的;`None` = 安装器没说过。
+    /// 合成一个布尔值就会把这两种情况混成一个,而它们的含义相反。
+    pub uncommitted: Option<u32>,
 }
 
 /// Read an env var, treating an empty string as absent.
@@ -56,6 +67,17 @@ pub struct RuntimeIdentityDto {
 /// what this whole banner exists to prevent.
 fn env_value(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// Read an env var as a count.
+///
+/// A non-numeric value is reported as absent rather than guessed at or coerced to 0:
+/// `"abc"` is not "zero uncommitted changes", it is "the installer told us something we
+/// could not read", and those must not render the same way. Coercing a parse failure to
+/// 0 would make a corrupted count read as a clean build — the exact direction of error
+/// that hides the thing this field exists to show.
+fn env_count(key: &str) -> Option<u32> {
+    env_value(key).and_then(|v| v.trim().parse::<u32>().ok())
 }
 
 /// Report the runtime identity of this process.
@@ -72,6 +94,7 @@ pub async fn cmd_get_runtime_identity() -> Result<RuntimeIdentityDto, String> {
         branch: env_value("SEATLOOM_SANDBOX_BRANCH"),
         commit: env_value("SEATLOOM_SANDBOX_COMMIT"),
         built_at: env_value("SEATLOOM_SANDBOX_BUILT"),
+        uncommitted: env_count("SEATLOOM_SANDBOX_DIRTY"),
     })
 }
 
@@ -125,11 +148,12 @@ mod tests {
     }
 
     /// The keys every test touches, so each one starts from a clean slate.
-    const KEYS: [&str; 4] = [
+    const KEYS: [&str; 5] = [
         "SEATLOOM_SANDBOX",
         "SEATLOOM_SANDBOX_BRANCH",
         "SEATLOOM_SANDBOX_COMMIT",
         "SEATLOOM_SANDBOX_BUILT",
+        "SEATLOOM_SANDBOX_DIRTY",
     ];
 
     fn clear_sandbox_env() -> SandboxEnvGuard {
@@ -194,7 +218,7 @@ mod tests {
         assert!(id.commit.is_none(), "whitespace is absent");
     }
 
-    /// The description fields are independent of the flag. A sandbox whose installer
+    /// The three description fields are independent of the flag. A sandbox whose installer
     /// failed to record the branch must still render, saying "not recorded" for that
     /// one field — not refuse to draw, and not guess.
     #[tokio::test]
@@ -205,5 +229,63 @@ mod tests {
         assert!(id.branch.is_none());
         assert!(id.commit.is_none());
         assert!(id.built_at.is_none());
+    }
+
+    /// A `--allow-dirty` build must not be able to pass itself off as its commit.
+    ///
+    /// This is the assertion that would have caught the gap Lyra found: the installer
+    /// exported the count and nothing read it, so the banner could not say it. If the
+    /// DTO ever drops this field again, this test fails — it does not merely pass
+    /// because the fixture was updated to match the code.
+    #[tokio::test]
+    async fn a_dirty_build_reports_its_uncommitted_count() {
+        let _guard = set_sandbox_env(&[
+            ("SEATLOOM_SANDBOX", Some("1")),
+            ("SEATLOOM_SANDBOX_DIRTY", Some("2")),
+        ]);
+        let id = cmd_get_runtime_identity().await.unwrap();
+        assert_eq!(id.uncommitted, Some(2));
+    }
+
+    /// `Some(0)` and `None` are different facts and must not collapse.
+    ///
+    /// 0 means the installer checked and the tree was clean. None means the installer
+    /// never said. A build made by this script always exports the count, including 0,
+    /// so None can only mean "not from this installer" — which is worth showing as
+    /// "未记录" rather than silently reading as clean.
+    #[tokio::test]
+    async fn zero_is_clean_and_absent_is_unknown() {
+        let _guard = set_sandbox_env(&[
+            ("SEATLOOM_SANDBOX", Some("1")),
+            ("SEATLOOM_SANDBOX_DIRTY", Some("0")),
+        ]);
+        assert_eq!(
+            cmd_get_runtime_identity().await.unwrap().uncommitted,
+            Some(0)
+        );
+        drop(_guard);
+        let _guard = set_sandbox_env(&[("SEATLOOM_SANDBOX", Some("1"))]);
+        assert_eq!(cmd_get_runtime_identity().await.unwrap().uncommitted, None);
+    }
+
+    /// An unreadable count must not read as a clean build.
+    ///
+    /// Coercing a parse failure to 0 is the failure direction that hides the thing
+    /// this field exists to expose: a corrupted count would render as "no uncommitted
+    /// changes", which is a claim about the code, not about our ability to read it.
+    #[tokio::test]
+    async fn an_unparseable_count_is_absent_not_zero() {
+        let _guard = set_sandbox_env(&[
+            ("SEATLOOM_SANDBOX", Some("1")),
+            ("SEATLOOM_SANDBOX_DIRTY", Some("abc")),
+        ]);
+        assert_eq!(cmd_get_runtime_identity().await.unwrap().uncommitted, None);
+        drop(_guard);
+        // Negative and fractional values are not counts.
+        let _guard = set_sandbox_env(&[
+            ("SEATLOOM_SANDBOX", Some("1")),
+            ("SEATLOOM_SANDBOX_DIRTY", Some("-1")),
+        ]);
+        assert_eq!(cmd_get_runtime_identity().await.unwrap().uncommitted, None);
     }
 }

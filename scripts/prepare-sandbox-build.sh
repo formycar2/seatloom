@@ -345,7 +345,8 @@ export SEATLOOM_SANDBOX_BRANCH="$SAND_BRANCH"
 export SEATLOOM_SANDBOX_COMMIT="$SAND_COMMIT"
 export SEATLOOM_SANDBOX_BUILT="$SAND_BUILT"
 if [ -n "$DIRTY_MARK" ]; then
-  # 标识必须说实话:这份构建不等于那个提交
+  # 每次都导出,包括 0 —— 这样「没导出」只可能是非本脚本构建的东西,
+  # 而不是「干净」被误读成「没记录」。前端靠这个区分三态。
   export SEATLOOM_SANDBOX_DIRTY="$DIRTY_COUNT"
 fi
 if [ -n "$SANDBOX_DB" ]; then
