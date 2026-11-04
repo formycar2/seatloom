@@ -50,12 +50,13 @@ WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
 MAIN_APP="/Applications/SeatLoom.app"
 SAND_APP="/Applications/SeatLoom-Sandbox.app"
 SANDBOX_KEY_PREFIX="slsandbox:"
-MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; SANDBOX_DB=""
+MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
 
 # ---- 参数 ----
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1; shift;;
+    --allow-dirty) ALLOW_DIRTY=1; shift;;
     --from-dispatch) DISPID="${2:-}"; shift 2 || fail "--from-dispatch 后面要跟派单 id";;
     --sandbox-db) SANDBOX_DB="${2:-}"; shift 2 || fail "--sandbox-db 后面要跟一个 URL";;
     *) [ -z "$BRANCH" ] && BRANCH="$1"; shift;;
@@ -95,6 +96,16 @@ fi
 if [ -n "$DISPID" ] && [ -z "${BRANCH_FROM_LEDGER:-}" ]; then :; fi
 
 # ---- 在哪构建 ----
+# 🔴 2026-11-04 修:第二遍曾经是「任何能解析该 ref 的工作区就算匹配」。
+#    传入**提交哈希**时,第一遍(按分支名比 HEAD)永远不中,第二遍匹配第一个
+#    只是**包含**该对象的工作区 —— 而本脚本构建的是那个工作区检出中的树。
+#    结果:横幅打印「提交 9f29b06」(解析自参数),构建的是另一个落后 868 个
+#    提交、根本没有那个机制的工作区,退出码 0。Lyra 实测,Aegis 独立复现
+#    (选中 d2preview @ 608fc5f,`restoredPosition` 在其中 0 处,在 mira 9 处)。
+#    **一个装错代码的沙箱比没有沙箱更糟** —— 他会去验一份没有那个机制的东西,
+#    而且每一行输出都告诉他那就是他要的那一版。
+#    现在只认「这个 ref 就是该工作区检出的 HEAD」;对不上就停下来并指路,
+#    绝不悄悄构建另一棵树。构建前再硬核一次参数与检出是否同一棵树。
 if [ "$BRANCH" = "track/infra-foundation" ]; then
   WT="$REPO"
 else
@@ -104,12 +115,68 @@ else
     if [ "$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BRANCH" ]; then WT="${d%/}"; break; fi
   done
   if [ -z "$WT" ]; then
+    # 不猜。列出「包含这个 ref」的工作区,并说清每个检出在哪,让调用方自己选。
+    WANT="$(git -C "$REPO" rev-parse --verify "$BRANCH" 2>/dev/null || true)"
+    OTHERS=""
     for d in "$WROOT"/*/; do
       [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
-      git -C "$d" rev-parse --verify "$BRANCH" >/dev/null 2>&1 && { WT="${d%/}"; break; }
+      git -C "$d" rev-parse --verify "$BRANCH" >/dev/null 2>&1 || continue
+      NAME="$(basename "${d%/}")"
+      HEADREF="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      HEADSHA="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)"
+      if [ -n "$WANT" ] && [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" = "$WANT" ]; then
+        OTHERS="${OTHERS}\n     $NAME —— 检出正好在这个提交上(分支 $HEADREF),传这个分支名即可"
+      else
+        OTHERS="${OTHERS}\n     $NAME —— 检出在 $HEADSHA ($HEADREF),**不是**你要的"
+      fi
     done
+    say ""
+    say "❌ '$BRANCH' 不是任何工作区当前检出的分支。"
+    say ""
+    say "  本脚本构建的是**某个工作区检出中的那棵树**,它不会替你 checkout。"
+    say "  所以传进来的必须是那条工作区已经检出的分支名 ——"
+    say "  传提交哈希会构建另一棵树,而横幅还会印着你要的那个提交。"
+    if [ -n "$OTHERS" ]; then
+      say ""
+      say "  包含这个 ref 的工作区:"
+      printf '%b\n' "$OTHERS"
+    fi
+    say ""
+    say "  请改用上面列出的、确实被检出的分支名再跑。"
+    fail "不从工作区里猜。指定一条已检出的分支再跑。"
   fi
-  [ -n "$WT" ] || fail "找不到检出 $BRANCH 的工作区(在 $WROOT 下没有)"
+fi
+
+# 铁律:要构建的树,必须就是参数指定的那棵树。不一致就不构建。
+# 🔴 2026-11-04 Lyra 补的第二个洞:上面只比对**提交**。一个检出在正确分支上、
+#    但带未提交改动的工作区会顺利通过 —— 横幅印 a7353e9,构建的是 a7353e9
+#    **外加 124 行不存在于任何提交里的 Rust**(nimbus 实测)。同一个病,低一层:
+#    守卫比对两个提交,所以它看不见工作区。默认拒绝;要真去验一份未提交的活,
+#    必须显式 --allow-dirty,并且把「带未提交改动」写进沙箱自己的标识,
+#    不让这份构建冒充某个提交。
+ASKED_SHA="$(git -C "$REPO" rev-parse --verify "$BRANCH" 2>/dev/null || true)"
+TREE_SHA="$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)"
+[ -n "$ASKED_SHA" ] || fail "解析不出 '$BRANCH' 这个 ref"
+[ "$ASKED_SHA" = "$TREE_SHA" ] || fail "要构建的树和参数指定的不是同一棵树(参数 ${ASKED_SHA:0:9},检出 ${TREE_SHA:0:9})—— 停,不构建"
+
+DIRTY_FILES="$(git -C "$WT" status --porcelain 2>/dev/null | sed 's/^...//' | grep -v '^$')"
+DIRTY_COUNT=0; [ -n "$DIRTY_FILES" ] && DIRTY_COUNT="$(printf '%s\n' "$DIRTY_FILES" | grep -c .)"
+DIRTY_MARK=""
+if [ "$DIRTY_COUNT" -gt 0 ]; then
+  say ""
+  say "⚠️  $WT 有 $DIRTY_COUNT 个未提交的改动:"
+  printf '%s\n' "$DIRTY_FILES" | head -20 | sed 's/^/       /'
+  [ "$DIRTY_COUNT" -gt 20 ] && say "       ...还有 $((DIRTY_COUNT-20)) 个"
+  if [ "$ALLOW_DIRTY" != "1" ]; then
+    say ""
+    say "  这份构建会包含上面这些**不存在于任何提交里**的改动,而横幅只会印提交号。"
+    say "  你会在沙箱里验一份被标成某个提交、其实是别人半成品的东西。"
+    say "  真的就是要验这份未提交的活,加 --allow-dirty 明确认下;否则先把工作区弄干净。"
+    fail "不从带未提交改动的工作区构建。给 --allow-dirty 才构建,并且沙箱标识会写明它带未提交改动。"
+  fi
+  DIRTY_MARK="+${DIRTY_COUNT}个未提交改动"
+  say ""
+  say "  --allow-dirty:继续构建,沙箱标识会写明它带 $DIRTY_COUNT 个未提交改动。"
 fi
 
 line
@@ -117,7 +184,7 @@ if [ "$APPLY" = "1" ]; then say "沙箱构建 — 应用模式"; else say "沙�
 line
 say "  分支          : $BRANCH"
 say "  构建目录      : $WT"
-say "  提交          : $(git -C "$WT" rev-parse --short "$BRANCH" 2>/dev/null || echo '?')"
+say "  提交          : $(git -C "$WT" rev-parse --short HEAD 2>/dev/null || echo '?')(要构建的就是这一棵)${DIRTY_MARK:+ 带 $DIRTY_MARK}"
 say "  主版(不动)    : $MAIN_APP"
 say "  沙箱(要装的)  : $SAND_APP"
 say "  沙箱键前缀    : $SANDBOX_KEY_PREFIX(避免和主版抢 localStorage)"
@@ -271,12 +338,17 @@ OPERATOR_REF="${SEATLOOM_OPERATOR_REF:-human:supervisor}"
 # 而不是让前端去猜或依赖 localStorage(那三个无命名空间的键会和主版互抢)。
 # 这些是只读变量,不给沙箱任何额外能力。
 SAND_BRANCH="$BRANCH"
-SAND_COMMIT="$(git -C "$WT" rev-parse --short "$BRANCH" 2>/dev/null || echo unknown)"
+SAND_COMMIT="$(git -C "$WT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 SAND_BUILT="$(date '+%Y-%m-%d %H:%M')"
 export SEATLOOM_SANDBOX=1
 export SEATLOOM_SANDBOX_BRANCH="$SAND_BRANCH"
 export SEATLOOM_SANDBOX_COMMIT="$SAND_COMMIT"
 export SEATLOOM_SANDBOX_BUILT="$SAND_BUILT"
+if [ -n "$DIRTY_MARK" ]; then
+  # 每次都导出,包括 0 —— 这样「没导出」只可能是非本脚本构建的东西,
+  # 而不是「干净」被误读成「没记录」。前端靠这个区分三态。
+  export SEATLOOM_SANDBOX_DIRTY="$DIRTY_COUNT"
+fi
 if [ -n "$SANDBOX_DB" ]; then
   SEATLOOM_OPERATOR_REF="$OPERATOR_REF" DATABASE_URL="$SANDBOX_DB" \
     open -a "$SAND_APP" || fail "open 沙箱失败"
@@ -285,7 +357,7 @@ else
   SEATLOOM_OPERATOR_REF="$OPERATOR_REF" open -a "$SAND_APP" || fail "open 沙箱失败"
   say "  以 $OPERATOR_REF 启动,数据库:**与主版同一个库**"
 fi
-say "  注入标识:分支=$SAND_BRANCH 提交=$SAND_COMMIT 构建于=$SAND_BUILT"
+say "  注入标识:分支=$SAND_BRANCH 提交=$SAND_COMMIT 构建于=$SAND_BUILT${DIRTY_MARK:+ 未提交改动=$DIRTY_COUNT}"
 
 up=0
 for _ in $(seq 1 30); do
@@ -306,5 +378,5 @@ if [ -z "$SANDBOX_DB" ]; then
   say "  ⚠️ 沙箱连的是同一个库。在沙箱里点「接受」会真的改账本。"
   say "     只想看不想改,就别在沙箱里点接受;或下次加 --sandbox-db 指定另一个库。"
 fi
-say "  这一份构建来自:$BRANCH @ $(git -C "$WT" rev-parse --short "$BRANCH")"
+say "  这一份构建来自:$BRANCH @ $(git -C "$WT" rev-parse --short HEAD)(检出树,已与参数核对一致)${DIRTY_MARK:+ 外加 $DIRTY_MARK}"
 exit 0

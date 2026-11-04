@@ -33,6 +33,11 @@ const SANDBOX_IDENTITY = {
   branch: 'packet/mira/knowledge-panel',
   commit: 'abc1234',
   built_at: '2026-10-21 13:20',
+  // Every fixture below carries this field so that dropping it from the DTO or from the
+  // render cannot pass silently. 🔴 2026-11-04: the fixtures previously mirrored a
+  // four-field DTO exactly, which is why nothing failed when the installer exported a
+  // fifth fact that no code read.
+  uncommitted: 0,
 };
 
 describe('when the backend says this is the sandbox', () => {
@@ -46,6 +51,8 @@ describe('when the backend says this is the sandbox', () => {
     expect(strip.textContent).toContain('packet/mira/knowledge-panel');
     expect(strip.textContent).toContain('abc1234');
     expect(strip.textContent).toContain('2026-10-21 13:20');
+    // A clean build says so, which is what makes "0" and "not recorded" different things.
+    expect(strip.textContent).toContain('无未提交改动');
   });
 
   it('states which command it read, so a wrong build can be traced', async () => {
@@ -63,6 +70,7 @@ describe('when the backend says this is the main build', () => {
       branch: null,
       commit: null,
       built_at: null,
+      uncommitted: 0,
     });
     const { container } = render(<SandboxBanner />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalled());
@@ -79,6 +87,7 @@ describe('when a value is missing', () => {
       branch: 'packet/mira/knowledge-panel',
       commit: null,
       built_at: '',
+      uncommitted: 0,
     });
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
@@ -96,6 +105,7 @@ describe('when a value is missing', () => {
       branch: null,
       commit: null,
       built_at: null,
+      uncommitted: 0,
     });
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
@@ -129,6 +139,54 @@ describe('when the command fails', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByText(/身份读取失败/)).toBeTruthy());
     expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
+describe('when the build carries uncommitted changes', () => {
+  // 🔴 2026-11-04. These are the tests that make the field load-bearing. The DTO field,
+  // the installer export and the render clause were each added at a different time and
+  // none of them had a consumer-side assertion, so a `--allow-dirty` sandbox was
+  // indistinguishable from a clean one in the application the operator reads while
+  // deciding whether to click Accept. Delete the render clause and these fail.
+  it('says out loud that this build is not the commit printed above it', async () => {
+    invokeMock.mockResolvedValue({ ...SANDBOX_IDENTITY, uncommitted: 2 });
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('2 个未提交改动');
+    // The clause must state the consequence, not merely the count.
+    expect(text).toContain('不等于上面那个提交');
+  });
+
+  it('does not let a large count pass as a small one', async () => {
+    invokeMock.mockResolvedValue({ ...SANDBOX_IDENTITY, uncommitted: 124 });
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('124 个未提交改动');
+    expect(text).not.toContain('2 个未提交改动');
+  });
+
+  it('states "not recorded" rather than reading a missing count as clean', async () => {
+    // A build this installer did not make: the variable was never exported. It must not
+    // render as "no uncommitted changes", because that is a claim about the code.
+    invokeMock.mockResolvedValue({ ...SANDBOX_IDENTITY, uncommitted: null });
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('未提交改动 未记录');
+    expect(text).not.toContain('无未提交改动');
+  });
+
+  it('does not read an unparseable count as zero', async () => {
+    // The backend reports a parse failure as absent; the frontend must not then coerce
+    // it to a clean build. "abc" is not "nothing uncommitted".
+    invokeMock.mockResolvedValue({ ...SANDBOX_IDENTITY, uncommitted: 'abc' as unknown as number });
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('未提交改动 未记录');
+    expect(text).not.toContain('无未提交改动');
   });
 });
 

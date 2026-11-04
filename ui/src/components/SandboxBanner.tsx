@@ -33,6 +33,16 @@ export type RuntimeIdentityDto = {
   branch: string | null;
   commit: string | null;
   built_at: string | null;
+  /**
+   * How many uncommitted changes this build carries, or null when the installer never
+   * said. `0` means it checked and the tree was clean — which is a different fact from
+   * "unknown", and the two must not render the same way.
+   *
+   * 🔴 2026-11-04 补。`prepare-sandbox-build.sh --allow-dirty` 会明确地从带未提交
+   *    改动的工作区构建,那种构建不等于上面那个提交。这个字段是唯一能让操作者
+   *    在看的那块屏幕上看出来的途径 —— Lyra 量到它此前有 0 个消费者。
+   */
+  uncommitted: number | null;
 };
 
 /**
@@ -53,6 +63,26 @@ async function getRuntimeIdentity(): Promise<RuntimeIdentityDto> {
 /** Render a missing value as a stated absence, never as a guess. */
 function orUnrecorded(value: string | null | undefined): string {
   return value && value.trim() !== '' ? value : '未记录';
+}
+
+/**
+ * The uncommitted-change clause — the reason this field exists.
+ *
+ * Three states, deliberately not collapsed into a boolean:
+ *   - a count above zero  → say it loudly, and say what it means: this build is not the
+ *     commit printed above it. That is the whole point of the field.
+ *   - exactly zero        → the installer checked and it was clean. Stating that is
+ *     what makes "0" and "did not say" distinguishable on screen.
+ *   - absent              → "未记录". A build this installer did not make must not be
+ *     able to read as clean by default.
+ *
+ * coercing an unreadable value to 0 would render as "no uncommitted changes", which is a
+ * claim about the code rather than about our ability to read it.
+ */
+function uncommittedClause(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return ' · 未提交改动 未记录';
+  if (value <= 0) return ' · 无未提交改动';
+  return ` · 带 ${value} 个未提交改动 —— 这份构建不等于上面那个提交`;
 }
 
 type LoadState =
@@ -110,6 +140,7 @@ export const SandboxBanner: React.FC = () => {
     <div className="sl-sandbox-banner" role="status" aria-label="这是沙箱构建">
       沙箱 · 分支 {orUnrecorded(identity.branch)} · 提交 {orUnrecorded(identity.commit)} · 构建于{' '}
       {orUnrecorded(identity.built_at)}
+      {uncommittedClause(identity.uncommitted)}
     </div>
   );
 };
