@@ -464,9 +464,22 @@ describe("the inbox does not show another project's rows", () => {
     fireEvent.click(screen.getByRole('button', { name: /派发/ }));
 
     // FIRST argument, and it is the project the operator is viewing.
-    // `expect.anything()` for the trailing arguments so this asserts the PROJECT
-    // rather than the whole call shape — adding a parameter later must not turn a
-    // scoping check into noise.
+    //
+    // `expect.anything()` covers the trailing arguments, and that is ALL it covers:
+    // their VALUES. The arity and the ORDER are pinned exactly.
+    //
+    // 2026-11-04: this comment used to claim that adding a parameter later would
+    // not break the check. That is FALSE, and Aegis measured it with a throwaway
+    // probe: a five-element matcher against a six-element call THROWS.
+    // `toHaveBeenCalledWith` is arity-sensitive. Adding an argument turns this red
+    // — which is the correct behaviour, and the reason the old wording was wrong
+    // rather than merely imprecise: the next person to add a parameter would read
+    // this comment, expect green, and debug the wrong thing.
+    //
+    // So the honest statement is: trailing VALUES are loose, arity and ORDER are
+    // pinned. Both are deliberate — a loose value keeps this a scoping check
+    // rather than a shape check, and a pinned arity means a signature change
+    // cannot slip past it.
     await vi.waitFor(() =>
       expect(state.enqueue).toHaveBeenCalledWith(
         'ql_delivery',
@@ -476,5 +489,10 @@ describe("the inbox does not show another project's rows", () => {
         expect.anything(),
       ),
     );
+    // And the arity itself, stated so a reader does not have to infer it: five
+    // arguments today. If the command gains one, the assertion above fails on the
+    // count before it ever compares values — which is the point, and it is now
+    // written down instead of being a comment that claims the opposite.
+    expect(state.enqueue.mock.calls[0]).toHaveLength(5);
   });
 });
