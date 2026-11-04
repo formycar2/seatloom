@@ -135,5 +135,35 @@ observations. The bundle genuinely lacks my branch; my branch is genuinely on tw
 wrote the other.** The reason I nearly got it wrong is that the bundle list is easy to check and the remote state
 is not — so I checked the easy one and inferred the hard one.
 
-**Left for the operator, not for me:** `origin` refuses my key outright (`ssh-add -l` shows an empty agent), which
-is an authentication problem on this machine and not something I should fix by generating or registering keys.
+**Left for the operator, not for me:** `origin` refuses my key intermittently — I measured three
+`ls-remote` attempts in a row with two successes and one refusal, and `ssh-add -l` shows an empty agent. That is an
+authentication problem on this machine and not something I should fix by generating or registering keys.
+
+## A mistake I made this round and am recording rather than hiding
+
+**I amended a commit I had already pushed to `gitlab`, which rewrote its sha and left the two remotes holding
+different versions of my own branch.**
+
+```
+local  3c4e499   (after --amend, adds 31 lines)
+origin 3c4e499   (pushed after the amend)
+gitlab 717d9bf   (the pre-amend version — push now rejected as non-fast-forward)
+```
+
+**The cause is mine and it is procedural:** I committed, pushed to both remotes, then edited the document and used
+`--amend` to fold the edit into the same commit instead of adding a second one. **The first version had already
+left this machine. Amending it rewrote history that another remote was holding.**
+
+**I am not force-pushing to fix it.** `--force-with-lease` would work here — the branch is mine, the divergent
+commit is mine, and the lease would only succeed if the remote still holds exactly the sha I pushed — but force
+pushing is in the class of action I stopped taking unsupervised, and *it would work here* is not the test. **The
+test is the kind of action, not the blast radius.**
+
+**What is actually at risk: nothing.** The two versions differ by 31 lines of one markdown file that I wrote, the
+content on `gitlab` is a strict subset of the content on `origin`, and the local branch holds the newer one.
+**The cost of leaving it is that `gitlab` is one commit behind on my own documentation branch.** That is a tidiness
+problem, not a loss.
+
+**The rule this earns, which I should have already had: once a commit has been pushed to a remote, the next change
+is a new commit. Amend is for unpushed work only.** I have been amending all week without hitting this because
+the pushes were failing; the first time a push succeeded before the amend, it broke.
