@@ -1,4 +1,17 @@
-# 预算池 → 模型映射(2026-11-02 张先生口述 + 实测)
+# 预算池 → 模型映射(2026-11-05 最新,张先生口述 + 实测)
+
+| Field | Value |
+|---|---|
+| template | T3 |
+| subtype | task |
+| id | HARNESS-2026-11-05-budget-pool-model-map |
+| status | reference |
+| author | harness-session |
+| recipient | all-seats |
+| date | 2026-11-05 |
+| version | v1 |
+| depends_on | AEGIS-2026-11-02-dsh-architecture-review-delivery-v1.zhs |
+| tags | budget, models, provider, protocol, fallback-chain |
 
 **这是计费事实,不是推测。** 席位选模型时按这张表走,不要猜。
 
@@ -57,6 +70,7 @@
 | `step-5-preview-sys` | coding-deepseek-v4.1f | ♾️ **不计费** |
 | `deepseek-v4.1-flash-sys` | coding-deepseek-v4.1f | ♾️ **不计费** |
 | `gpt-6.1-sol-sys-ptu` | coding-gpt-6.1-sol | ¥1999.91 |
+| **`gpt-6.1-sol`** | **coding-gpt-6.1-sol** | ↑ 同池 |
 | `stepcode-gpt-6.1-sol-eastus2` | stepcode-0903 | ¥1000.00 |
 | `claude-opus-5-5-sys` | coding-opus-5.5 | ¥494.73 |
 | `claude-fable-5-1-sys` | coding-fable-5.1 | ¥86.83 |
@@ -109,7 +123,51 @@
 第二跳选它不是因为「池最宽裕」(那是按错误数字算的),而是因为它**根本不计费**。
 这比「余量 ¥22854」强得多 —— 没有上限约束。
 
-**注意分界线是 `-sys` 后缀。** 带 `-sys` 的走专属池,不带的国模走 ToB-Infra 计费。
+### 2b. `gpt-6.1-sol` 开放后,chain 值得加一跳(张先生 2026-11-05)
+
+**这是今天最重要的变化:一个真正强的模型进了计费池。**
+
+AA Intelligence Index v5 对比:
+
+| 模型 | 指数 | 每任务成本 | 池 |
+|---|---|---|---|
+| GPT-6.1 Sol (max) | **55** | $1.27 | coding-gpt-6.1-sol ¥1993.86 |
+| GPT-6.1 Sol (xhigh) | 52 | $0.76 | 同上 |
+| GPT-6.1 Sol (high) | 50 | $0.59 | 同上 |
+| GPT-6.1 Sol (medium) | 46 | $0.36 | 同上 |
+| `step-5-preview`(当前主) | **29** | $2.35 | 不走池 |
+| `step-5-preview-sys`(当前第二跳) | 29 | — | ♾️ 免费 |
+| `deepseek-v4.1-flash`(最强国模) | 32 | $0.60 | ToB-Infra |
+
+**指数差 17–26 分。** chain 前两跳都是指数 29 的 step-5,fallback 只是在换供应商,
+能力没变。`gpt-6.1-sol` 是第一个能真正「提能力」的 fallback。
+
+建议的 chain(未应用,等确认):
+
+```json
+"chain": [
+  "sp-team/step-5-preview",                    ← 主,不走池
+  "modelproxy-anthropic/step-5-preview-sys",   ← ♾️ 免费,保底不花钱
+  "modelproxy/gpt-6.1-sol",                    ← ¥1994 池,能力大幅提升
+  "sp-personal/step-5-preview"                 ← 兜底,不走池
+]
+```
+
+**为什么 `gpt-6.1-sol` 排在免费的那跳之后:** 免费的先试,失败才花钱。
+**为什么又排在 sp-personal 之前:** 指数 46–55 vs 29,值得花这个钱。
+
+### 但有两个未知数,所以先别急着改
+
+1. **它在 `coding-gpt-6.1-sol` 池上的单价没测过。** 池余 ¥1994,不知道能撑多久。
+   要测就打一个已知量的探针,再看余额增量。
+2. **它不支持 `claude_native`**(实测 `HTTP 400`),只能走 `openai-responses`。
+   已确认 bash 工具和真实 seatloom MCP 都能用,但**没在 chain 里实测过跳转** ——
+   协议切换时工具定义要转换,这一步没验证过。
+
+**在测完这两点之前,不要把它加进 chain。**
+
+
+
 
 ### 3. 计费模型里余量都还够,但别浪费
 
@@ -304,8 +362,8 @@ ToB-Infra 剩 ¥2384.19。本文档作者的探针实测:
 | `deepseek-v4.1-flash` | **大模型系统-ToB-Infra** |
 | `deepseek-v4.1-flash-sys` | 大模型系统coding-deepseek-v4.1f(**不限量**) |
 
-**分界线就是 `-sys` 后缀**:带 `-sys` 走各自专属池(其中 deepseek 那个不限量),
-不带 `-sys` 的国模走 ToB-Infra 计费。
+**分界线不是 `-sys` 后缀** —— 张先生 2026-11-05 调整策略,让 `gpt-6.1-sol`
+(无 `-sys`)也走 `coding-gpt-6.1-sol` 池。**池是逐模型配的路由规则,不能按命名推断。**
 
 #### 为什么作者没能自己查到(记下来,下次别白试)
 
