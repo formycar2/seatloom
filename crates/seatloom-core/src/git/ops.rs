@@ -20,6 +20,93 @@ use std::path::{Path, PathBuf};
 /// must never run against a guessed repository.
 pub const REPO_ROOT_ENV: &str = "SEATLOOM_REPO_ROOT";
 
+/// One deletion the OPERATOR has explicitly ruled on.
+///
+/// `path` is the repository-relative path a merge would delete. `ruled_by` and
+/// `why` are mandatory: a bare path in a year reads as legacy cruft and someone
+/// will route around it, so the ruling travels with the line.
+///
+/// WHY THIS LIVES IN `core` AND NOT IN THE CALLER. It was private to
+/// `seatloom-mcp-emit`, which was fine while only the MCP tool checked the
+/// deletion risk — but `cmd_accept_delivery` needs the SAME list, and a copy in
+/// a second crate would be two lists that drift the first time an operator
+/// rules on a path. Both callers now read this one, so a ruling is recorded
+/// once and honoured by both the card-opening gate and the click that merges.
+pub struct DeletionExemption {
+    pub path: &'static str,
+    pub ruled_by: &'static str,
+    pub why: &'static str,
+}
+
+/// Deletions the operator has ruled on. THE OPERATOR, not this process: the
+/// list is a compile-time constant, so the only way onto it is a code change
+/// that goes through review and leaves a git record. An env var or a runtime
+/// config file could open it without any of that, which would turn a defence
+/// into an option.
+///
+/// SCOPE. It is consumed ONLY by the merge-deletion guard. An unsynced branch
+/// has no exemption at all, and a deletion NOT on this list is refused exactly
+/// as before — subtracting the list from the previewed deletion set leaves the
+/// rest to be listed in the refusal.
+pub const DELETION_EXEMPTIONS: &[DeletionExemption] = &[DeletionExemption {
+    path: "ui/src/app-v2/AppV2.tsx",
+    ruled_by: "human:supervisor",
+    why: "dead code, deleted by dispatch disp-DFeH6Ut_aNfzIbuuR21V5 item 3b; \
+           zero importers, no route mounted, already unreachable on the base",
+}];
+
+/// The list is audited by the COMPILER, not only by a test someone may delete:
+/// an entry with no path, no ruling, or no reason fails the build. That is the
+/// point of making the audit fields part of the type — a bare path would pass
+/// every test and still be a hole in six months.
+const _: () = {
+    let mut i = 0;
+    while i < DELETION_EXEMPTIONS.len() {
+        let exemption = &DELETION_EXEMPTIONS[i];
+        assert!(
+            !exemption.path.is_empty(),
+            "an entry with no path exempts nothing and documents nothing"
+        );
+        assert!(
+            !exemption.ruled_by.is_empty(),
+            "no `ruled_by`: nobody can tell whose ruling this is"
+        );
+        assert!(
+            !exemption.why.is_empty(),
+            "no `why`: in a year this line reads as legacy cruft"
+        );
+        i += 1;
+    }
+};
+
+/// Is this previewed deletion exempt — i.e. did the operator rule on this exact
+/// path?
+///
+/// Matching is EXACT, never a prefix, a glob, or a substring: `ui/src` must not
+/// exempt `ui/src/app-v2/AppV2.tsx`, and `AppV2.tsx` must not exempt
+/// `ui/src/app-v2/other.tsx`. A fuzzy match would quietly widen the hole every
+/// time a path moved.
+pub fn is_deletion_exempt(path: &str) -> bool {
+    DELETION_EXEMPTIONS
+        .iter()
+        .any(|exemption| exemption.path == path)
+}
+
+/// The previewed deletions minus the operator-ruled ones — what the defence
+/// actually still protects.
+///
+/// Subtract BEFORE deciding to refuse. An empty remainder means every deletion
+/// was ruled on, so there is nothing to defend and the merge may proceed; a
+/// non-empty remainder is the list to name in the refusal. This is the one
+/// function both callers use, so the subtraction cannot be done differently on
+/// the two paths.
+pub fn undeleted_deletions(would_delete: Vec<String>) -> Vec<String> {
+    would_delete
+        .into_iter()
+        .filter(|path| !is_deletion_exempt(path))
+        .collect()
+}
+
 #[derive(Default)]
 pub struct GitOps;
 
