@@ -144,7 +144,30 @@ fi
 # explicit arg > MR base > merge-base with track/infra-foundation > merge-base
 # with the default branch > empty tree. Bare origin/main is unusable (GitLab's
 # main is an unrelated empty Initial commit).
+# 🔴🔴🔴 2026-11-05 17:0x — THE HOOK WAS A FAKE GATE FOR TWO ROUNDS, AND THIS IS WHY.
+#
+# The pre-commit hook calls `verify-docs.sh HEAD "$DOC_PROBE"`, intending "compare HEAD
+# against the commit that is about to exist". But this script takes exactly ONE
+# positional argument: BASE. The second argument was silently discarded, and the
+# diff below is hardcoded to `$BASE..HEAD` — where HEAD is the LAST COMMITTED
+# commit, which by definition does not contain the new file. So the answer was
+# always "all conform" for anything not yet committed.
+#
+# Measured: I staged a markdown file with NO universal header at all, ran the hook,
+# and got `pre-commit: OK - docs touched by this commit conform` and exit 0. The
+# gate I reported as "wired up" at 15:00 had never refused anything.
+#
+# THE FIX is a real second argument: RIGHT (default HEAD). When the hook passes
+# the probe commit, the diff is BASE..RIGHT and the new file is visible.
+#
+# 🔴 Why this class of bug is the one I keep making: the script's OUTPUT was
+# correct for the question it actually answered ("do the docs changed between
+# BASE and HEAD conform?") and wrong for the question I thought I was asking.
+# A tool that answers a different question than you asked, in the same format,
+# is indistinguishable from a working tool until you feed it a case that must
+# fail. So: after wiring any gate, feed it a case that MUST fail.
 BASE="${1:-}"
+RIGHT="${2:-HEAD}"
 if [ -z "$BASE" ]; then
   if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
     BASE="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
@@ -158,12 +181,14 @@ fi
 git rev-parse --verify -q "${BASE:-}^{object}" >/dev/null 2>&1 || BASE="$(git hash-object -t tree /dev/null)"
 
 CHANGED="$( {
-  git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- docs 2>/dev/null
-  git diff --name-only --diff-filter=ACMR -- docs 2>/dev/null
-  git ls-files --others --exclude-standard -- docs 2>/dev/null
+  git diff --name-only --diff-filter=ACMR "$BASE" "$RIGHT" -- docs 2>/dev/null
+  # The index/worktree lines only make sense when RIGHT is HEAD; comparing them
+  # against an arbitrary commit would double-count.
+  [ "$RIGHT" = "HEAD" ] && git diff --name-only --diff-filter=ACMR -- docs 2>/dev/null
+  [ "$RIGHT" = "HEAD" ] && git ls-files --others --exclude-standard -- docs 2>/dev/null
 } | grep -E '\.md$' | sort -u )"
 
-[ -z "$CHANGED" ] && { echo "verify-docs: no changed docs vs $BASE — nothing to check."; exit 0; }
+[ -z "$CHANGED" ] && { echo "verify-docs: no changed docs vs $BASE..$RIGHT — nothing to check."; exit 0; }
 
 is_grandfathered() { [ -f "$GRANDFATHER" ] && grep -qxF "$1" "$GRANDFATHER"; }
 
@@ -187,7 +212,7 @@ done | sort | uniq -d)"
 [ -n "$dupes" ] && { echo "  ✗ duplicate document id(s): $(printf '%s' "$dupes" | tr '\n' ' ') (§11)"; FAIL=1; }
 
 if [ "$FAIL" -eq 0 ]; then
-  echo "verify-docs: changed docs vs $BASE — all conform."
+  echo "verify-docs: changed docs vs $BASE..$RIGHT — all conform."
 else
   echo "verify-docs: violations found. New/changed docs must follow DOCUMENT_TEMPLATES + COORDINATION_RULES; fix or (for pre-existing debt) add to $GRANDFATHER."
 fi
