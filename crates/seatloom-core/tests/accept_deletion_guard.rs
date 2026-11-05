@@ -129,6 +129,26 @@ fn command_refuses_on(deletions: &[&str]) -> bool {
         "the refusal must return, not fall through to the merge"
     );
 
+    // AND THE REFUSAL MUST SAY WHAT IT REFUSED. Flux's surviving mutation D-2:
+    // replacing the path enumeration with `String::new()` left the suite 5/5,
+    // because the behavioural tests assert on the helper's return value (which is
+    // upstream of the message) and this test asserted only that `Err` exists.
+    //
+    // The message is the part the OPERATOR reads when he is refused. A refusal
+    // naming no paths is not actionable, and it regressed invisibly. So the
+    // enumeration is pinned the same way the call and the condition are.
+    let refusal = &body[body.find("return Err").expect("the refusal")..];
+    assert!(
+        refusal.contains("undeleted") && refusal.contains(".iter()"),
+        "the refusal must ENUMERATE the paths it is refusing — a message with no \
+         paths names nothing the operator can act on"
+    );
+    assert!(
+        refusal.contains("row.acceptance.branch") && refusal.contains("row.acceptance.base"),
+        "the refusal must name the branch and the base — 'refused' with no referent \
+         is not a refusal"
+    );
+
     // Then evaluate that same composition over the given deletions, so the test
     // is behavioural as well as textual.
     let undeleted = seatloom_core::git::ops::undeleted_deletions(
