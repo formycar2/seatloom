@@ -112,6 +112,36 @@ printf '%s\n' "$OUT" | grep -q "disp-verif" && die "判据 6 失败:verification
 printf '%s\n' "$OUT" | grep -q "verification 单不在此列\|verification" && pass "说出了 verification 单为什么不在" || die "没说为什么不在"
 
 echo ""
+echo "── 判据 5b:带 acceptance 键的单,不能被「键存在」这条规则吃掉 ──"
+# 🔴 这一条是 Flux 的 FAIL ev-CohbOrZoJXdcABSXp7VTG 修出来的,而且它指出的失效
+#    是真的:他加了 `and not (payload::jsonb ? 'acceptance')`(Aegis 在
+#    check-unclaimed-work.sh 上量到的那个 live 缺陷),整份套件**全绿退出 0**。
+#
+#    为什么能活:上面 disp-nocard 的 payload 是 {"kind":"implementation"},
+#    而整个 fixture 里**没有任何一行带 acceptance 键**。于是那条规则加进来
+#    改变不了任何一行的可见性 —— 判据 5 加不加都过。
+#    这正是「一个跑在缺陷值和正确值无法区分的状态里」的测试:缺的那个状态是
+#    「一张 done、没卡、而 payload 里带着 acceptance 键的单」。
+#
+#    所以这里补上**成对**的两行,只差这一个键:
+#      disp-ackey    payload 带 acceptance 键,没有卡  → 必须在
+#      disp-ackey2   payload 不带那个键,没有卡      → 必须在
+#    两行都必须在。只靠一行是不够的:一行在,只能证明「不是把所有 done 单都藏了」,
+#    证明不了「不是按这个键藏的」。两行都可见,按键排除才真的被钉住。
+psq_ok "insert into dispatches (id, target_seat_id, issued_by, project_id, title, payload, status, priority, completed_at) values ('disp-ackey','seat-test-001','seat-test-001','wl','带 acceptance 键却没卡','{\"kind\":\"implementation\",\"acceptance\":\"acc-gone\"}','done',5, now())"
+psq_ok "insert into dispatches (id, target_seat_id, issued_by, project_id, title, payload, status, priority, completed_at) values ('disp-ackey2','seat-test-001','seat-test-001','wl','不带那个键也没卡','{\"kind\":\"implementation\"}','done',5, now())"
+OUT="$(wl)"; RC=$?
+[ "$RC" = "0" ] && pass "退出 0" || die "退出 $RC"
+# 🔴 断言必须能区分这两行。grep -q "disp-ackey" 会同时命中 "disp-ackey2" ——
+#    前者是后者的前缀,于是「带键的那行被藏了」永远查不出来(实测:变异后
+#    grep -c 仍返回 1,套件全绿)。加 \b 不够,数字也算词字符;用行尾锚定。
+SEC4B="$(printf '%s\n' "$OUT" | sed -n '/四 —/,$p')"
+printf '%s\n' "$SEC4B" | grep -qE "disp-ackey[^0-9]|disp-ackey\$" \
+  && pass "判据 5b:带 acceptance 键的未验收单仍在" \
+  || die "判据 5b 失败:按 acceptance 键把它藏了 —— Aegis 量的那个 live 缺陷回来了"
+printf '%s\n' "$SEC4B" | grep -q "disp-ackey2" && pass "不带那个键的未验收单也在" || die "判据 5b 失败:不带键的也不在,说明这一段整个坏了"
+
+echo ""
 echo "── 判据 7:同一张派单两条待办 → 两行都在,id 不同 ──"
 psq_ok "insert into acceptances (id, dispatch_id, project_id, branch, base, how_to_verify, flux_verdict_ref, status) values ('acc-2','disp-nocard','wl','packet/test/y','track/infra-foundation','再看看','ev-y','pending')"
 OUT="$(wl)"; RC=$?
