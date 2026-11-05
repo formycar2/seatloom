@@ -34,7 +34,8 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG="${SEATLOOM_PG_CONTAINER:-seatloom-postgres}"
 TARGET="${SEATLOOM_TARGET_MODEL:-stepplan-wash-anthropic/step-5-preview}"
-MODELS_JSON="${HOME}/.pi/agent/models.json"
+# 🔴 2026-11-02 修:saih 读 .saih/,不是 .pi/。旧路径让「检查 A」永远失败。
+MODELS_JSON="${HOME}/.saih/agent/models.json"
 
 APPLY=0; RESTART=0
 for a in "$@"; do

@@ -25,6 +25,8 @@ export type Provenance =
   | 'live'
   /** The canonical ledger, read for real — not a tmux mirror, and not a fixture. */
   | 'ledger'
+  /** A tab whose backing was never declared. NOT the same as seed — see below. */
+  | 'not-declared'
   | 'seed'
   | 'fixture'
   | 'no-live'
@@ -39,12 +41,6 @@ export type Provenance =
  *   'failed'  the IPC call itself threw
  */
 export type SeatDiscovery = 'unknown' | 'ok' | 'empty' | 'failed';
-
-/**
- * Tabs whose content is mirrored from a live tmux pane. Everything not listed
- * here is seed- or fixture-backed until its capture path lands.
- */
-export const LIVE_TABS: ReadonlySet<string> = new Set(['live-seats', 'sessions', 'dispatches']);
 
 /**
  * Tabs whose rows come from the canonical ledger, read for real.
@@ -77,9 +73,46 @@ export const LIVE_MIRROR_TAB = 'live-seats';
  */
 export const LIVE_TAB_BACKING: Readonly<Record<string, 'tmux' | 'database'>> = {
   'live-seats': 'tmux',
+  // Every other LIVE tab is backed by Postgres.
+  //
+  // The set below used to be exactly [sessions, dispatches], and a test asserted
+  // that exact set — which is how the SAMPLE badge stayed on seven surfaces that
+  // read live PostgreSQL. The premise was that a tab fed from the zustand store is
+  // somehow different from a database-backed one. It is not: hydrateProjectData
+  // fills the store from api.listSeats / listWorkitems / listHandoffs /
+  // listArtifacts / listSessions / listEvents / listDocuments, every one a real
+  // Postgres read, and it builds inboxItems from that data too. There is no
+  // store-backed tier. The distinction the badge logic was built on does not exist.
+  //
+  // Measured against the live database: 10 seats, 7 workitems, 15 artifacts,
+  // 2946 events — all behind tabs that were telling the operator "SAMPLE DATA —
+  // not yet from live capture".
   sessions: 'database',
   dispatches: 'database',
+  dashboard: 'database',
+  inbox: 'database',
+  workitems: 'database',
+  seats: 'database',
+  artifacts: 'database',
+  playbook: 'database',
 };
+
+/**
+ * Tabs whose content is mirrored from a live tmux pane. Everything not listed
+ * here is seed- or fixture-backed until its capture path lands.
+ *
+ * 2026-10-30: this used to be a hand-written `new Set([...])` — a SECOND list of
+ * tab names, next to `LIVE_TAB_BACKING`. The two drifted immediately once six tabs
+ * were added to BACKING, and nothing watched the direction they had already
+ * drifted in. Worse, the branch that consulted this set
+ * (`if (LIVE_TABS.has(tab)) return 'live'`) became unreachable the moment BACKING
+ * covered the same tabs, and deleting it left 23 tests green.
+ *
+ * So it is now DERIVED from the one list that decides anything. There is exactly
+ * one place to add a tab, and this set cannot disagree with it by construction.
+ * A reader auditing provenance sees one gate list, not three.
+ */
+export const LIVE_TABS: ReadonlySet<string> = new Set(Object.keys(LIVE_TAB_BACKING));
 
 /**
  * Provenance of a tab. `backendHydrated` comes from useDataStore and tells us
@@ -118,10 +151,41 @@ export function provenanceForTab(
     // `backendHydrated`, so a failed read still wore a green LIVE badge.
     return backendHydrated ? 'live' : 'fixture';
   }
-  if (LIVE_TABS.has(tab)) return 'live';
+  // 2026-10-30: `if (LIVE_TABS.has(tab)) return 'live';` used to sit here.
+  // It became unreachable the moment LIVE_TAB_BACKING covered the same tabs —
+  // every member of LIVE_TABS is caught by the mirror branch above or the database
+  // branch above that — and deleting it left 23 tests green. A gate that reads as
+  // a live rule but can never run is worse than no gate: a reader auditing
+  // provenance counts three gates and reasonably assumes the third is reachable.
+  //
+  // It is gone, and LIVE_TABS is now derived from LIVE_TAB_BACKING rather than
+  // hand-maintained beside it, so there is nothing left to drift.
   if (LEDGER_TABS.has(tab)) return backendHydrated ? 'ledger' : 'fixture';
-  return backendHydrated ? 'seed' : 'fixture';
+  // A tab that declares NO backing is not a tab whose rows are hand-written
+  // fixtures. It is a tab nobody has said anything about, and the honest answer to
+  // "where does this data come from?" is "nobody has declared it yet".
+  //
+  // This used to fall through to `seed`, which claims the opposite: that the rows
+  // ARE a hand-written baseline. Measured: provenanceForTab('brandnew', true,
+  // 'ready') returned 'seed' — a brand-new tab with a fully hydrated backend behind
+  // it told the operator "these rows are a hand-written baseline, not captured
+  // activity". That is the same false-lie direction the whole module exists to
+  // kill, and it needs nobody to write a wrong assertion: it only needs someone to
+  // add a tab and forget the second place.
+  //
+  // It is a DEFAULT, which is what makes it worse than a one-off mistake.
+  return 'not-declared';
 }
+
+// Flux's M-1: deleting the seed branch left 24 tests green, and his reading was
+// that dead code describing a correct state is better than no code — wait until
+// the state actually arrives. He is right about `seed`, and that is why the seed
+// meta below survives: when a genuinely seed-fed surface lands, the wording
+// already exists and is already correct.
+//
+// What is gone is the FALL-THROUGH that let an undeclared tab borrow that
+// wording. An unreachable branch and a reachable branch nobody reaches yet are
+// not the same thing, and only the second one is honest.
 
 export interface ProvenanceMeta {
   /** Short badge text. */
@@ -164,13 +228,26 @@ export const PROVENANCE_META: Record<Provenance, ProvenanceMeta> = {
     bg: 'var(--sl-green-subtle)',
     border: 'var(--sl-green)',
   },
+  'not-declared': {
+    badge: '未声明',
+    headline: '这个视图的来源还没有人声明',
+    detail:
+      '没有任何名单说明这一页的数据从哪里来 —— 不是数据库,不是 tmux 镜像,也不是 ' +
+      '手工基线。这是「没人说过」,不是「这是假数据」。如果你是新加了这一页, ' +
+      '请在 LIVE_TAB_BACKING 里声明它读什么;在声明之前,请不要把这里显示的任何 ' +
+      '行当成实时数据,也不要把它们当成示例数据 —— 它们的来源是未知的。',
+    fg: 'var(--sl-amber-subtle)',
+    bg: 'var(--sl-amber-subtle)',
+    border: 'var(--sl-amber)',
+  },
   seed: {
     badge: 'SAMPLE',
     headline: SAMPLE_HEADLINE,
     detail:
-      'These rows are read from PostgreSQL for real, but they are seed fixtures — ' +
-      'a hand-written baseline, not captured activity. Nothing here reflects what the seats ' +
-      'are doing now. The live mirror is under 实时席位.',
+      'This view is not wired to a live read yet: it has no declared database backing, ' +
+      'so what you see is a hand-written fixture rather than captured activity. ' +
+      'It is not that the database was unreachable — a failed read says MOCK instead — ' +
+      'it is that nothing here has been connected. Treat every row as a placeholder.',
     fg: '#8A6100',
     bg: 'var(--sl-amber-subtle)',
     border: 'var(--sl-amber)',

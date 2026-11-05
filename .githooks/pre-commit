@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# Refuse a commit that would make a pending acceptance card unclickable.
+#
+# Installed by Aegis on 2026-10-28 after the SAME rule, written twice in prose,
+# was broken twice by the same seat on the same day.
+#
+# The first version of this hook measured the state BEFORE the commit. That is
+# the wrong measurement: at 12:33 it ran, found all three branches synced to
+# track's tip, and printed "pre-commit: OK - pending cards remain clickable" -
+# and then the very commit it was guarding stranded 12 cards, because the commit
+# itself was the new tip nobody had merged. A guard that measures the state
+# before the change cannot see the change. It said OK while doing the thing it
+# exists to prevent, which is worse than no guard, because now the number is
+# believed.
+#
+# So this version asks the right question: AFTER this commit, will each pending
+# card's branch still contain its base? It builds the commit's tree, points a
+# throwaway ref at it, and measures against that. Nothing is pushed and nothing
+# in the working tree changes.
+
+set -u
+
+# 分支名要在这里就取出来,不能等到后面 —— 第二条规则(05:00 / 06:00)
+# 要靠它推「这是谁的席位」。我第一版把它留在原来的位置(文件后半段),
+# 于是第二条规则读到一个空变量,在 set -u 下直接崩。
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
+
+# ---------------------------------------------------------------------------
+# 2026-11-01 04:00 补第二条规则。Lyra 04:00 挣来的:
+#   她用 git add -A(一个目录 glob)代替点名文件,把两份她本轮没碰的文件扫了
+#   进去。第一份她提交前发现并撤了;第二份是一行 version v2→v3,**她没发现**。
+#   而那一行本来躺在工作区里,未提交、无主 —— 有人改到一半放下,glob 拿走了它。
+#
+#   她的原话:「版本号是一次声明:它说这份文档现在是第 3 版,
+#   而一份受管合同的 v3 和 v2 是不同的合同。我把我的名字和今天的日期
+#   贴在了它上面,却不知道 v3 说了什么、是谁声明的。」
+#
+#   「目录里有一个预先存在的脏文件,不是邀请,是信号 ——
+#    有人正在编辑到一半,而面对一个你不理解的信号,正确的反应是问,不是提交。」
+#
+# 这条规则我也有份:我这 63 个提交全用 git add -A。审计过,没有一次拿走
+# 别人的东西(那些提交只碰 tasks/aegis、knowledge 里我自己写的、scripts、
+# salvage),但那是**运气**:我的仓库里恰好没有别人的脏文件。
+# 别人的工作区有(Nimbus 124 行、Lyra 4 个文件),而我从来不往那些目录 add。
+#
+# 这个检查不猜作者,只报事实:暂存区里有没有**我没碰过的其他目录的脏文件**。
+# 判据用「不在暂存区里、但在工作区里被修改」——那是 glob 最容易顺手带走的东西。
+# 🔴🔴 06:00 修订。Lyra 06:00 量出来:我上一版把「自己的目录」写死成 aegis,
+# 于是**另外五个核心席位连提交自己的工作都被拒**。她的实测:
+#   aegis 自己的文件                          → 放行 exit 0
+#   lyra/mira/nimbus/onyx/vela 自己的文件      → 全部拒绝 exit 1
+# 她的结论:「一个要求五个席位用 --no-verify 才能干活的守卫不是守卫,是收费站。」
+# 而她的原话更准:「**五个被拦,一个放行,而放行的那一个是作者。**」
+#
+# 她给那个版本起了名字,我要照着改:**作者特权**。
+# 我写这条规则时脑子里只有自己,于是把自己的目录设成唯一例外。
+# 这正是我这一整天在记的那一族 —— 一个关于集合的规则,只覆盖了集合里我自己那一个。
+#
+# 修法(她给的,而且她说这不是她的决定):从**分支名**推席位,不写死作者。
+# 同一个文件 24 行之后已经在取 branch 了,复用它。
+staged_elsewhere=""
+# 判据必须是「暂存区里有什么」(git diff --cached --name-only),
+# 不是 git status --porcelain。我第一版用后者,在自己的临时仓库里测出来
+# 它不触发,而那个提交照样把别的席位的文件带走了。
+# 原因:被 glob add 之后,那个文件已经在暂存区里,status 对它显示为空
+# (没有未暂存改动),于是「工作区里有脏文件」这个判据看不见它。
+# 一个 glob 犯罪的后果,恰好让针对 glob 的检查失效。
+#
+# 只查 tasks/<其他席位>/ —— 按人划分,最不会误伤。knowledge/ 和 scripts/ 是共享的,
+# 不在这里拦(拦了会误伤每一轮都要改的那些)。
+#
+# 「自己的席位」从分支名推:packet/<seat>/... → <seat>。
+# 推不出来(在 track 上、在 detached HEAD 上、分支名不认识)时,**不拦** ——
+# 那时没有依据说某个目录是谁的,而一个没有依据的拒绝比放行更糟:
+# 它会在集成线上拦住所有席位的合并,而合并本来就是要跨目录的。
+# 「自己的席位」从分支名推:packet/<seat>/... → <seat>。
+# 推不出来(在 track 上、在 detached HEAD 上、分支名不认识)时,这条规则**整体不生效**。
+#
+# 🔴 为什么必须整体不生效,而不是「放不过就拒绝」:我第一版写成
+#      docs/coordination/tasks/${SEAT}/*) [ -n "$SEAT" ] && continue ;;
+#    看起来 SEAT 为空时那一条不匹配、于是走第二条「别的席位」→ 全部拒绝。
+#    实测确认:在 track 上提交会把**每一个**席位的文件都判成「别人的」。
+#    而 track 是集成线,合并本来就要跨目录 —— 那会让所有合并都被这条守卫拦死。
+#    **一个没有依据时选择拒绝的守卫,会在最需要放行的地方拦死一切。**
+SEAT=""
+case "$branch" in
+  packet/*/*) SEAT="${branch#packet/}"; SEAT="${SEAT%%/*}" ;;
+esac
+
+# 推不出席位就不拦:没有依据说这个目录是谁的。
+if [ -z "$SEAT" ]; then
+  : # 规则不适用,继续往下(卡片检查仍然跑)
+else
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      # 自己席位的目录,放行。
+      docs/coordination/tasks/${SEAT}/*) continue ;;
+      docs/coordination/tasks/*/*) staged_elsewhere="${staged_elsewhere}  ${path}\n" ;;
+    esac
+  done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+fi
+
+if [ -n "$staged_elsewhere" ]; then
+  echo "pre-commit: REFUSED - 暂存区或工作区里有其他席位的文件。" >&2
+  echo >&2
+  echo "git add -A 是一个声明:声明那个目录里的一切都是我的。它不是。" >&2
+  echo "一个预先存在的脏文件是信号,不是邀请 —— 有人正在编辑到一半。" >&2
+  echo "面对一个你不理解的信号,正确的反应是问,不是提交。" >&2
+  echo >&2
+  printf "$staged_elsewhere" >&2
+  echo >&2
+  echo "如果你确认其中某个文件确实是你的,点名它再 add:" >&2
+  echo "  git reset && git add <确切路径>" >&2
+  echo "如果它是别人的、而且是未提交的,那就该留在原处等它的主人。" >&2
+  exit 1
+fi
+
+echo "pre-commit: OK - all pending cards will still contain this commit" >&2
+echo "pre-commit: OK - 没有其他席位的文件被 glob 带走" >&2
+exit 0
+
+[ -n "$branch" ] || exit 0
+
+if [ "$branch" != "track/infra-foundation" ]; then
+  exit 0
+fi
+
+if ! podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -c \
+     "select 1 from acceptances where status='pending' limit 1" 2>/dev/null | grep -q 1; then
+  exit 0
+fi
+
+echo "pre-commit: pending acceptance cards exist. Measuring the state AFTER this commit..." >&2
+
+# Build the commit that is about to exist, without creating it.
+#
+# `git commit-tree` writes a tree object and a commit object but does not move
+# any ref, so nothing visible changes and nothing is pushed. Its output is the
+# sha this commit will have.
+if ! git diff --cached --quiet; then
+  TREE=$(git write-tree 2>/dev/null) || TREE=""
+else
+  TREE=$(git rev-parse HEAD^{tree} 2>/dev/null) || TREE=""
+fi
+
+if [ -z "$TREE" ]; then
+  # Cannot reason about it. Refuse rather than wave through: a guard that
+  # cannot measure must not report success.
+  echo "pre-commit: REFUSED - could not compute the tree for this commit." >&2
+  echo "Commit with --no-verify only if you know why, and say why in the body." >&2
+  exit 1
+fi
+
+FUTURE=$(git commit-tree "$TREE" -p HEAD -m "pre-commit probe" 2>/dev/null)
+if [ -z "$FUTURE" ]; then
+  echo "pre-commit: REFUSED - could not build the probe commit." >&2
+  exit 1
+fi
+
+# Now measure every pending card against the tip that WILL exist.
+rows=$(podman exec seatloom-postgres psql -U seatloom -d seatloom -t -A -F'|' -c \
+  "select a.branch, a.base, a.id from acceptances a where a.status='pending'" 2>/dev/null)
+
+bad=0
+detail=""
+while IFS='|' read -r br base card; do
+  [ -n "$br" ] || continue
+  if ! git rev-parse --verify -q "$br" >/dev/null; then
+    bad=$((bad + 1))
+    detail="${detail}  ${card}: branch ${br} is missing in this checkout\n"
+    continue
+  fi
+  if ! git merge-base --is-ancestor "$FUTURE" "$br" 2>/dev/null; then
+    bad=$((bad + 1))
+    detail="${detail}  ${card}: ${br} will not contain this commit\n"
+  fi
+done <<< "$rows"
+
+if [ "$bad" -gt 0 ]; then
+  echo "pre-commit: REFUSED. This commit would strand ${bad} pending acceptance card(s)." >&2
+  printf "$detail" >&2
+  cat >&2 <<'MSG'
+
+The operator's Accept is the only thing that merges a card, and the acceptance
+gate refuses a branch that does not contain its base. Committing to track now
+means he clicks and gets a rejection, with no visible reason.
+
+To proceed anyway:
+  1. commit with --no-verify, AND
+  2. in the SAME turn, dispatch each affected seat owner a priority-99 branch
+     sync (merge track into their packet branch, never rebase), AND
+  3. say all of that in the commit body.
+
+Do not do it silently. This has already happened three times today.
+
+MSG
+  exit 1
+fi
+

@@ -228,8 +228,21 @@ describe('DispatchInboxView', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /派发/ }));
 
+    // The project comes FIRST, and it is the one the operator is viewing.
+    //
+    // The command used to take no project and the child was spawned with a startup
+    // constant, so this dispatch would have been filed under seatloom while the
+    // operator was looking at this project's list — which reads
+    // cmd_list_dispatches scoped to this project and would therefore refresh to
+    // nothing, with nothing in the app saying where the row went.
     await vi.waitFor(() =>
-      expect(state.enqueue).toHaveBeenCalledWith('seat-nimbus-001', '新任务', '指令', 5),
+      expect(state.enqueue).toHaveBeenCalledWith(
+        'seatloom',
+        'seat-nimbus-001',
+        '新任务',
+        '指令',
+        5,
+      ),
     );
   });
 
@@ -420,5 +433,77 @@ describe("the inbox does not show another project's rows", () => {
     // The wrapper forwards projectId; the view must supply it, not let the backend
     // fall back to its own default project.
     expect(state.listCalls).toContain('ql_delivery');
+  });
+
+  it('it passes the active project to the WRITE — not a hardcoded one', async () => {
+    // The mirror of the read-path test above, and the gap Lyra found by mutating
+    // the call site.
+    //
+    // She replaced `const projectId = activeProjectId ?? ''` with
+    // `const projectId = 'seatloom'` — reintroducing exactly the hardcoded project
+    // this dispatch removed — and 14 tests stayed green. The only assertion on the
+    // enqueue call expected the literal 'seatloom', which is also what the hardcoded
+    // version passes, because that test runs with activeProjectId='seatloom'.
+    //
+    // So: same shape as the read case, non-seatloom project, and the project must
+    // arrive FIRST.
+    //
+    // The consequence when this regresses is the whole dispatch's subject: a
+    // dispatch created under project X is filed under seatloom, the list scoped to X
+    // refreshes to nothing, and nothing in the app says where the row went.
+    useDataStore.setState({ activeProjectId: 'ql_delivery', backendHydrated: true });
+    render(<DispatchInboxView />);
+    await screen.findByText('Alpha');
+
+    fireEvent.click(screen.getByRole('button', { name: '新建派单' }));
+    fireEvent.change(screen.getByPlaceholderText(TITLE_INPUT), { target: { value: '新任务' } });
+    fireEvent.change(screen.getByPlaceholderText(INSTR_INPUT), { target: { value: '指令' } });
+    fireEvent.change(screen.getAllByRole('combobox')[0], {
+      target: { value: 'seat-nimbus-001' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /派发/ }));
+
+    // FIRST argument, and it is the project the operator is viewing.
+    //
+    // `expect.anything()` covers the trailing arguments, and that is ALL it covers:
+    // their VALUES. The arity and the ORDER are pinned exactly.
+    //
+    // 2026-11-04: this comment used to claim that adding a parameter later would
+    // not break the check. That is FALSE, and Aegis measured it with a throwaway
+    // probe: a five-element matcher against a six-element call THROWS.
+    // `toHaveBeenCalledWith` is arity-sensitive. Adding an argument turns this red
+    // — which is the correct behaviour, and the reason the old wording was wrong
+    // rather than merely imprecise: the next person to add a parameter would read
+    // this comment, expect green, and debug the wrong thing.
+    //
+    // So the honest statement is: trailing VALUES are loose, arity and ORDER are
+    // pinned. Both are deliberate — a loose value keeps this a scoping check
+    // rather than a shape check, and a pinned arity means a signature change
+    // cannot slip past it.
+    await vi.waitFor(() =>
+      expect(state.enqueue).toHaveBeenCalledWith(
+        'ql_delivery',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    );
+    // And the arity, stated so a reader does not have to count four
+    // `expect.anything()`s: five arguments today.
+    //
+    // 2026-11-04, second narrowing — this line is DOCUMENTARY, not DETECTIVE.
+    //
+    // Aegis measured it: delete this assertion and keep the mutation (a sixth
+    // parameter) and the file is still 2 red. The positional matcher above already
+    // fails on an extra argument, so this line adds no detection. My first version
+    // of this comment claimed it "fails on the count before it ever compares
+    // values" — that was still too strong, and it was the same mistake one comment
+    // up: stating a mechanism I had not measured.
+    //
+    // What it actually does is make "five arguments today" a readable fact instead
+    // of something inferred from a matcher list. That is worth a line. It is not a
+    // safety net, and it is now labelled as one thing rather than the other.
+    expect(state.enqueue.mock.calls[0]).toHaveLength(5);
   });
 });

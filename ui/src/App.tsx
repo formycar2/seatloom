@@ -33,6 +33,7 @@ import { IMErrorBoundary } from './supervisor/IMErrorBoundary';
 import { api, isTauri, onSupervisorDetached, onSupervisorReembedded } from './lib/api';
 import PipelineProgress from './components/PipelineProgress';
 import ReconcileNotification from './components/ReconcileNotification';
+import { TriangleAlert } from 'lucide-react';
 import SwitchProtectionDialog from './components/SwitchProtectionDialog';
 import { useDataStore } from './stores/useDataStore';
 import { useAppStore } from './stores/useAppStore';
@@ -95,33 +96,38 @@ const App: React.FC = () => {
     projectDataOrderRef.current = useDataStore.getState().projects.map((p) => p.id);
   });
   const [restoredPosition, setRestoredPosition] = useState(false);
-  // The project the cold-start restore lands on. Read by the tab-memory effect
-  // below to tell a cold start from an in-session switch. Held as STATE, not a
-  // ref: a ref was measured unreliable because which of the two effects runs
-  // first on a given render is not something the code can see.
-  const [coldStartProjectId, setColdStartProjectId] = useState<string | null>(null);
+  // The project id whose arrival is the cold-start restore, cleared as soon as
+  // the tab effect has seen it. See the assignment in the restore effect below.
+  const coldStartSkip = useRef<string | null>(null);
   useEffect(() => {
     if (restoredPosition) return;
     if (!backendHydrated) return; // do not guess before the read lands
     const ids = new Set(projectDataOrderRef.current);
     if (!ids.has(persistedProjectId ?? '')) {
-      // The backend has already selected the first real project, or null.
+      // The record names a project the backend did not return. Fall back to one
+      // that exists — the data store has already selected the first real project
+      // during hydration — and TELL the operator, because a silent correction is
+      // indistinguishable from "your list is empty because there is nothing in
+      // it", and those two readings demand opposite actions from him.
+      const fellBackTo = useDataStore.getState().activeProjectId;
+      coldStartSkip.current = fellBackTo;
       if (projectDataOrderRef.current.length === 0) setActiveProjectId(null);
-      setColdStartProjectId(useDataStore.getState().activeProjectId);
+      if (persistedProjectId && fellBackTo && fellBackTo !== persistedProjectId) {
+        setDroppedProject({ missing: persistedProjectId, switchedTo: fellBackTo });
+      }
       setRestoredPosition(true);
       return;
     }
+    // Mark BEFORE the project changes. `activeProjectId` is derived from the
+    // data store, so it changes as soon as setActiveProject runs, and the tab
+    // effect re-runs within the same effect flush — this ref is what tells that
+    // re-run "this arrival is the cold-start restore, do not apply its saved tab".
+    // Setting it after would be a render too late, which is the mechanism Flux
+    // named.
+    coldStartSkip.current = persistedProjectId as string;
     setActiveProject(persistedProjectId as string);
-    setColdStartProjectId(persistedProjectId as string);
     setRestoredPosition(true);
-  }, [
-    backendHydrated,
-    persistedProjectId,
-    restoredPosition,
-    setActiveProject,
-    setActiveProjectId,
-    setColdStartProjectId,
-  ]);
+  }, [backendHydrated, persistedProjectId, restoredPosition, setActiveProject, setActiveProjectId]);
 
   // Hydrate from backend on first mount. Silently noops in browser-dev.
   useEffect(() => {
@@ -152,6 +158,20 @@ const App: React.FC = () => {
   const [loadedUIProjectId, setLoadedUIProjectId] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showCommandBar, setShowCommandBar] = useState(false);
+  // The persisted project id that named no project the backend returned, and the
+  // one we fell back to. Held so the operator can be TOLD, not just silently
+  // moved.
+  //
+  // A silent fallback fixes the data and hides the event, which is the same
+  // failure one level down: the operator reads an empty list as "my work is all
+  // done" when the real state is "you are looking at a project that is not in the
+  // database". Measured — his active project was project_delivery, which has no
+  // row in projects at all, so every project-scoped read returned nothing while
+  // the real work sat in seatloom.
+  const [droppedProject, setDroppedProject] = useState<{
+    missing: string;
+    switchedTo: string | null;
+  } | null>(null);
   const [showSupervisorIM, setShowSupervisorIM] = useState(
     () => localStorage.getItem('seatloom.supervisor.open') === 'true',
   );
@@ -467,53 +487,95 @@ const App: React.FC = () => {
   // Two earlier attempts were measured and reverted, recorded so they are not
   // retried: gating the WRITE effect froze the remembered project permanently;
   // delaying `setLoadedUIProjectId` broke the write gate's own precondition.
-  const coldStartTabSkipped = useRef(false);
   useEffect(() => {
     if (activeProjectId && activeProjectId !== 'all-projects') {
-      const savedState = projectUIStatesRef.current[activeProjectId];
-      const isColdStartRestore =
-        coldStartProjectId === activeProjectId && !coldStartTabSkipped.current;
-      if (savedState && !isColdStartRestore) {
-        setActiveTab(savedState.activeTab as Tab);
-        setSelectedObject(
-          savedState.selectedObjectId && savedState.selectedObjectType
-            ? { type: savedState.selectedObjectType, id: savedState.selectedObjectId }
-            : null,
-        );
+      // The cold-start restore arrives once, on the project the restore effect
+      // put there. Its saved tab must NOT be written over the 派单 default — but
+      // every later arrival at that project (a switch back) must restore. So the
+      // skip is consumed on first sight, not sticky.
+      //
+      // A ref, not state: state set here would not be visible to the tab effect's
+      // re-run within the same effect flush, which is the mechanism Flux named.
+      // Before the restore has landed, NO arrival at a project is the operator's:
+      // the app is still showing defaults ('p-1') and then whatever the data
+      // store picked for itself while the backend read was in flight (measured:
+      // the first real project). Applying a saved tab to either would be
+      // answering "where was the operator?" with a project they never opened.
+      //
+      // After it lands, every arrival restores normally — including a switch back
+      // to the restored project, because the skip is consumed on first sight.
+      const skipColdStart = !restoredPosition || coldStartSkip.current === activeProjectId;
+      if (coldStartSkip.current === activeProjectId) coldStartSkip.current = null;
+      if (!skipColdStart) {
+        const savedState = projectUIStatesRef.current[activeProjectId];
+        if (savedState) {
+          setActiveTab(savedState.activeTab as Tab);
+          setSelectedObject(
+            savedState.selectedObjectId && savedState.selectedObjectType
+              ? { type: savedState.selectedObjectType, id: savedState.selectedObjectId }
+              : null,
+          );
+        }
       }
-      // One skip per launch. Flipping here rather than on the cold-start run
-      // itself means the very next run at the same project restores normally —
-      // which is what a project switch back must do.
-      if (isColdStartRestore) coldStartTabSkipped.current = true;
     }
     setLoadedUIProjectId(activeProjectId);
-  }, [activeProjectId, coldStartProjectId]);
+  }, [activeProjectId, restoredPosition]);
 
+  // Remember which project the operator is in. This is NOT the UI position: it is
+  // which project the next launch returns to, and it is written here rather than
+  // in `chooseTab` because a project SWITCH must also be remembered, and the
+  // switch path does not go through a tab change.
+  //
+  // Kept separate from the tab persistence on purpose. The ruling removed the
+  // effect-driven TAB write; it did not ask for the project id to stop being
+  // remembered, and without it a launch could not return to where the operator
+  // was.
   useEffect(() => {
     if (!restoredPosition || loadedUIProjectId !== activeProjectId) return;
-    if (activeProjectId && activeProjectId !== 'all-projects' && activeTab !== 'all-projects') {
-      updateProjectUIState(activeProjectId, {
-        activeTab,
-        selectedObjectId: selectedObject?.id || null,
-        selectedObjectType: selectedObject?.type || null,
-      });
-      // Remember which project the operator is in, so the next launch returns here.
+    if (activeProjectId && activeProjectId !== 'all-projects') {
       setActiveProjectId(activeProjectId);
     }
-  }, [
-    restoredPosition,
-    loadedUIProjectId,
-    activeTab,
-    selectedObject,
-    activeProjectId,
-    updateProjectUIState,
-    setActiveProjectId,
-  ]);
+  }, [restoredPosition, loadedUIProjectId, activeProjectId, setActiveProjectId]);
+
+  // ─── Persisting the UI position ───
+  //
+  // RULED 2026-10-29 (Lyra): the UI position is persisted from OPERATOR INPUT, not
+  // from an effect.
+  //
+  // The effect-driven write could not tell "restored" from "chosen": both produce
+  // the same `activeTab` value, so every gate I tried either left the cold-start
+  // default being persisted over the operator's real saved tab (the round-6
+  // pollution, which came back and was caught by Lyra's mutation 2), or swallowed
+  // the operator's legitimate writes. Five attempts traded one for the other.
+  //
+  // The information that distinguishes them exists only at the call site, so the
+  // write belongs there. ONE wrapper, used by every operator-driven tab change:
+  // eight scattered `updateProjectUIState` calls would be eight chances to forget
+  // one, and forgetting one is silent position loss — the same class of bug that
+  // took ten rounds to find.
+  //
+  // The restore at the tab effect above deliberately does NOT go through this.
+  // It is the only tab change with no operator input, and it must not persist.
+  const chooseTab = useCallback(
+    (tab: Tab) => {
+      setActiveTab(tab);
+      if (activeProjectId && activeProjectId !== 'all-projects' && tab !== 'all-projects') {
+        updateProjectUIState(activeProjectId, {
+          activeTab: tab,
+          selectedObjectId: selectedObject?.id || null,
+          selectedObjectType: selectedObject?.type || null,
+        });
+        // Remember which project the operator is in, so the next launch returns here.
+        setActiveProjectId(activeProjectId);
+      }
+    },
+    [activeProjectId, selectedObject, updateProjectUIState, setActiveProjectId],
+  );
 
   // ─── Project switching ───
   const handleProjectSwitchRequest = (id: string) => {
     if (id === 'all-projects') {
-      setActiveTab('all-projects');
+      chooseTab('all-projects');
       return;
     }
     const currentData = activeProjectId ? projectData[activeProjectId] : null;
@@ -538,7 +600,7 @@ const App: React.FC = () => {
     setActiveProject(id);
     setPendingProjectId(null);
     setProtectionType(null);
-    if (activeTab === 'all-projects') setActiveTab('dashboard');
+    if (activeTab === 'all-projects') chooseTab('dashboard');
   };
 
   // ─── Object selection ───
@@ -622,7 +684,7 @@ const App: React.FC = () => {
   const handleConfirmProposal = (workItem: any) => {
     addWorkItem(workItem);
     setSelectedObject({ type: 'WorkItem', id: workItem.id });
-    setActiveTab('workitems');
+    chooseTab('workitems');
     setActiveForm('none');
   };
 
@@ -706,7 +768,7 @@ const App: React.FC = () => {
       return (
         <SupervisionDashboard
           onNavigateToInbox={() => {
-            setActiveTab('inbox');
+            chooseTab('inbox');
             setSelectedObject(null);
           }}
           onSelectInboxItem={handleInboxSelect}
@@ -810,7 +872,7 @@ const App: React.FC = () => {
       <AppShell
         activeTab={activeTab}
         onTabChange={(tab) => {
-          setActiveTab(tab as Tab);
+          chooseTab(tab as Tab);
           setSelectedObject(null);
           setActiveForm('none');
         }}
@@ -835,7 +897,7 @@ const App: React.FC = () => {
             activeTab === 'live-seats'
               ? undefined
               : () => {
-                  setActiveTab('live-seats');
+                  chooseTab('live-seats');
                   setSelectedObject(null);
                   setActiveForm('none');
                 }
@@ -923,12 +985,45 @@ const App: React.FC = () => {
         />
       )}
 
+      {droppedProject && (
+        <div
+          role="status"
+          className="fixed top-16 right-4 z-[60] animate-in slide-in-from-right duration-300"
+        >
+          <div className="bg-card border border-amber-500/40 rounded-xl shadow-2xl overflow-hidden min-w-[320px]">
+            <div className="p-4 flex items-start gap-3 bg-amber-500/5">
+              <div className="p-2 bg-amber-500/10 rounded-lg text-amber-600 shrink-0">
+                <TriangleAlert size={18} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-bold text-foreground">已切换项目</h4>
+                {/* Names BOTH ids. "The project you were last in no longer
+                    exists" without naming it leaves the operator unable to tell
+                    whether this is about the project he cares about. */}
+                <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+                  你上次所在的项目 <code className="font-mono">{droppedProject.missing}</code>{' '}
+                  已不存在, 已切换到{' '}
+                  <code className="font-mono">{droppedProject.switchedTo ?? '无项目'}</code>
+                  。如果这里显示的工作项比你预期的少,原因是这个,不是工作已经做完。
+                </p>
+                <button
+                  onClick={() => setDroppedProject(null)}
+                  className="text-xs font-semibold text-amber-700 hover:underline mt-2"
+                >
+                  知道了
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showReconcileSummary && activeTab !== 'all-projects' && (
         <ReconcileNotification
           count={reconcileIssueCount || 0}
           onClose={() => setShowReconcileSummary(false)}
           onViewInbox={() => {
-            setActiveTab('inbox');
+            chooseTab('inbox');
             setShowReconcileSummary(false);
           }}
         />

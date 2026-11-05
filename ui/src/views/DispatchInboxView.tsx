@@ -871,7 +871,12 @@ const DispatchInboxView: React.FC = () => {
     setSubmitting(true);
     setSubmitErr(null);
     try {
-      await api.enqueueDispatch(newSeat, newTitle.trim(), newInstr.trim(), newPrio);
+      // The project the operator is viewing. The command used to take no project
+      // and the child was spawned with a startup constant, so a dispatch created
+      // under project X was filed under seatloom — and the list he was reading
+      // (scoped to X) refreshed to nothing, with nothing saying where it went.
+      const projectId = activeProjectId ?? '';
+      await api.enqueueDispatch(projectId, newSeat, newTitle.trim(), newInstr.trim(), newPrio);
       setNewTitle('');
       setNewInstr('');
       setShowNew(false);
@@ -881,7 +886,11 @@ const DispatchInboxView: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
-  }, [newSeat, newTitle, newInstr, newPrio, load]);
+    // `activeProjectId` belongs here: the dispatch is filed under the project the
+    // operator is viewing, so a project change must be reflected in the next
+    // submit. Leaving it out would file a dispatch created after a switch under
+    // the project the callback was created in.
+  }, [newSeat, newTitle, newInstr, newPrio, load, activeProjectId]);
 
   // S5's loop: a ready/blocked row can be re-issued without retyping it.
   const reuseDispatch = useCallback((d: DispatchDto) => {

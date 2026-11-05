@@ -35,6 +35,14 @@ use tauri::State;
 async fn call_tool(
     state: &AppState,
     tool: &str,
+    // The project the read belongs to. Passed by every caller that has one, and
+    // required rather than defaulted.
+    //
+    // The child used to be spawned with `SEATLOOM_PROJECT_ID =
+    // state.default_project_id` — the constant set once at startup. A caller
+    // reading project X therefore got seatloom's corpus, which is the same defect
+    // the read commands were fixed for, left behind on this path.
+    project_id: &str,
     arguments: serde_json::Value,
 ) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
@@ -56,7 +64,7 @@ async fn call_tool(
         .env("DATABASE_URL", &db_url)
         // The operator is who reads the corpus, so the actor is the operator.
         .env("SEATLOOM_ACTOR_REF", "human:supervisor")
-        .env("SEATLOOM_PROJECT_ID", &state.default_project_id)
+        .env("SEATLOOM_PROJECT_ID", project_id)
         // The extracted contexts live at `<repo root>/resume-contexts` (the location the
         // contract records). Set it explicitly instead of letting the child inherit this
         // process's CWD: launched from /Applications the CWD is `/`, and
@@ -101,8 +109,17 @@ async fn call_tool(
 
 /// (a) The projects that have archived sessions, with session and message counts.
 #[tauri::command]
-pub async fn cmd_list_history_projects(state: State<'_, AppState>) -> Result<String, String> {
-    call_tool(&state, "list_history_projects", serde_json::json!({})).await
+pub async fn cmd_list_history_projects(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<String, String> {
+    // The project LIST is global — every project with archived sessions — so this
+    // command takes no project of its own to scope by. But the child process still
+    // needs one in scope, and it used to fall back to
+    // `state.default_project_id`. Required here as well, so the four write/spawn
+    // paths and this one all refuse rather than reach for the startup constant.
+    let project = crate::commands::require_project_id("cmd_list_history_projects", project_id)?;
+    call_tool(&state, "list_history_projects", &project, serde_json::json!({})).await
 }
 
 /// (b) One project's sessions. Dated first, undated last and flagged.
@@ -114,6 +131,7 @@ pub async fn cmd_list_history_sessions(
     call_tool(
         &state,
         "list_history_sessions",
+        &project_id,
         serde_json::json!({ "project_id": project_id }),
     )
     .await
@@ -123,12 +141,19 @@ pub async fn cmd_list_history_sessions(
 #[tauri::command]
 pub async fn cmd_get_history_session_turns(
     state: State<'_, AppState>,
+    project_id: Option<String>,
     harness: String,
     id: String,
 ) -> Result<String, String> {
+    // A session's turns are pointers, and the pointers resolve against the corpus
+    // of the project they were read under. Required, not defaulted, for the same
+    // reason as the rest: the startup constant is one project, and this session
+    // may not be it.
+    let project = crate::commands::require_project_id("cmd_get_history_session_turns", project_id)?;
     call_tool(
         &state,
         "get_history_session_turns",
+        &project,
         serde_json::json!({ "harness": harness, "id": id }),
     )
     .await
