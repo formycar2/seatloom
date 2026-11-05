@@ -114,6 +114,62 @@ do
   fi
 done
 
+echo ""
+echo "── 3b. 工作区脏了必须说出来,并且说出是哪些路径 ──"
+# Flux 的 FAIL:这一条原来是空的。他设 DIRTY="" 变异,套件全绿 —— 因为 fixture
+# 从来造的是一个**干净**仓库,于是「工作区干净」那一条分支之外的三句话
+# (列出改动、超过 20 条给截断标记、警告这个构建不只是那个提交)
+# 从来没有被任何测试观察到。而脏工作区警告是整份报告里对验收最有用的一句:
+# 它告诉操作者「你要验的东西不是卡上写的那个提交」。
+#
+# 所以这里造一个脏工作区,逐条断言。路径是**真实写出来的文件**,不是 grep 自己
+# 的字符串 —— 那样断言的是字典,不是行为。
+# 🔴 必须改**已跟踪**的文件,不是新建一个未跟踪文件。脚本用 grep -v '^??' 把
+#    未跟踪文件排掉了 —— 那是故意的:一个没 git add 的文件本来就不会进构建,
+#    不是这条警告要防的风险。第一版造的是未跟踪文件,于是四条断言全红,
+#    看起来像脚本坏了,其实是 fixture 造错了状态(实测踩到)。
+printf 'dirty change\n' >> "$FIX/repo/README.md"
+OUT="$(run_dry)"; RC=$?
+# 脏工作区是**阻碍**(BLOCKERS=1),所以干跑必须非零退出 —— 不是 0。
+# 第一版这里断言退出 0,四条内容断言全过而退出码那条红,看起来像脚本坏了;
+# 其实是脚本对(先提交再装),我的断言错。
+[ "$RC" != "0" ] && pass "脏工作区时干跑非零退出(它是阻碍)" || die "脏工作区却退出 0 —— 那等于允许装一个不等于该提交的东西"
+printf '%s\n' "$OUT" | grep -qF "README.md" \
+  && pass "列出了未提交的路径" \
+  || die "没列出脏路径 —— 操作者看不出构建里多了什么"
+printf '%s\n' "$OUT" | grep -q "不只是提交" \
+  && pass "警告了构建不只是那个提交" \
+  || die "没说构建会包含未提交的改动 —— 这正是最有用的一句"
+printf '%s\n' "$OUT" | grep -q "工作区干净" \
+  && die "脏工作区却打印了「工作区干净」" \
+  || pass "没有谎称干净"
+git -C "$FIX/repo" checkout -q -- . 2>/dev/null || true
+
+echo ""
+echo "── 3c. 超过 20 条改动要给截断标记,不能只显示前 20 条就闭嘴 ──"
+# 同样:已提交再改,才是 porcelain 里的 ' M' 而不是 '??'。
+for i in $(seq 1 25); do
+  printf 'original %s\n' "$i" > "$FIX/repo/dirty_$i.txt"
+done
+( cd "$FIX/repo" && git add . && git commit -qm "25 tracked files" ) >/dev/null 2>&1
+for i in $(seq 1 25); do
+  printf 'change %s\n' "$i" > "$FIX/repo/dirty_$i.txt"
+done
+OUT="$(run_dry)"; RC=$?
+[ "$RC" != "0" ] && pass "脏工作区非零退出" || die "退出 0"
+printf '%s\n' "$OUT" | grep -qF "dirty_1.txt" && pass "显示了改动" || die "一条改动都没显示"
+printf '%s\n' "$OUT" | grep -q "还有更多" \
+  && pass "超过 20 条时给了截断标记" \
+  || die "超过 20 条却没有任何截断标记 —— 看起来像是全部改动只有这些"
+for i in $(seq 1 25); do rm -f "$FIX/repo/dirty_$i.txt"; done
+( cd "$FIX/repo" && git add -A && git commit -qm "fixture cleanup" ) >/dev/null 2>&1
+# 恢复到干净状态,后面的用例假设工作区干净。
+git -C "$FIX/repo" checkout -q -- . 2>/dev/null || true
+OUT="$(run_dry)"
+printf '%s\n' "$OUT" | grep -q "工作区干净" \
+  && pass "清理后回到「工作区干净」" \
+  || die "清理后仍说脏 —— fixture 没复原,后面的用例会被污染"
+
 echo "── 4. 未知参数必须非零退出 ──"
 for bad in "--nonsense" "--dry-run --nonsense"; do
   # shellcheck disable=SC2086
