@@ -43,6 +43,16 @@ export type RuntimeIdentityDto = {
    *    在看的那块屏幕上看出来的途径 —— Lyra 量到它此前有 0 个消费者。
    */
   uncommitted: number | null;
+  /**
+   * The commit **this binary** was compiled from, captured at build time.
+   *
+   * 🔴 2026-11-07 补。`commit` above is what the INSTALLER said (a launcher env var);
+   * this is what the binary itself can state. Before this field, `strings` on the
+   * sandbox binary found the four env var names and six hex-looking strings, none of
+   * which was a hash of any commit on the branch — so nothing could answer "what are
+   * you?", and the positive case of an acceptance was unfalsifiable.
+   */
+  built_commit: string | null;
 };
 
 /**
@@ -83,6 +93,28 @@ function uncommittedClause(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return ' · 未提交改动 未记录';
   if (value <= 0) return ' · 无未提交改动';
   return ` · 带 ${value} 个未提交改动 —— 这份构建不等于上面那个提交`;
+}
+
+/**
+ * The build-embedded commit, and what to do when it disagrees with the installer's.
+ *
+ * 🔴 这个条款是这次补字段的全部理由。三件事必须分开:
+ *   二进制自己说的提交 / 安装器说的提交 / 卡上写的提交。只有三者一致,这个点击
+ *   验的才是它要验的东西。
+ *
+ * 一致时照常显示。不一致时**必须响**:一个说自己是一个提交、实际是另一个提交的
+ * 沙箱,比没有横幅更糟 —— 它会把一个错的验收显示成对的。所以这里写成一条显眼的
+ * 警告,并且不静默选一个值显示。
+ *
+ * `built_commit` 缺席(不是空串,是没编译进去)时说「未记录」,不猜。
+ */
+function identityClause(identity: RuntimeIdentityDto): string {
+  const built = identity.built_commit?.trim();
+  const claimed = identity.commit?.trim();
+  if (!built) return ' · 二进制内提交 未记录';
+  if (!claimed) return ` · 二进制内提交 ${built}(安装器未说)`;
+  if (claimed === built) return ` · 二进制内提交 ${built}(与安装器一致)`;
+  return ` · ⚠️ 二进制内提交 ${built} ≠ 安装器说的 ${claimed} —— 这个点击验的可能不是它要验的东西`;
 }
 
 type LoadState =
@@ -141,6 +173,7 @@ export const SandboxBanner: React.FC = () => {
       沙箱 · 分支 {orUnrecorded(identity.branch)} · 提交 {orUnrecorded(identity.commit)} · 构建于{' '}
       {orUnrecorded(identity.built_at)}
       {uncommittedClause(identity.uncommitted)}
+      {identityClause(identity)}
     </div>
   );
 };

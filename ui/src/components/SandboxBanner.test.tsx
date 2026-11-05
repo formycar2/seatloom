@@ -38,7 +38,22 @@ const SANDBOX_IDENTITY = {
   // four-field DTO exactly, which is why nothing failed when the installer exported a
   // fifth fact that no code read.
   uncommitted: 0,
+  // 🔴 2026-11-07: the same trap again, third field in. `commit` is what the
+  // INSTALLER claimed; `built_commit` is what the BINARY can state. Measured before
+  // this field existed: `strings` on the sandbox binary found four env var NAMES and
+  // six hex-looking strings, none a hash of any commit on the branch — so nothing could
+  // answer "what are you?", and the positive case of an acceptance was unfalsifiable.
+  built_commit: 'abc1234',
 };
+
+/** The installer's claim and the binary's own statement, agreeing. */
+const AGREEING = { ...SANDBOX_IDENTITY };
+
+/** The binary states a different commit than the installer claimed. */
+const DISAGREEING = { ...SANDBOX_IDENTITY, commit: 'old9999' };
+
+/** The build did not capture a commit (git unavailable, or not a repository). */
+const NO_BUILT_COMMIT = { ...SANDBOX_IDENTITY, built_commit: null };
 
 describe('when the backend says this is the sandbox', () => {
   it('renders a strip naming the branch, the commit and the build time', async () => {
@@ -88,12 +103,19 @@ describe('when a value is missing', () => {
       commit: null,
       built_at: '',
       uncommitted: 0,
+      // Present, so the count below is exactly the two absences this case is about:
+      // the installer's commit and the build time. Without this the fixture would
+      // also be missing the build-embedded commit and the count would be 3 — which
+      // tests a different thing than the name of this case says.
+      built_commit: 'abc1234',
     });
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toContain('packet/mira/knowledge-panel');
-    // Two absences stated, and neither is a blank or an invented value.
+    // Two absences stated, and neither is a blank or an invented value: the
+    // installer's commit, and the build time. The build-embedded commit is present,
+    // so it is named rather than counted as absent.
     expect(text.match(/未记录/g) ?? []).toHaveLength(2);
     expect(text).not.toContain('null');
     expect(text).not.toContain('undefined');
@@ -110,7 +132,10 @@ describe('when a value is missing', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
-    expect(text.match(/未记录/g) ?? []).toHaveLength(3);
+    // 4, not 3: branch, commit, built_at and the build-embedded commit. Each absent
+    // fact is STATED as absent — that is the property. A future field that can be
+    // absent bumps this count, and this comment is where that is noticed.
+    expect(text.match(/未记录/g) ?? []).toHaveLength(4);
     // The words that would betray a guess.
     expect(text).not.toContain('unknown');
     expect(text).not.toContain('main');
@@ -176,6 +201,41 @@ describe('when the build carries uncommitted changes', () => {
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toContain('未提交改动 未记录');
     expect(text).not.toContain('无未提交改动');
+  });
+
+  it('states the commit the binary itself was built from', async () => {
+    // The whole point of the field: the binary can now answer "what are you?", so the
+    // operator can compare it against the commit the card names.
+    invokeMock.mockResolvedValue(AGREEING);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('二进制内提交 abc1234');
+    expect(text).toContain('与安装器一致');
+  });
+
+  it('alerts when the binary disagrees with the installer', async () => {
+    // A sandbox that claims one commit and is another is worse than no banner: it
+    // renders a wrong acceptance as a right one. So this must be loud, and it must not
+    // silently pick one of the two values to show.
+    invokeMock.mockResolvedValue(DISAGREEING);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('abc1234');
+    expect(text).toContain('old9999');
+    expect(text).toContain('⚠️');
+  });
+
+  it('says unrecorded when the build captured no commit, and does not read that as agreement', async () => {
+    // Absent is not "same as the installer". A build whose capture failed must not be
+    // able to read as verified-by-identity.
+    invokeMock.mockResolvedValue(NO_BUILT_COMMIT);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('二进制内提交 未记录');
+    expect(text).not.toContain('与安装器一致');
   });
 
   it('does not read an unparseable count as zero', async () => {
