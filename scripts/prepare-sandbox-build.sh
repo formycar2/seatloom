@@ -46,7 +46,14 @@ line(){ say "──────────────────────�
 fail(){ say ""; say "❌ $*"; exit 1; }
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 两种形状都试:从主检出跑,工作区在 ../seatloom-worktrees;
+# 从某个席位自己的工作区跑(本脚本的文档里就让人这么干),那是 ../ ——
+# 再拼一次会得到 seatloom-worktrees/seatloom-worktrees,一个不存在的目录,
+# 于是「找检出该分支的工作区」的循环一次都不进,报出来的却是
+# 「这不是任何工作区当前检出的分支」—— 一个把人指向错误方向的失败。
+# 只认真实存在的那个,而且不存在就响亮失败,不静默退回。
 WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
+[ -d "$WROOT" ] || WROOT="$(cd "$REPO/.." && pwd)"
 MAIN_APP="/Applications/SeatLoom.app"
 SAND_APP="/Applications/SeatLoom-Sandbox.app"
 SANDBOX_KEY_PREFIX="slsandbox:"
