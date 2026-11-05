@@ -45,6 +45,10 @@ const state = vi.hoisted(() => ({
     },
   ],
   acceptances: [] as unknown[],
+  // Per-project acceptance rows, so the mock can answer the way the Rust command
+  // does — by project_id. Without this a client-side scoping bug is invisible.
+  acceptancesByProject: {} as Record<string, unknown[]>,
+  projects: [] as Array<{ id: string; name: string }>,
   dispatches: [] as unknown[],
   handoffs: [] as unknown[],
   events: [] as unknown[],
@@ -58,6 +62,9 @@ const state = vi.hoisted(() => ({
   enqueueId: 'disp-new-1',
   enqueueThrows: '' as string,
   planCalls: [] as string[],
+  // Every project the planner was asked about, in order. Asserted so a caller that
+  // forgets to pass it (or passes the wrong one) is visible.
+  planProjectCalls: [] as string[],
   enqueueCalls: [] as unknown[][],
 }));
 
@@ -68,15 +75,28 @@ vi.mock('../../lib/api', () => ({
       if (!state.seatsOk) throw new Error('db unreachable');
       return state.seats;
     }),
-    listAcceptances: vi.fn(async () => state.acceptances),
+    // Scoped server-side, like the real command: it takes a project_id and filters
+    // by it. Answering the whole list regardless would make a client-side scoping
+    // bug invisible — any code asking about the wrong project would still get the
+    // cards. `acceptancesByProject` holds the rows for projects OTHER than the
+    // active one, which is what the "empty here, waiting elsewhere" test needs.
+    listAcceptances: vi.fn(async (projectId: string) =>
+      projectId === 'seatloom'
+        ? (state.acceptances as never[])
+        : ((state.acceptancesByProject[projectId] as never[]) ?? []),
+    ),
     listDispatches: vi.fn(async () => state.dispatches),
     listHandoffs: vi.fn(async () => state.handoffs),
     listEvents: vi.fn(async () => state.events),
     listCheckpoints: vi.fn(async () => state.checkpoints),
     getKnowledgeTree: vi.fn(async () => state.tree),
     getTopicMemories: vi.fn(async () => state.memories),
-    planIntent: vi.fn(async (intent: string) => {
+    // (projectId, intent) — the planner gathers facts scoped to a project, so it
+    // must be told which one the operator is looking at. The command used to take
+    // no project and the child fell back to a startup constant.
+    planIntent: vi.fn(async (projectId: string, intent: string) => {
       state.planCalls.push(intent);
+      state.planProjectCalls.push(projectId);
       if (state.planThrows) throw new Error(state.planThrows);
       return state.planRaw;
     }),
@@ -201,9 +221,23 @@ describe('SupervisorIntent', () => {
     // is project-scoped, so the tests say which project they run under. They used
     // to rely on useDataStore's launch default — a SEED_PROJECTS_FOR_TESTS id that
     // named no project in any database.
-    useDataStore.setState({ activeProjectId: 'seatloom', backendHydrated: true });
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [{ id: 'seatloom', name: 'SeatLoom' }, ...state.projects] as never,
+    });
     state.seatsOk = true;
     state.acceptances = [];
+    state.acceptancesByProject = {};
+    // The OTHER projects the elsewhere-check reads. Set per test; the active
+    // project ('seatloom') is always added by the store setup below.
+    state.projects = [];
+    // Re-seed the store, because the beforeEach above ran before these were set.
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [{ id: 'seatloom', name: 'SeatLoom' }, ...state.projects] as never,
+    });
     state.dispatches = [];
     state.handoffs = [];
     state.events = [];
@@ -216,6 +250,7 @@ describe('SupervisorIntent', () => {
     state.enqueueId = 'disp-new-1';
     state.enqueueThrows = '';
     state.planCalls = [];
+    state.planProjectCalls = [];
     state.enqueueCalls = [];
   });
 
@@ -246,6 +281,50 @@ describe('SupervisorIntent', () => {
     fireEvent.click(screen.getByText('读取'));
     await waitFor(() => expect(screen.getByText(/没有待运营者判定的验收卡/)).toBeTruthy());
     expect(screen.getByText(/新交付经 Flux 验绿后会在这里出现/)).toBeTruthy();
+  });
+
+  it('an empty acceptance read says WHERE the cards are instead of "none waiting"', async () => {
+    // The failure this closes, measured: the operator's three cards all belong to
+    // seatloom while his active project held none, so this panel showed an empty
+    // "no pending cards" — which is worse than not showing him, because it
+    // actively told him there was nothing to do.
+    //
+    // Lyra then measured one worse: his active project was `p-1`, the first entry
+    // of SEED_PROJECTS_FOR_TESTS, which has no row in projects at all. So the read
+    // was not scoped to the wrong project — it was scoped to a project that does
+    // not exist.
+    //
+    // Two independent reasons, one shape: a scoped read that comes back empty must
+    // not be reported as "nothing is waiting for you". The two readings demand
+    // opposite actions from him.
+    //
+    // The mock answers per project, exactly like the Rust command does — it takes
+    // a project_id and filters by it. Answering the whole list regardless would
+    // make the scoping bug invisible, because any code asking about the wrong
+    // project would still get the cards.
+    state.acceptances = [];
+    state.acceptancesByProject = { other: [acc({ id: 'acc-elsewhere' })] };
+    state.projects = [{ id: 'other', name: 'Other' }];
+    useDataStore.setState({
+      activeProjectId: 'seatloom',
+      backendHydrated: true,
+      projects: [
+        { id: 'seatloom', name: 'SeatLoom' },
+        { id: 'other', name: 'Other' },
+      ] as never,
+    });
+    mount();
+    fireEvent.click(screen.getByText('读取'));
+
+    // It must NOT claim there is nothing waiting.
+    await waitFor(() => expect(screen.queryByText(/没有待运营者判定的验收卡/)).toBeNull());
+    // It says how many and under which project — a number he can act on.
+    await waitFor(() => expect(screen.getByText(/别处有 1 张在等你/)).toBeTruthy());
+    expect(screen.getByText(/other/)).toBeTruthy();
+    // And it points at the surface that shows them, rather than leaving him to
+    // guess where a count lives. Matched on the full sentence, because '派单'
+    // alone matches several surfaces.
+    expect(screen.getByText(/左边栏「派单」上的数字就是它们/)).toBeTruthy();
   });
 
   // 3. decision-answer — real reads; no active memories is a meaningful empty.
@@ -338,11 +417,51 @@ describe('SupervisorIntent', () => {
     await waitFor(() => expect(screen.getByText('确认并建卡')).toBeTruthy());
     fireEvent.click(screen.getByText('确认并建卡'));
     await waitFor(() => expect(screen.getByText(/disp-real-777/)).toBeTruthy());
+    // The project the operator is viewing comes FIRST. It used to be absent and
+    // the dispatch was filed under a startup constant instead.
     expect(state.enqueueCalls[0]).toEqual([
+      'seatloom',
       'seat-nimbus-001',
       '接唤醒服务兜底',
       '把唤醒服务硬底兜底接上',
     ]);
+  });
+
+  it('the project reaches planIntent AND enqueueDispatch — not a hardcoded one', async () => {
+    // The same gap Lyra found on the other call site, closed here.
+    //
+    // Every fixture in this file sets activeProjectId to 'seatloom', and no
+    // assertion names the project argument at all. So hardcoding
+    // `useDataStore.getState().activeProjectId ?? ''` to 'seatloom' would keep the
+    // whole file green — which is precisely the regression the project-scoping
+    // dispatch removed, one layer down.
+    //
+    // The consequence is the dispatch's own subject: a plan made while viewing
+    // project X gathered X's operator's intent against seatloom's facts, and the
+    // confirm step then wrote the dispatch under seatloom.
+    useDataStore.setState({
+      activeProjectId: 'ql_delivery',
+      backendHydrated: true,
+      projects: [{ id: 'ql_delivery', name: 'QL' }] as never,
+    });
+    state.planRaw = proposalJson();
+    state.enqueueId = 'disp-real-888';
+    mount();
+
+    typeAndSubmit('给 Nimbus 洽个活,把唤醒服务兑底接上');
+    await waitFor(() => expect(screen.getByText('确认并建卡')).toBeTruthy());
+
+    // The PLAN was about the project he is viewing. `planProjectCalls` is recorded
+    // by the mock for exactly this assertion — the intent alone would pass with
+    // any project, including a hardcoded one.
+    expect(state.planProjectCalls).toContain('ql_delivery');
+
+    fireEvent.click(screen.getByText('确认并建卡'));
+    await waitFor(() => expect(screen.getByText(/disp-real-888/)).toBeTruthy());
+
+    // And the WRITE was filed under it — project FIRST, exactly as the command
+    // now takes it.
+    expect(state.enqueueCalls[0][0]).toBe('ql_delivery');
   });
 
   // 6. A rejection from plan_intent is shown verbatim, no dispatch id.
@@ -415,12 +534,18 @@ describe('澄清选项被点后必须直接继续,不要把活推回给用户', 
       clarification: {
         question: '这句话里没有我能确定执行的动作。你要做下面哪一种?',
         choices: [
-          { label: 'create — 给 nimbus 派个活,把唤醒服务的硬底兜底接上', value: 'create', why: 'one of the five verbs' },
+          {
+            label: 'create — 给 nimbus 派个活,把唤醒服务的硬底兜底接上',
+            value: 'create',
+            why: 'one of the five verbs',
+          },
         ],
       },
     });
     render(<SupervisorIntent onRawSend={vi.fn()} />);
-    fireEvent.change(screen.getByPlaceholderText(/说你想干什么/), { target: { value: '给后端席位派一张单' } });
+    fireEvent.change(screen.getByPlaceholderText(/说你想干什么/), {
+      target: { value: '给后端席位派一张单' },
+    });
     fireEvent.click(screen.getByText('拆解'));
     await screen.findByText(/你要做下面哪一种/);
     expect(state.planCalls).toHaveLength(1);

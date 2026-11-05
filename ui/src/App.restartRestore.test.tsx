@@ -78,6 +78,9 @@ const CANNED: Record<string, unknown> = {
   // snake_case on purpose: SandboxBanner reads the raw payload and checks
   // `is_sandbox` before any normalise step.
   cmd_get_runtime_identity: { is_sandbox: false, branch: null, commit: null, built_at: null },
+  // Acceptance cards. Empty by default so the nav badge is absent unless a test
+  // says otherwise — a badge that is always there cannot prove anything.
+  cmd_list_acceptances: [],
 };
 
 // ONE source of truth for "the backend", answering every command the app can
@@ -98,7 +101,20 @@ const CANNED: Record<string, unknown> = {
 // failure instead of a rejection attributed to whichever effect got there first.
 const answerCommand = async (cmd: string, args?: unknown): Promise<unknown> => {
   calls.order.push(`${cmd}${args ? ` ${JSON.stringify(args)}` : ''}`);
-  if (cmd in CANNED) return CANNED[cmd];
+  if (cmd in CANNED) {
+    // `cmd_list_acceptances` is scoped SERVER-SIDE — the Rust command takes a
+    // project_id and filters by it (acceptance_cmds.rs, and the comment there
+    // records the same silent-default bug being removed). Returning the whole
+    // list regardless would make a client-side scoping bug invisible: any code
+    // that asked about the wrong project would still get the cards. So the mock
+    // filters, exactly like the backend.
+    if (cmd === 'cmd_list_acceptances') {
+      const asked = (args as { projectId?: string } | undefined)?.projectId;
+      const rows = (CANNED[cmd] as Array<{ projectId?: string }>) ?? [];
+      return rows.filter((r) => r.projectId === asked);
+    }
+    return CANNED[cmd];
+  }
   throw new Error(`unmocked Tauri command: ${cmd}`);
 };
 
@@ -133,6 +149,7 @@ vi.mock('../app-v2/panel/SessionTerminal', () => ({
 
 import App from './App';
 import { useAppStore } from './stores/useAppStore';
+import { provenanceForTab } from './lib/provenance';
 import { SEED_PROJECTS_FOR_TESTS, useDataStore } from './stores/useDataStore';
 
 // The store's own launch value, captured at import time — before any test in this
@@ -161,7 +178,7 @@ function readStoredAppStore(): { activeProjectId: string | null } {
  */
 function mainText(): string {
   const main = document.querySelector('main');
-  return main ? main.textContent ?? '' : '';
+  return main ? (main.textContent ?? '') : '';
 }
 
 function mountApp() {
@@ -195,6 +212,16 @@ async function relaunch() {
 function writtenProjectIds(): Array<string | null> {
   return appStoreWrites.values.map((v) => JSON.parse(v).state.activeProjectId);
 }
+
+/**
+ * Every `updateProjectUIState` call the app made, in order.
+ *
+ * This watches the WRITE PATH rather than what landed on disk. A disk-level check
+ * cannot see a write that happens to write the same value back — and "the restore
+ * writes its own value back" is precisely the mutation that survived a green
+ * suite (Lyra, 2026-10-29). Whether a write HAPPENED is decidable only here.
+ */
+const restoreFrameWrites: Array<{ projectId: string; updates: unknown }> = [];
 
 /** Every tab the app persisted for one project, in order. */
 function writtenTabsFor(projectId: string): Array<string | undefined> {
@@ -236,6 +263,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  restoreFrameWrites.length = 0;
   cleanup();
   window.localStorage.clear();
 });
@@ -328,6 +357,75 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
     expect(screen.queryByText('产出物')).toBeNull();
     expect(screen.queryByText(/Playbook & 治理文档/)).toBeNull();
+
+    // AND the restore must not have persisted anything.
+    //
+    // The ruling's second half: persistence moved into operator input, so the
+    // restore — the one tab change with no operator input — must not write. This
+    // is the assertion for the direction nobody tested, and it is where the
+    // round-6 pollution lived: the write effect persisted the cold-start default
+    // over the operator's real saved tab.
+    //
+    // Mutation this kills: route the restore through `chooseTab`. With that, the
+    // default is written to disk and the saved 'artifacts' is destroyed.
+    const writes = appStoreWrites.values.length;
+    expect(writes).toBeGreaterThan(0); // the test's own setup persisted, so there is a baseline
+    const tabsWrittenSince = writtenTabsFor(RECORDED_PROJECT)
+      .slice(writes)
+      .filter((t) => t !== undefined);
+    expect(tabsWrittenSince).toEqual([]);
+    // ...and the operator's saved tab is still on disk, untouched.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
+  });
+
+  it('MEASURED: a cold launch with two projects holding different saved tabs opens on the dispatch tab', async () => {
+    // Lyra asked for this measurement explicitly: "launch the app cold with two
+    // projects holding different saved tabs and report which tab actually opens".
+    //
+    // It is worth its own test rather than a line in a delivery note, because it is
+    // the observation the whole mechanism exists to produce, and the two
+    // neighbouring tests each assert a DIFFERENT thing (one that the saved tab is
+    // not applied, one that it is applied on a switch). Neither of them states the
+    // plain answer to "which page do I see".
+    //
+    // The two saved tabs are chosen so all three possible answers are distinct
+    // observations: 'artifacts' would mean the restored project's memory won,
+    // 'workitems' would mean the data store's own pick won, and 'dispatches' means
+    // the cold-start default held. Only the third is the ruling.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          activeTab: 'workitems',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    // The project is restored first — that is the other half of the same ruling.
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+
+    // THE MEASUREMENT. Reported against what the app actually rendered rather than
+    // a tab id, because `activeTab` is component state: the dispatches page's own
+    // heading is the evidence, and neither saved tab's surface may be showing.
+    // Every tab's content is in the DOM at once, so the absence checks below are
+    // what make this a measurement of the SHOWING surface rather than of presence.
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
+    expect(screen.queryByText(/Active Task Ledger/)).toBeNull();
+    expect(screen.queryByText(/活跃工作项账本/)).toBeNull();
+
+    // And the restored project's memory is still intact — the ruling removes the
+    // APPLICATION of the saved tab on a cold start, not the memory itself.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
   });
 
   it('switching projects inside a session still restores THAT project\u2019s tab', async () => {
@@ -343,7 +441,12 @@ describe('restart lands back in the recorded project, and the write cannot win t
           filters: {},
         },
         [FIRST_REAL_PROJECT]: {
-          activeTab: 'dispatches',
+          // 'workitems', NOT 'dispatches': 'dispatches' is the cold-start default,
+          // so "the memory was applied" and "nothing happened" are the same
+          // observation. This is the same measurement the cold-start test above
+          // records, and it was left behind here — which is why this test could
+          // not tell a working restore from a missing one.
+          activeTab: 'workitems',
           selectedObjectId: null,
           selectedObjectType: null,
           filters: {},
@@ -351,8 +454,21 @@ describe('restart lands back in the recorded project, and the write cannot win t
       },
     });
 
+    // Watch the WRITE PATH for the whole test. `restoreFrameWrites` is what the
+    // ruling's exception has to keep empty while the restore runs.
+    restoreFrameWrites.length = 0;
+    const realUpdate = useAppStore.getState().updateProjectUIState;
+    vi.spyOn(useAppStore.getState(), 'updateProjectUIState').mockImplementation(
+      (projectId, updates) => {
+        restoreFrameWrites.push({ projectId, updates });
+        realUpdate(projectId, updates);
+      },
+    );
+
     mountApp();
     await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    // The cold start wrote nothing either — the other half of the same exception.
+    expect(restoreFrameWrites).toEqual([]);
 
     // Now switch. The memory must come back: FIRST_REAL_PROJECT's saved tab is
     // 'live-seats', so the seat mirror must appear. Its own banner is the
@@ -371,10 +487,412 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // cold-start default, and the live-seats headline is rendered in several
     // places. What makes this one valid is that the dispatches page does NOT
     // contain it — checked against the cold-start test's own render.
-    console.log('PROBE firstReal saved=', JSON.stringify(useAppStore.getState().projectUIStates[FIRST_REAL_PROJECT]));
     await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
     // ...and the other project's tab is not inherited.
     expect(screen.queryByText('产出物')).toBeNull();
+
+    // AND the restore itself did not WRITE.
+    //
+    // This is the assertion the ruling was built around, and it was missing: the
+    // tests above assert the tab IS restored, which is a different claim from
+    // "restoring it did not persist". Lyra added
+    // `updateProjectUIState(activeProjectId, { activeTab: savedState.activeTab })`
+    // right after the restore's setActiveTab and the whole file stayed 12 passed —
+    // because nothing watched the write path.
+    //
+    // Spied on the STORE ACTION, not on a snapshot of what landed on disk: a
+    // disk-level check cannot see a write that happens to write the same value
+    // back, and that is exactly the mutation in question.
+    //
+    // The cold-start frame cannot host this test: the restore is inside
+    // `if (!skipColdStart)`, which a cold start never enters. A SWITCH is where
+    // the restore actually runs, so it is where the write path must be watched.
+    expect(restoreFrameWrites).toEqual([]);
+  });
+
+  it('switching AWAY and then BACK to the restored project still restores its tab', async () => {
+    // Lyra's mutation 2, made un-survivable.
+    //
+    // The cold-start skip is CONSUMPTIVE — it fires once and clears itself — and
+    // that is the whole design. But no test covered the case the consumptive
+    // shape depends on: leave the restored project, come back to it, and its
+    // saved tab must still be applied.
+    //
+    // Lyra ran three mutations. Mutation 2 — delete the line that consumes the
+    // skip, making it permanent — SURVIVED a fully green suite, and it silently
+    // destroys per-project tab memory for every project after the first. The
+    // operator asked for that feature. This test is what kills it.
+    //
+    // Three distinct tabs across two projects, so all three observations are
+    // distinguishable from each other and from the cold-start default.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          // 'artifacts': neither the cold-start default ('dispatches') nor the
+          // other project's tab, so "restored", "still on the switch-back page"
+          // and "nothing happened" are three different observations.
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          activeTab: 'workitems',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    // Cold start: the restored project, on the 派单 default — its saved
+    // 'artifacts' must NOT be applied here.
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+    expect(screen.queryByText('产出物')).toBeNull();
+
+    // Away. FIRST_REAL_PROJECT's saved tab applies.
+    act(() => {
+      useDataStore.getState().setActiveProject(FIRST_REAL_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+    expect(screen.queryByText('产出物')).toBeNull();
+
+    // Back. THIS is the assertion the suite was missing. A permanent skip would
+    // leave the app on 'workitems' here — the previous project's page — and the
+    // operator would silently lose the memory he asked for.
+    act(() => {
+      useDataStore.getState().setActiveProject(RECORDED_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('产出物'));
+    expect(screen.queryByText('活跃工作项账本')).toBeNull();
+  });
+
+  it('chooseTab persists the SELECTED OBJECT alongside the tab — M-4', async () => {
+    // Flux's M-4, made un-survivable.
+    //
+    // chooseTab is the ONLY writer of selectedObjectId / selectedObjectType into
+    // the persisted ProjectUIState, and nothing asserted those fields. Flux ran
+    // the mutation — chooseTab writes null for both — and the file stayed 12
+    // passed. It survives.
+    //
+    // THE HARD PART, stated plainly: on a cold start nothing is selected, so
+    // null-for-null looks correct on disk and the mutation hides there too. The
+    // mutation is only observable on a frame where something IS selected. Every
+    // backend list in this suite is mocked empty, so the reachable way to get a
+    // selection is the saved record itself: give the project a saved
+    // selectedObjectId, switch to it, and the restore applies that selection —
+    // then the operator's next tab change must carry it into the write.
+    //
+    // So this test does two things the others do not: it puts a real selection on
+    // screen, and it asserts the write carried it. With Flux's mutation the write
+    // carries null and the assertion fails.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+        [FIRST_REAL_PROJECT]: {
+          // A saved selection, so the restore has something real to apply.
+          activeTab: 'workitems',
+          selectedObjectId: 'wi-saved-42',
+          selectedObjectType: 'WorkItem',
+          filters: {},
+        },
+      },
+    });
+
+    // Watch what chooseTab hands to the store. Installed BEFORE the mount: App
+    // captures `updateProjectUIState` from the store when it renders, so a spy
+    // installed afterwards is invisible to it. (Measured — installing it after
+    // the mount gave writes.length === 0 and the test could not fail for the
+    // right reason.)
+    const writes: Array<{ projectId: string; updates: Record<string, unknown> }> = [];
+    const realUpdate = useAppStore.getState().updateProjectUIState;
+    vi.spyOn(useAppStore.getState(), 'updateProjectUIState').mockImplementation(
+      (projectId, updates) => {
+        writes.push({ projectId, updates: updates as Record<string, unknown> });
+        realUpdate(projectId, updates);
+      },
+    );
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+
+    // Switch to the project that carries a saved selection. The restore applies
+    // it, so `selectedObject` is now non-null — the state M-4 needs.
+    act(() => {
+      useDataStore.getState().setActiveProject(FIRST_REAL_PROJECT);
+    });
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+
+    // Now the operator changes tab. This write must carry the selection through.
+    writes.length = 0;
+    fireEvent.click(screen.getByTitle('时间线'));
+    await waitFor(() => expect(writes.length).toBeGreaterThan(0));
+
+    const last = writes[writes.length - 1];
+    expect(last.projectId).toBe(FIRST_REAL_PROJECT);
+    expect(last.updates).toHaveProperty('activeTab', 'timeline');
+    // The fields Flux found unwatched. With the mutation these are null.
+    expect(last.updates.selectedObjectId).toBe('wi-saved-42');
+    expect(last.updates.selectedObjectType).toBe('WorkItem');
+  });
+
+  it('a pending acceptance count is visible with the panel closed and regardless of project', async () => {
+    // The operator's cards were unreachable from the product for THREE independent
+    // reasons, and any one of them hides them.
+    //
+    // 1. the panel that lists them defaults CLOSED (his live persisted state is
+    //    seatloom.supervisor.open = f) and there was no count anywhere outside
+    //    it — grepped NavRail, layouts, components: zero matches;
+    // 2. the panel scopes its reads with api.listAcceptances(activeProjectId),
+    //    and every card belongs to seatloom while his active project had none;
+    // 3. Lyra measured worse than either: his saved active project is `p-1`,
+    //    which is the first entry of SEED_PROJECTS_FOR_TESTS — a test fixture.
+    //    select count(*) from projects where id='p-1' returns 0. So the read was
+    //    not scoped to the wrong project, it was scoped to a project that does
+    //    not exist. (localStorage holds it as UTF-16LE 70 00 2d 00 31 00 = 'p-1'.)
+    //
+    // This test closes reason 1: a count on the nav, which renders whatever the
+    // panel state is.
+    //
+    // The count is deliberately NOT scoped to the active project. Reading every
+    // project and unioning the cards is the only algorithm a badge can use
+    // without lying — and reason 3 is why: the active project may be an id the
+    // backend does not return at all.
+    //
+    // Mutation this kills: scope the read back to activeProjectId. The badge
+    // becomes 0 and this fails — but in the product it reads "nothing is waiting
+    // for me", which is the exact failure.
+    CANNED.cmd_list_acceptances = [
+      { id: 'acc-one', status: 'pending', dispatchId: 'disp-one', projectId: FIRST_REAL_PROJECT },
+      {
+        id: 'acc-two',
+        status: 'awaiting_acceptance',
+        dispatchId: 'disp-two',
+        projectId: FIRST_REAL_PROJECT,
+      },
+      // Not pending: must not be counted.
+      {
+        id: 'acc-three',
+        status: 'accepted',
+        dispatchId: 'disp-three',
+        projectId: FIRST_REAL_PROJECT,
+      },
+    ];
+
+    mountApp();
+    // Wait for the project list to land first. The badge reads `projects` to know
+    // which project ids to ask about, and measuring it before hydration gives an
+    // empty id set — a badge of 0 that is indistinguishable from "nothing
+    // waiting". (Measured: that was my first version's failure.)
+    await waitFor(() => expect(useDataStore.getState().projects.length).toBeGreaterThan(0));
+
+    // The count appears. Two pending, one accepted — so the badge reads 2.
+    await waitFor(() => expect(screen.getByText('2')).toBeTruthy());
+    // And the supervisor panel was never opened: this suite never opens it.
+    expect(window.localStorage.getItem('seatloom.supervisor.open')).not.toBe('true');
+  });
+
+  it('the count survives an active project that does not exist in the database', async () => {
+    // Lyra measured a third reason, worse than the two I reported: his saved
+    // active project is `p-1`, the first entry of SEED_PROJECTS_FOR_TESTS — a test
+    // fixture. `select count(*) from projects where id='p-1'` returns 0, and
+    // `select count(*) from acceptances where project_id='p-1'` returns 0.
+    //
+    // So the panel's read was not scoped to the wrong project. It was scoped to a
+    // project that does not exist. Both roads lead away from his three cards:
+    // hydration drops an id the backend does not return and falls back to
+    // projects[0], and projects[0] is not seatloom either.
+    //
+    // This is the mutation that matters: scope the badge to activeProjectId. With
+    // a real project selected that mutation can pass by coincidence — the active
+    // project happens to hold the cards — so the test above cannot catch it. This
+    // one can, because the active project here holds nothing and does not exist.
+    //
+    // Mutation this kills: `const ids = [activeProjectId]` instead of every
+    // project. Then the badge is 0 while two cards wait, and the operator reads
+    // "nothing needs me" — the exact failure this whole chain is about.
+    CANNED.cmd_list_acceptances = [
+      { id: 'acc-one', status: 'pending', dispatchId: 'disp-one', projectId: FIRST_REAL_PROJECT },
+      { id: 'acc-two', status: 'pending', dispatchId: 'disp-two', projectId: FIRST_REAL_PROJECT },
+    ];
+
+    mountApp();
+    // Force the state Lyra measured: an active project the backend never returned.
+    // Set after the mount so it is not immediately overwritten by hydration.
+    await waitFor(() => expect(useDataStore.getState().backendHydrated).toBe(true));
+    act(() => {
+      useDataStore.setState({ activeProjectId: 'p-1' });
+    });
+
+    // The badge must still count the cards that exist, wherever they live.
+    await waitFor(() => expect(screen.getByText('2')).toBeTruthy());
+  });
+
+  it('zero pending cards means NO badge — the assumption the whole harness rests on', async () => {
+    // Flux found this and Lyra reproduced it: change `> 0` to `>= 0` in the badge
+    // expression and 15 tests stay green. The consequence is a permanent 0 sitting
+    // on the 派单 nav item forever — and a badge that is always there cannot
+    // convey anything.
+    //
+    // It matters more than noise because of the comment this file already carries:
+    // "Empty by default so the nav badge is absent unless a test says otherwise —
+    // a badge that is always there cannot prove anything." That is the assumption
+    // the ENTIRE harness is built on, and nothing asserted it. A suite whose
+    // instrumentation depends on an unasserted premise is a suite that can be
+    // quietly disarmed.
+    //
+    // Mutation this kills: `pendingAcceptanceCount >= 0 ? ... : undefined`. With
+    // that, a 0 badge renders and this test fails.
+    CANNED.cmd_list_acceptances = [];
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().projects.length).toBeGreaterThan(0));
+
+    // No badge on the 派单 item. The nav item renders its label with no number
+    // beside it.
+    //
+    // Scoped to that button's own text, not the document: a bare `queryByText('0')`
+    // matches every other zero on screen (the inbox badge, the counters), and the
+    // assertion has to be about THIS item to fail for the right reason.
+    await waitFor(() => expect(screen.getByTitle('派单')).toBeTruthy());
+    expect(screen.getByTitle('派单').textContent).not.toContain('0');
+  });
+
+  it('the badge refreshes on a bounded interval, and the interval is cleared on unmount', async () => {
+    // Flux found this and Lyra reproduced it: change `setInterval(read, 15000)` to a
+    // value that never expires and 16 tests stay green. The consequence is that
+    // after the operator accepts a card the count never goes down, and when a new
+    // card arrives the count never appears — the staleness window stops being 15
+    // seconds and becomes forever.
+    //
+    // This is a DIFFERENT class from the last gap. That one was "the assumption the
+    // whole harness rests on had no assertion"; this one is "a behaviour has no
+    // assertion". The consequence is a stale number, not a disarmed suite. Flux
+    // deliberately separated the two and so does this test.
+    //
+    // Three mutations this kills:
+    //   · remove setInterval entirely — the count never updates after the first read;
+    //   · make the interval never expire — the same, invisibly;
+    //   · set it to something huge (24h) — the same, with a plausible-looking number.
+    //
+    // Fake timers, because the claim is about WHEN the read happens, and a real
+    // 15-second wait would make this suite take minutes.
+    vi.useFakeTimers();
+    try {
+      CANNED.cmd_list_acceptances = [];
+      mountApp();
+      // Let the first read land.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // Now a card arrives. The only way the badge can learn about it is a poll.
+      CANNED.cmd_list_acceptances = [
+        {
+          id: 'acc-late',
+          status: 'pending',
+          dispatchId: 'disp-late',
+          projectId: FIRST_REAL_PROJECT,
+        },
+      ];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16000);
+      });
+
+      // It appeared, without the operator touching anything. Without the interval
+      // this assertion waits forever and fails.
+      expect(screen.getByTitle('派单').textContent).toContain('1');
+
+      // And it is BOUNDED: a poll that fires continuously is a poll nobody sized.
+      // Advance well past one interval and confirm the read happened again rather
+      // than the timer having been a one-shot.
+      CANNED.cmd_list_acceptances = [];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31000);
+      });
+      expect(screen.getByTitle('派单').textContent).not.toContain('1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the badge poll is cleared on unmount', async () => {
+    // Flux verified the cleanup exists but noted nothing pins it. Without a pin, the
+    // next person to touch that effect can drop the `return () => clearInterval(...)`
+    // and the suite stays green — while every project switch leaks a timer that
+    // keeps polling a component that no longer renders.
+    vi.useFakeTimers();
+    try {
+      CANNED.cmd_list_acceptances = [
+        { id: 'acc-a', status: 'pending', dispatchId: 'disp-a', projectId: FIRST_REAL_PROJECT },
+      ];
+      mountApp();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTitle('派单').textContent).toContain('1');
+
+      // Unmount. The interval must stop.
+      cleanup();
+      const pendingBefore = vi.getTimerCount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120000);
+      });
+
+      // No timers survive the unmount. If the cleanup were dropped, the count here
+      // would still be at least one and it would keep firing into a dead component.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(pendingBefore).toBeGreaterThanOrEqual(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('every nav tab declares its backing — a new tab cannot default to "hand-written samples"', async () => {
+    // The last unenforced omission on this chain.
+    //
+    // Flux's framing, quoted because it is the precise one: the derivation fix
+    // closed the drift BETWEEN the two lists; it added nothing that catches a tab
+    // in NEITHER. The original defect was an ENFORCED EXCLUSION (an assertion that
+    // the set was exactly [sessions, dispatches], pinning seven live tabs to
+    // SAMPLE). That is gone. What is left is an UNENFORCED OMISSION failing
+    // silently in the same direction. He called it narrower; the direction is
+    // identical.
+    //
+    // Lyra measured it: add a tab to NavRail without declaring its backing and 382
+    // tests stay green. provenanceForTab('brandnew', true, 'ok') returned 'seed' —
+    // a fully hydrated backend behind a tab telling the operator its rows are a
+    // hand-written baseline.
+    //
+    // This walks the REAL nav rail, read out of the DOM. A hardcoded list of tab
+    // names here would be the exact property of the original assertion that
+    // enforced the exclusion: a test that has to be edited whenever a tab is added
+    // is a test that will be edited to pass. Reading the nav means ADDING a tab is
+    // what makes this demand a declaration.
+    //
+    // Mutation this kills: add an entry to NavRail's navItems without declaring it
+    // in LIVE_TAB_BACKING or LEDGER_TABS.
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().backendHydrated).toBe(true));
+
+    // Every nav button carries its tab id as the accessible name (the rail is
+    // collapsed at this breakpoint, so the label lives in `title`). Read them all
+    // rather than naming them here.
+    const navButtons = Array.from(document.querySelectorAll('nav button[data-tab-id]'));
+    const tabIds = navButtons.map((b) => b.getAttribute('data-tab-id')).filter(Boolean);
+    expect(tabIds.length).toBeGreaterThan(0);
+
+    const undeclared = tabIds.filter(
+      (id) => provenanceForTab(id as string, true, 'ok') === 'not-declared',
+    );
+    expect(undeclared, `nav tabs with no declared backing: ${undeclared.join(', ')}`).toEqual([]);
   });
 
   it('does not restore a project the backend did not return', async () => {
@@ -393,6 +911,90 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(readStoredAppStore().activeProjectId).toBe(FIRST_REAL_PROJECT));
     expect(writtenProjectIds().at(-1)).toBe(FIRST_REAL_PROJECT);
     expect(writtenProjectIds()).not.toContain(OLD_LAUNCH_DEFAULT);
+
+    // AND the operator is TOLD it happened.
+    //
+    // A silent fallback fixes the data and hides the event, which is the same
+    // failure one level down. Measured on the real machine: the active project was
+    // `project_delivery`, which has no row in projects at all — a directory-style
+    // prefix that used to be a project and is now a namespace. Every
+    // project-scoped read therefore returned nothing, and the empty state is
+    // honest about the read: hydrateProjectData builds the list fresh from real
+    // data. So the operator reads "my work is all done" when the real state is
+    // "you are looking at a project that is not in the database", and the work is
+    // sitting in seatloom.
+    //
+    // The notice must name BOTH ids. "The project you were in no longer exists"
+    // without naming it leaves him unable to tell whether it is about the project
+    // he cares about.
+    //
+    // Mutation this kills: drop the setDroppedProject call. The fallback above
+    // still passes — the app still lands on a real project — so without this
+    // assertion the correction is invisible.
+    // Matched by its own text, not by role: `role="status"` is used by several
+    // surfaces (the provenance banner among them), and a role query here found
+    // more than one.
+    const notice = await screen.findByText(/已不存在/);
+    const noticeText = notice.closest('[role="status"]')?.textContent ?? notice.textContent;
+    expect(noticeText).toContain('deleted-project');
+    expect(noticeText).toContain(FIRST_REAL_PROJECT);
+  });
+
+  it('an operator-driven tab change IS persisted — the wrapper is not decorative', async () => {
+    // The ruling moved persistence from an effect into operator input. That makes
+    // the write reachable only through `chooseTab`, which makes "did anything
+    // actually persist?" the question the suite has to answer — and this is the
+    // direction nobody had tested.
+    //
+    // Mutation this kills: make chooseTab NOT call updateProjectUIState. Without
+    // this test that mutation is invisible — the suite stays green while the
+    // operator's position is silently never saved again, which is the same class
+    // of failure as the round-6 pollution, in the opposite direction.
+    useAppStore.setState({
+      projectUIStates: {
+        [RECORDED_PROJECT]: {
+          activeTab: 'artifacts',
+          selectedObjectId: null,
+          selectedObjectType: null,
+          filters: {},
+        },
+      },
+    });
+
+    mountApp();
+    await waitFor(() => expect(useDataStore.getState().activeProjectId).toBe(RECORDED_PROJECT));
+    await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
+
+    // The cold start added no write of its own. `writtenTabsFor` reports a
+    // snapshot taken at every write, and the test's own `setState` in beforeEach
+    // persists too — so the baseline is measured here, after the mount settles,
+    // and the assertion is that nothing was ADDED to it by the launch.
+    const writesAfterColdStart = appStoreWrites.values.length;
+    expect(writesAfterColdStart).toBeGreaterThan(0);
+
+    // Now the operator navigates, through the nav rail — the same path he uses.
+    // 'workitems' is chosen because it is neither the cold-start default nor the
+    // saved 'artifacts', so "the write happened" and "nothing happened" are
+    // different observations.
+    // The nav rail's own button. Matched by title because the rail is collapsed in
+    // jsdom (the compact/tablet breakpoints collapse it), which leaves the label
+    // only as an accessible name on the button.
+    fireEvent.click(screen.getByTitle('工作项'));
+    await waitFor(() => expect(mainText()).toContain('活跃工作项账本'));
+
+    // It reached the disk, for the project he was in — and it is a NEW write, not
+    // one of the baseline ones.
+    expect(appStoreWrites.values.length).toBeGreaterThan(writesAfterColdStart);
+    const written = writtenTabsFor(RECORDED_PROJECT)
+      .slice(writesAfterColdStart)
+      .filter((t) => t !== undefined);
+    expect(written).toContain('workitems');
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('workitems');
+
+    // ...and a later launch reads it back. The project memory survives a restart,
+    // which is the whole point of persisting it.
+    await relaunch();
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('workitems');
   });
 
   it('a second launch lands back on the same project AND the same tab', async () => {
@@ -432,13 +1034,20 @@ describe('restart lands back in the recorded project, and the write cannot win t
     await waitFor(() => expect(mainText()).toContain('每个席位的治理派单队列'));
     expect(screen.queryByText('产出物')).toBeNull();
 
-    // The saved TAB is whatever the operator is actually looking at. Since the
-    // 2026-10-29 contract change that is 'dispatches' on a cold start — the point
-    // of the assertion is that disk agrees with the screen, which is what the
-    // `loadedUIProjectId` gate protects: without it the write effect fires before
-    // the destination's saved tab has been applied, overwriting it with the
-    // previous tab.
-    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('dispatches');
+    // The saved TAB is what the OPERATOR chose, not what a cold start happened to
+    // be showing.
+    //
+    // 2026-10-29, second correction: this used to assert 'dispatches' here — i.e.
+    // that the cold-start default IS written into the project's memory, replacing
+    // the saved 'artifacts'. That is the pollution, stated as the expectation.
+    // Measured: with that write in place, the restored project's per-project tab
+    // memory is destroyed on every launch, and the operator silently loses the
+    // feature he asked for. Lyra's mutation 2 was surviving a green suite for
+    // exactly this reason.
+    //
+    // So the assertion is the opposite: the saved tab survives the launch
+    // untouched, because nothing on a cold start is the operator's choice.
+    expect(useAppStore.getState().projectUIStates[RECORDED_PROJECT]?.activeTab).toBe('artifacts');
 
     // ...and it never wrote any OTHER tab for that project, not even for one
     // render. The final value above is what a later launch reads; a wrong tab on
@@ -446,9 +1055,14 @@ describe('restart lands back in the recorded project, and the write cannot win t
     // window loses. React applies the tab restore and the write effect in the
     // same commit, so an ungated write effect reads the OLD tab and persists it —
     // invisible in the final state, fatal in the window.
+    //
+    // 2026-10-29, second correction: this asserted `new Set(['dispatches'])` —
+    // that the ONLY tab ever written for the restored project is the cold-start
+    // default. That is the pollution again, now stated as "it never wrote
+    // anything else". The set must be the operator's own tab.
     const writtenTabs = writtenTabsFor(RECORDED_PROJECT).filter((t) => t !== undefined);
     expect(writtenTabs.length).toBeGreaterThan(0);
-    expect(new Set(writtenTabs)).toEqual(new Set(['dispatches']));
+    expect(new Set(writtenTabs)).toEqual(new Set(['artifacts']));
   });
 
   it('starts with no active project when the backend has none at all', async () => {

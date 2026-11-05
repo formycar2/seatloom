@@ -88,3 +88,83 @@ mod require_project_id_tests {
         );
     }
 }
+
+/// Source-level contract for the four write/spawn paths.
+///
+/// These commands cannot be unit-tested directly — they spawn a child process and
+/// speak JSON-RPC over stdio — so the claim that matters ("they no longer reach
+/// for the startup constant") is checked against their own source.
+///
+/// Why a source check and not a mock: the defect is precisely that the child is
+/// spawned with a CONSTANT, and the observable consequence (a dispatch filed under
+/// the wrong project) only appears against a live database with two projects. A
+/// source check fails the moment the constant comes back, which is the direction
+/// the regression would come from.
+///
+/// The strings are spelled so that this file's own prose cannot satisfy them.
+#[cfg(test)]
+mod spawn_path_project_scoping_tests {
+    use std::fs;
+
+    fn source(rel: &str) -> String {
+        // CARGO_MANIFEST_DIR is src-tauri/, so the commands live under src/.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/commands")
+            .join(rel);
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    }
+
+    /// Every one of the four must call `require_project_id`. That call is the
+    /// refusal; without it an absent id becomes a default somewhere downstream.
+    #[test]
+    fn each_of_the_four_calls_require_project_id() {
+        let cases = [
+            ("dispatch_cmds.rs", "cmd_enqueue_dispatch"),
+            ("dispatch_cmds.rs", "cmd_plan_intent"),
+            ("history_cmds.rs", "cmd_list_history_projects"),
+            ("history_cmds.rs", "cmd_get_history_session_turns"),
+            ("session_work_cmds.rs", "cmd_session_work"),
+            ("session_work_cmds.rs", "cmd_memory_session"),
+        ];
+        for (file, command) in cases {
+            let src = source(file);
+            let needle = format!("require_project_id(\"{command}\"");
+            assert!(
+                src.contains(&needle),
+                "{file}: {command} must refuse an absent project_id via require_project_id — \
+                 a silent fallback files the row under the startup constant instead"
+            );
+        }
+    }
+
+    /// The `SEATLOOM_PROJECT_ID` handed to a child must come from the caller's
+    /// project, never from `state.default_project_id`. This is the mutation that
+    /// matters: the four commands still compile and still work when this regresses,
+    /// and the only visible symptom is a dispatch landing in the wrong project.
+    #[test]
+    fn no_spawn_path_hands_the_child_the_startup_constant() {
+        for file in [
+            "dispatch_cmds.rs",
+            "history_cmds.rs",
+            "session_work_cmds.rs",
+        ] {
+            let src = source(file);
+            // The comment blocks legitimately NAME the constant to record what was
+            // removed, so count the `.env(...)` calls rather than any occurrence.
+            let spawns = src
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    t.starts_with(".env(\"SEATLOOM_PROJECT_ID\"")
+                })
+                .filter(|l| l.contains("default_project_id"))
+                .count();
+            assert_eq!(
+                spawns, 0,
+                "{file}: a spawn still hands the child state.default_project_id — \
+                 that constant is one project set once at startup, and every dispatch \
+                 created under any other project is filed there"
+            );
+        }
+    }
+}

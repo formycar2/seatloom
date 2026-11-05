@@ -85,8 +85,7 @@ export const api = {
     invoke('cmd_get_project', { projectId }),
 
   // --- Seats / roles / delegations ---
-  listSeats: (projectId: string): Promise<SeatDto[]> =>
-    invoke('cmd_list_seats', { projectId }),
+  listSeats: (projectId: string): Promise<SeatDto[]> => invoke('cmd_list_seats', { projectId }),
   // The GLOBAL seat registry, unfiltered. Used for exactly one purpose: naming
   // the seats that are bound in no project at all, so an empty seat list can say
   // why it is empty instead of rendering as broken. Everything else reads the
@@ -126,9 +125,11 @@ export const api = {
   // --- Documents ---
   // projectId is required: the command used to fall back to the app's default
   // project, so the Artifacts tab's document half was always seatloom's.
-  listDocuments: (
-    opts: { projectId: string; template?: string; subtype?: string },
-  ): Promise<DocumentDto[]> => invoke('cmd_list_documents', opts),
+  listDocuments: (opts: {
+    projectId: string;
+    template?: string;
+    subtype?: string;
+  }): Promise<DocumentDto[]> => invoke('cmd_list_documents', opts),
   getDocument: (documentId: string): Promise<DocumentDto | null> =>
     invoke('cmd_get_document', { documentId }),
   listDocumentSections: (documentId: string): Promise<DocumentSectionDto[]> =>
@@ -177,29 +178,53 @@ export const api = {
   // dispatches and looked like data. The type now refuses to let a caller forget.
   listDispatches: (projectId: string, limit?: number): Promise<DispatchDto[]> =>
     invoke('cmd_list_dispatches', { projectId, limit }),
+  // The project is required, exactly as listDispatches requires it.
+  //
+  // The command used to take no project and the child was spawned with
+  // `SEATLOOM_PROJECT_ID = state.default_project_id` — a constant set once at
+  // startup. So a dispatch created while viewing project X was filed under
+  // seatloom, and the list the operator was looking at (which reads
+  // cmd_list_dispatches with X) refreshed to nothing. Measured: 3 of the 4
+  // projects that have a seat binding are not seatloom, so this was the normal
+  // case, not an edge.
   enqueueDispatch: (
+    projectId: string,
     targetSeatId: string,
     title: string,
     instructions: string,
     priority?: number,
   ): Promise<string> =>
-    invoke('cmd_enqueue_dispatch', { targetSeatId, title, instructions, priority }),
+    invoke('cmd_enqueue_dispatch', { projectId, targetSeatId, title, instructions, priority }),
   // Supervisor intent entry (contract slice 1) — plan_intent over the same stdio path
   // as cmd_enqueue_dispatch (actor human:supervisor). Reads only, appends nothing;
   // returns the tool's pretty-JSON text (parse as IntentPlanResult). A rejection is
   // thrown verbatim so the UI can show the reason rather than an empty card.
-  planIntent: (intent: string): Promise<string> => invoke('cmd_plan_intent', { intent }),
+  // Same reason as enqueueDispatch: the planner gathers facts scoped to a project,
+  // so it must be told which one the operator is looking at. Without it the plan
+  // was about seatloom while the operator read project X, and the confirm step
+  // then wrote the dispatch under that project.
+  planIntent: (projectId: string, intent: string): Promise<string> =>
+    invoke('cmd_plan_intent', { projectId, intent }),
 
   // --- Historical session corpus (LYRA-2026-10-14 contract §8.2 slice 3) ---
   // The three reads are Nimbus's slice-2 tools over stdio; the two below them
   // dereference the turn pointers on this machine's disk. Every one returns the
   // tool's own text verbatim on rejection, so the UI shows the measured reason
-  // instead of an empty list. `list_history_projects` takes no argument.
-  listHistoryProjects: (): Promise<string> => invoke('cmd_list_history_projects'),
+  // All three now take the project the operator is in.
+  //
+  // `list_history_projects` returns a GLOBAL list, so it looks like it needs no
+  // project — but the child process it spawns still needs one in scope, and it
+  // used to fall back to the startup constant. Required here as well, so this
+  // path refuses rather than reaching for it.
+  //
+  // The other two are genuinely scoped: a session's turns resolve against the
+  // corpus of the project they were read under.
+  listHistoryProjects: (projectId: string): Promise<string> =>
+    invoke('cmd_list_history_projects', { projectId }),
   listHistorySessions: (projectId: string): Promise<string> =>
     invoke('cmd_list_history_sessions', { projectId }),
-  getHistorySessionTurns: (harness: string, id: string): Promise<string> =>
-    invoke('cmd_get_history_session_turns', { harness, id }),
+  getHistorySessionTurns: (projectId: string, harness: string, id: string): Promise<string> =>
+    invoke('cmd_get_history_session_turns', { projectId, harness, id }),
   readHistoryContextSlice: (
     contextPath: string,
     lineStart: number,
@@ -215,8 +240,7 @@ export const api = {
   // side shells out to the platform opener, the same mechanism openLocalPath
   // already uses. Only http(s) passes the gate there; other schemes come back as
   // an error naming the scheme, which is what callers surface.
-  openExternalUrl: (url: string): Promise<void> =>
-    invoke('cmd_open_external_url', { url }),
+  openExternalUrl: (url: string): Promise<void> => invoke('cmd_open_external_url', { url }),
 
   // --- D2 acceptance loop (a delivered milestone, decided in the UI) ---
   // Nimbus's lane. The three commands below are NOT registered on `track` yet,
@@ -347,9 +371,7 @@ export function onSessionMirrorLost(
  *   4. no search                          -> the text is searchable
  * None of those are solved here; the point is that none of them is BLOCKED here.
  */
-export function onSessionTurn(
-  handler: (event: SessionTurnEvent) => void,
-): Promise<UnlistenFn> {
+export function onSessionTurn(handler: (event: SessionTurnEvent) => void): Promise<UnlistenFn> {
   return listen<SessionTurnEvent>('session:turn', (e: Event<SessionTurnEvent>) =>
     handler(e.payload),
   );
