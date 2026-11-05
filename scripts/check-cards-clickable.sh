@@ -99,6 +99,7 @@ fi
 
 total=0
 bad=0
+behind_note=""
 declare_bad=""
 
 while IFS='|' read -r branch base card; do
@@ -114,11 +115,81 @@ while IFS='|' read -r branch base card; do
   # Measured in the gate's repository, not in this script's working directory.
   # They are the same refs (worktrees share refs/heads) but the question "can the
   # gate see a repository at all" is not, and that question came first.
-  if ! git -C "$GATE_REPO_ROOT" merge-base --is-ancestor "$base" "$branch" 2>/dev/null; then
-    behind=$(git rev-list --count "$branch".."$base" 2>/dev/null)
+  #
+  # 🔴 2026-11-05: the predicate CHANGED, by the operator's ruling.
+  # dec-clickable-criterion-level-with-base, resolved 03:43:40 UTC by
+  # human:supervisor: clickability asks only whether the merge would DROP the
+  # mainline's commits or DELETE files tracked on the base; it no longer requires
+  # the branch to be LEVEL with the mainline. The level-with-base requirement
+  # STAYS at request_acceptance (dispatch.rs:1815 BranchNotSynced) and does not
+  # block clicking.
+  #
+  # What used to be here was the level check itself — merge-base --is-ancestor —
+  # which refused every branch that was merely behind. That is exactly the
+  # ground he ruled invalid, and it cost him five hours a day (Lyra's re-priced
+  # figure: windows of 61.5 / 58.9 / 61.1 / 119.4 minutes).
+  #
+  # 🔴 A gate that stops refusing without starting to check anything is WORSE
+  # than one that refuses on the wrong ground. So this does not delete the
+  # check; it replaces it with the two questions he named. Both are already
+  # used by the real gate: branch_contains (dispatch.rs:1810) and
+  # merge_would_delete (dispatch.rs:1822, exemptions applied).
+  #
+  # Both directions are proven by scripts/test-clickability-criterion.sh:
+  # a branch that is merely BEHIND must NOT be refused, and a branch whose
+  # merge DELETES must be refused. The second protects the merge; the first is
+  # what he paid five hours a day for.
+  #
+  # Being behind is now only a NOTE. It is not a refusal, because a behind
+  # branch merges cleanly: the merge keeps the mainline's later commits.
+  behind=$(git rev-list --count "$branch".."$base" 2>/dev/null)
+  [ "$behind" = "0" ] || behind_note="behind ${behind}"
+
+  # (1) Would the merge DELETE files the base still tracks? This is the one
+  # that protects merged work, so it is asked first.
+  merge_tree=$(git -C "$GATE_REPO_ROOT" merge-tree --write-tree "$base" "$branch" 2>/dev/null | head -1)
+  if [ -z "$merge_tree" ]; then
+    # Not a conflict message we can read. Say so rather than guessing: an
+    # unreadable preview must not become "nothing would be deleted".
     bad=$((bad + 1))
-    declare_bad="${declare_bad}${branch}|${card}|behind ${behind}\n"
+    declare_bad="${declare_bad}${branch}|${card}|merge preview unreadable\n"
+  else
+    deleted=$(git -C "$GATE_REPO_ROOT" diff --name-only --diff-filter=D "$base" "$merge_tree" 2>/dev/null)
+    if [ -n "$deleted" ]; then
+      # Subtract the operator-ruled exemptions, the same list the gate uses.
+      # The remainder is what the defence actually protects.
+      undeleted=""
+      while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        case "$path" in
+          ui/src/app-v2/AppV2.tsx) ;;   # DELETION_EXEMPTIONS, ruled by the operator
+          *) undeleted="${undeleted}${path} " ;;
+        esac
+      done <<< "$deleted"
+      if [ -n "$undeleted" ]; then
+        bad=$((bad + 1))
+        declare_bad="${declare_bad}${branch}|${card}|merge would delete: ${undeleted}\n"
+      fi
+    fi
   fi
+
+  # (2) There is deliberately NO second predicate here, and the first version of
+  # this script got this wrong twice.
+  #
+  # The ruling says clickability asks whether the merge "would drop the
+  # mainline's commits or delete files". The deletion half is above. The
+  # drop-commits half is NOT a merge property: a git merge keeps both sides'
+  # history, so no ordinary merge can drop a mainline commit. The only thing it
+  # can map onto is "the branch does not contain the base"
+  # (`merge-base --is-ancestor base branch` = false) — and that is exactly
+  # `request_acceptance`'s BranchNotSynced at dispatch.rs:1815, which the
+  # operator EXPLICITLY KEPT at card-open time and EXPLICITLY SAID does not
+  # block clicking. Re-adding it here would re-implement the check he just
+  # moved, which is the same defect wearing different clothes.
+  #
+  # So the click-time gate asks the one question that is genuinely about the
+  # merge: would it delete files the base still tracks. The containment
+  # question is answered where he ruled it belongs.
 done <<< "$rows"
 
 if [ "$bad" -gt 0 ]; then
@@ -127,8 +198,15 @@ if [ "$bad" -gt 0 ]; then
   echo "which branch / which card / why"
   printf "$declare_bad" | sort -u
   echo
-  echo "the affected seats must merge track into their packet branch"
-  echo "   git merge track/infra-foundation    # on their branch, then push"
+  if [ -n "${behind_note:-}" ]; then
+    echo "note (not a refusal): some branches are merely behind — ${behind_note}"
+    echo "  being behind is no longer a ground to refuse. dec-clickable-criterion-level-with-base"
+    echo "  resolved that on 2026-11-05 03:43:40 UTC. They may merge to tidy up; they do not have to."
+    echo
+  fi
+  echo "the affected seats must fix the merge itself, not the calendar:"
+  echo "  a branch whose merge would delete base-tracked files must stop deleting them"
+  echo "  a branch that lacks the base must merge track into their packet branch, then push"
   echo
   echo "Do NOT merge their branches into track yourself: that is the operator's Accept."
   exit 1
@@ -136,5 +214,3 @@ fi
 
 [ "$QUIET" = "1" ] || echo "OK: all ${total} pending cards are clickable"
 exit 0
-// probe
-# probe
