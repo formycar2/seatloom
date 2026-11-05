@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# test-prepare-verification-build-dry-run.sh — 证明 --dry-run 只算不做。
+#
+# 为什么需要这个测试(2026-11-06):
+#   操作者批准的是「先看会动到什么,再决定装不装」。而 prepare-verification-build.sh
+#   的每一步都不可逆:pkill、rm -rf、cp -R、tauri build、重启。一个说自己在干跑
+#   其实动了手的脚本,比没有干跑更糟 —— 它会让人以为已经看过了。
+#
+# 所以这个测试的承重命题不是「它打印了东西」,而是:
+#   **干跑期间,那些命令一次都没有执行。**
+#
+# 做法:在一个临时 fixture 里造一个假仓库、假 tauri、假 launch 器、假 pkill/git,
+# 干跑脚本,然后断言 fixture 里没有出现任何「执行过」的痕迹。探针全部放在
+# fixture 里,**绝不碰主检出/主索引/在跑的应用**。
+#
+# 每一行都必须能失败。最后一条是变异:把干跑守卫删掉,这个测试必须红。
+
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$REPO/scripts/prepare-verification-build.sh"
+[ -f "$SCRIPT" ] || { echo "❌ 找不到 $SCRIPT"; exit 1; }
+
+FIX="$(mktemp -d)/dryrun-fixture"
+FAIL=0
+pass(){ echo "  ✓ $1"; }
+die(){ echo "  ✗ $1"; FAIL=1; }
+
+cleanup(){ rm -rf "$(dirname "$FIX")"; }
+trap cleanup EXIT
+
+# ── 造 fixture ────────────────────────────────────────────────────────────
+# 形状和真实仓库一致到脚本需要的程度:
+#   $FIX/repo/scripts/prepare-verification-build.sh   脚本本体(拷贝)
+#   $FIX/repo/ui/dist                                 (不存在 —— 干跑不该建)
+#   $FIX/repo/node_modules/.bin/tauri                 假可执行文件,记录自己被调用
+#   $FIX/repo/scripts/launch-seatloom.sh              假启动器,记录自己被调用
+#   $FIX/worktrees/seat/                              ？ 不需要:分支就是当前检出的
+mkdir -p "$FIX/repo/scripts" "$FIX/repo/ui" "$FIX/repo/node_modules/.bin" "$FIX/bin"
+cp "$SCRIPT" "$FIX/repo/scripts/prepare-verification-build.sh"
+
+cat > "$FIX/repo/node_modules/.bin/tauri" <<EOF
+#!/usr/bin/env bash
+echo "TAURI-RAN \$*" >> "$FIX/executed.log"
+echo "fake tauri build"
+EOF
+chmod +x "$FIX/repo/node_modules/.bin/tauri"
+
+cat > "$FIX/repo/scripts/launch-seatloom.sh" <<EOF
+#!/usr/bin/env bash
+echo "LAUNCH-RAN" >> "$FIX/executed.log"
+echo "fake launch"
+EOF
+chmod +x "$FIX/repo/scripts/launch-seatloom.sh"
+
+# pnpm 也要有 —— 干跑不该调它,但真实路径会。造一个会记录的假货,
+# 这样「干跑没跑 pnpm」才是一个可断言的命题,而不是一句注释。
+cat > "$FIX/bin/pnpm" <<EOF
+#!/usr/bin/env bash
+echo "PNPM-RAN \$*" >> "$FIX/executed.log"
+echo "fake pnpm"
+EOF
+chmod +x "$FIX/bin/pnpm"
+
+# git 的探测(rev-parse / status / branch)是真 git,但要在 fixture 里有个仓库。
+# 不 source 主检出的 .git,所以这是独立的。
+( cd "$FIX/repo" && git init -q -b packet/fixture/test >/dev/null 2>&1 \
+  && git config user.email t@t.local && git config user.name t \
+  && echo hi > README.md && git add . && git commit -qm base ) >/dev/null 2>&1
+
+run_dry(){
+  ( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+      bash scripts/prepare-verification-build.sh --dry-run packet/fixture/test MUST_HAVE_ME ) \
+      2>&1
+}
+
+echo "── 1. 干跑要能跑完,并且退出码是 0 ──"
+OUT="$(run_dry)"; RC=$?
+if [ "$RC" = "0" ]; then pass "干跑退出 0"; else die "干跑退出 $RC"; printf '%s\n' "$OUT" | tail -20; fi
+
+echo "── 2. 干跑期间,一个副作用命令都没有执行 ──"
+# 这是整个测试的承重命题。
+if [ -f "$FIX/executed.log" ]; then
+  die "干跑执行了东西:"; cat "$FIX/executed.log" | sed 's/^/      /'
+else
+  pass "tauri / pnpm / launch 一次都没被调用"
+fi
+# 应用没有被删、没有被复制、没有被装。
+if [ -e "$FIX/repo/ui/dist" ]; then
+  die "干跑构建了前端(ui/dist 出现了)"
+else
+  pass "没有构建前端"
+fi
+if [ -e "$FIX/repo/target" ]; then
+  die "干跑构建了 release(target/ 出现了)"
+else
+  pass "没有构建 release"
+fi
+
+echo "── 3. 干跑把该说的都说了 ──"
+for want in \
+  "packet/fixture/test" \
+  "干跑" \
+  "/Applications/SeatLoom.app" \
+  "pnpm build" \
+  "tauri build" \
+  "需要人批准" \
+  "MUST_HAVE_ME"
+do
+  if printf '%s\n' "$OUT" | grep -qF "$want"; then
+    pass "打印了:$want"
+  else
+    die "没打印:$want"
+  fi
+done
+
+echo "── 4. 未知参数必须非零退出 ──"
+for bad in "--nonsense" "--dry-run --nonsense"; do
+  # shellcheck disable=SC2086
+  ( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+      bash scripts/prepare-verification-build.sh $bad packet/fixture/test ) >/dev/null 2>&1
+  if [ "$?" != "0" ]; then pass "拒绝:$bad"; else die "接受了未知参数:$bad"; fi
+done
+
+echo "── 5. 第二个 --dry-run 必须非零退出(不能静默忽略)──"
+( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+    bash scripts/prepare-verification-build.sh --dry-run --dry-run packet/fixture/test ) >/dev/null 2>&1
+if [ "$?" != "0" ]; then pass "拒绝重复的 --dry-run"; else die "静默接受了第二个 --dry-run"; fi
+
+echo "── 6. 缺安全前提时,不得打印「可以装」──"
+# 把 launch 器拿走:那是操作者身份的来源,缺了它装上去也点不了合并。
+mv "$FIX/repo/scripts/launch-seatloom.sh" "$FIX/launch.bak"
+OUT2="$(run_dry)"; RC2=$?
+mv "$FIX/launch.bak" "$FIX/repo/scripts/launch-seatloom.sh"
+if [ "$RC2" != "0" ]; then pass "缺 launch 器时退出非零"; else die "缺 launch 器却退出 0"; fi
+if printf '%s\n' "$OUT2" | grep -q "前提都满足"; then
+  die "缺 launch 器却打印「前提都满足」—— 那是在劝人装一个点不了合并的程序"
+else
+  pass "缺 launch 器时没有打印「前提都满足」"
+fi
+
+echo "── 7. 变异:删掉干跑守卫,这个测试必须红 ──"
+# 把「if [ \"\$DRY\" = \"1\" 」改成永假,于是 --dry-run 会走真实路径。
+# 真实路径会调 tauri/pnpm,于是第 2 条会失败 —— 证明第 2 条真的在守东西。
+MUT="$FIX/repo/scripts/prepare-verification-build.sh"
+cp "$MUT" "$FIX/orig.sh"
+sed -i.bak 's/^if \[ "\$DRY" = "1" \]; then$/if [ "$DRY" = "never" ]; then/' "$MUT"
+rm -f "$FIX/executed.log"
+OUTM="$(run_dry)"; RCM=$?
+if [ -s "$FIX/executed.log" ] || [ -e "$FIX/repo/ui/dist" ]; then
+  pass "变异后干跑真的动手了(第 2 条会抓住它)"
+else
+  die "变异后仍然没有任何执行痕迹 —— 第 2 条守的是空的"
+fi
+# 还原
+cp "$FIX/orig.sh" "$MUT"
+
+echo ""
+if [ "$FAIL" = "0" ]; then
+  echo "✅ 全部通过"
+  exit 0
+fi
+echo "❌ 有失败项"
+exit 1
