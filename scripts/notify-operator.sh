@@ -181,6 +181,39 @@ if [ "${binds:-0}" -lt 7 ]; then
   if pop "SeatLoom 项目下只看到 ${binds} 个席位" "项目席位绑定没补全,UI 只显示 vela。跑:bash scripts/bind-seatloom-seats.sh --apply" "seatloom-seat-bindings"; then did=$((did+1)); fi
 fi
 
+# 5. 有卡现在点不动(2026-11-05 02:0x 补,Lyra disp-ZZEb6fpwXPR0zqMQjiHwV 派的活)。
+#
+#    为什么必须进推送:这一类昨天真实发生了四次,每次都是我的说明提交让 Mira 的
+#    分支落后 track 1 个,两张待验收卡立刻从「可以点」变成「点了会被拒」。
+#    而第 1 类(有卡等你拍板)恰恰在卡 PENDING 时触发 —— 那正是卡被挡的时候。
+#    于是推送告诉张先生「有张卡在等你」,他点,被拒,没人告诉他为什么。
+#
+#    Lyra 量过代价:三/四个真实窗口 61.5 / 58.9 / 61.1 / 119.4 分钟,合计 5.0 小时,
+#    外加 Mira 三次合并。我把这条写在这里而不是只在心跳正文里,理由和第 4 类相同 ——
+#    一个只写在我回复里的待办,和一个不存在的待办,在他眼前效果一样。
+#
+#    🔴 这一条只在真的被挡时才弹。check-cards-clickable.sh 退出码非 0 恰好等于
+#       「有卡点不动」,它自己就会列出哪条分支、哪张卡、落后几个提交。
+#       **现在实测退出码是 0(卡都点得动),所以这一条必须完全不发声。**
+#       一个在没事时也弹的通知,会教他忽略整条通道,那比没有通道更糟。
+#       这条要用变异证明,不能只靠我说 —— 见 test 文件。
+#
+#    🔴 不静默吞错:脚本失败(psql 不在、repo root 解析不出)不等于「没卡被挡」。
+#       退出码 2 是我的约定:「查不了,不知道」。那种情况下这一条也闭嘴,
+#       但会说一句自己没查,而不是假装干净。
+click_out="$(bash "$REPO/scripts/check-cards-clickable.sh" 2>&1)"
+click_rc=$?
+if [ "$click_rc" = "0" ]; then
+  :  # 点得动,这一类不发声 —— 这是设计,不是遗漏
+elif [ "$click_rc" = "1" ]; then
+  # 真的被挡。文案必须说清两件事:什么不对,以及一条命令怎么解开。
+  # 不说「有张卡在等你」—— 第 1 类已经在说那句,而他点不动。
+  detail="$(printf '%s\n' "$click_out" | grep -E '^packet/|behind' | head -4 | tr '\n' ' ')"
+  if pop "有验收卡现在点不动" "分支落后于主干,你的接受会被拒。解锁:在卡上写的那条分支里跑 git merge track/infra-foundation 再 push(不用 rebase)。${detail}" "cards-unclickable"; then did=$((did+1)); fi
+else
+  say "  (没查卡的点得动性:check-cards-clickable.sh 退出码 $click_rc,不是 0 也不是 1)"
+fi
+
 say ""
 if [ "$did" = "0" ]; then say "  没有新事需要通知他(该弹的都弹过了)"; else say "  弹了 $did 条"; fi
 exit 0
