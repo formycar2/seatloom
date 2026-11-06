@@ -37,9 +37,28 @@ carry them.
 - `scripts/prepare-sandbox-build.sh`
 - `scripts/test-replace-sandbox-failclosed.sh`
 
-**The deletion guard** is a third subject and is **NOT in this candidate**. Its verdicts
-name `6e04dae` / `6f1c566` on `packet/nimbus/project-scoped-reads`; none names `ac3d1f3`,
-the isolated branch. No verdict has been reused to cover it.
+**The deletion guard** is a third subject and is **NOT in this candidate**.
+
+The earlier version of this manifest said "no isolated guard verdict exists". That
+statement was **too broad and is corrected here**: the ledger does carry
+`ev-flux-verdict-deletion-guard-only-05`, a pass naming `34f8681` on
+`packet/nimbus/deletion-guard-only`, covering the guard itself with a 5/5 guard
+suite and three of Flux's own mutations red. So a verdict for the isolated guard
+branch does exist.
+
+What does not exist is a verdict for the guard **as part of this candidate**, and the
+guard is still excluded, for two measured reasons:
+
+1. That verdict's own `not_claimed` records that at `34f8681` the two identity defects
+   were still open — the watch paths that do not exist in a linked worktree, and a
+   dirty build indistinguishable from a clean one. Both are fixed later in this
+   candidate's history, but not at `34f8681`.
+2. The guard's blobs would come from `34f8681`, which is an ancestor of this branch's
+   history, so including them would mean reusing a verdict to cover a commit it does
+   not name — the thing this manifest exists to avoid.
+
+So the exclusion stands, but the reason is now the correct one. What the candidate
+**cannot** demonstrate is the guard at runtime, and that is stated rather than glossed.
 
 Each subject keeps its own verdict reference. No single verdict is treated as covering the
 combined candidate, and the three separate passes are not read as certifying it.
@@ -117,25 +136,89 @@ bash scripts/replace-sandbox.sh --from-branch packet/nimbus/verification-candida
 That backs up first, then replaces, then verifies the sandbox came up, and prints the
 one-command rollback.
 
+## Operator handoff — measured, end to end
+
+All three steps below were **run**, not described. The final commit for the handoff is
+`9f0e50f`.
+
+**Step 1, build only** — from this seat worktree, on the committed clean source:
+
+```
+bash scripts/prepare-sandbox-build.sh --build-only packet/nimbus/verification-candidate seatloom-build-commit
+```
+
+Result: **exit 0**. Frontend built, release built, and the binary's own embedded commit
+`9f0e50f2e4e5` matched the worktree HEAD. Its own closing line states that nothing was
+installed, replaced, stopped or started.
+
+**Step 2, preview the replacement**:
+
+```
+bash scripts/replace-sandbox.sh --from-branch packet/nimbus/verification-candidate
+```
+
+Result: **exit 0**, listing the backup path, the seven actions in order, the processes and
+paths involved, and what needs approval. It no longer refuses on identity, because step 1
+produced a matching binary. It still stops before `--apply`.
+
+**Step 3, preview a rollback**:
+
+```
+bash scripts/replace-sandbox.sh --rollback --list
+```
+
+Result: **exit 0**, reporting that no backup exists — meaning this script has never
+replaced the sandbox, so there is nothing to roll back to yet.
+
+Zero side effects were verified after all three: the main application (pid 90805) is
+still running and untouched, no backup directory was created, and the sandbox binary's
+mtime is unchanged from before the run.
+
 ## Blockers
 
-1. **`prepare-sandbox-build.sh` cannot find the worktrees root when run from a seat
-   worktree.** `WROOT` is computed as `$REPO/../seatloom-worktrees` with no fallback,
-   which resolves to `.../seatloom-worktrees/seatloom-worktrees` inside a seat worktree.
-   `replace-sandbox.sh` has the fallback; this script does not. **This is pre-existing on
-   track** — line 49 of `track/infra-foundation`'s copy — and I did not introduce it and
-   did not fix it here, because fixing it would add a third subject to a branch whose
-   whole point is to contain exactly two. Measured: step 1 run from this worktree exits 1
-   with "not a branch any worktree has checked out".
-2. **The candidate is not yet built.** Step 1 has not completed, so step 2 currently
-   refuses on the identity mismatch shown above. That is correct behaviour, not a defect,
-   but it means the handoff is not yet clickable end-to-end.
-3. **No verdict names this candidate.** Both subject verdicts name their own commits, not
-   `93ef3d3` plus these blobs. Flux must verify this exact candidate before any operator
-   authorisation.
-4. **`/Applications/SeatLoom-Sandbox.app` still runs the stale `1cee50c` build** (pid
-   20580), and the main app (pid 90805) is untouched. Neither was modified by this work.
-5. **The deletion guard is absent**, deliberately, for the reason above.
+1. **The build prerequisites must be installed first.** `pnpm install` at the repository
+   root and in `ui/`. Both are gitignored, so neither can dirty the source — verified with
+   `git status --porcelain` clean afterwards. Without them step 1 fails at
+   "no node_modules", which is what its own message says.
+2. **No verdict names this candidate.** Both subject verdicts name their own commits. Flux
+   must verify the exact final commit before any operator authorisation, and the three
+   separate passes are **not** a verdict on the combination.
+3. **`/Applications/SeatLoom-Sandbox.app` is still the stale build.** Its executable's
+   mtime is unchanged and it was not modified. The main application (pid 90805) was never
+   touched.
+4. **The deletion guard is absent**, deliberately. A verdict for the isolated branch does
+   exist (`ev-flux-verdict-deletion-guard-only-05` at `34f8681`, pass, guard suite 5/5), but
+   it predates the identity fixes and does not cover this candidate. The candidate
+   therefore cannot demonstrate the guard at runtime, and this manifest does not claim it
+   can.
+
+## Defects found while making the handoff runnable
+
+These were not in the dispatch's scope; they surfaced because the handoff was run rather
+than assumed. All are fixed on this branch.
+
+**The worktree root was guessed.** Both scripts computed `$REPO/../seatloom-worktrees`,
+which resolves to a doubled path inside a seat worktree — so the loop over worktrees never
+ran and the error blamed the branch. `replace-sandbox.sh` had a `[ -d ]` fallback and
+`prepare-sandbox-build.sh` did not, which is how the same bug came back in one place after
+being fixed in the other. Both now share `scripts/worktree-root.sh`, which asks
+`git worktree list`.
+
+**A failed build was reported as a successful one.** Measured: `pnpm build` failed with
+`tsc: command not found`, and the script printed "frontend artefacts present" and
+"application bundle present" anyway. Two defects compounding — the pipe
+`pnpm build 2>&1 | tail -4` made `$?` the status of `tail`, and `[ -d ui/dist ]` was
+satisfied by the **previous day's** `dist`. `tauri build` then bundled the day-old frontend
+into the application, and only the binary-commit check caught it. Both build sites now
+capture the exit status separately and delete the stale artefact first, so "dist exists"
+can only mean "this build produced it".
+
+That fail-open was hiding real errors in my own code: the frontend had never compiled this
+branch's test file. Two TypeScript errors were fixed once they became visible.
+
+This is the **third instance of the same defect family today**: a pipe or `|| true`
+swallowing a command's exit status while a stale state satisfies the check meant to catch
+it.
 
 ## What I did not do
 
