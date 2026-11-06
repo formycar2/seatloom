@@ -56,7 +56,14 @@ line(){ say "──────────────────────�
 fail(){ say ""; say "❌ $*"; exit 1; }
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
+# 🔴 席位工作区根从 git 自己记录的 worktree 列表定,不猜目录名。
+#    老写法 `$(cd "$REPO/.." && pwd)/seatloom-worktrees` 在主检出里对,在席位自己的
+#    工作区里错(拼出双层),于是「找检出该分支的工作区」一次都不进,报出来的是
+#    「这条分支不是任何工作区检出的分支」—— 把人指向错误方向的失败。
+#    replace-sandbox.sh 上有兜底而这里没有:同一个 bug 一处修一处没修,所以复发。
+#    现在两边共用 scripts/worktree-root.sh。
+. "$REPO/scripts/worktree-root.sh"
+WROOT="$(resolve_worktree_root "$REPO")" || exit 1
 MAIN_APP="/Applications/SeatLoom.app"
 SAND_APP="/Applications/SeatLoom-Sandbox.app"
 SANDBOX_KEY_PREFIX="slsandbox:"

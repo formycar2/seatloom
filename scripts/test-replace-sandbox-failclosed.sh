@@ -45,9 +45,18 @@ trap cleanup EXIT
 #   $FIX/seatloom-worktrees/wt/                 源工作区(一个真 git 仓库)
 #   $FIX/Applications/                          假 /Applications
 #   $FIX/bin/                                   假 git / pkill / open / plutil
-mkdir -p "$FIX/repo/scripts" "$FIX/seatloom-worktrees/wt" "$FIX/Applications" "$FIX/bin" "$FIX/backups"
-cp "$SCRIPT" "$FIX/repo/scripts/replace-sandbox.sh"
-cp "$REPO/scripts/prepare-sandbox-build.sh" "$FIX/repo/scripts/prepare-sandbox-build.sh"
+mkdir -p "$FIX/seatloom-worktrees/wt" "$FIX/Applications" "$FIX/bin" "$FIX/backups"
+# 脚本拷贝进**工作区**(那是一个真 git 仓库),因为 worktree-root.sh 用
+# `git worktree list` 定席位根,而 REPO 就是脚本自己所在的目录。放进一个普通目录,
+# resolver 会报「读不到 git」,而那条信息完全没提「你的 fixture 不是仓库」。
+WT_SCRIPTS="$FIX/seatloom-worktrees/wt/scripts"
+mkdir -p "$WT_SCRIPTS"
+cp "$SCRIPT" "$WT_SCRIPTS/replace-sandbox.sh"
+cp "$REPO/scripts/prepare-sandbox-build.sh" "$WT_SCRIPTS/prepare-sandbox-build.sh"
+# 🔴 worktree-root.sh 必须一起拷。两个脚本现在都 source 它来定席位工作区根,
+#    少拷一个就是「command not found」—— 而失败信息指向的是脚本内部第 42 行,
+#    不是「你少拷了一个文件」。实测踩到:十三条断言一起红。
+cp "$REPO/scripts/worktree-root.sh" "$WT_SCRIPTS/worktree-root.sh"
 
 # 假主版和假沙箱。主版必须真的存在,因为「没碰主版」是一个可断言的命题。
 mkdir -p "$FIX/Applications/SeatLoom.app/Contents/MacOS"
@@ -98,7 +107,22 @@ chmod +x "$FIX/bin/pgrep" "$FIX/bin/open"
   && "$REAL_GIT" init -q -b packet/fixture/test \
   && "$REAL_GIT" config user.email t@t.local && "$REAL_GIT" config user.name t \
   && echo hi > README.md && "$REAL_GIT" add . && "$REAL_GIT" commit -qm base ) >/dev/null 2>&1
+# 🔴 把刚拷进去的脚本提交掉。脚本现在放在工作区**里面**,不提交就是未跟踪文件,
+#    而脏检查会先于身份核对触发 —— 于是 commit-missing 那条变异看起来「没复现」,
+#    其实是先撞上了「工作区脏」。实测踩到。
+# .gitignore 必须有。构建产物 target/ 放在工作区里,不忽略它就是未跟踪文件,
+# 而脚本的脏检查**故意**把未跟踪文件算作脏(prepare-sandbox-build.sh 的形状)——
+# 于是身份核对还没轮到,先撞上「工作区脏」。真实仓库是忽略 target/ 的,
+# fixture 不忽略就不是同一个状态。
+( cd "$FIX/seatloom-worktrees/wt" && printf '/target\nCargo.lock\n' > .gitignore ) >/dev/null 2>&1
+( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" add -A >/dev/null 2>&1 \
+  && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m "fixture scripts" ) >/dev/null 2>&1
 WT_SHORT="$(cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" rev-parse --short=12 HEAD)"
+# resolver 认「直接父目录下至少挂两个工作区」的那一个作席位根。fixture 里只有一个 wt,
+# 所以再造一个同属一个仓库的兄弟。放在这里是因为它必须在 fixture 仓库建好**之后** ——
+# 第一版放在仓库建立之前,worktree add 静默失败,父目录下仍然只有一个。
+( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" worktree add -q "$FIX/seatloom-worktrees/wt2" \
+    -b packet/fixture/test2 ) >/dev/null 2>&1
 
 # 一个「构建产物」。二进制里带提交标签,这样身份核对才有东西可核。
 # 同时带 MUST_HAVE_ME —— 「必须存在的字符串」这项检查也是承重的,
@@ -117,8 +141,13 @@ make_bin(){
 make_bin "$WT_SHORT"
 
 # 跑一次干跑。所有用例都用这个入口,只有 git-mode / 沙箱状态不同。
+# 🔴 脚本要从一个**git 仓库里**跑,因为 worktree-root.sh 用 `git worktree list`
+#    定席位根,而 REPO 就是脚本自己所在的目录。第一版把脚本放在 $FIX/repo 这个
+#    普通目录里,于是 resolver 报「读不到 git」—— 而那条失败信息完全没提
+#    「你的 fixture 不是仓库」,十三条断言一起红,看起来像脚本坏了。
+#    正确形状:源工作区自己就是那个仓库,脚本拷贝放进它的 scripts/ 下。
 run_rs(){
-  ( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+  ( cd "$FIX/seatloom-worktrees/wt" && PATH="$FIX/bin:$PATH" \
       SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
       SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
@@ -224,7 +253,7 @@ echo ""
 echo "── 6. 沙箱路径 == 主版路径 → 必须停(否则就是把主版删掉)──"
 # 这个脚本所有破坏性动作都只针对沙箱路径。一旦它被指到主版,后果就是删掉主版。
 rm -f "$FIX/executed.log"
-OUT="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+OUT="$( cd "$FIX/seatloom-worktrees/wt" && PATH="$FIX/bin:$PATH" \
     SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom.app" \
     SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
     SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
@@ -240,8 +269,12 @@ echo "── 7. 变异:把 fail-closed 退回 warn-then-continue,这个测试必
 # 承重命题:上面 1/3/4 不是靠运气绿的。逐个把阻碍改回「警告然后继续」,
 # 对应的断言必须红。三个都测,因为它们是三处独立的 fail-open。
 for which in commit-missing status-fails dirty; do
-  MUT="$FIX/repo/scripts/replace-sandbox.sh"
-  cp "$MUT" "$FIX/mut-orig.sh"
+  MUT="$WT_SCRIPTS/replace-sandbox.sh"
+  # 🔴 备份的必须是**原始**脚本,不是工作区里当前那一版。
+  #    变异会改工作区里的文件;上一轮如果没还原到位,这一轮 cp 走的就是变异版,
+  #    于是 python 的锚点找不到(它已经在变异后的形状里),或者更糟:
+  #    变异叠变异,两条都报「守的是空的」。实测踩到。
+  cp "$SCRIPT" "$FIX/mut-orig.sh"
   python3 - "$MUT" "$which" <<'PYEOF'
 import sys
 p, which = sys.argv[1], sys.argv[2]
@@ -282,20 +315,41 @@ PYEOF
     dirty) printf 'dirty change\n' >> "$FIX/seatloom-worktrees/wt/README.md";;
   esac
   chmod +x "$BUILT/Contents/MacOS/seatloom-tauri"
+  # 把变异后的脚本也提交掉:否则工作区因为它而脏,脏检查先响,被测的那道闸根本轮不到。
+  ( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" add -A >/dev/null 2>&1 \
+    && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m "mutation $which" ) >/dev/null 2>&1
+  # 🔴 提交会移动 HEAD,而身份闸比对的是二进制里的提交和 HEAD。不刷新 fixture 二进制,
+  #    它带的还是旧提交,于是身份闸先响 —— 被测的那道闸(状态/脏)根本轮不到。
+  #    实测输出明明白白写着「二进制里的提交 X 和工作区 HEAD Y 不一致」。
+  WT_SHORT="$(cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" rev-parse --short=12 HEAD)"
+  make_bin "$WT_SHORT"
+  ( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" add -A >/dev/null 2>&1 \
+    && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m "fixture binary for $which" ) >/dev/null 2>&1
   OUTM="$(run_rs)"; RCM=$?
   if [ "$RCM" = "0" ]; then
     pass "变异 $which 之后 fail-open 复现(退出 0)—— 对应断言真的在守东西"
   else
     die "变异 $which 之后仍然非零退出 —— 对应断言守的是空的"
+    printf '%s\n' "$OUTM" | tail -4 | sed 's/^/      MUT> /'
   fi
+  # 🔴 变异改的是**工作区里的脚本**,那本身就是一处未提交改动。脏检查先于身份核对,
+  #    于是 commit-missing 那条变异撞上的是「工作区脏」,不是身份闸 ——
+  #    实测输出明明白白写着 `M scripts/replace-sandbox.sh`。
+  #    所以造完状态之后、跑之前,必须把变异那一版也提交掉,只留被测的那处差异。
   # 还原,并证明逐字节。
   # 🔴 比的对象必须是**仓库里那份原始脚本**,不是循环开头拷出来的副本 ——
   #    比副本证明的是「我刚才把它拷回了它自己」,那是恒真的,一个永远不会报错的
   #    检查比没有检查更有害。
   cp "$FIX/mut-orig.sh" "$MUT"
+  # 🔴 顺序:先把变异版**提交掉**(在造状态那段),跑完再把原版 cp 回来并**再提交一次**。
+  #    第一版在 cp 之后还有一句 `git checkout -q -- .`,它把工作区恢复到最后一次提交 ——
+  #    而最后一次提交正是变异那一版,于是还原被自己撤销,cmp 恒不等。
+  #    「还原」必须是文件层面的,而且必须落在最后一次提交上,否则下一个用例拿到的
+  #    还是变异版。实测踩到:status-fails 和 dirty 两条都红在「没还原干净」。
+  ( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" add -A >/dev/null 2>&1 \
+    && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m "restore after $which" ) >/dev/null 2>&1
   cmp -s "$MUT" "$SCRIPT" || die "变异 $which 没还原干净 —— 后面的用例会被污染"
   echo ok > "$FIX/git-mode"
-  ( cd "$FIX/seatloom-worktrees/wt" && "$REAL_GIT" checkout -q -- . ) >/dev/null 2>&1
   # 用 make_bin,不是手写 printf:手写的那一版只写提交标签,漏了 MUST_HAVE_ME,
   # 于是下一个变异用例在「必须存在的字符串」上就失败了 —— 看起来像变异没复现,
   # 其实是上一个用例还原时把 fixture 弄坏了(实测踩到)。
@@ -314,7 +368,7 @@ chmod +x "$RBAKSRC/SeatLoom-Sandbox.app/Contents/MacOS/seatloom-sandbox"
 { printf '这份是什么  : 被替换掉的旧沙箱\n'
   printf '旧沙箱提交   : bbbbbbbbbbbb\n'; } > "$RBAKSRC/BACKUP-META.txt"
 rm -f "$FIX/executed.log"
-OUTR="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+OUTR="$( cd "$FIX/seatloom-worktrees/wt" && PATH="$FIX/bin:$PATH" \
   SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
   SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
   SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
@@ -340,7 +394,7 @@ NOMETA="$FIX/backups/20260102-000000"
 mkdir -p "$NOMETA/SeatLoom-Sandbox.app/Contents/MacOS"
 printf 'x\n' > "$NOMETA/SeatLoom-Sandbox.app/Contents/MacOS/seatloom-sandbox"
 chmod +x "$NOMETA/SeatLoom-Sandbox.app/Contents/MacOS/seatloom-sandbox"
-OUTN="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+OUTN="$( cd "$FIX/seatloom-worktrees/wt" && PATH="$FIX/bin:$PATH" \
   SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
   SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
   SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
@@ -386,6 +440,7 @@ PSB_REPO="$PSB_ROOT/repo"
 PSB_WT="$PSB_ROOT/seatloom-worktrees/wt"
 mkdir -p "$PSB_REPO/scripts" "$PSB_WT"
 cp "$REPO/scripts/prepare-sandbox-build.sh" "$PSB_REPO/scripts/"
+cp "$REPO/scripts/worktree-root.sh" "$PSB_REPO/scripts/"
 # 主检出的 HEAD 必须在**另一条**分支上。git worktree add 拒绝把一个已经有别的
 # 工作区检出了的分支再检出一份 —— 而主检出自己就占了它那条分支。第一版把主检出
 # 直接建在 packet/fixture/test 上,于是 worktree add 失败,工作区里没有 .git,
@@ -395,8 +450,12 @@ cp "$REPO/scripts/prepare-sandbox-build.sh" "$PSB_REPO/scripts/"
   && echo hi > README.md && "$REAL_GIT" add . \
   && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m base ) >/dev/null 2>&1
 ( cd "$PSB_REPO" && "$REAL_GIT" branch packet/fixture/test ) >/dev/null 2>&1
+( cd "$PSB_REPO" && "$REAL_GIT" branch packet/fixture/test2 ) >/dev/null 2>&1
 # 工作区是主检出的一个 LINKED worktree —— 这正是真实形状,而且 HEAD 就在那条分支上。
 ( cd "$PSB_REPO" && "$REAL_GIT" worktree add -q "$PSB_WT" packet/fixture/test ) >/dev/null 2>&1
+# 第二个工作区,让 resolver 认得出这一层是席位根(它要求至少两个)。
+( cd "$PSB_REPO" && "$REAL_GIT" worktree add -q "$PSB_ROOT/seatloom-worktrees/wt2" \
+    -b packet/fixture/test2 ) >/dev/null 2>&1
 # 构建产物放在工作区里,和真实形状一致。
 BUILT2="$PSB_WT/target/release/bundle/macos/SeatLoom.app"
 mkdir -p "$BUILT2/Contents/MacOS"
@@ -423,7 +482,7 @@ run_psb(){
 rm -f "$FIX/executed.log"
 OUTB="$(run_psb)"; RCB=$?
 [ "$RCB" != "0" ] && pass "两个旗标同时给时非零退出" || die "两个旗标同时给却退出 0 —— 结果取决于哪个分支后被求值,不取决于操作者要了什么"
-printf '%s\n' "$OUTB" | grep -q "不能同时给" && pass "明说这两个不能同时给" || die "没说为什么拒绝"
+printf '%s\n' "$OUTB" | grep -q "不能同时给" && pass "明说这两个不能同时给" || { die "没说为什么拒绝"; printf '%s\n' "$OUTB" | tail -5 | sed 's/^/      OUT> /'; }
 # 🔴 数的是**破坏性**副作用,不是所有调用。pgrep 是只读的:脚本在动任何东西之前
 #    本来就要报告「主版在不在跑」。第一版把任何 executed.log 条目都算「动手了」,
 #    于是 pgrep 的那一行让这一条恒红 —— 而它证明的正好相反:守卫确实在副作用之前。
@@ -471,7 +530,7 @@ echo ""
 echo "── 10. 变异:删掉那个守卫,第 9 条必须红 ──"
 # 承重命题:第 9 条不是靠运气绿的。
 MUT2="$PSB_REPO/scripts/prepare-sandbox-build.sh"   # 测试跑的就是这个拷贝
-cp "$MUT2" "$FIX/mut2-orig.sh"
+cp "$REPO/scripts/prepare-sandbox-build.sh" "$FIX/mut2-orig.sh"
 # 锚点单独放在一个文件里,因为这段测试本身已经是 bash,再嵌一层 heredoc 会让
 # 引号层级失控(实测:嵌进去之后整个测试文件语法错误,而且报错行号离现场 60 行)。
 cat > "$FIX/mut2.py" <<'PYEOF'

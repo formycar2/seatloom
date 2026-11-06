@@ -35,11 +35,12 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# 两种形状都试:从主检出跑,工作区在 ../seatloom-worktrees;从席位自己的工作区跑,
-# 那是 ../ —— 再拼一次会得到一个不存在的目录,于是「找检出该分支的工作区」一次都
-# 不进,报出来的却是「这不是任何工作区检出的分支」——把人指向错误方向的失败。
-WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
-[ -d "$WROOT" ] || WROOT="$(cd "$REPO/.." && pwd)"
+# 🔴 席位工作区根由 git worktree list 定,不猜目录名,也不靠 [ -d ] 兜底。
+#    兜底补丁的问题是:在主检出里它静默返回上一层,而那里并不是工作区根 ——
+#    一个「能跑但找错地方」的补丁,比直接报错更难发现。
+#    现在和 prepare-sandbox-build.sh 共用 scripts/worktree-root.sh。
+. "$REPO/scripts/worktree-root.sh"
+WROOT="$(resolve_worktree_root "$REPO")" || exit 1
 
 APP="${SEATLOOM_MAIN_APP:-/Applications/SeatLoom.app}"          # 主版:只看,不动
 SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"
