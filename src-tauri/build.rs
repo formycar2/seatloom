@@ -178,18 +178,38 @@ fn main() {
     // capture failure must never leave the PREVIOUS answer in place: the file is
     // rewritten unconditionally on every run, so an IO failure below surfaces as a
     // build error rather than as a silently retained stale claim.
-    let (commit, dirty, git_ok) = match root.as_ref() {
-        Some(r) => (
-            // A commit hash is never empty, so an empty answer here means the read
-            // went wrong even though git exited 0 — that is `None`, not a commit.
-            // This is the one caller where an empty string is meaningless, which is
-            // exactly why the filter lives HERE and not in the shared helper.
-            git_in(r, &["rev-parse", "--short=12", "HEAD"]).filter(|s| !s.is_empty()),
-            dirty_count(r),
-            true,
-        ),
-        None => (None, None, false),
-    };
+    //
+    // 🔴 `BUILD_GIT_OK` means **the required git commands succeeded**, not "a
+    //    repository was found".
+    //
+    //    The first version set it from `root` being `Some(...)`. That answers a
+    //    different question: it says the workspace root exists, which is a fact about
+    //    the filesystem. So a git whose `status --porcelain` exits 128 produced
+    //    `BUILD_DIRTY = None` with `BUILD_GIT_OK = true` — the field whose entire
+    //    purpose is to make "git failed" machine-readable was true on the exact
+    //    failure path. Measured by an independent verdict at b843af4
+    //    (ev-5Z2eSzH1_B-VZa62_CoIh).
+    //
+    //    The screen stayed honest, because `built_dirty` is `None` and the banner
+    //    renders "not recorded". That is luck, not design: a reader of the field —
+    //    a script, another seat, a future version of the banner — cannot tell from
+    //    `git_ok` whether git worked. The DTO's own comment says it means "whether
+    //    git answered at all during the capture", and it did not compute that.
+    //
+    //    So it is computed from the capture's own results. `dirty` is the required
+    //    command whose answer carries the most states, so it is the load-bearing
+    //    one; the commit is required too, and both must have answered.
+    let root_present = root.is_some();
+    let commit = root
+        .as_ref()
+        // A commit hash is never empty, so an empty answer here means the read went
+        // wrong even though git exited 0 — that is `None`, not a commit. This is
+        // the one caller where an empty string is meaningless, which is exactly why
+        // the filter lives HERE and not in the shared helper.
+        .and_then(|r| git_in(r, &["rev-parse", "--short=12", "HEAD"]))
+        .filter(|s| !s.is_empty());
+    let dirty = root.as_ref().and_then(|r| dirty_count(r));
+    let git_ok = root_present && commit.is_some() && dirty.is_some();
 
     // The commit is emitted next to its label so a reader can match unambiguously.
     let commit_lit = commit

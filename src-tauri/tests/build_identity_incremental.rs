@@ -208,11 +208,50 @@ impl Scratch {
 
     /// Build and read back the generated `build_identity.rs`.
     fn build_and_capture(&self) -> Capture {
+        self.build_and_capture_with(&self.work.join(".failing-git-bin"))
+    }
+
+    /// Read the generated `build_identity.rs` under the scratch target dir.
+    ///
+    /// Used by the fixture that builds with an unusual PATH: reading the file the
+    /// unusual build produced is the measurement; rebuilding would redo it with the
+    /// normal PATH and measure something else.
+    fn read_generated(&self) -> String {
+        let target = self.work.join("target");
+        let mut found: Option<PathBuf> = None;
+        for entry in walk(&target) {
+            if entry
+                .file_name()
+                .map(|n| n == "build_identity.rs")
+                .unwrap_or(false)
+            {
+                found = Some(entry);
+            }
+        }
+        let path = found.expect("build_identity.rs must be generated under target/");
+        std::fs::read_to_string(&path).expect("read build_identity.rs")
+    }
+
+    /// Build with an extra directory prepended to PATH.
+    ///
+    /// The failing-git fixtures install a wrapper into `.failing-git-bin/`; passing
+    /// it here is what puts that wrapper in front of the real git for the build
+    /// script's child process. When the directory does not exist the PATH entry is
+    /// simply inert, which is what the ordinary tests want.
+    fn build_and_capture_with(&self, extra_path: &Path) -> Capture {
+        let mut path = std::env::var_os("PATH").unwrap_or_default();
+        if extra_path.is_dir() {
+            let mut combined = std::ffi::OsString::from(extra_path);
+            combined.push(":");
+            combined.push(&path);
+            path = combined;
+        }
         run(Command::new("cargo")
             .arg("build")
             .arg("-q")
             .arg("--manifest-path")
-            .arg(self.work.join("crate/Cargo.toml")));
+            .arg(self.work.join("crate/Cargo.toml"))
+            .env("PATH", &path));
         let out = std::env::var("OUT_DIR").ok();
         // Find the generated file under the worktree's target dir.
         let target = self.work.join("target");
@@ -854,4 +893,215 @@ fn a_failed_write_fails_the_build_rather_than_keeping_the_stale_answer() {
         out.text
     );
     let _ = previous;
+}
+
+/// 🔴 `BUILD_GIT_OK` must describe whether the git COMMANDS succeeded.
+///
+/// Measured at b843af4 by an independent verdict (ev-5Z2eSzH1_B-VZa62_CoIh): with a
+/// git whose `status --porcelain` exits 128, the generated file said
+/// `BUILD_DIRTY: Option<u32> = None` with `BUILD_GIT_OK: bool = true`. The flag was
+/// set from "a repository root was found" — a fact about the filesystem — so the one
+/// field whose purpose is to make "git failed" machine-readable was true on the
+/// exact failure path.
+///
+/// The screen stayed honest only because `built_dirty` is `None` and the banner's
+/// first check is `typeof n !== 'number'`. That is luck, not design: a reader of the
+/// field — a script, another seat, a future banner — cannot tell whether git worked.
+///
+/// This is the third defect from that FAIL, and the dispatch required it explicitly:
+/// git unavailable / status / read / write failures must be explicit unknown, never
+/// silently readable as success.
+#[test]
+fn git_ok_is_false_when_the_required_git_command_fails() {
+    let s = Scratch::new("gitok_status128");
+
+    // Baseline first: the flag must be TRUE when git works. A test that only checks
+    // the failure direction would pass if the flag were hardcoded to false.
+    let good = s.build_and_capture();
+    assert!(
+        good.git_ok,
+        "BUILD_GIT_OK must be true when git works — otherwise this test cannot \
+         distinguish a truthful flag from a constant one"
+    );
+
+    // Inject a git that fails ONLY on `status --porcelain`, exit 128, writing to
+    // stderr. Every other subcommand behaves normally. That is the shape a
+    // permissions problem, a corrupt index, or a disk error takes.
+    install_failing_git(&s.work, "status");
+
+    let c = s.build_and_capture();
+    remove_failing_git(&s.work);
+
+    assert!(
+        !c.git_ok,
+        "BUILD_GIT_OK must be false when git status failed. It was true, which means \\
+         the flag reports repository DISCOVERY rather than command SUCCESS"
+    );
+    assert_eq!(
+        c.dirty, None,
+        "a failed status read must be unknown, not a count"
+    );
+}
+
+/// The commit read failing must also clear the flag, and must not leave the previous
+/// answer behind. This is the same property from the other direction: `rev-parse`
+/// failing while `status` succeeds.
+#[test]
+fn git_ok_is_false_when_the_commit_read_fails() {
+    let s = Scratch::new("gitok_revparse");
+    let good = s.build_and_capture();
+    assert!(good.git_ok, "baseline must be git_ok = true");
+    assert!(
+        good.commit_hash().is_some(),
+        "baseline must capture a commit"
+    );
+
+    install_failing_git(&s.work, "rev-parse");
+    let c = s.build_and_capture();
+    remove_failing_git(&s.work);
+
+    assert!(
+        !c.git_ok,
+        "BUILD_GIT_OK must be false when rev-parse failed"
+    );
+    assert_eq!(
+        c.commit_hash(),
+        None,
+        "a failed commit read must be None, not the previous commit — that is the \\
+         stale-claim defect"
+    );
+}
+
+/// Git entirely absent from PATH must be unknown, not clean and not a stale commit.
+///
+/// A missing binary makes `Command::new(\"git\")` fail to spawn, which is a different
+/// failure from a nonzero exit and must land in the same place.
+#[test]
+fn git_ok_is_false_when_git_cannot_be_spawned_at_all() {
+    let s = Scratch::new("gitok_nogit");
+    let good = s.build_and_capture();
+    assert!(good.git_ok, "baseline must be git_ok = true");
+
+    // A PATH with no git in it, but with everything cargo itself needs — rustc
+    // especially. 🔴 The first version set PATH to just `/usr/bin:/bin`, which
+    // removed rustc from the child's PATH, so the build failed with
+    // "could not execute process `rustc -vV`" and the test measured the fixture,
+    // not the capture. Measured, not reasoned.
+    //
+    // So: take the real PATH and FILTER OUT the directories that contain a `git`.
+    let original = std::env::var_os("PATH").unwrap_or_default();
+    let mut filtered: Vec<std::path::PathBuf> = Vec::new();
+    for dir in std::env::split_paths(&original) {
+        if dir.join("git").exists() {
+            continue;
+        }
+        filtered.push(dir);
+    }
+    let filtered_path = std::env::join_paths(filtered).expect("join the filtered PATH");
+    assert!(
+        !filtered_path
+            .to_string_lossy()
+            .split(':')
+            .any(|d| std::path::Path::new(d).join("git").exists()),
+        "the filtered PATH must genuinely contain no git, or this fixture tests nothing"
+    );
+    let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let out = run_outcome(
+        Command::new(&cargo_bin)
+            .arg("build")
+            .arg("-q")
+            .arg("--manifest-path")
+            .arg(s.work.join("crate/Cargo.toml"))
+            .env("PATH", &filtered_path)
+            .env_remove("GIT_EXEC_PATH"),
+    );
+
+    assert!(
+        out.success,
+        "the build must still succeed with git absent — the failure must be recorded, \\
+         not turned into a build error. cargo said: {}",
+        out.text
+    );
+    // 🔴 Read the file that NO-GIT build produced. Do not rebuild: `build_and_capture`
+    // runs with the normal PATH, so git works again and the capture flips back to
+    // git_ok = true — which made this assertion fail on a correct implementation.
+    // Measured, and the failure message pointed at the assertion rather than at the
+    // fixture, which is exactly how a wrong test survives.
+    let c = Capture::parse(&s.read_generated());
+    assert!(
+        !c.git_ok,
+        "BUILD_GIT_OK must be false when git cannot even be spawned"
+    );
+    assert_eq!(c.dirty, None, "no git means unknown, not clean");
+    assert_eq!(
+        c.commit_hash(),
+        None,
+        "no git means unknown, not the previous commit"
+    );
+}
+
+/// The three failure states must be DISTINGUISHABLE from the success states on all
+/// three fields, not just on one. A reader should be able to tell
+/// "git worked and the tree was clean" from "git failed" without knowing which
+/// subcommand failed.
+#[test]
+fn git_failure_is_distinguishable_from_a_clean_tree_on_every_field() {
+    let s = Scratch::new("gitok_distinct");
+    let clean = s.build_and_capture();
+    assert!(clean.git_ok, "baseline must be git_ok = true");
+    assert_eq!(clean.dirty, Some(0), "baseline must be a clean Some(0)");
+
+    install_failing_git(&s.work, "status");
+    let failed = s.build_and_capture();
+    remove_failing_git(&s.work);
+
+    // Every field must differ. If any one of them agrees, a reader cannot tell the
+    // two states apart from that field alone.
+    assert_ne!(
+        clean.git_ok, failed.git_ok,
+        "git_ok must distinguish the two states"
+    );
+    assert_ne!(
+        clean.dirty, failed.dirty,
+        "dirty must distinguish the two states: Some(0) vs None"
+    );
+}
+
+// ── failing-git injection helpers ─────────────────────────────────────────
+//
+// A git on PATH that behaves normally for every subcommand EXCEPT the named one.
+// It is a wrapper, not a replacement: `exec /usr/bin/git \"$@\"` keeps every other
+// call real, so the fixture stays a working repository for everything else. That
+// matters — a git that fails on everything would also break the fixture's own
+// setup, and the test would measure the fixture rather than the capture.
+fn failing_git_dir(work: &Path) -> PathBuf {
+    work.join(".failing-git-bin")
+}
+
+fn install_failing_git(work: &Path, subcommand: &str) {
+    let dir = failing_git_dir(work);
+    std::fs::create_dir_all(&dir).expect("failing-git dir");
+    let real = std::env::var("REAL_GIT_FOR_TEST").unwrap_or_else(|_| "/usr/bin/git".to_string());
+    let script = format!(
+        "#!/usr/bin/env bash\n\
+         for a in \"$@\"; do\n\
+         \x20 if [ \"$a\" = \"{subcommand}\" ]; then\n\
+         \x20   echo \"fatal: injected failure for {subcommand}\" >&2\n\
+         \x20   exit 128\n\
+         \x20 fi\n\
+         done\n\
+         exec \"{real}\" \"$@\"\n"
+    );
+    let path = dir.join("git");
+    std::fs::write(&path, script).expect("write failing git");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod failing git");
+    }
+}
+
+fn remove_failing_git(work: &Path) {
+    let _ = std::fs::remove_dir_all(failing_git_dir(work));
 }
