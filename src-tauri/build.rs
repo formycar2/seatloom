@@ -48,7 +48,13 @@ fn main() {
              /// A literal: the value is compiled in, never read at runtime. A runtime `git`\n\
              /// call would make the banner depend on the launcher's working directory,\n\
              /// which is exactly what this replaces.\n\
-             pub const BUILD_COMMIT: Option<&str> = Some({c:?});\n"
+             ///\n\
+             /// 🔴 The label is not decoration. Measured: grepping a binary for a bare\n\
+             /// 12-hex-digit run finds `dbdbdbdbdbdb` and other placeholders that are not\n\
+             /// commits — Lyra measured six hex-looking strings in the sandbox binary,\n\
+             /// none of them a commit. So the hash is emitted next to a fixed label, and\n\
+             /// anything reading it must match the LABEL, never the bare hex.\n\
+             pub const BUILD_COMMIT: Option<&str> = Some(\"seatloom-build-commit={c}\");\n"
         ),
         None => "/// No commit was captured (git unavailable, or not a repository).\n\
                   /// Stated as absent rather than guessed at.\n\

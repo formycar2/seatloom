@@ -47,6 +47,13 @@ mod build_identity {
     include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 }
 
+/// The fixed prefix `build.rs` emits the captured commit next to.
+///
+/// A bare 12-hex-digit run in a binary is not an identity: measured, grepping for one
+/// finds `dbdbdbdbdbdb` and other placeholders. Matching the label makes the read
+/// unambiguous, and a label that is absent is a stated "could not read", never a guess.
+const BUILD_COMMIT_LABEL: &str = "seatloom-build-commit=";
+
 /// What the frontend needs to render the banner.
 ///
 /// `is_sandbox` is the only field that is ever a hard yes/no: it answers "am I the
@@ -138,7 +145,13 @@ pub async fn cmd_get_runtime_identity() -> Result<RuntimeIdentityDto, String> {
         commit: env_value("SEATLOOM_SANDBOX_COMMIT"),
         built_at: env_value("SEATLOOM_SANDBOX_BUILT"),
         uncommitted: env_count("SEATLOOM_SANDBOX_DIRTY"),
-        built_commit: build_identity::BUILD_COMMIT.map(str::to_string),
+        // The label is stripped here, at the boundary, so the DTO carries a bare hash
+        // and the frontend never has to know the encoding. The label exists so that a
+        // binary reader (scripts/replace-sandbox.sh) can match an unambiguous marker
+        // instead of a bare 12-hex run — which measured `dbdbdbdbdbdb` and other
+        // placeholders that are not commits.
+        built_commit: build_identity::BUILD_COMMIT
+            .map(|v| v.strip_prefix(BUILD_COMMIT_LABEL).unwrap_or(v).to_string()),
     })
 }
 
