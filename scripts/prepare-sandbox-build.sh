@@ -302,23 +302,23 @@ if [ "$BUILD_ONLY" = "1" ]; then
   #    修法两件事一起做:退出码单独取,并且构建前把旧 dist 删掉 ——
   #    于是「dist 存在」只可能意味着「这次构建产出了它」。
   rm -rf "$WT/ui/dist"
-  ( cd "$WT/ui" && pnpm build ) > "$WT/ui/.build.log" 2>&1
+  ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
   UI_RC=$?
   tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
   [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
   [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
-  rm -f "$WT/ui/.build.log"
+  rm -f "$WT/target/ui-build.log"
   say "  ✅ 前端产物在(这次构建产出的)"
   line; say "二 — 构建 release 应用(要几分钟)"; line
   . "$HOME/.cargo/env" 2>/dev/null || true
   # 同一个病:管道吃掉退出码,而 target/release 里可能躺着上一次的产物。
-  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/.tauri-build.log" 2>&1
+  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/target/tauri-build.log" 2>&1
   TAURI_RC=$?
-  tail -5 "$WT/.tauri-build.log" | sed 's/^/    /'
+  tail -5 "$WT/target/tauri-build.log" | sed 's/^/    /'
   [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
   BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
   [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
-  rm -f "$WT/.tauri-build.log"
+  rm -f "$WT/target/tauri-build.log"
   say "  ✅ 应用包在:$BUILT"
   line; say "三 — 证明这个构建带着那份活"; line
   if [ -n "$MUST_HAVE" ]; then
@@ -358,24 +358,24 @@ say "  ✅ 目录在,依赖在"
 line; say "二 — 构建前端"; line
 # 🔴 同上:退出码单独取,并且先删旧 dist —— 否则旧目录会让失败看起来成功。
 rm -rf "$WT/ui/dist"
-( cd "$WT/ui" && pnpm build ) > "$WT/ui/.build.log" 2>&1
+( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
 UI_RC=$?
 tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
 [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
 [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
-rm -f "$WT/ui/.build.log"
+rm -f "$WT/target/ui-build.log"
 say "  ✅ 前端产物在(这次构建产出的)"
 
 # ---- release ----
 line; say "三 — 构建 release 应用(要几分钟)"; line
 . "$HOME/.cargo/env" 2>/dev/null || true
-( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/.tauri-build.log" 2>&1
+( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/target/tauri-build.log" 2>&1
 TAURI_RC=$?
-tail -5 "$WT/.tauri-build.log" | sed 's/^/    /'
+tail -5 "$WT/target/tauri-build.log" | sed 's/^/    /'
 [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
 BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
 [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
-rm -f "$WT/.tauri-build.log"
+rm -f "$WT/target/tauri-build.log"
 say "  ✅ 应用包在:$BUILT"
 
 # ---- 证明这个构建真的带着要验的东西 ----
