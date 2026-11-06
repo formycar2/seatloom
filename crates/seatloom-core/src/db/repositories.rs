@@ -1263,6 +1263,39 @@ impl SeatloomDb {
     ) -> Result<(), DbError> {
         let mut client = self.pool.get().await.map_err(DbError::Pool)?;
         let tx = client.transaction().await?;
+        // `023`: refuse a repeat write BEFORE inserting, inside the same
+        // transaction, so the check and the insert can never disagree.
+        //
+        // The key is built by `memory_dedup_key` below, and the SQL uses
+        // `IS NOT DISTINCT FROM` so a NULL line range compares equal to a NULL
+        // line range — see the three directions pinned in
+        // `tests/memory_dedup_key.rs`, which runs without a database.
+        let dedup = memory_dedup_key(l2_file_path, l2_line_start, l2_line_end, l0_summary);
+        let existing = tx
+            .query_opt(
+                "SELECT id, created_at FROM memories \
+                  WHERE coalesce(l2_file_path, '') = coalesce($1, '') \
+                    AND l2_line_start IS NOT DISTINCT FROM $2 \
+                    AND l2_line_end IS NOT DISTINCT FROM $3 \
+                    AND l0_summary = $4 \
+                  LIMIT 1",
+                &[
+                    &dedup.l2_file_path,
+                    &dedup.l2_line_start,
+                    &dedup.l2_line_end,
+                    &dedup.l0_summary,
+                ],
+            )
+            .await?;
+        if let Some(row) = existing {
+            return Err(DbError::MemoryDuplicate {
+                existing_id: row.get(0),
+                created_at: row.get(1),
+                l2_file_path: l2_file_path.map(str::to_string),
+                l2_line_start,
+                l2_line_end,
+            });
+        }
         tx.execute(
             "INSERT INTO memories \
                (id, project_id, topic_id, title, tags, l0_summary, l1_overview, \
@@ -4067,6 +4100,60 @@ fn row_to_channel_action_receipt(r: &Row) -> ChannelActionReceiptRow {
     }
 }
 
+/// `023`: the dedup key for a memory write — the evidence pointer plus the
+/// substance.
+///
+/// WHY THIS IS A NAMED, CALLED FUNCTION AND NOT AN INLINE TUPLE. The guard used
+/// to build its key inline at the call site, so the only way to pin "a title-only
+/// difference is still refused" or "a NULL line range still matches" was to run
+/// the SQL against a live database — and a test that needs a database is either
+/// `#[ignore]`d (silently skipping, which is worse than no test) or writes to
+/// live. Extracting the key makes the three directions testable in plain
+/// `cargo test -p seatloom-core`, with no database and nothing to skip.
+///
+/// THE THREE DIRECTIONS, and why each one matters:
+///
+/// 1. **`title` is not an input.** A key that moves with a rename lets the same
+///    memory back in. Vela's 2026-10-11 idempotency probe got a second row out of
+///    a write whose only difference was a title suffix.
+/// 2. **A NULL line range stays NULL.** `l2_line_start`/`l2_line_end` are
+///    `Option<i32>` and are carried through as `Option`. Three of the four
+///    duplicate groups on live carry no line range at all, and `= NULL` matches
+///    nothing, so a plain equality predicate would miss exactly the groups that
+///    need catching. The SQL pairs this with `IS NOT DISTINCT FROM`; the key must
+///    not pre-collapse `None` into `Some(0)`, or the SQL would compare 0 to 0 and
+///    never match a NULL row.
+/// 3. **`l0_summary` IS an input.** Two rows that share a pointer and differ only
+///    in what they say are different records, not duplicates. This is the
+///    false-positive direction: getting it wrong silently breaks legitimate
+///    writes, which is worse than the duplicate it was meant to catch.
+///
+/// The claim that this key catches all four duplicate groups with zero false
+/// positives was measured on live **before** the 10-31 incident emptied that
+/// database. It is unverifiable now rather than confirmed, and it is not
+/// asserted here — the three directions above are what is pinned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryDedupKey<'a> {
+    pub l2_file_path: Option<&'a str>,
+    pub l2_line_start: Option<i32>,
+    pub l2_line_end: Option<i32>,
+    pub l0_summary: &'a str,
+}
+
+pub fn memory_dedup_key<'a>(
+    l2_file_path: Option<&'a str>,
+    l2_line_start: Option<i32>,
+    l2_line_end: Option<i32>,
+    l0_summary: &'a str,
+) -> MemoryDedupKey<'a> {
+    MemoryDedupKey {
+        l2_file_path,
+        l2_line_start,
+        l2_line_end,
+        l0_summary,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("postgres error: {0}")]
@@ -4100,6 +4187,36 @@ pub enum DbError {
     /// not render an empty obligation.
     #[error("operator decision {id:?} not found")]
     OperatorDecisionNotFound { id: String },
+    /// `023`: a memory that already exists. The dedup key is
+    /// `(l2_file_path, l2_line_start, l2_line_end, l0_summary)` — the evidence
+    /// pointer plus what the record actually says.
+    ///
+    /// WHY THIS IS A REFUSAL AND NOT AN UPSERT. A repeat `remember` is either a
+    /// retry of a write that landed (in which case the second write is a
+    /// duplicate and the id of the row that already exists is the useful
+    /// answer) or a genuinely new record that happens to cite the same lines
+    /// (in which case the substance differs and the key does not collide).
+    /// Silently updating would rewrite a recorded fact — the same reason
+    /// 013/014 refuse to roll a terminal row back — and silently inserting is
+    /// the defect this closes: measured on live, a retry-shaped probe created a
+    /// second row with no error and no warning.
+    ///
+    /// `title` is deliberately NOT in the key: it changes, and a key that moves
+    /// with a rename lets the same memory back in. Vela's 2026-10-11 probe
+    /// proved exactly that — she altered the title and the write went through.
+    #[error(
+        "memory already exists at {l2_file_path:?} lines {l2_line_start:?}-{l2_line_end:?} \
+         with this l0_summary (row {existing_id:?}, created {created_at:?}) — a repeat write is \
+         refused, never duplicated. If this is a genuinely new record, change its \
+         l0_summary or its evidence pointer; if it is a retry, the row is already there."
+    )]
+    MemoryDuplicate {
+        existing_id: String,
+        created_at: String,
+        l2_file_path: Option<String>,
+        l2_line_start: Option<i32>,
+        l2_line_end: Option<i32>,
+    },
     /// `020`: the decision is already `resolved`. Resolved is TERMINAL, for the
     /// same reason 013/014 refuse to roll a terminal row back: the row is a
     /// projection of the append-only ledger, and re-deciding would rewrite a
