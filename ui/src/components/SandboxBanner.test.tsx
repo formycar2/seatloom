@@ -13,7 +13,6 @@
 
 import React from 'react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { cleanup } from '@testing-library/react';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { SandboxBanner } from './SandboxBanner';
 
@@ -191,7 +190,7 @@ describe('the build-embedded dirty count, in all three states', () => {
   // successful clean read reading as "not recorded" (which was the live defect: the
   // `!s.is_empty()` filter turned a clean tree into None, so every clean build
   // displayed "not recorded").
-  const withDirty = (built_dirty, built_git_ok) => ({
+  const withDirty = (built_dirty: number | null, built_git_ok: boolean) => ({
     is_sandbox: true,
     branch: 'packet/test/x',
     commit: 'abc1234',
@@ -201,7 +200,7 @@ describe('the build-embedded dirty count, in all three states', () => {
     built_dirty,
     built_git_ok,
   });
-  const renderClause = async (built_dirty, built_git_ok) => {
+  const renderClause = async (built_dirty: number | null, built_git_ok: boolean) => {
     // cleanup() between renders: the last test renders three times in a row, and
     // without it there are three status strips in the document and getByRole throws
     // "found multiple elements". A test that cannot run is worse than no test.
