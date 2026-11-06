@@ -302,6 +302,13 @@ if [ "$BUILD_ONLY" = "1" ]; then
   #    修法两件事一起做:退出码单独取,并且构建前把旧 dist 删掉 ——
   #    于是「dist 存在」只可能意味着「这次构建产出了它」。
   rm -rf "$WT/ui/dist"
+# target/ 要在写日志**之前**就存在:前端构建是第一个写的,而那时 cargo 还没建过它。
+# 实测:target/ 不存在时重定向失败,pnpm build 拿到退出码 2(不是它自己的失败),
+# 于是报的是「前端构建失败(退出码 2)」而上面一个字都没有 —— 一个没有证据的失败。
+# --apply 那一份早就有这两行,而 --build-only 这一份没有 —— 同一条规则在两条路径上
+# 只修了一处,正是这个 bug 会复发的原因。2026-11-07 补上,并且测试里不再由 fixture
+# 预先建好 target/(那等于让测试替被测代码准备好前提)。
+mkdir -p "$WT/target"
   ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
   UI_RC=$?
   tail -4 "$WT/target/ui-build.log" | sed 's/^/    /'
