@@ -41,6 +41,29 @@ fn run(cmd: &mut Command) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// Run a command that is ALLOWED to fail, and return (success, combined output).
+///
+/// `run` above asserts success, which is right for setup but wrong for the
+/// assertions whose whole point is that a command FAILS. Using `run` there would
+/// panic before the assertion was reached, so the test would fail with a panic
+/// message rather than with the property it names.
+struct Outcome {
+    success: bool,
+    text: String,
+}
+
+fn run_outcome(cmd: &mut Command) -> Outcome {
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("could not run {cmd:?}: {e}"));
+    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Outcome {
+        success: out.status.success(),
+        text,
+    }
+}
+
 /// A scratch git repository with a workspace whose build script is the real one.
 struct Scratch {
     dir: PathBuf,
@@ -94,6 +117,18 @@ impl Scratch {
             "pub fn ok() -> bool { true }\n",
         )
         .unwrap();
+        // 🔴 A `.gitignore` for build output, matching the real repository's shape.
+        //
+        // Without it, `Cargo.lock` and `target/` are UNTRACKED, so
+        // `git status --porcelain` ALWAYS has output — and `git_in` therefore never
+        // sees the empty string. Measured: with the original `!s.is_empty()` filter
+        // restored (the defect), the clean-tree fixture still produced `Some(0)`,
+        // because the filter had nothing to discard. The mutation survived, and the
+        // fixture had built the wrong state.
+        //
+        // A clean tree in the real repo produces ZERO BYTES of porcelain output.
+        // The fixture must reproduce that, or it is not testing the clean-tree case.
+        std::fs::write(seed.join(".gitignore"), "/target\nCargo.lock\n").unwrap();
         // `tauri_build::build()` is not available in a scratch crate, so the copied
         // build script drops that one call and closes `main()`. 🔴 The trim is a
         // line-level edit of ONE identified line, and it asserts that line exists
@@ -642,4 +677,181 @@ fn the_commit_is_emitted_next_to_a_fixed_label() {
         c.commit_hash().is_some_and(|h| !h.is_empty()),
         "the label must be followed by a hash"
     );
+}
+
+/// 🔴 A clean tree must be `Some(0)`, NOT `None`.
+///
+/// This is the live defect Flux measured at 5d66aab (ev-CJ-PZ6nmSkizgDI8QfAT9).
+/// `git_in` ended with `.filter(|s| !s.is_empty())`. `git status --porcelain` on a
+/// clean tree emits ZERO BYTES, so the filter discarded a successful, informative
+/// answer and returned `None` — the same value used for "could not read". The
+/// generated file said `BUILD_DIRTY = None` with `BUILD_GIT_OK = true`, and the
+/// banner rendered "build-time dirty state not recorded" on every clean build.
+///
+/// The operator was told the build could not say whether it was clean, when in fact
+/// it looked and found nothing. Three states collapsed into two, in the opposite
+/// direction to the one the dispatch named, but the same defect class.
+///
+/// The fix moves the emptiness decision to the CALLER, because whether an empty
+/// answer is meaningful depends on the subcommand: empty for `status` is "clean",
+/// empty for `rev-parse` is "went wrong".
+#[test]
+fn a_clean_tree_is_some_zero_not_none() {
+    let s = Scratch::new("cleanzero");
+    // The scratch repo is committed and clean by construction. Prove it, or this
+    // fixture is asserting on a state it did not create.
+    let status = s.git(&["status", "--porcelain"]);
+    assert!(
+        status.trim().is_empty(),
+        "this fixture requires a genuinely clean tree; it was not clean: {status}"
+    );
+    let c = s.build_and_capture();
+    assert_eq!(
+        c.dirty,
+        Some(0),
+        "a clean tree with git available must be Some(0). None means the reader \\
+         cannot tell 'we looked and it was clean' from 'we could not look' — which \\
+         is exactly what made every clean build display 'not recorded'"
+    );
+    assert!(
+        c.git_ok,
+        "git was available in this fixture, so BUILD_GIT_OK must be true"
+    );
+    // And the commit must still be captured: the fix must not have traded one lost
+    // value for another.
+    assert!(
+        c.commit_hash().is_some_and(|h| !h.is_empty()),
+        "the commit must still be captured on a clean tree"
+    );
+}
+
+/// The mirror image: a tree with uncommitted changes is `Some(n>0)`, and the two
+/// states must be distinguishable. A one-directional check would pass if both
+/// collapsed to the same value in either direction.
+#[test]
+fn a_dirty_tree_is_some_n_above_zero() {
+    let s = Scratch::new("dirtyabove");
+    // Dirty a TRACKED file, so it appears as ' M' rather than '??'. An untracked
+    // file is deliberately excluded: it was never going to be in the build.
+    std::fs::write(
+        s.work.join("crate/src/lib.rs"),
+        "pub fn ok() -> bool { false }\n",
+    )
+    .unwrap();
+    let c = s.build_and_capture();
+    match c.dirty {
+        Some(n) => assert!(n >= 1, "a dirty tree must report at least one change, got {n}"),
+        None => panic!(
+            "a dirty tree must be Some(n), not None — None means unreadable, and this tree was readable"
+        ),
+    }
+    assert!(c.git_ok, "git was available, so BUILD_GIT_OK must be true");
+}
+
+/// A tree with ONLY untracked files is `Some(0)`, not `None` and not `Some(1)`.
+///
+/// The exclusion of untracked files is deliberate and matches
+/// `prepare-sandbox-build.sh`: a file that was never `git add`ed was never going to
+/// be in the build either. But excluding it must not turn the answer into "unknown".
+#[test]
+fn untracked_only_is_still_some_zero() {
+    let s = Scratch::new("untrackedonly");
+    std::fs::write(s.work.join("crate/src/untracked_new.rs"), "pub fn n() {}\n").unwrap();
+    let c = s.build_and_capture();
+    assert_eq!(
+        c.dirty,
+        Some(0),
+        "an untracked file must be excluded from the count, but the answer must still \\
+         be a successful Some(0) — not None, which would read as unreadable"
+    );
+    assert!(c.git_ok);
+}
+
+/// 🔴 A failed write is a BUILD ERROR, never a silent skip.
+///
+/// Flux's R-3: replacing the panicking write with `let _ = std::fs::write(...)`
+/// left the suite 11/11 green. So the behaviour that prevents the stale-claim defect
+/// from returning — the exact mechanism that produced an earlier false conclusion —
+/// had no test. It was fail-closed in the shipped code, but nothing pinned it.
+///
+/// This makes the write fail by making OUT_DIR unwritable, and asserts the build
+/// fails. A silent write failure would leave the PREVIOUS `build_identity.rs` in
+/// place, and the next build would pick it up and state a commit it is not.
+#[test]
+fn a_failed_write_fails_the_build_rather_than_keeping_the_stale_answer() {
+    let s = Scratch::new("writefail");
+
+    // First build, so a build_identity.rs exists. Then remove write permission from
+    // the directory that holds it: writing a NEW file into a read-only directory
+    // fails on macOS regardless of who owns it.
+    let _ = s.build_and_capture();
+    let target = s.work.join("target");
+    let mut out_dir: Option<PathBuf> = None;
+    for entry in walk(&target) {
+        if entry
+            .file_name()
+            .map(|n| n == "build_identity.rs")
+            .unwrap_or(false)
+        {
+            out_dir = entry.parent().map(|p| p.to_path_buf());
+        }
+    }
+    let out_dir = out_dir.expect("the first build must have produced build_identity.rs");
+    let existing = out_dir.join("build_identity.rs");
+    let previous = std::fs::read_to_string(&existing).expect("read the previous answer");
+
+    // Two things must both be true for this to measure anything, and the first
+    // version got both wrong — measured, not reasoned:
+    //
+    // 1. The build script must actually RUN. A second `cargo build` with nothing
+    //    changed is a no-op: cargo's fingerprint is satisfied, the script is skipped,
+    //    no write is attempted, and the build "succeeds". That looked exactly like
+    //    the silent-write defect. So the build script's mtime is bumped to force a
+    //    rerun.
+    // 2. The write must be able to fail. Making the DIRECTORY read-only does not do
+    //    it, because `build_identity.rs` already exists and `fs::write` opens an
+    //    existing file for truncation, which needs write permission on the FILE.
+    //    Directory permissions only gate creating new files. So the FILE is made
+    //    read-only.
+    std::fs::remove_file(&existing).ok();
+    std::fs::write(&existing, &previous).expect("recreate build_identity.rs");
+    let perms = std::fs::metadata(&existing).unwrap().permissions();
+    let mut ro = perms.clone();
+    ro.set_readonly(true);
+    std::fs::set_permissions(&existing, ro).expect("make build_identity.rs read-only");
+
+    // Force the build script to rerun: touch it, so cargo's fingerprint changes.
+    let build_rs = s.work.join("crate/build.rs");
+    std::fs::write(&build_rs, std::fs::read_to_string(&build_rs).unwrap())
+        .expect("rewrite build.rs to bump its mtime");
+
+    let out = run_outcome(
+        Command::new("cargo")
+            .arg("build")
+            .arg("-q")
+            .arg("--manifest-path")
+            .arg(s.work.join("crate/Cargo.toml")),
+    );
+
+    // Restore, whatever happened, so the fixture directory can be cleaned up.
+    let mut rw = perms;
+    rw.set_readonly(false);
+    let _ = std::fs::set_permissions(&existing, rw);
+
+    // The build must FAIL. Exit code is the assertion, not a message.
+    assert!(
+        !out.success,
+        "a failed write must fail the build. It succeeded, which means the previous \\
+         answer was silently retained — the stale-claim defect, unguarded. \\
+         cargo said: {}",
+        out.text
+    );
+    // And the failure must name the write, so it is diagnosable rather than a
+    // generic compile error.
+    assert!(
+        out.text.contains("could not write") || out.text.contains("build_identity"),
+        "the build failed but did not say the identity write was the reason: {}",
+        out.text
+    );
+    let _ = previous;
 }

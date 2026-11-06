@@ -50,6 +50,24 @@ use std::process::Command;
 pub(crate) const BUILD_COMMIT_LABEL: &str = "seatloom-build-commit=";
 
 /// Run `git` in `dir` and return stdout on success.
+///
+/// 🔴 `Some("")` and `None` are DIFFERENT FACTS and must stay different.
+///
+/// The first version ended with `.filter(|s| !s.is_empty())`, which threw away a
+/// perfectly successful, perfectly informative answer. `git status --porcelain` on a
+/// clean tree emits ZERO BYTES, so that filter turned "we looked and it was clean"
+/// into `None` — the same value used for "we could not look". Measured at 5d66aab by
+/// an independent verdict (ev-CJ-PZ6nmSkizgDI8QfAT9): the generated file said
+/// `BUILD_DIRTY: Option<u32> = None` with `BUILD_GIT_OK: bool = true`, so every clean
+/// build rendered "build-time dirty state not recorded" on screen. `Some(0)` was
+/// reachable without the filter and unreachable with it.
+///
+/// So this helper reports exactly what git said. Whether an empty answer is
+/// meaningful is the CALLER's decision, because it depends on the subcommand:
+///   - `status --porcelain`  empty = clean (meaningful)
+///   - `rev-parse --short`   empty = something went wrong (meaningless)
+/// A shared filter cannot make that distinction, and applying one here silently
+/// made it for every caller. The per-caller decisions are below.
 fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
     Command::new("git")
         .arg("-C")
@@ -60,7 +78,6 @@ fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 /// The directory cargo is building, which is the tree whose sources are compiled.
@@ -102,7 +119,9 @@ fn watch_paths(root: &Path) -> Vec<PathBuf> {
         ["rev-parse", "--git-common-dir"],
     ] {
         // `--git-dir` may be relative to the CWD, so resolve it against `root`.
-        if let Some(raw) = git_in(root, &args) {
+        // A directory path is never empty, so an empty answer means the read went
+        // wrong — filtered here for the same reason as the commit, not in the helper.
+        if let Some(raw) = git_in(root, &args).filter(|s| !s.is_empty()) {
             let p = {
                 let candidate = PathBuf::from(&raw);
                 if candidate.is_absolute() {
@@ -128,6 +147,11 @@ fn watch_paths(root: &Path) -> Vec<PathBuf> {
 fn dirty_count(root: &Path) -> Option<u32> {
     let out = git_in(root, &["status", "--porcelain"])?;
     // `--porcelain` is stable and machine-readable; `^??` are untracked.
+    //
+    // 🔴 An EMPTY output is the answer "clean", not a failure. `git_in` no longer
+    // discards empty stdout, so a successful read of a clean tree lands here as
+    // `Some("")` and must become `Some(0)`. Collapsing it to `None` is what made the
+    // banner claim "not recorded" on every clean build.
     let n = out
         .lines()
         .filter(|l| !l.trim_start().starts_with("??"))
@@ -156,7 +180,11 @@ fn main() {
     // build error rather than as a silently retained stale claim.
     let (commit, dirty, git_ok) = match root.as_ref() {
         Some(r) => (
-            git_in(r, &["rev-parse", "--short=12", "HEAD"]),
+            // A commit hash is never empty, so an empty answer here means the read
+            // went wrong even though git exited 0 — that is `None`, not a commit.
+            // This is the one caller where an empty string is meaningless, which is
+            // exactly why the filter lives HERE and not in the shared helper.
+            git_in(r, &["rev-parse", "--short=12", "HEAD"]).filter(|s| !s.is_empty()),
             dirty_count(r),
             true,
         ),

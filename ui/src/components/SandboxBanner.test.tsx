@@ -13,6 +13,7 @@
 
 import React from 'react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { SandboxBanner } from './SandboxBanner';
 
@@ -175,6 +176,78 @@ describe('when the command fails', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByText(/身份读取失败/)).toBeTruthy());
     expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
+describe('the build-embedded dirty count, in all three states', () => {
+  // 🔴 2026-11-07. Flux's ev-CJ-PZ6nmSkizgDI8QfAT9 measured that the three states the
+  // doc comment promises are distinct on screen were NOT pinned: the suite had exactly
+  // one occurrence of built_dirty (set to null) and ZERO of built_git_ok. So a mutation
+  // making built_git_ok===false render "no uncommitted changes" stayed 16/16 green.
+  //
+  // These three tests are the missing states, and each one asserts the rendered string
+  // DIFFERS from the other two. That is the property: three states must not collapse
+  // into two on screen, in either direction — a failure reading as clean, or a
+  // successful clean read reading as "not recorded" (which was the live defect: the
+  // `!s.is_empty()` filter turned a clean tree into None, so every clean build
+  // displayed "not recorded").
+  const withDirty = (built_dirty, built_git_ok) => ({
+    is_sandbox: true,
+    branch: 'packet/test/x',
+    commit: 'abc1234',
+    built_at: '2026-11-07 10:00',
+    uncommitted: 0,
+    built_commit: 'abc1234',
+    built_dirty,
+    built_git_ok,
+  });
+  const renderClause = async (built_dirty, built_git_ok) => {
+    // cleanup() between renders: the last test renders three times in a row, and
+    // without it there are three status strips in the document and getByRole throws
+    // "found multiple elements". A test that cannot run is worse than no test.
+    cleanup();
+    invokeMock.mockResolvedValue(withDirty(built_dirty, built_git_ok));
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    return screen.getByRole('status').textContent ?? '';
+  };
+
+  it('Some(0): a clean tree says so, and does NOT say "not recorded"', async () => {
+    const text = await renderClause(0, true);
+    expect(text).toContain('编译时无未提交改动');
+    // The live defect: a successful clean read was rendered as unknown. This is the
+    // assertion that would have caught it.
+    expect(text).not.toContain('编译时脏状态 未记录');
+  });
+
+  it('Some(n>0): a dirty build says the count AND that it is not that commit', async () => {
+    const text = await renderClause(7, true);
+    expect(text).toContain('编译时带 7 个未提交改动');
+    expect(text).toContain('不等于上面那个提交');
+    expect(text).not.toContain('编译时无未提交改动');
+    expect(text).not.toContain('编译时脏状态 未记录');
+  });
+
+  it('git failure: says unrecorded, and NEVER says clean', async () => {
+    const text = await renderClause(null, false);
+    expect(text).toContain('编译时脏状态 未记录');
+    // This is the mutation Flux ran (U-1) that survived: making built_git_ok===false
+    // render "no uncommitted changes". A failure must not read as a clean measurement.
+    expect(text).not.toContain('编译时无未提交改动');
+  });
+
+  it('the three states are three different strings on screen', async () => {
+    const clean = await renderClause(0, true);
+    const dirty = await renderClause(7, true);
+    const failed = await renderClause(null, false);
+    const all = [clean, dirty, failed];
+    // Pairwise distinct. Two of them rendering the same IS the defect, in either
+    // direction, so this is checked directly rather than inferred from the three above.
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        expect(all[i]).not.toBe(all[j]);
+      }
+    }
   });
 });
 
