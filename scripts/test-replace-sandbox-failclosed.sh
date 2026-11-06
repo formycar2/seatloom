@@ -348,6 +348,140 @@ OUTN="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
 RCN=$?
 [ "$RCN" != "0" ] && pass "没有元信息的备份拒绝回滚" || die "没有元信息却允许回滚 —— 说不清回的是哪一份"
 
+
+echo ""
+echo "── 9. --apply 和 --build-only 同时给 → 必须在任何副作用之前就拒绝 ──"
+# B-1 (Flux 的 ev-B5dq_hybh4VZbA-dkGvbl):这两个旗标的意思是**相反的** ——
+# --apply 替换沙箱,--build-only 构建完就停。同时给会让结果取决于后面哪个分支被求值,
+# 而不是取决于操作者要了什么。守卫本身在,而且注释写明了它为什么存在,
+# 但套件里没有任何一条测它 —— 一条只有源码撑着的规则。
+#
+# 承重断言不是「打印了一句话」,是**零副作用 + 非零退出**:
+# --apply 的路径会 pnpm build、tauri build、rm -rf、cp -R、起进程,所以一旦守卫失守,
+# executed.log 一定会有东西。这也顺便证明守卫是在副作用**之前**,而不是之后。
+# 🔴 prepare-sandbox-build.sh 在 $REPO 里 `git rev-parse --verify "$BRANCH"` 核对
+#    「要构建的树就是参数指定的那棵树」,所以 $REPO 必须是一个**带这条分支、而且
+#    分支指向的提交就是源工作区 HEAD** 的 git 仓库。
+#
+#    第一版把 $FIX/repo 留成普通目录,于是 rev-parse 失败,脚本在「解析不出 ref」上
+#    退出 —— 退出码确实非零,但那和守卫没有关系,第 9 条会假绿。
+#    第二版给它建了个仓库,但分支指向自己那个 base 提交,于是撞上
+#    「要构建的树和参数指定的不是同一棵树」—— 同样非零,同样和守卫无关。
+#    两次都假绿。正确的形状是:让**源工作区自己**当那个仓库。
+# 🔴 这个脚本假定的是**主检出**的形状:REPO 是仓库本身,WROOT 是它下面的
+#    seatloom-worktrees/,里面每个子目录是一个检出了某条分支的席位工作区。
+#    所以 fixture 要照这个形状搭,不能图省事:
+#      $PSB_REPO                      主检出(带 packet/fixture/test 分支)
+#      $PSB_REPO/seatloom-worktrees/wt  检出该分支的工作区(构建目录)
+#    放错位置会以各种方式非零退出,而每一种都和守卫无关 —— 实测连续踩了三次:
+#      1. $FIX/repo 不是仓库          → 「解析不出 ref」
+#      2. 分支指向别的提交            → 「不是同一棵树」
+#      3. 脚本放进工作区里面          → WROOT 找不到任何工作区
+#    三次的退出码都非零,第 9 条都会假绿。所以这一条的形状是承重的。
+# WROOT 是 REPO 的**兄弟目录**(`$REPO/../seatloom-worktrees`),不是它的子目录 ——
+# 这一点我自己看错了两次,fixture 按子目录搭,于是循环一次都没进去,报
+# 「不是任何工作区当前检出的分支」。第五次假绿,而每一次的退出码都非零。
+PSB_ROOT="$FIX/psb"
+PSB_REPO="$PSB_ROOT/repo"
+PSB_WT="$PSB_ROOT/seatloom-worktrees/wt"
+mkdir -p "$PSB_REPO/scripts" "$PSB_WT"
+cp "$REPO/scripts/prepare-sandbox-build.sh" "$PSB_REPO/scripts/"
+# 主检出的 HEAD 必须在**另一条**分支上。git worktree add 拒绝把一个已经有别的
+# 工作区检出了的分支再检出一份 —— 而主检出自己就占了它那条分支。第一版把主检出
+# 直接建在 packet/fixture/test 上,于是 worktree add 失败,工作区里没有 .git,
+# 脚本的循环一个都进不去,报「不是任何工作区当前检出的分支」。第四次假绿。
+( cd "$PSB_REPO" && "$REAL_GIT" init -q -b packet/fixture/root >/dev/null 2>&1 \
+  && "$REAL_GIT" config user.email t@t.local && "$REAL_GIT" config user.name t \
+  && echo hi > README.md && "$REAL_GIT" add . \
+  && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m base ) >/dev/null 2>&1
+( cd "$PSB_REPO" && "$REAL_GIT" branch packet/fixture/test ) >/dev/null 2>&1
+# 工作区是主检出的一个 LINKED worktree —— 这正是真实形状,而且 HEAD 就在那条分支上。
+( cd "$PSB_REPO" && "$REAL_GIT" worktree add -q "$PSB_WT" packet/fixture/test ) >/dev/null 2>&1
+# 构建产物放在工作区里,和真实形状一致。
+BUILT2="$PSB_WT/target/release/bundle/macos/SeatLoom.app"
+mkdir -p "$BUILT2/Contents/MacOS"
+make_bin "$WT_SHORT"
+# 🔴 工作区必须**干净**,而且包括我刚刚放进去的那些文件。
+#    第一版把 target/ 和 scripts/ 放进工作区之后没有提交,于是 porcelain 里有
+#    未跟踪文件之外还有真的未提交改动,脚本在「不从带未提交改动的工作区构建」上
+#    就停了 —— 退出码非零,但那和旗标守卫无关。实测输出明明白白写着那句,
+#    而断言在找「不能同时给」。** fixture 造错状态,正确的行为看起来就是坏的。**
+#    scripts/ 也要提交:它是脚本自己的拷贝,放在工作区里就是未跟踪文件。
+( cd "$PSB_WT" && "$REAL_GIT" add -A >/dev/null 2>&1 \
+  && "$REAL_GIT" -c core.hooksPath=/dev/null commit -q --no-verify -m "fixture artifacts" ) >/dev/null 2>&1
+WT_SHORT="$(cd "$PSB_WT" && "$REAL_GIT" rev-parse --short=12 HEAD)"
+make_bin "$WT_SHORT"
+DIRTY_NOW="$(cd "$PSB_WT" && "$REAL_GIT" status --porcelain | grep -v '^??' | grep -c .)"
+[ "$DIRTY_NOW" = "0" ] || die "fixture 的工作区不干净($DIRTY_NOW 处)—— 这一条会假绿"
+run_psb(){
+  ( cd "$PSB_REPO" && PATH="$FIX/bin:$PATH" \
+      SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
+      SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+      SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
+      bash "$PSB_REPO/scripts/prepare-sandbox-build.sh" packet/fixture/test MUST_HAVE_ME --apply --build-only ) 2>&1
+}
+rm -f "$FIX/executed.log"
+OUTB="$(run_psb)"; RCB=$?
+[ "$RCB" != "0" ] && pass "两个旗标同时给时非零退出" || die "两个旗标同时给却退出 0 —— 结果取决于哪个分支后被求值,不取决于操作者要了什么"
+printf '%s\n' "$OUTB" | grep -q "不能同时给" && pass "明说这两个不能同时给" || die "没说为什么拒绝"
+# 🔴 数的是**破坏性**副作用,不是所有调用。pgrep 是只读的:脚本在动任何东西之前
+#    本来就要报告「主版在不在跑」。第一版把任何 executed.log 条目都算「动手了」,
+#    于是 pgrep 的那一行让这一条恒红 —— 而它证明的正好相反:守卫确实在副作用之前。
+#    🔴 破坏性的那几个是 pnpm / tauri / open(还有真路径里的 pkill、rm、cp)。
+if [ -f "$FIX/executed.log" ]; then
+  HARMFUL="$(grep -E '^(PNPM|TAURI|OPEN|PKILL|RM|CP)' "$FIX/executed.log" || true)"
+  if [ -n "$HARMFUL" ]; then
+    die "守卫失守,破坏性动作已经执行:"; printf '%s\n' "$HARMFUL"|sed 's/^/      /'
+  else
+    pass "守卫在副作用之前就拦住了(只有只读的 pgrep 被调用,零破坏性副作用)"
+  fi
+else
+  pass "守卫在副作用之前就拦住了(零副作用)"
+fi
+# 反向:只给 --build-only 必须仍然可用 —— 证明上面不是「给了 --build-only 就一律拒绝」。
+rm -f "$FIX/executed.log"
+OUTB2="$( cd "$PSB_REPO" && PATH="$FIX/bin:$PATH" \
+  SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
+  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
+  bash "$PSB_REPO/scripts/prepare-sandbox-build.sh" --build-only packet/fixture/test MUST_HAVE_ME 2>&1 )"
+printf '%s\n' "$OUTB2" | grep -q "不能同时给" \
+  && die "只给 --build-only 也被拒了 —— 守卫把合法的调用形状一起挡了" \
+  || pass "只给 --build-only 不受影响(守卫没有误伤)"
+
+echo ""
+echo "── 10. 变异:删掉那个守卫,第 9 条必须红 ──"
+# 承重命题:第 9 条不是靠运气绿的。
+MUT2="$PSB_REPO/scripts/prepare-sandbox-build.sh"   # 测试跑的就是这个拷贝
+cp "$MUT2" "$FIX/mut2-orig.sh"
+# 锚点单独放在一个文件里,因为这段测试本身已经是 bash,再嵌一层 heredoc 会让
+# 引号层级失控(实测:嵌进去之后整个测试文件语法错误,而且报错行号离现场 60 行)。
+cat > "$FIX/mut2.py" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = 'if [ "$APPLY" = "1" ] && [ "$BUILD_ONLY" = "1" ]; then\n  fail "--apply 和 --build-only 不能同时给。--apply 会替换沙箱,--build-only 只构建。分开跑。"\nfi'
+assert old in s, "变异锚点没找到 —— 第 10 条没有测到任何东西"
+open(p, 'w', encoding='utf-8').write(s.replace(old, '# MUTATION: guard removed\n', 1))
+PYEOF
+if ! python3 "$FIX/mut2.py" "$MUT2"; then
+  die "变异锚点没找到 —— 第 10 条什么都没测"
+  cp "$FIX/mut2-orig.sh" "$MUT2"
+else
+  rm -f "$FIX/executed.log"
+  OUTM2="$(run_psb)"; RCM2=$?
+  if [ "$RCM2" = "0" ] || [ -s "$FIX/executed.log" ]; then
+    pass "变异后守卫失守(退出 $RCM2)—— 第 9 条真的在守东西"
+  else
+    die "变异后第 9 条仍然绿 —— 它守的是空的"
+  fi
+  # 还原,并证明逐字节。比的对象是**仓库里那份**,不是循环内的副本 ——
+  # 比副本证明的是「我刚才把它拷回了它自己」,那是恒真的。
+  cp "$FIX/mut2-orig.sh" "$MUT2"
+  cmp -s "$MUT2" "$REPO/scripts/prepare-sandbox-build.sh" || die "变异没还原干净 —— 后面的用例会被污染"
+  rm -f "$FIX/mut2.py"
+fi
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
