@@ -438,6 +438,24 @@ if [ -f "$FIX/executed.log" ]; then
 else
   pass "守卫在副作用之前就拦住了(零副作用)"
 fi
+# 🔴 冲突必须在**参数解析完之后立刻**判,不能等工作区、身份、数据库都查过。
+#    Flux 的 ev-wZhxxQuaY0xUrg7IHNF2X 实测到守卫原来在第 255 行,排在工作区解析之后 ——
+#    于是一起给两个旗标时先撞上的是「找不到工作区」,操作者看到的和他改错的东西无关,
+#    而针对守卫的判据也**不可伪证**:守卫删掉后那次运行照样非零、照样零副作用
+#    (更早的失败先响),判据分不清「守卫拒了」和「别的拒了」。
+#    所以这里用一个**什么前提都不满足**的形状再测一次:分支不存在、没有工作区、
+#    没有构建产物、没有快照库。只有旗标冲突能在这种形状下给出那个理由。
+OUTB3="$( cd "$PSB_REPO" && PATH="$FIX/bin:$PATH" \
+  SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
+  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  SEATLOOM_SANDBOX_BACKUP_ROOT="$FIX/backups" \
+  bash "$PSB_REPO/scripts/prepare-sandbox-build.sh" no-such-branch-at-all MUST_HAVE_ME --apply --build-only 2>&1 )"
+RCB3=$?
+[ "$RCB3" != "0" ] && pass "分支不存在时,旗标冲突仍然非零退出" || die "分支不存在却退出 0"
+printf '%s\n' "$OUTB3" | grep -q "不能同时给" \
+  && pass "分支不存在时,给出的仍然是旗标冲突这个理由(不是工作区的理由)" \
+  || die "分支不存在时给的不是旗标冲突 —— 守卫排在别的检查后面,判据不可伪证"
+
 # 反向:只给 --build-only 必须仍然可用 —— 证明上面不是「给了 --build-only 就一律拒绝」。
 rm -f "$FIX/executed.log"
 OUTB2="$( cd "$PSB_REPO" && PATH="$FIX/bin:$PATH" \

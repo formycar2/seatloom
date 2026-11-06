@@ -74,6 +74,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# 🔴 旗标冲突必须在**参数解析完之后立刻**判,不能等到工作区解析、身份核对、
+#    脏检查、数据库检查之后。这两个旗标的意思是相反的:--apply 替换沙箱,
+#    --build-only 构建完就停。冲突是**参数自身的性质**,参数一读完就能定,
+#    就应该定 —— 一个把两种相反意图都传上来的人,收到的应该是关于旗标的报错,
+#    而不是关于一个他根本没问的工作区的报错。
+#
+#    实测(e238a04,Flux 的 ev-wZhxxQuaY0xUrg7IHNF2X):守卫原来在第 255 行,
+#    排在分支解析、工作区解析、身份、脏、数据库、落后主干之后。于是一起给两个
+#    旗标时,先撞上的是工作区解析失败,操作者看到的和他改错的东西无关。
+#    这也让针对它的测试**不可伪证**:守卫删掉之后,那次运行照样非零退出、照样
+#    零副作用(因为更早的那个失败先响),于是判据分不清「守卫拒了」和「别的拒了」。
+#    套件自己的变异检查把这件事报成了「我守的是空的」。
+if [ "$APPLY" = "1" ] && [ "$BUILD_ONLY" = "1" ]; then
+  fail "--apply 和 --build-only 不能同时给。--apply 会替换沙箱,--build-only 只构建。分开跑。"
+fi
+
 if [ -n "$DISPID" ]; then
   SEAT="$(podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -U seatloom -d seatloom -tAc \
     "select target_seat_id from dispatches where id='$DISPID'" 2>/dev/null | tr -d ' ')"
@@ -250,10 +266,6 @@ if git -C "$REPO" rev-parse --verify "$BASE" >/dev/null 2>&1 && [ "$BRANCH" != "
     say "  ⚠️  这条分支比主干旧 $BEHIND 个提交。沙箱会**缺**那 $BEHIND 个提交里的功能。"
     say "     落后越多,你在沙箱里看不到的越多 —— 那不等于那些功能坏了。"
   fi
-fi
-
-if [ "$APPLY" = "1" ] && [ "$BUILD_ONLY" = "1" ]; then
-  fail "--apply 和 --build-only 不能同时给。--apply 会替换沙箱,--build-only 只构建。分开跑。"
 fi
 
 if [ "$APPLY" != "1" ] && [ "$BUILD_ONLY" != "1" ]; then
