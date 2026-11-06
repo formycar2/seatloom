@@ -13,6 +13,7 @@
 
 import React from 'react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { SandboxBanner } from './SandboxBanner';
 
@@ -38,7 +39,22 @@ const SANDBOX_IDENTITY = {
   // four-field DTO exactly, which is why nothing failed when the installer exported a
   // fifth fact that no code read.
   uncommitted: 0,
+  // 🔴 2026-11-07: the same trap again, third field in. `commit` is what the
+  // INSTALLER claimed; `built_commit` is what the BINARY can state. Measured before
+  // this field existed: `strings` on the sandbox binary found four env var NAMES and
+  // six hex-looking strings, none a hash of any commit on the branch — so nothing could
+  // answer "what are you?", and the positive case of an acceptance was unfalsifiable.
+  built_commit: 'abc1234',
 };
+
+/** The installer's claim and the binary's own statement, agreeing. */
+const AGREEING = { ...SANDBOX_IDENTITY };
+
+/** The binary states a different commit than the installer claimed. */
+const DISAGREEING = { ...SANDBOX_IDENTITY, commit: 'old9999' };
+
+/** The build did not capture a commit (git unavailable, or not a repository). */
+const NO_BUILT_COMMIT = { ...SANDBOX_IDENTITY, built_commit: null };
 
 describe('when the backend says this is the sandbox', () => {
   it('renders a strip naming the branch, the commit and the build time', async () => {
@@ -88,13 +104,24 @@ describe('when a value is missing', () => {
       commit: null,
       built_at: '',
       uncommitted: 0,
+      // Present, so the count below is exactly the two absences this case is about:
+      // the installer's commit and the build time. Without this the fixture would
+      // also be missing the build-embedded commit and the count would be 3 — which
+      // tests a different thing than the name of this case says.
+      built_commit: 'abc1234',
+      // Absent on purpose: the dirty count is a THIRD state, not a number. It must
+      // be stated as unrecorded rather than read as 0 (clean) — that is the whole
+      // reason it is Option<u32> and not u32. So this case is about 2+1 absences.
+      built_dirty: null,
     });
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toContain('packet/mira/knowledge-panel');
-    // Two absences stated, and neither is a blank or an invented value.
-    expect(text.match(/未记录/g) ?? []).toHaveLength(2);
+    // Three absences stated, and neither is a blank or an invented value: the
+    // installer's commit, the build time, and the dirty count. The build-embedded
+    // commit is present, so it is named rather than counted as absent.
+    expect(text.match(/未记录/g) ?? []).toHaveLength(3);
     expect(text).not.toContain('null');
     expect(text).not.toContain('undefined');
   });
@@ -110,7 +137,17 @@ describe('when a value is missing', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
-    expect(text.match(/未记录/g) ?? []).toHaveLength(3);
+    // 5, not 4: branch, commit, built_at, the build-embedded commit, and the
+    // dirty count. Each absent fact is STATED as absent — that is the property.
+    // (The first version of this assertion said 4 and enumerated four fields while
+    // a fifth was already rendering: the comment counted the fields I had written
+    // down, not the ones on screen. Measured, not reasoned — hence the count above.)
+    // A future field that can be absent bumps this count, and this comment is where
+    // that is noticed.
+    expect(text.match(/未记录/g) ?? []).toHaveLength(5);
+    // And the third state is stated in its own words, not as a number and not as
+    // clean. This is the assertion that an unknown is not a measured zero.
+    expect(text).toContain('未记录');
     // The words that would betray a guess.
     expect(text).not.toContain('unknown');
     expect(text).not.toContain('main');
@@ -139,6 +176,78 @@ describe('when the command fails', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByText(/身份读取失败/)).toBeTruthy());
     expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
+describe('the build-embedded dirty count, in all three states', () => {
+  // 🔴 2026-11-07. Flux's ev-CJ-PZ6nmSkizgDI8QfAT9 measured that the three states the
+  // doc comment promises are distinct on screen were NOT pinned: the suite had exactly
+  // one occurrence of built_dirty (set to null) and ZERO of built_git_ok. So a mutation
+  // making built_git_ok===false render "no uncommitted changes" stayed 16/16 green.
+  //
+  // These three tests are the missing states, and each one asserts the rendered string
+  // DIFFERS from the other two. That is the property: three states must not collapse
+  // into two on screen, in either direction — a failure reading as clean, or a
+  // successful clean read reading as "not recorded" (which was the live defect: the
+  // `!s.is_empty()` filter turned a clean tree into None, so every clean build
+  // displayed "not recorded").
+  const withDirty = (built_dirty, built_git_ok) => ({
+    is_sandbox: true,
+    branch: 'packet/test/x',
+    commit: 'abc1234',
+    built_at: '2026-11-07 10:00',
+    uncommitted: 0,
+    built_commit: 'abc1234',
+    built_dirty,
+    built_git_ok,
+  });
+  const renderClause = async (built_dirty, built_git_ok) => {
+    // cleanup() between renders: the last test renders three times in a row, and
+    // without it there are three status strips in the document and getByRole throws
+    // "found multiple elements". A test that cannot run is worse than no test.
+    cleanup();
+    invokeMock.mockResolvedValue(withDirty(built_dirty, built_git_ok));
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    return screen.getByRole('status').textContent ?? '';
+  };
+
+  it('Some(0): a clean tree says so, and does NOT say "not recorded"', async () => {
+    const text = await renderClause(0, true);
+    expect(text).toContain('编译时无未提交改动');
+    // The live defect: a successful clean read was rendered as unknown. This is the
+    // assertion that would have caught it.
+    expect(text).not.toContain('编译时脏状态 未记录');
+  });
+
+  it('Some(n>0): a dirty build says the count AND that it is not that commit', async () => {
+    const text = await renderClause(7, true);
+    expect(text).toContain('编译时带 7 个未提交改动');
+    expect(text).toContain('不等于上面那个提交');
+    expect(text).not.toContain('编译时无未提交改动');
+    expect(text).not.toContain('编译时脏状态 未记录');
+  });
+
+  it('git failure: says unrecorded, and NEVER says clean', async () => {
+    const text = await renderClause(null, false);
+    expect(text).toContain('编译时脏状态 未记录');
+    // This is the mutation Flux ran (U-1) that survived: making built_git_ok===false
+    // render "no uncommitted changes". A failure must not read as a clean measurement.
+    expect(text).not.toContain('编译时无未提交改动');
+  });
+
+  it('the three states are three different strings on screen', async () => {
+    const clean = await renderClause(0, true);
+    const dirty = await renderClause(7, true);
+    const failed = await renderClause(null, false);
+    const all = [clean, dirty, failed];
+    // Pairwise distinct. Two of them rendering the same IS the defect, in either
+    // direction, so this is checked directly rather than inferred from the three above.
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        expect(all[i]).not.toBe(all[j]);
+      }
+    }
   });
 });
 
@@ -176,6 +285,41 @@ describe('when the build carries uncommitted changes', () => {
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toContain('未提交改动 未记录');
     expect(text).not.toContain('无未提交改动');
+  });
+
+  it('states the commit the binary itself was built from', async () => {
+    // The whole point of the field: the binary can now answer "what are you?", so the
+    // operator can compare it against the commit the card names.
+    invokeMock.mockResolvedValue(AGREEING);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('二进制内提交 abc1234');
+    expect(text).toContain('与安装器一致');
+  });
+
+  it('alerts when the binary disagrees with the installer', async () => {
+    // A sandbox that claims one commit and is another is worse than no banner: it
+    // renders a wrong acceptance as a right one. So this must be loud, and it must not
+    // silently pick one of the two values to show.
+    invokeMock.mockResolvedValue(DISAGREEING);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('abc1234');
+    expect(text).toContain('old9999');
+    expect(text).toContain('⚠️');
+  });
+
+  it('says unrecorded when the build captured no commit, and does not read that as agreement', async () => {
+    // Absent is not "same as the installer". A build whose capture failed must not be
+    // able to read as verified-by-identity.
+    invokeMock.mockResolvedValue(NO_BUILT_COMMIT);
+    render(<SandboxBanner />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toContain('二进制内提交 未记录');
+    expect(text).not.toContain('与安装器一致');
   });
 
   it('does not read an unparseable count as zero', async () => {

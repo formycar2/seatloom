@@ -33,10 +33,20 @@
 #
 #   默认:dry-run —— 只报「会装什么、装到哪、会起几个进程」,不动任何东西。
 #   --apply:真的构建并安装。
+#   --build-only:只构建 + 只证明构建带着那份活,不安装、不替换、不起进程。
 #   --sandbox-db <url>:给沙箱注入独立的 DATABASE_URL(要他自己决定,不由脚本猜)。
+#
+# 🔴 为什么必须有 --build-only(2026-11-07):
+#   replace-sandbox.sh 在「还没有构建产物」时,原来会叫人跑
+#     prepare-sandbox-build.sh <分支> --apply
+#   而那个 --apply 顺手 rm -rf + cp -R 把沙箱换掉,一步备份都没有 ——
+#   在一个「先备份再换」的脚本里指人去跑一个「直接换不备份」的脚本,
+#   等于把刚立好的规矩拆掉。所以那条指路改成只指构建。
+#   构建和安装必须是两步:构建可以反复跑,安装必须显式授权。
 #
 # 安全性:
 #   - dry-run 是默认,不给 --apply 就绝不构建、绝不安装、绝不起进程
+#   - --build-only 同样不装、不替换、不起进程,只产出 target/release/bundle/macos/SeatLoom.app
 #   - 不 pkill 任何进程 —— 主版在跑就不动它
 #   - 装完必须验证沙箱进程真的起来了,否则报错,不假装成功
 set -uo pipefail
@@ -50,18 +60,35 @@ WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
 MAIN_APP="/Applications/SeatLoom.app"
 SAND_APP="/Applications/SeatLoom-Sandbox.app"
 SANDBOX_KEY_PREFIX="slsandbox:"
-MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
+MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; BUILD_ONLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
 
 # ---- 参数 ----
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1; shift;;
+    --build-only) BUILD_ONLY=1; shift;;
     --allow-dirty) ALLOW_DIRTY=1; shift;;
     --from-dispatch) DISPID="${2:-}"; shift 2 || fail "--from-dispatch 后面要跟派单 id";;
     --sandbox-db) SANDBOX_DB="${2:-}"; shift 2 || fail "--sandbox-db 后面要跟一个 URL";;
     *) [ -z "$BRANCH" ] && BRANCH="$1"; shift;;
   esac
 done
+
+# 🔴 旗标冲突必须在**参数解析完之后立刻**判,不能等到工作区解析、身份核对、
+#    脏检查、数据库检查之后。这两个旗标的意思是相反的:--apply 替换沙箱,
+#    --build-only 构建完就停。冲突是**参数自身的性质**,参数一读完就能定,
+#    就应该定 —— 一个把两种相反意图都传上来的人,收到的应该是关于旗标的报错,
+#    而不是关于一个他根本没问的工作区的报错。
+#
+#    实测(e238a04,Flux 的 ev-wZhxxQuaY0xUrg7IHNF2X):守卫原来在第 255 行,
+#    排在分支解析、工作区解析、身份、脏、数据库、落后主干之后。于是一起给两个
+#    旗标时,先撞上的是工作区解析失败,操作者看到的和他改错的东西无关。
+#    这也让针对它的测试**不可伪证**:守卫删掉之后,那次运行照样非零退出、照样
+#    零副作用(因为更早的那个失败先响),于是判据分不清「守卫拒了」和「别的拒了」。
+#    套件自己的变异检查把这件事报成了「我守的是空的」。
+if [ "$APPLY" = "1" ] && [ "$BUILD_ONLY" = "1" ]; then
+  fail "--apply 和 --build-only 不能同时给。--apply 会替换沙箱,--build-only 只构建。分开跑。"
+fi
 
 if [ -n "$DISPID" ]; then
   SEAT="$(podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -U seatloom -d seatloom -tAc \
@@ -241,10 +268,57 @@ if git -C "$REPO" rev-parse --verify "$BASE" >/dev/null 2>&1 && [ "$BRANCH" != "
   fi
 fi
 
-if [ "$APPLY" != "1" ]; then
+if [ "$APPLY" != "1" ] && [ "$BUILD_ONLY" != "1" ]; then
   say ""
-  say "预演到此为止。要真的构建并安装,加 --apply。"
-  say "构建要花几分钟;装的是旁边那份,你正在用的那份不受影响。"
+  say "预演到此为止。两条路,分开走:"
+  say "  只构建(不装、不替换):bash scripts/prepare-sandbox-build.sh --build-only $BRANCH${MUST_HAVE:+ $MUST_HAVE}"
+  say "  真的构建并安装        :bash scripts/prepare-sandbox-build.sh $BRANCH${MUST_HAVE:+ $MUST_HAVE} --apply"
+  say ""
+  say "  要替换沙箱,走 scripts/replace-sandbox.sh —— 它先备份再换,而本脚本的 --apply 不备份。"
+  exit 0
+fi
+
+# --build-only:构建 + 证明带着那份活,然后停。不装、不替换、不停进程、不起进程。
+if [ "$BUILD_ONLY" = "1" ]; then
+  line; say "只构建(不安装、不替换、不停进程、不起进程)"; line
+  [ -d "$WT/node_modules" ] || fail "$WT 没有 node_modules"
+  [ -d "$WT/ui" ] || fail "$WT 没有 ui 目录"
+  say "  ✅ 目录在,依赖在"
+  line; say "一 — 构建前端"; line
+  ( cd "$WT/ui" && pnpm build ) 2>&1 | tail -4
+  [ -d "$WT/ui/dist" ] || fail "前端构建没产出 ui/dist"
+  say "  ✅ 前端产物在"
+  line; say "二 — 构建 release 应用(要几分钟)"; line
+  . "$HOME/.cargo/env" 2>/dev/null || true
+  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) 2>&1 | tail -5
+  BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
+  [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 没产出 $BUILT"
+  say "  ✅ 应用包在:$BUILT"
+  line; say "三 — 证明这个构建带着那份活"; line
+  if [ -n "$MUST_HAVE" ]; then
+    n="$(LC_ALL=C strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")" || n=0
+    [ "${n:-0}" -ge 1 ] && say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)" \
+      || fail "二进制里找不到 '$MUST_HAVE' —— 这份构建不带那份活"
+  else
+    say "  ⚠️  没给必须存在的字符串,这一项没验。建议给一个。"
+  fi
+  line; say "四 — 二进制自己说它是哪个提交"; line
+  BCOMMIT="$(LC_ALL=C grep -a -o 'seatloom-build-commit=[0-9a-f]*' "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | head -1 | sed 's/^seatloom-build-commit=//' || true)"
+  if [ -z "$BCOMMIT" ]; then
+    fail "二进制里读不到提交号 —— 「装的是哪个提交」不可核,不能拿去替换沙箱"
+  fi
+  say "      二进制内提交:$BCOMMIT"
+  say "      工作区 HEAD :$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null)"
+  [ "$BCOMMIT" = "$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null)" ] \
+    || fail "二进制里的提交和工作区 HEAD 不一致 —— 这份构建不是这棵树"
+  say "      ✅ 一致"
+  line; say "结果"; line
+  say "  ✅ 构建产物:$BUILT"
+  say "  ✅ 提交:$BCOMMIT"
+  say ""
+  say "  一步都没装、一步都没替换、一个进程都没停、一个进程都没起。"
+  say "  接下来先干跑确认,再加 --apply:"
+  say "    bash scripts/replace-sandbox.sh --from-branch $BRANCH"
   exit 0
 fi
 
