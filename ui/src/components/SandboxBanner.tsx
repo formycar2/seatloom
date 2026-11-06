@@ -53,6 +53,25 @@ export type RuntimeIdentityDto = {
    * you?", and the positive case of an acceptance was unfalsifiable.
    */
   built_commit: string | null;
+  /**
+   * How many uncommitted changes to TRACKED files the tree had when this binary was
+   * built — stated by the BINARY, not by the installer.
+   *
+   * 🔴 GAP fix (Flux, ev-OFHL9WBqlQnAqs8DCGAkN). The banner used to carry `uncommitted`
+   * from the launcher's env var, which is the channel this whole change exists to stop
+   * trusting — so a dirty build and a clean build at the same commit were
+   * indistinguishable by the binary's own account. Three states, not a boolean:
+   * `0` = the capture looked and it was clean; `n` = n tracked files were modified;
+   * `null` = the capture could not tell. Rendering `null` as clean would let an
+   * unreadable state pass as verified.
+   */
+  built_dirty: number | null;
+  /**
+   * Whether git answered at all during the capture. Separate from the fields above
+   * being null, because "git is unavailable here" is a different fact from "the
+   * repository had no answer", and the operator needs to know which one it is.
+   */
+  built_git_ok: boolean;
 };
 
 /**
@@ -111,10 +130,30 @@ function uncommittedClause(value: number | null | undefined): string {
 function identityClause(identity: RuntimeIdentityDto): string {
   const built = identity.built_commit?.trim();
   const claimed = identity.commit?.trim();
+  if (identity.built_git_ok === false) {
+    return ' · ⚠️ 编译时读不到 git —— 这份构建无法自证身份';
+  }
   if (!built) return ' · 二进制内提交 未记录';
   if (!claimed) return ` · 二进制内提交 ${built}(安装器未说)`;
   if (claimed === built) return ` · 二进制内提交 ${built}(与安装器一致)`;
   return ` · ⚠️ 二进制内提交 ${built} ≠ 安装器说的 ${claimed} —— 这个点击验的可能不是它要验的东西`;
+}
+
+/**
+ * The dirty clause, from the BINARY rather than the installer.
+ *
+ * 🔴 This is the other half of Flux's finding. The old clause read `uncommitted`, which
+ * the launcher exported — so the banner was trusting the exact channel the identity work
+ * exists to replace. A build made from a dirty tree now says so in the binary's own
+ * voice, and the three states stay distinct on screen: a capture that looked and found
+ * nothing, a capture that found changes, and a capture that could not tell.
+ */
+function builtDirtyClause(identity: RuntimeIdentityDto): string {
+  if (identity.built_git_ok === false) return ' · 编译时脏状态 未记录';
+  const n = identity.built_dirty;
+  if (typeof n !== 'number' || !Number.isFinite(n)) return ' · 编译时脏状态 未记录';
+  if (n <= 0) return ' · 编译时无未提交改动';
+  return ` · 编译时带 ${n} 个未提交改动 —— 这份构建不等于上面那个提交`;
 }
 
 type LoadState =
@@ -174,6 +213,7 @@ export const SandboxBanner: React.FC = () => {
       {orUnrecorded(identity.built_at)}
       {uncommittedClause(identity.uncommitted)}
       {identityClause(identity)}
+      {builtDirtyClause(identity)}
     </div>
   );
 };

@@ -108,15 +108,19 @@ describe('when a value is missing', () => {
       // also be missing the build-embedded commit and the count would be 3 — which
       // tests a different thing than the name of this case says.
       built_commit: 'abc1234',
+      // Absent on purpose: the dirty count is a THIRD state, not a number. It must
+      // be stated as unrecorded rather than read as 0 (clean) — that is the whole
+      // reason it is Option<u32> and not u32. So this case is about 2+1 absences.
+      built_dirty: null,
     });
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toContain('packet/mira/knowledge-panel');
-    // Two absences stated, and neither is a blank or an invented value: the
-    // installer's commit, and the build time. The build-embedded commit is present,
-    // so it is named rather than counted as absent.
-    expect(text.match(/未记录/g) ?? []).toHaveLength(2);
+    // Three absences stated, and neither is a blank or an invented value: the
+    // installer's commit, the build time, and the dirty count. The build-embedded
+    // commit is present, so it is named rather than counted as absent.
+    expect(text.match(/未记录/g) ?? []).toHaveLength(3);
     expect(text).not.toContain('null');
     expect(text).not.toContain('undefined');
   });
@@ -132,10 +136,17 @@ describe('when a value is missing', () => {
     render(<SandboxBanner />);
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     const text = screen.getByRole('status').textContent ?? '';
-    // 4, not 3: branch, commit, built_at and the build-embedded commit. Each absent
-    // fact is STATED as absent — that is the property. A future field that can be
-    // absent bumps this count, and this comment is where that is noticed.
-    expect(text.match(/未记录/g) ?? []).toHaveLength(4);
+    // 5, not 4: branch, commit, built_at, the build-embedded commit, and the
+    // dirty count. Each absent fact is STATED as absent — that is the property.
+    // (The first version of this assertion said 4 and enumerated four fields while
+    // a fifth was already rendering: the comment counted the fields I had written
+    // down, not the ones on screen. Measured, not reasoned — hence the count above.)
+    // A future field that can be absent bumps this count, and this comment is where
+    // that is noticed.
+    expect(text.match(/未记录/g) ?? []).toHaveLength(5);
+    // And the third state is stated in its own words, not as a number and not as
+    // clean. This is the assertion that an unknown is not a measured zero.
+    expect(text).toContain('未记录');
     // The words that would betray a guess.
     expect(text).not.toContain('unknown');
     expect(text).not.toContain('main');

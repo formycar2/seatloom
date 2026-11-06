@@ -108,6 +108,25 @@ pub struct RuntimeIdentityDto {
     /// 不声称更多:编译期捕获只说编译那棵树是什么,不说启动者的工作目录,也不是签名。
     /// git 不可用或目录不是仓库时它是 `None`,横幅写「未记录」—— 诚实的那个方向。
     pub built_commit: Option<String>,
+    /// How many uncommitted changes to TRACKED files the tree had when the binary was
+    /// built — stated by the binary, not by the installer.
+    ///
+    /// 🔴 This closes the GAP Flux recorded in ev-OFHL9WBqlQnAqs8DCGAkN: a dirty build
+    /// was indistinguishable from a clean one at the same commit, by the binary's own
+    /// account. The banner previously carried `uncommitted` from the launcher's env var
+    /// — the very channel this change exists to stop trusting.
+    ///
+    /// Three states, deliberately not collapsed into a boolean: `Some(0)` means the
+    /// capture looked and the tree was clean; `Some(n)` means n tracked files were
+    /// modified; `None` means the capture could not tell. Rendering `None` as clean
+    /// would let an unreadable state pass as verified.
+    pub built_dirty: Option<u32>,
+    /// Whether `git` answered at all during the capture.
+    ///
+    /// Kept separate from `built_commit` being `None` because the two mean different
+    /// things: "git is unavailable here" is a statement about the environment, while a
+    /// missing commit with git available would be a statement about the repository.
+    pub built_git_ok: bool,
 }
 
 /// Read an env var, treating an empty string as absent.
@@ -152,6 +171,8 @@ pub async fn cmd_get_runtime_identity() -> Result<RuntimeIdentityDto, String> {
         // placeholders that are not commits.
         built_commit: build_identity::BUILD_COMMIT
             .map(|v| v.strip_prefix(BUILD_COMMIT_LABEL).unwrap_or(v).to_string()),
+        built_dirty: build_identity::BUILD_DIRTY,
+        built_git_ok: build_identity::BUILD_GIT_OK,
     })
 }
 
