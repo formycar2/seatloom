@@ -304,7 +304,7 @@ if [ "$BUILD_ONLY" = "1" ]; then
   rm -rf "$WT/ui/dist"
   ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
   UI_RC=$?
-  tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
+  tail -4 "$WT/target/ui-build.log" | sed 's/^/    /'
   [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
   [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
   rm -f "$WT/target/ui-build.log"
@@ -364,7 +364,7 @@ rm -rf "$WT/ui/dist"
 mkdir -p "$WT/target"
 ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
 UI_RC=$?
-tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
+tail -4 "$WT/target/ui-build.log" | sed 's/^/    /'
 [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
 [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
 rm -f "$WT/target/ui-build.log"
