@@ -358,6 +358,10 @@ say "  ✅ 目录在,依赖在"
 line; say "二 — 构建前端"; line
 # 🔴 同上:退出码单独取,并且先删旧 dist —— 否则旧目录会让失败看起来成功。
 rm -rf "$WT/ui/dist"
+# target/ 要在写日志**之前**就存在:前端构建是第一个写的,而那时 cargo 还没建过它。
+# 实测:target/ 不存在时重定向失败,pnpm build 拿到退出码 2(不是它自己的失败),
+# 于是报的是「前端构建失败(退出码 2)」而上面一个字都没有 —— 一个没有证据的失败。
+mkdir -p "$WT/target"
 ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
 UI_RC=$?
 tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
