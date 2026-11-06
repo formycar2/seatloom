@@ -147,8 +147,54 @@ if [ "$DRY" = "1" ]; then
 
   # 身份:这个构建到底是谁、从哪来。工作区脏了要说,因为脏意味着
   # 「构建出来的东西不等于这个提交」,那是验收里最贵的意外。
-  DIRTY="$(git -C "$WT" status --porcelain 2>/dev/null | grep -v '^??' || true)"
-  if [ -n "$DIRTY" ]; then
+  #
+  # 🔴 git status 读失败 ≠ 工作区干净。第一版写成
+  #      DIRTY="$(git -C "$WT" status --porcelain 2>/dev/null | grep -v '^??' || true)"
+  #    于是 status 退出 128(权限坏了、索引坏了、磁盘出错)时:2>/dev/null 把唯一
+  #    能区分「干净」和「读不出来」的证据扔掉,|| true 让整条管道算成功,DIRTY
+  #    落成空串,[ -n ] 为假,走 else 打印「工作区干净」—— 而且那个分支从不设
+  #    BLOCKERS,干跑退出 0,等于告诉操作者「可以装」。这份构建跟那个提交的关系
+  #    根本没测过。2026-11-07 实测复现(ev-dr3OFuoVhsMO3JYi7mHfK):注入一个只在
+  #    status --porcelain 上失败的 git,干跑退出 0 并打印「工作区干净」。
+  #
+  #    修法只有一条承重规则:**git 的退出码和 grep 的「没匹配」必须分开取。**
+  #    grep 没匹配是「没有未跟踪文件」,是正常结果;git 退出 128 是「我没读到」。
+  #    把两者用一条管道和一个 || true 混在一起,后者就被前者吃掉了。
+  #
+  #    stderr 走一个临时文件而不是 2>/dev/null —— 那句话就是「干净」和「读不出来」
+  #    的全部区别,mktemp 本身失败时按「读不出来」处理,不能当成干净放过去。
+  GIT_STATUS_ERR="$(mktemp 2>/dev/null)" || GIT_STATUS_ERR=""
+  if [ -n "$GIT_STATUS_ERR" ] && [ -w "$GIT_STATUS_ERR" ]; then
+    DIRTY_RAW="$(git -C "$WT" status --porcelain 2>"$GIT_STATUS_ERR")"
+    GIT_STATUS_RC=$?
+  else
+    # 连临时文件都建不出来,一样是「读不出来」,不是干净。
+    DIRTY_RAW=""
+    GIT_STATUS_RC=99
+  fi
+  # stderr 是区分「干净」和「读不出来」的那句话,所以不丢。取前几行,压成一行。
+  if [ -n "$GIT_STATUS_ERR" ] && [ -f "$GIT_STATUS_ERR" ]; then
+    GIT_STATUS_MSG="$(tr -d '\r' <"$GIT_STATUS_ERR" | grep -v '^[[:space:]]*$' \
+      | head -3 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    rm -f "$GIT_STATUS_ERR"
+  else
+    GIT_STATUS_MSG=""
+  fi
+  # 未跟踪文件不算 —— 没 git add 过的文件本来就不进构建,这是故意的。这个 grep
+  # 只在 git 真的读成功时才跑,所以它自己的退出码没有意义,|| true 不会吃掉任何东西。
+  if [ "$GIT_STATUS_RC" = "0" ]; then
+    DIRTY="$(printf '%s' "$DIRTY_RAW" | grep -v '^??' || true)"
+  else
+    DIRTY=""
+  fi
+  if [ "$GIT_STATUS_RC" != "0" ]; then
+    # 三种状态,不是两种。读不出来是第三种,它既不是干净也不是脏,
+    # 绝不能落到 [ -n "$DIRTY" ] 这个二值判断里。
+    say "  ❌ 读不出工作区状态(git status 退出码 $GIT_STATUS_RC)"
+    [ -n "$GIT_STATUS_MSG" ] && say "     git 说:$GIT_STATUS_MSG"
+    say "     这不是「干净」—— 这份构建跟提交 ${WT_COMMIT} 的关系没有测过。"
+    say "     权限、索引、磁盘任何一个出问题都会走到这里。修好再干跑,不要在没测过的情况下装。"
+  elif [ -n "$DIRTY" ]; then
     say "  ⚠️  工作区有未提交的改动(不算未跟踪文件):"
     printf '%s\n' "$DIRTY" | sed 's/^/      /' | head -20
     [ "$(printf '%s\n' "$DIRTY" | grep -c .)" -gt 20 ] && say "      …(还有更多)"
@@ -201,7 +247,9 @@ if [ "$DRY" = "1" ]; then
     say "  ❌ $WT 没有 tauri 可执行文件(node_modules/.bin/tauri)—— 装不了"; BLOCKERS=1; }
   [ -x "$REPO/scripts/launch-seatloom.sh" ] || {
     say "  ❌ 没有 scripts/launch-seatloom.sh —— 起来会缺操作者身份,点合并必然失败"; BLOCKERS=1; }
-  if [ -n "$DIRTY" ]; then
+  if [ "$GIT_STATUS_RC" != "0" ]; then
+    say "  ❌ 读不出工作区状态 —— 不知道这份构建是不是提交 $WT_COMMIT,现在不能装"; BLOCKERS=1
+  elif [ -n "$DIRTY" ]; then
     say "  ❌ 工作区脏 —— 先提交或 stash,否则验收的东西不等于这个提交"; BLOCKERS=1
   fi
   if [ "$BLOCKERS" != "0" ]; then

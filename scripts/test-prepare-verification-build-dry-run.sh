@@ -212,6 +212,99 @@ fi
 cp "$FIX/orig.sh" "$MUT"
 
 echo ""
+echo "── 8. git status 读失败时,必须既不说干净也不能说可以装 ──"
+# 这一条来自 ev-dr3OFuoVhsMO3JYi7mHfK 实测到的 fail-open。
+#
+# 原来的形状:DIRTY="$(git status --porcelain 2>/dev/null | grep -v '^??' || true)"
+# git 退出 128 时,2>/dev/null 把证据扔掉,|| true 让管道算成功,DIRTY 成空串,
+# [ -n ] 为假 → 走 else 打印「工作区干净」,而那个分支从不设 BLOCKERS → 退出 0。
+#
+# 注入一个只在 status --porcelain 上失败的 git(别的子命令全部照常 exec 真 git),
+# 那是权限坏了/索引坏了/磁盘出错的形状 —— 一个仓库还在、但读不出状态。
+cat > "$FIX/bin/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "status" ]; then
+    echo "fatal: unable to read the index" >&2
+    exit 128
+  fi
+done
+exec /usr/bin/git "\$@"
+EOF
+chmod +x "$FIX/bin/git"
+OUT="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+  bash scripts/prepare-verification-build.sh --dry-run packet/fixture/test MUST_HAVE_ME 2>&1 )"
+RC=$?
+[ "$RC" != "0" ] && pass "读不出工作区状态时干跑非零退出" \
+  || die "读不出工作区状态却退出 0 —— 它认为可以装,而这份构建跟那个提交的关系根本没测过"
+printf '%s\n' "$OUT" | grep -q "工作区干净" \
+  && die "读失败被说成「工作区干净」—— 把没测过说成测过了" \
+  || pass "没有把读失败说成干净"
+printf '%s\n' "$OUT" | grep -q "前提都满足" \
+  && die "读失败却打印「前提都满足」—— 那是在劝人装一个关系未定的构建" \
+  || pass "读失败时没有打印「前提都满足」"
+# 三态,不是两态:读不出来必须自己有个名字,不能落到 [ -n "$DIRTY" ] 这个二值里。
+printf '%s\n' "$OUT" | grep -q "读不出工作区状态" \
+  && pass "明确说了读不出工作区状态(第三种状态有自己的名字)" \
+  || die "没说读不出工作区状态 —— 一个没有名字的状态最后一定会被算成干净"
+# git 自己那句话必须出现在输出里。它才是「干净」和「读不出来」的区别所在。
+printf '%s\n' "$OUT" | grep -q "unable to read the index" \
+  && pass "把 git 的报错原话带出来了(证据没被 2>/dev/null 丢掉)" \
+  || die "没带出 git 的报错 —— 那操作者还是分不清是干净还是读不出来"
+# 退出码本身要说出来,不能只说「出错了」。
+printf '%s\n' "$OUT" | grep -q "128" \
+  && pass "说出了 git 的退出码" \
+  || die "没说退出码 —— 无法区分权限、索引、磁盘是哪一种"
+rm -f "$FIX/bin/git"
+
+echo "── 9. 变异:把失败吞掉,这个测试必须红 ──"
+# 承重命题:上面第 8 条不是靠运气绿的。把修复退回第一版的形状
+#(2>/dev/null + || true 混在一条管道里),第 8 条必须红。
+# 变异必须**只**动那一行,并且验完逐字节还原 —— 变异还原不干净比没有变异更糟。
+MUT="$FIX/repo/scripts/prepare-verification-build.sh"
+cp "$MUT" "$FIX/mut-orig.sh"
+python3 - "$MUT" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+# 变异:把退出码和 stderr 一起丢掉,回到第一版的形状。锚点必须是**真实存在的那几行**,
+# 上一版的锚点在我加固 mktemp 分支之后就找不到了 —— 于是变异没发生,
+# 「变异后仍然绿」其实是「变异根本没跑」。锚点失配必须让第 9 条失败,
+# 不能让它静悄悄地变成一条永远通过的测试。
+old = '''  GIT_STATUS_ERR="$(mktemp 2>/dev/null)" || GIT_STATUS_ERR=""
+  if [ -n "$GIT_STATUS_ERR" ] && [ -w "$GIT_STATUS_ERR" ]; then
+    DIRTY_RAW="$(git -C "$WT" status --porcelain 2>"$GIT_STATUS_ERR")"
+    GIT_STATUS_RC=$?'''
+new = '''  GIT_STATUS_ERR="$(mktemp 2>/dev/null)" || GIT_STATUS_ERR=""
+  if [ -n "$GIT_STATUS_ERR" ] && [ -w "$GIT_STATUS_ERR" ]; then
+    DIRTY_RAW="$(git -C "$WT" status --porcelain 2>/dev/null || true)"
+    GIT_STATUS_RC=0'''
+assert old in s, "变异锚点没找到 —— 第 9 条没有测到任何东西"
+assert new not in s.replace(old, ''), "变异后跟变异前一样"
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+PYEOF
+cat > "$FIX/bin/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "status" ]; then echo "fatal: unable to read the index" >&2; exit 128; fi
+done
+exec /usr/bin/git "\$@"
+EOF
+chmod +x "$FIX/bin/git"
+OUTM="$( cd "$FIX/repo" && PATH="$FIX/bin:$PATH" \
+  bash scripts/prepare-verification-build.sh --dry-run packet/fixture/test MUST_HAVE_ME 2>&1 )"
+RCM=$?
+if [ "$RCM" = "0" ] || printf '%s\n' "$OUTM" | grep -q "工作区干净"; then
+  pass "变异后失败被吞了(退出 $RCM)—— 第 8 条真的在守东西"
+else
+  die "变异后第 8 条仍然绿 —— 它守的是空的"
+fi
+# 还原,并证明还原是逐字节的。
+cp "$FIX/mut-orig.sh" "$MUT"
+cmp -s "$MUT" "$FIX/mut-orig.sh" || die "变异没还原干净 —— 后面的用例会被污染"
+rm -f "$FIX/bin/git" "$FIX/mut-orig.sh"
+
+echo ""
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
   exit 0
