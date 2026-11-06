@@ -23,7 +23,7 @@ use crate::db::write_api::{append_event_in_tx, EventDraft, ObjectRefDraft};
 use crate::objects::memory::MemoryLayer;
 use crate::objects::seat::SeatRole;
 use crate::objects::session::{Agent, Harness, ParseValueError};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 pub struct SeatloomDb {
     pool: Pool,
@@ -1288,9 +1288,23 @@ impl SeatloomDb {
             )
             .await?;
         if let Some(row) = existing {
+            // `created_at` is `timestamptz` in the schema, so it must be read as
+            // a `DateTime<Utc>` and then rendered. Reading it straight into a
+            // `String` PANICS at runtime — measured, not reasoned about: the
+            // behavioural tests drove a repeat write and the guard found the
+            // duplicate, then died on its own error construction with
+            // "error retrieving column 1: error deserializing column 1".
+            //
+            // 🔴 A guard whose error path panics is worse than no guard: the
+            //    caller gets a panic instead of a refusal, and the refusal is
+            //    the whole point — it is what makes a retry recognisable as a
+            //    retry. The key-struct tests could never have caught this,
+            //    because they never touch the query; only driving the real
+            //    thing could.
+            let created_at: DateTime<Utc> = row.get(1);
             return Err(DbError::MemoryDuplicate {
                 existing_id: row.get(0),
-                created_at: row.get(1),
+                created_at: created_at.to_rfc3339(),
                 l2_file_path: l2_file_path.map(str::to_string),
                 l2_line_start,
                 l2_line_end,
