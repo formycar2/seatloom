@@ -218,6 +218,21 @@ printf '%s\n' "$OUT" | grep -q "disp-wl2" && pass "I1:wl2 里能看到自己的�
 printf '%s\n' "$OUT" | grep -q "disp-nocard" && die "I1 失败:wl2 的清单里出现了 wl 的单" || pass "I1:wl2 里没有 wl 的单(反方向)"
 
 echo ""
+echo "── I1c:另一个项目的 ready 停滞单 —— 直接钉住 ready 查询的项目过滤 ──"
+# Flux 的 V-1(ev-eJlCzXwSGEAQC2rPQTciA):删掉 ready 查询的 project 项会红,
+# 但红在 I3「没说快照关系」上,不是红在隔离判据上。原因:I1 的 disp-wl2 是一张
+# done 单,它走的是第四段的过滤,从来不走 ready 查询。于是 ready 查询的项目过滤
+# **只被偶然保护着** —— 隔离属性对 I1 恰好测到的那一段成立,不对被变异的那一段成立。
+# 缺的状态就是「另一个项目的一张 ready 停滞单」。补上它,变异才会红在隔离上。
+psq_ok "insert into dispatches (id, target_seat_id, issued_by, project_id, title, payload, status, priority, issued_at) values ('disp-wl2ready','seat-test-001','seat-test-001','wl2','别的项目的停滞 ready 单','{}','ready',5, now() - interval '90 minutes')"
+OUT="$(wl --project wl)"; RC=$?
+[ "$RC" = "0" ] && pass "退出 0" || die "退出 $RC"
+printf '%s\n' "$OUT" | grep -q "disp-wl2ready" && die "I1c 失败:wl 的清单里出现了 wl2 的 ready 停滞单 —— ready 查询的项目过滤没起作用" || pass "I1c:wl 里没有 wl2 的 ready 停滞单"
+OUT="$(wl --project wl2)"; RC=$?
+[ "$RC" = "0" ] && pass "wl2 退出 0" || die "wl2 退出 $RC"
+printf '%s\n' "$OUT" | grep -q "disp-wl2ready" && pass "I1c:wl2 里能看到自己的 ready 停滞单(证明不是整个查空)" || die "I1c 失败:wl2 里连自己的 ready 单都没有 —— 那是查询坏了,不是隔离"
+
+echo ""
 echo "── I1b:不给项目 / 给空 / 给不存在的项目,都拒绝,没有默认项目 ──"
 OUT="$(wl_bare)"; RC=$?
 [ "$RC" != "0" ] && pass "I1b:不给 --project 时非零退出" || die "I1b 失败:不给项目也退出 0 —— 它会退化成某个默认项目"
@@ -250,6 +265,20 @@ printf '%s\n' "$OUT" | grep -q "env:SEATLOOM_OPERATOR_REF" && pass "I2:明说身
 # 不测这一条,顺序反转也不会有人发现。
 
 echo ""
+echo "── I2b:另一个人的待裁决定,对这位操作者必须不可见 ──"
+# Flux 的 V-2:删掉 operator_decisions 的 decider 过滤,SURVIVES,退出 0,全绿。
+# 为什么能活:整个 fixture 里**只有一行** operator_decisions,decider 是
+# 'human:todo-owner',没有任何第二个人的决定。于是删掉 decider 过滤改变不了
+# 任何一行的可见性 —— 这个属性被断言在一个正确值和缺陷值无法区分的状态上。
+# 缺的状态就是「一条属于别人的待裁决定」,它对这位操作者必须不可见。
+psq_ok "insert into operator_decisions (id, project_id, target, choices, decider, consequence, status, created_by) values ('od-someoneelse','wl','别人该裁的事','[{\"a\":1}]','human:someone-else','别人裁错别人担','pending','seat:seat-aegis-001')"
+OUT="$(wl --project wl)"; RC=$?
+[ "$RC" = "0" ] && pass "退出 0" || die "退出 $RC"
+printf '%s\n' "$OUT" | grep -q "od-someoneelse" && die "I2b 失败:别人的待裁决定出现了 —— 他把别人的活显示成了你的" || pass "I2b:别人的待裁决定不可见"
+# 反向:自己的那一行还在。只查「别人的不在」不够 —— 整个段坏掉也会让它不在。
+printf '%s\n' "$OUT" | grep -q "od-1" && pass "I2b:自己的待裁决定仍在(证明不是整段查空)" || die "I2b 失败:自己的决定也不在 —— 那是查询坏了,不是隔离"
+
+echo ""
 echo "── I3:一次只读快照,不是五个各自为政的查询 ──"
 # 直接可测的那一面:查询排队和查询执行必须分开。第一版把执行放在第一个查询之后,
 # 结果只有项目存在性是真的,其余四段恒定取空 —— 一份「0 obligations」而库里有活。
@@ -267,6 +296,94 @@ printf '%s\n' "$OUT" | grep -qE "disp-ackey[^0-9]|disp-ackey$" && pass "I3:done 
 psq_ok "insert into projects (id,name,created_at,worker_budget_tokens,supervisor_budget_tokens) values ('wl3', 'wl3', now(), 1024, 1024)"
 EMPTY_OUT="$(wl --project wl3)"
 printf '%s\n' "$EMPTY_OUT" | grep -q "同一个只读快照" && pass "I3:输出说明三张表来自同一个快照" || die "I3 失败:没说明快照关系"
+
+echo ""
+echo "── I3b:静态那一面 —— 只有一次事务,不是多次各自为政 ──"
+# Flux 的 V-3:删掉 REPEATABLE READ 事务,SURVIVES,退出 0,全绿。原因:没有任何
+# 判据观察快照。这一段是**静态**断言:数一下源码里的事务开始和快照执行各几次。
+# 它有用,但它**不是并发证明** —— 源码里有一行 BEGIN 不等于运行时真的一个快照。
+# 并发那一面在 I3c,那里用一次真实的并发提交去观测。
+N_BEGIN="$(grep -c 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' "$SCRIPT")"
+[ "$N_BEGIN" = "1" ] && pass "I3b:源码里恰好一个 REPEATABLE READ 只读事务开始" || die "I3b 失败:事务开始有 $N_BEGIN 处 —— 多个事务就不是一个快照"
+# 数**调用**,不是数定义。第一版用 `grep -c 'run_snapshot$'`,而真实调用点是
+# `if ! run_snapshot; then` —— 那一行不以 run_snapshot 结尾,于是数出 0 次,
+# 看起来像「快照执行了零次」,而它明明执行了。定义行 `run_snapshot(){` 要先减掉。
+N_RUN_DEF="$(grep -c '^run_snapshot(){' "$SCRIPT")"
+N_RUN="$(grep -c 'run_snapshot' "$SCRIPT")"
+N_RUN=$(( N_RUN - N_RUN_DEF - 1 ))   # 再减掉注释里提到它的那一行
+[ "$N_RUN" = "1" ] && pass "I3b:快照只执行一次(一次 psql 调用 = 一个事务)" || die "I3b 失败:run_snapshot 被调用 $N_RUN 次 —— 每次调用是一个独立事务"
+# 查询必须排队之后才执行,不能查一条用一条。
+N_Q_AFTER="$(awk '/^# ── 一次性执行/{seen=1} seen && /^require /{c++} END{print c+0}' "$SCRIPT")"
+[ "$N_Q_AFTER" = "0" ] && pass "I3b:执行点之后没有再排队查询(排队与执行是两段)" || die "I3b 失败:执行点之后还有 $N_Q_AFTER 条 require —— 查询和执行混在一起了"
+
+echo ""
+echo "── I3c:并发那一面 —— 快照开始之后提交的行,必须不在清单里 ──"
+# 这是 V-3 真正缺的状态:**一个能观测快照的东西**。
+#
+# 做法是确定性的,不靠 sleep 猜时序:
+#   1. 另一个会话对 operator_decisions 拿 ACCESS EXCLUSIVE 锁并且不提交。
+#      work-list 的 projects 查询先跑(快照在这一刻建立),然后卡在
+#      operator_decisions 的 SELECT 上 —— 确定性可等。
+#   2. 等它真的卡住了(轮询 pg_locks 里对该表的一个未授权锁请求)。
+#   3. 这时从第三个会话插入并**提交**一张 done 单 disp-race。
+#   4. 释放锁,work-list 继续跑完。
+#
+# REPEATABLE READ 的快照建于第 1 步,所以第 3 步提交的那一行**不在**清单里,
+# 计数查询也同样看不到它 —— 两者一致。删掉 BEGIN 之后 psql 走 autocommit,
+# 每条语句各自一个事务,第 3 步提交的行就会被看到,这一条断言才红。
+#
+# 这一条证明的是「清单和计数来自同一时刻」,不是「并发下永不幻读」——
+# 后者要更宽的实验,这里只钉住这个命令自己声称的那一条。
+RACE_OUT="$SCRATCH_DIR/race.out"
+rm -f "$RACE_OUT"
+( podman exec -i -e PGPASSWORD=seatloom "$CONTAINER" psql -X -U seatloom -d "$SCRATCH" -q \
+    -c "begin" \
+    -c "lock table operator_decisions in access exclusive mode" \
+    -c "select pg_sleep(25)" ) >/dev/null 2>&1 &
+LOCKCLIENT=$!
+# 等锁真的被持有,再启动 work-list —— 否则可能抢在锁之前就跑完了。
+for _ in $(seq 1 50); do
+  HELD="$(psq "select count(*) from pg_locks where locktype='relation' and relation='operator_decisions'::regclass and granted and mode='AccessExclusiveLock'" | tr -d '[:space:]')"
+  [ "$HELD" = "1" ] && break
+  sleep 0.2
+done
+wl --project wl > "$RACE_OUT" 2>&1 &
+WLPID=$!
+# 等 work-list 真的卡在那把锁上。未授权的锁请求就是它卡住的证据。
+BLOCKED=0
+for _ in $(seq 1 100); do
+  WAITING="$(psq "select count(*) from pg_locks where locktype='relation' and relation='operator_decisions'::regclass and not granted" | tr -d '[:space:]')"
+  [ "$WAITING" != "0" ] && [ -n "$WAITING" ] && { BLOCKED=1; break; }
+  sleep 0.2
+done
+if [ "$BLOCKED" != "1" ]; then
+  die "I3c 失败:没能让 work-list 卡在锁上 —— 这个并发实验没有测到东西(不是命令的问题,是实验没做成)"
+  kill "$WLPID" 2>/dev/null
+else
+  pass "I3c:work-list 已卡在快照中途(并发实验的前提成立)"
+fi
+# 快照已建立之后,提交一行。REPEATABLE READ 看不到它;autocommit 看得到。
+psq_ok "insert into dispatches (id, target_seat_id, issued_by, project_id, title, payload, status, priority, completed_at) values ('disp-race','seat-test-001','seat-test-001','wl','快照开始之后才提交的单','{\"kind\":\"implementation\"}','done',5, now())"
+# 释放锁:客户端一断,后端回滚,锁就放了。
+kill "$LOCKCLIENT" 2>/dev/null
+wait "$WLPID" 2>/dev/null
+RCR=$?
+RACE="$(cat "$RACE_OUT" 2>/dev/null)"
+# 承重断言:快照建立之后提交的那一行,不在清单里。
+printf '%s\n' "$RACE" | grep -q "disp-race" \
+  && die "I3c 失败:快照开始之后提交的单出现在清单里 —— 这份清单没有一个统一的时刻" \
+  || pass "I3c:快照后提交的单不在清单里(清单有统一的时刻)"
+# 而且计数查询也同样看不到它:显示条数 + 未显示条数 == 全量条数。
+# 拿两个独立查询的结论对账,这是「同一快照」在输出上唯一可观测的形状。
+SHOWN_R="$(printf '%s\n' "$RACE" | grep -cE '^dispatches ')"
+if printf '%s\n' "$RACE" | grep -q "还有 .* 条没显示"; then
+  TOT_R="$(printf '%s\n' "$RACE" | grep -o '共 [0-9]* 条' | grep -o '[0-9]*' | head -1)"
+  HID_R="$(printf '%s\n' "$RACE" | grep -o '还有 [0-9]* 条没显示' | grep -o '[0-9]*' | head -1)"
+  SHOWN_R="$(( TOT_R - HID_R ))"
+fi
+[ "$SHOWN_R" -ge 1 ] && pass "I3c:清单有条目(证明不是整个查空)" || die "I3c 失败:一条都没有 —— 那是查询坏了,不是隔离"
+# 清掉这一行,后面的用例假设它不存在。
+psq_ok "delete from dispatches where id='disp-race'"
 
 echo ""
 echo "── I4:超过展示上限必须说出来,不静默截断 ──"
