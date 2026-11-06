@@ -292,14 +292,33 @@ if [ "$BUILD_ONLY" = "1" ]; then
   [ -d "$WT/ui" ] || fail "$WT 没有 ui 目录"
   say "  ✅ 目录在,依赖在"
   line; say "一 — 构建前端"; line
-  ( cd "$WT/ui" && pnpm build ) 2>&1 | tail -4
-  [ -d "$WT/ui/dist" ] || fail "前端构建没产出 ui/dist"
-  say "  ✅ 前端产物在"
+  # 🔴 管道会吃掉退出码。`pnpm build 2>&1 | tail -4` 里 $? 是 tail 的,
+  #    pnpm 失败也照样往下走;而 `[ -d ui/dist ]` 又被**上一次构建留下的旧目录**
+  #    满足 —— 于是「前端构建失败」被打成「✅ 前端产物在」。
+  #    实测(2026-11-07):tsc 找不到(pnpm install 之后 ui/ 下没有 node_modules),
+  #    pnpm build 失败,而 ui/dist 是**前一天**的,检查通过,tauri build 接着把
+  #    旧前端打进了应用,并且打印「✅ 应用包在」。只有二进制提交号那一关拦住它。
+  #    **一个把昨天的产物说成今天的检查,比没有检查更有害。**
+  #    修法两件事一起做:退出码单独取,并且构建前把旧 dist 删掉 ——
+  #    于是「dist 存在」只可能意味着「这次构建产出了它」。
+  rm -rf "$WT/ui/dist"
+  ( cd "$WT/ui" && pnpm build ) > "$WT/ui/.build.log" 2>&1
+  UI_RC=$?
+  tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
+  [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
+  [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
+  rm -f "$WT/ui/.build.log"
+  say "  ✅ 前端产物在(这次构建产出的)"
   line; say "二 — 构建 release 应用(要几分钟)"; line
   . "$HOME/.cargo/env" 2>/dev/null || true
-  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) 2>&1 | tail -5
+  # 同一个病:管道吃掉退出码,而 target/release 里可能躺着上一次的产物。
+  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/.tauri-build.log" 2>&1
+  TAURI_RC=$?
+  tail -5 "$WT/.tauri-build.log" | sed 's/^/    /'
+  [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
   BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
-  [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 没产出 $BUILT"
+  [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
+  rm -f "$WT/.tauri-build.log"
   say "  ✅ 应用包在:$BUILT"
   line; say "三 — 证明这个构建带着那份活"; line
   if [ -n "$MUST_HAVE" ]; then
@@ -337,16 +356,26 @@ say "  ✅ 目录在,依赖在"
 
 # ---- 前端 ----
 line; say "二 — 构建前端"; line
-( cd "$WT/ui" && pnpm build ) 2>&1 | tail -4
-[ -d "$WT/ui/dist" ] || fail "前端构建没产出 ui/dist"
-say "  ✅ 前端产物在"
+# 🔴 同上:退出码单独取,并且先删旧 dist —— 否则旧目录会让失败看起来成功。
+rm -rf "$WT/ui/dist"
+( cd "$WT/ui" && pnpm build ) > "$WT/ui/.build.log" 2>&1
+UI_RC=$?
+tail -4 "$WT/ui/.build.log" | sed 's/^/    /'
+[ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
+[ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
+rm -f "$WT/ui/.build.log"
+say "  ✅ 前端产物在(这次构建产出的)"
 
 # ---- release ----
 line; say "三 — 构建 release 应用(要几分钟)"; line
 . "$HOME/.cargo/env" 2>/dev/null || true
-( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) 2>&1 | tail -5
+( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/.tauri-build.log" 2>&1
+TAURI_RC=$?
+tail -5 "$WT/.tauri-build.log" | sed 's/^/    /'
+[ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
 BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
-[ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 没产出 $BUILT"
+[ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
+rm -f "$WT/.tauri-build.log"
 say "  ✅ 应用包在:$BUILT"
 
 # ---- 证明这个构建真的带着要验的东西 ----
