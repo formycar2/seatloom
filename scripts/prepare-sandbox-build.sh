@@ -64,8 +64,28 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #    现在两边共用 scripts/worktree-root.sh。
 . "$REPO/scripts/worktree-root.sh"
 WROOT="$(resolve_worktree_root "$REPO")" || exit 1
-MAIN_APP="/Applications/SeatLoom.app"
-SAND_APP="/Applications/SeatLoom-Sandbox.app"
+MAIN_APP="${SEATLOOM_MAIN_APP:-/Applications/SeatLoom.app}"
+# 🔴 SAND_APP 必须可被显式重定向,而且默认值就是那个真实路径。
+#
+#     2026-11-07 事故(Flux 和 Lyra 都独立量到):这一行原本写死
+#     SAND_APP="/Applications/SeatLoom-Sandbox.app",**不读任何环境变量**。
+#     而 replace-sandbox.sh 第 46 行是
+#     SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}" ——
+#     同一个变量名,一边认一边不认。于是测试里设 SEATLOOM_SANDBOX_APP 想把它
+#     指向临时目录,**被静静忽略**,--apply 的 rm -rf 和 cp -R 落到了真的沙箱上,
+#     真的 12.7MB 二进制没了,而且没有备份。
+#
+#     **一个看着接上了、其实没接上的控制,比没有控制更糟** ——
+#     它让人以为已经重定向了。这和 MUST_HAVE 那个 bug 是同一类:
+#     存在、被引用、没有被接到任何能改变行为的地方。
+#
+#     现在两个脚本用同一种写法。下面还有第二道闸:目标是真实路径时,
+#     破坏性路径要求显式确认(见 ALLOW_REAL_SANDBOX)。
+SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"
+# 第二道闸:目标就是真实 /Applications 路径时,破坏性动作要显式确认。
+# 没有这个确认,--apply 直接拒绝 —— 宁可拒绝一次真的安装,
+# 也不能让一个忘了改路径的调用把真的沙箱删掉。
+ALLOW_REAL_SANDBOX="${SEATLOOM_ALLOW_REAL_SANDBOX:-}"
 SANDBOX_KEY_PREFIX="slsandbox:"
 MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; BUILD_ONLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
 
@@ -455,6 +475,33 @@ BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
 [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
 rm -f "$WT/target/tauri-build.log"
 say "  ✅ 应用包在:$BUILT"
+
+# ---- 第二道闸:目标就是真实 /Applications 路径时,要显式确认 ----
+# 🔴 这道闸是 2026-11-07 那次事故的直接产物。
+#
+#     SAND_APP 现在可以被 SEATLOOM_SANDBOX_APP 重定向了(见文件开头),
+#     但那只是让**有意的**重定向生效。还有两种情形会落到真实路径上:
+#       1. 调用方忘了设那个变量,用了默认值;
+#       2. 一个自动化流程(测试、脚本、别的席位)以为设了,其实设错了名字。
+#     这两种都是"以为在别处,其实在这儿"——正是那次事故的形状。
+#
+#     所以:目标是真实路径时,破坏性路径要一句显式确认。
+#     宁可拒绝一次**真的**安装(操作者补一个环境变量再跑),
+#     也不能让一个忘了改路径的调用把真的沙箱删掉。
+#     **一个不可逆的破坏动作,不该由一个默认值触发。**
+if [ "$SAND_APP" = "/Applications/SeatLoom-Sandbox.app" ] \
+   && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then
+  fail "拒绝在真实的 /Applications 路径上做破坏性动作。
+
+  要做的这一步会 rm -rf $SAND_APP,而它就是你机器上真的那份沙箱。
+  2026-11-07 已经因为这个形状出过一次事故:一个测试以为把路径重定向了,
+  实际没有,于是真的沙箱被删掉、换成一份假二进制,而且没有备份。
+
+  两条路,分开走:
+    * 只是想验证构建  → 用 --build-only,它不装、不替换、不停进程。
+    * 真的要换沙箱    → 走 scripts/replace-sandbox.sh,它先备份再换。
+    * 明确就要动真的  → 设 SEATLOOM_ALLOW_REAL_SANDBOX=1 再跑(这是显式确认)。"
+fi
 
 # ---- 证明这个构建真的带着要验的东西 ----
 line; say "四 — 证明这个构建带着那份活"; line

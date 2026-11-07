@@ -31,6 +31,10 @@
 #  12. --apply 那道 MUST_HAVE 检查也要有 fixture(它才是拒绝安装的那道)
 #  13. 变异:弄坏 --apply 那道 → 第 12 条必须红
 #  14. 反向确认:同一变异下 --build-only 那条路的行为,证明第 13 节的红只出自 --apply
+#  15. 那道新闸必须是行为上的:真实路径拒,临时路径放行
+#  16. SEATLOOM_SANDBOX_APP 必须真的被读到(那次事故的直接教训)
+#  17. 变异:删掉那道闸 → 第 15 条必须红
+#  18. 每一次变异跑完,真实 /Applications 一个字节都没动
 
 set -uo pipefail
 
@@ -170,6 +174,11 @@ exec env FAKE_MODE_FILE="$FIX/mode" "$FIX/fake-tauri" "\$@"
 FAKEEOF
 chmod +x "$WT/node_modules/.bin/tauri"
 echo ok > "$FIX/mode"
+
+# 🔴 真实 /Applications 的指纹,在**任何**测试跑之前取一次。
+#    第 18 节拿它和跑完之后比。没有这个快照,"没有任何一次运行写到外面"
+#    就是一句无法验证的话。
+APP_SUM_BEFORE="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom.app -type f -exec md5 {} \; 2>/dev/null | sort | md5)"
 
 # 前置形状必须真的在,否则后面每一条都红在一个没说原因的地方。
 [ -d "$WT/ui" ] || { echo "❌ fixture 的 ui/ 不在 —— 套件测不了任何东西"; exit 1; }
@@ -642,6 +651,96 @@ else
   cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
   rm -f "$FIX/mut6.py"
 fi
+
+echo ""
+echo "── 15. 那道新闸必须是行为上的,不是文字上的 ──"
+# Flux 量到第 12 节的守卫不可伪证:它 grep 脚本里有没有那一行写死的路径,
+# 两种情况下都通过。**一个不断言行为的断言,不是断言。**
+# 所以这里改成钉行为:跑一次真的 --apply,看它拒绝;再给它一个临时路径,看它放行。
+# 🔴 这一条必须**绕过 run_build** 直接调脚本:run_build 永远带着
+#    SEATLOOM_SANDBOX_APP,所以从那里调用时脚本看到的从来不是真实路径,
+#    那道闸也就永远不触发 —— 于是"它会拦真实路径"这一条根本测不到。
+#    第一版就是这么一个死掉的用例:它退出码 1(原因是临时路径上 open 失败),
+#    看起来像拒绝了,其实拒绝来自完全不相干的一步。
+#    **一个用例如果绕过了要测的那个条件,它测的是别的东西。**
+reset_fixture
+OUTG="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP PATH="$FIX/bin:$PATH" \
+  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCG=$?
+if [ "$RCG" != "0" ] && printf '%s\n' "$OUTG" | grep -q "拒绝在真实的 /Applications 路径上做破坏性动作"; then
+  pass "目标是真实路径且没有显式确认 → 拒绝,并且说了为什么"
+else
+  die "没有拒绝,或没说为什么(退出码 $RCG)。见它自己的话:"
+  printf '%s\n' "$OUTG" | tail -6 | sed 's/^/      /'
+fi
+
+reset_fixture
+OUTH="$(SEATLOOM_SANDBOX_APP="$FIX/Applications/scratch-sandbox.app" \
+  run_build --apply --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCH=$?
+if printf '%s\n' "$OUTH" | grep -q "拒绝在真实的 /Applications 路径上"; then
+  die "给了临时路径却仍然拒绝 —— 重定向没生效,这正是那次事故的形状"
+else
+  pass "给了临时路径 → 那道闸不再触发(它只拦真实路径)"
+fi
+
+echo ""
+echo "── 16. SEATLOOM_SANDBOX_APP 必须真的被读到,不是看着接上了 ──"
+# 这一条是那次事故的直接教训:一个变量被设置、被引用、却没有接到任何
+# 能改变行为的地方。**一个看着接上了、其实没接上的控制,比没有控制更糟。**
+# 钉法不是 grep 那一行,而是让行为因它而不同。
+grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-' "$SCRIPT" \
+  && pass "脚本里 SAND_APP 由 SEATLOOM_SANDBOX_APP 决定(带默认值)" \
+  || die "脚本里 SAND_APP 不读 SEATLOOM_SANDBOX_APP —— 重定向是空的,任何测试都拦不住一次真实的 rm -rf"
+# 行为上的证明:上面第 15 节已经用「同一命令、不同变量值、不同结果」验过了。
+# 这里再补一条静态的,防止有人把默认值改成一个同样写死的临时路径
+# (那样第 15 节会因为两边都放行而悄悄失效)。
+DEFAULT_TARGET="$(grep -o 'SEATLOOM_SANDBOX_APP:-[^}]*' "$SCRIPT" | head -1 | sed 's/.*:-//')"
+[ "$DEFAULT_TARGET" = "/Applications/SeatLoom-Sandbox.app" ] \
+  && pass "默认值仍然是那个真实路径(所以第 15 节的拒绝一条是真的在拦)" \
+  || die "默认值被改成了 '$DEFAULT_TARGET' —— 第 15 节两条都会放行,那道闸就测不出来了"
+
+echo ""
+echo "── 17. 变异:把那道闸删掉,第 15 条必须红 ──"
+# 承重命题。变异就是还原\"没有第二道闸\"的状态。
+cat > "$FIX/mut7.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '''if [ "$SAND_APP" = "/Applications/SeatLoom-Sandbox.app" ] \\
+   && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
+new = '''if false; then'''
+assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
+assert s.count(old) == 1, "锚点出现 %d 次 —— 改到别的路径上去了" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误 —— 这条变异会弄坏程序而不是还原 bug")
+PYEOF
+if ! python3 "$FIX/mut7.py" "$MUT"; then
+  echo "      [dbg] 原始脚本里有那道闸: $(grep -c 'SEATLOOM_ALLOW_REAL_SANDBOX' "$SCRIPT" 2>/dev/null || echo 0)"
+  echo "      [dbg] 被执行那份里有那道闸: $(grep -c 'SEATLOOM_ALLOW_REAL_SANDBOX' "$MUT" 2>/dev/null || echo 'file-missing')"
+  die "变异锚点没找到 —— 这条变异什么都没测"
+fi
+grep -q 'if false; then' "$MUT" || die "变异没落到被执行的那份脚本上"
+OUTM7="$(run_build --apply --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCM7=$?
+if printf '%s\n' "$OUTM7" | grep -q "拒绝在真实的 /Applications 路径上"; then
+  die "变异后那道闸仍然拦着 —— 第 15 条守的是空的"
+else
+  pass "变异后那道闸消失(退出码 $RCM7)—— 第 15 条真的在守东西"
+fi
+cp "$FIX/mut-orig.sh" "$MUT"
+cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
+rm -f "$FIX/mut7.py"
+
+echo ""
+echo "── 18. 每一次变异跑完,/Applications 必须一个字节都没动 ──"
+# 这一条是整个 dispatch 的落点:证明没有任何一次变异运行能写到 fixture 外面。
+# 它比较的是**真实路径的指纹**,不是脚本的输出 —— 一个打印\"没动\"的脚本,
+# 不等于没动。实测:事故那一次,脚本打印的一切都正常,而 /Applications 已经被换了。
+APP_SUM_NOW="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom.app -type f -exec md5 {} \; 2>/dev/null | sort | md5)"
+[ "$APP_SUM_NOW" = "${APP_SUM_BEFORE:-}" ] \
+  && pass "两个真实应用的指纹和跑之前一致" \
+  || die "真实应用的指纹变了 —— 有东西写到了 fixture 外面。之前 ${APP_SUM_BEFORE:-<未记录>},现在 $APP_SUM_NOW"
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
   exit 0
