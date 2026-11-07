@@ -33,10 +33,20 @@
 #
 #   默认:dry-run —— 只报「会装什么、装到哪、会起几个进程」,不动任何东西。
 #   --apply:真的构建并安装。
+#   --build-only:只构建 + 只证明构建带着那份活,不安装、不替换、不起进程。
 #   --sandbox-db <url>:给沙箱注入独立的 DATABASE_URL(要他自己决定,不由脚本猜)。
+#
+# 🔴 为什么必须有 --build-only(2026-11-07):
+#   replace-sandbox.sh 在「还没有构建产物」时,原来会叫人跑
+#     prepare-sandbox-build.sh <分支> --apply
+#   而那个 --apply 顺手 rm -rf + cp -R 把沙箱换掉,一步备份都没有 ——
+#   在一个「先备份再换」的脚本里指人去跑一个「直接换不备份」的脚本,
+#   等于把刚立好的规矩拆掉。所以那条指路改成只指构建。
+#   构建和安装必须是两步:构建可以反复跑,安装必须显式授权。
 #
 # 安全性:
 #   - dry-run 是默认,不给 --apply 就绝不构建、绝不安装、绝不起进程
+#   - --build-only 同样不装、不替换、不起进程,只产出 target/release/bundle/macos/SeatLoom.app
 #   - 不 pkill 任何进程 —— 主版在跑就不动它
 #   - 装完必须验证沙箱进程真的起来了,否则报错,不假装成功
 set -uo pipefail
@@ -46,22 +56,46 @@ line(){ say "──────────────────────�
 fail(){ say ""; say "❌ $*"; exit 1; }
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WROOT="$(cd "$REPO/.." && pwd)/seatloom-worktrees"
+# 🔴 席位工作区根从 git 自己记录的 worktree 列表定,不猜目录名。
+#    老写法 `$(cd "$REPO/.." && pwd)/seatloom-worktrees` 在主检出里对,在席位自己的
+#    工作区里错(拼出双层),于是「找检出该分支的工作区」一次都不进,报出来的是
+#    「这条分支不是任何工作区检出的分支」—— 把人指向错误方向的失败。
+#    replace-sandbox.sh 上有兜底而这里没有:同一个 bug 一处修一处没修,所以复发。
+#    现在两边共用 scripts/worktree-root.sh。
+. "$REPO/scripts/worktree-root.sh"
+WROOT="$(resolve_worktree_root "$REPO")" || exit 1
 MAIN_APP="/Applications/SeatLoom.app"
 SAND_APP="/Applications/SeatLoom-Sandbox.app"
 SANDBOX_KEY_PREFIX="slsandbox:"
-MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
+MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; BUILD_ONLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
 
 # ---- 参数 ----
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1; shift;;
+    --build-only) BUILD_ONLY=1; shift;;
     --allow-dirty) ALLOW_DIRTY=1; shift;;
     --from-dispatch) DISPID="${2:-}"; shift 2 || fail "--from-dispatch 后面要跟派单 id";;
     --sandbox-db) SANDBOX_DB="${2:-}"; shift 2 || fail "--sandbox-db 后面要跟一个 URL";;
     *) [ -z "$BRANCH" ] && BRANCH="$1"; shift;;
   esac
 done
+
+# 🔴 旗标冲突必须在**参数解析完之后立刻**判,不能等到工作区解析、身份核对、
+#    脏检查、数据库检查之后。这两个旗标的意思是相反的:--apply 替换沙箱,
+#    --build-only 构建完就停。冲突是**参数自身的性质**,参数一读完就能定,
+#    就应该定 —— 一个把两种相反意图都传上来的人,收到的应该是关于旗标的报错,
+#    而不是关于一个他根本没问的工作区的报错。
+#
+#    实测(e238a04,Flux 的 ev-wZhxxQuaY0xUrg7IHNF2X):守卫原来在第 255 行,
+#    排在分支解析、工作区解析、身份、脏、数据库、落后主干之后。于是一起给两个
+#    旗标时,先撞上的是工作区解析失败,操作者看到的和他改错的东西无关。
+#    这也让针对它的测试**不可伪证**:守卫删掉之后,那次运行照样非零退出、照样
+#    零副作用(因为更早的那个失败先响),于是判据分不清「守卫拒了」和「别的拒了」。
+#    套件自己的变异检查把这件事报成了「我守的是空的」。
+if [ "$APPLY" = "1" ] && [ "$BUILD_ONLY" = "1" ]; then
+  fail "--apply 和 --build-only 不能同时给。--apply 会替换沙箱,--build-only 只构建。分开跑。"
+fi
 
 if [ -n "$DISPID" ]; then
   SEAT="$(podman exec -e PGPASSWORD=seatloom seatloom-postgres psql -U seatloom -d seatloom -tAc \
@@ -241,10 +275,83 @@ if git -C "$REPO" rev-parse --verify "$BASE" >/dev/null 2>&1 && [ "$BRANCH" != "
   fi
 fi
 
-if [ "$APPLY" != "1" ]; then
+if [ "$APPLY" != "1" ] && [ "$BUILD_ONLY" != "1" ]; then
   say ""
-  say "预演到此为止。要真的构建并安装,加 --apply。"
-  say "构建要花几分钟;装的是旁边那份,你正在用的那份不受影响。"
+  say "预演到此为止。两条路,分开走:"
+  say "  只构建(不装、不替换):bash scripts/prepare-sandbox-build.sh --build-only $BRANCH${MUST_HAVE:+ $MUST_HAVE}"
+  say "  真的构建并安装        :bash scripts/prepare-sandbox-build.sh $BRANCH${MUST_HAVE:+ $MUST_HAVE} --apply"
+  say ""
+  say "  要替换沙箱,走 scripts/replace-sandbox.sh —— 它先备份再换,而本脚本的 --apply 不备份。"
+  exit 0
+fi
+
+# --build-only:构建 + 证明带着那份活,然后停。不装、不替换、不停进程、不起进程。
+if [ "$BUILD_ONLY" = "1" ]; then
+  line; say "只构建(不安装、不替换、不停进程、不起进程)"; line
+  [ -d "$WT/node_modules" ] || fail "$WT 没有 node_modules"
+  [ -d "$WT/ui" ] || fail "$WT 没有 ui 目录"
+  say "  ✅ 目录在,依赖在"
+  line; say "一 — 构建前端"; line
+  # 🔴 管道会吃掉退出码。`pnpm build 2>&1 | tail -4` 里 $? 是 tail 的,
+  #    pnpm 失败也照样往下走;而 `[ -d ui/dist ]` 又被**上一次构建留下的旧目录**
+  #    满足 —— 于是「前端构建失败」被打成「✅ 前端产物在」。
+  #    实测(2026-11-07):tsc 找不到(pnpm install 之后 ui/ 下没有 node_modules),
+  #    pnpm build 失败,而 ui/dist 是**前一天**的,检查通过,tauri build 接着把
+  #    旧前端打进了应用,并且打印「✅ 应用包在」。只有二进制提交号那一关拦住它。
+  #    **一个把昨天的产物说成今天的检查,比没有检查更有害。**
+  #    修法两件事一起做:退出码单独取,并且构建前把旧 dist 删掉 ——
+  #    于是「dist 存在」只可能意味着「这次构建产出了它」。
+  rm -rf "$WT/ui/dist"
+# target/ 要在写日志**之前**就存在:前端构建是第一个写的,而那时 cargo 还没建过它。
+# 实测:target/ 不存在时重定向失败,pnpm build 拿到退出码 2(不是它自己的失败),
+# 于是报的是「前端构建失败(退出码 2)」而上面一个字都没有 —— 一个没有证据的失败。
+# --apply 那一份早就有这两行,而 --build-only 这一份没有 —— 同一条规则在两条路径上
+# 只修了一处,正是这个 bug 会复发的原因。2026-11-07 补上,并且测试里不再由 fixture
+# 预先建好 target/(那等于让测试替被测代码准备好前提)。
+mkdir -p "$WT/target"
+  ( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
+  UI_RC=$?
+  tail -4 "$WT/target/ui-build.log" | sed 's/^/    /'
+  [ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
+  [ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
+  rm -f "$WT/target/ui-build.log"
+  say "  ✅ 前端产物在(这次构建产出的)"
+  line; say "二 — 构建 release 应用(要几分钟)"; line
+  . "$HOME/.cargo/env" 2>/dev/null || true
+  # 同一个病:管道吃掉退出码,而 target/release 里可能躺着上一次的产物。
+  ( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/target/tauri-build.log" 2>&1
+  TAURI_RC=$?
+  tail -5 "$WT/target/tauri-build.log" | sed 's/^/    /'
+  [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
+  BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
+  [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
+  rm -f "$WT/target/tauri-build.log"
+  say "  ✅ 应用包在:$BUILT"
+  line; say "三 — 证明这个构建带着那份活"; line
+  if [ -n "$MUST_HAVE" ]; then
+    n="$(LC_ALL=C strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")" || n=0
+    [ "${n:-0}" -ge 1 ] && say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)" \
+      || fail "二进制里找不到 '$MUST_HAVE' —— 这份构建不带那份活"
+  else
+    say "  ⚠️  没给必须存在的字符串,这一项没验。建议给一个。"
+  fi
+  line; say "四 — 二进制自己说它是哪个提交"; line
+  BCOMMIT="$(LC_ALL=C grep -a -o 'seatloom-build-commit=[0-9a-f]*' "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | head -1 | sed 's/^seatloom-build-commit=//' || true)"
+  if [ -z "$BCOMMIT" ]; then
+    fail "二进制里读不到提交号 —— 「装的是哪个提交」不可核,不能拿去替换沙箱"
+  fi
+  say "      二进制内提交:$BCOMMIT"
+  say "      工作区 HEAD :$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null)"
+  [ "$BCOMMIT" = "$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null)" ] \
+    || fail "二进制里的提交和工作区 HEAD 不一致 —— 这份构建不是这棵树"
+  say "      ✅ 一致"
+  line; say "结果"; line
+  say "  ✅ 构建产物:$BUILT"
+  say "  ✅ 提交:$BCOMMIT"
+  say ""
+  say "  一步都没装、一步都没替换、一个进程都没停、一个进程都没起。"
+  say "  接下来先干跑确认,再加 --apply:"
+  say "    bash scripts/replace-sandbox.sh --from-branch $BRANCH"
   exit 0
 fi
 
@@ -256,16 +363,30 @@ say "  ✅ 目录在,依赖在"
 
 # ---- 前端 ----
 line; say "二 — 构建前端"; line
-( cd "$WT/ui" && pnpm build ) 2>&1 | tail -4
-[ -d "$WT/ui/dist" ] || fail "前端构建没产出 ui/dist"
-say "  ✅ 前端产物在"
+# 🔴 同上:退出码单独取,并且先删旧 dist —— 否则旧目录会让失败看起来成功。
+rm -rf "$WT/ui/dist"
+# target/ 要在写日志**之前**就存在:前端构建是第一个写的,而那时 cargo 还没建过它。
+# 实测:target/ 不存在时重定向失败,pnpm build 拿到退出码 2(不是它自己的失败),
+# 于是报的是「前端构建失败(退出码 2)」而上面一个字都没有 —— 一个没有证据的失败。
+mkdir -p "$WT/target"
+( cd "$WT/ui" && pnpm build ) > "$WT/target/ui-build.log" 2>&1
+UI_RC=$?
+tail -4 "$WT/target/ui-build.log" | sed 's/^/    /'
+[ "$UI_RC" = "0" ] || fail "前端构建失败(退出码 $UI_RC)。上面是它自己的话。这个构建不带最新前端,不要装。"
+[ -d "$WT/ui/dist" ] || fail "前端构建说成功但没产出 ui/dist —— 不要装"
+rm -f "$WT/target/ui-build.log"
+say "  ✅ 前端产物在(这次构建产出的)"
 
 # ---- release ----
 line; say "三 — 构建 release 应用(要几分钟)"; line
 . "$HOME/.cargo/env" 2>/dev/null || true
-( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) 2>&1 | tail -5
+( cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" tauri build ) > "$WT/target/tauri-build.log" 2>&1
+TAURI_RC=$?
+tail -5 "$WT/target/tauri-build.log" | sed 's/^/    /'
+[ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
 BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
-[ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 没产出 $BUILT"
+[ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
+rm -f "$WT/target/tauri-build.log"
 say "  ✅ 应用包在:$BUILT"
 
 # ---- 证明这个构建真的带着要验的东西 ----

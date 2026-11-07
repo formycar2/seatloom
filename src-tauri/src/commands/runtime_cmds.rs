@@ -27,6 +27,33 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The commit this binary was compiled from, written by `build.rs` into `OUT_DIR`.
+///
+/// 🔴 两种编译期机制不是一回事,而我第一版正好混了,而且混得看不出来:
+///    `option_env!("SEATLOOM_BUILD_COMMIT")` 读的是**编译期环境变量**;
+///    `build.rs` 里 `fs::write` 写到 `OUT_DIR` 的文件,**对 option_env! 完全不可见**。
+///    实测:OUT_DIR 里那份文件写着 `Some("b9060f7d95c0")`,而 option_env! 返回 `None`。
+///    也就是说字段恒为空、横幅恒显「未记录」,而测试仍然全绿 —— 那条测试只断言
+///    「不是空串」,而 None 满足它。**一个永远缺席的字段比没有字段更糟**,因为它
+///    让「我们有这个能力」这句话看起来是真的。
+///
+/// 所以用 `include!` 在**模块位置**展开 build.rs 写的那个文件。不在表达式位置 ——
+/// `const X: T = include!(...)` 是语法错误(实测:"expected expression, found keyword
+/// `pub`"),因为被包含的文件本身带 `pub const`,是 item 不是 expression。
+///
+/// 选 include! 而不是 `cargo:rustc-env`:后者把值泄进整个编译环境,任何 crate 都能读;
+/// 而这个身份只需要本 crate 知道。
+mod build_identity {
+    include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+}
+
+/// The fixed prefix `build.rs` emits the captured commit next to.
+///
+/// A bare 12-hex-digit run in a binary is not an identity: measured, grepping for one
+/// finds `dbdbdbdbdbdb` and other placeholders. Matching the label makes the read
+/// unambiguous, and a label that is absent is a stated "could not read", never a guess.
+const BUILD_COMMIT_LABEL: &str = "seatloom-build-commit=";
+
 /// What the frontend needs to render the banner.
 ///
 /// `is_sandbox` is the only field that is ever a hard yes/no: it answers "am I the
@@ -58,6 +85,48 @@ pub struct RuntimeIdentityDto {
     /// 三态,不是两态:`Some(0)` = 安装器查过,是干净的;`None` = 安装器没说过。
     /// 合成一个布尔值就会把这两种情况混成一个,而它们的含义相反。
     pub uncommitted: Option<u32>,
+    /// The commit **this binary** was compiled from, captured by the build script.
+    ///
+    /// 🔴 2026-11-07 补。上面那个 `commit` 是**安装器**说的:它来自启动器设的环境
+    ///    变量,描述的是「安装器以为自己启动了什么」。Lyra 量到沙箱二进制里只有
+    ///    四个环境变量名和六个像哈希的串,没有一个是这条分支上任何提交的哈希 ——
+    ///    也就是说二进制无法回答「你是什么」。
+    ///
+    ///    于是正例是不可falsify的:操作者点接受看到一个合并,没法判断守卫是因为
+    ///    对的理由拒绝了、还是合并是因为对的理由发生了。这个字段把提交从二进制
+    ///    **内部**拿出来,可以和卡上写的那个提交对比。
+    ///
+    /// 三处必须分开,合成一个就白做:
+    ///
+    ///   - `built_commit`(本字段)= 编译时这棵树是什么
+    ///   - `commit`            = 安装器启动时说自己是什么
+    ///   - 卡上写的提交          = 验收针对的是哪个
+    ///
+    /// 三者一致才算这个点击验的是它要验的东西。不一致时本字段非空而另外两项可能是
+    /// 任意值,屏幕上有东西可看,而不是全都显示同一个哈希。
+    ///
+    /// 不声称更多:编译期捕获只说编译那棵树是什么,不说启动者的工作目录,也不是签名。
+    /// git 不可用或目录不是仓库时它是 `None`,横幅写「未记录」—— 诚实的那个方向。
+    pub built_commit: Option<String>,
+    /// How many uncommitted changes to TRACKED files the tree had when the binary was
+    /// built — stated by the binary, not by the installer.
+    ///
+    /// 🔴 This closes the GAP Flux recorded in ev-OFHL9WBqlQnAqs8DCGAkN: a dirty build
+    /// was indistinguishable from a clean one at the same commit, by the binary's own
+    /// account. The banner previously carried `uncommitted` from the launcher's env var
+    /// — the very channel this change exists to stop trusting.
+    ///
+    /// Three states, deliberately not collapsed into a boolean: `Some(0)` means the
+    /// capture looked and the tree was clean; `Some(n)` means n tracked files were
+    /// modified; `None` means the capture could not tell. Rendering `None` as clean
+    /// would let an unreadable state pass as verified.
+    pub built_dirty: Option<u32>,
+    /// Whether `git` answered at all during the capture.
+    ///
+    /// Kept separate from `built_commit` being `None` because the two mean different
+    /// things: "git is unavailable here" is a statement about the environment, while a
+    /// missing commit with git available would be a statement about the repository.
+    pub built_git_ok: bool,
 }
 
 /// Read an env var, treating an empty string as absent.
@@ -95,6 +164,15 @@ pub async fn cmd_get_runtime_identity() -> Result<RuntimeIdentityDto, String> {
         commit: env_value("SEATLOOM_SANDBOX_COMMIT"),
         built_at: env_value("SEATLOOM_SANDBOX_BUILT"),
         uncommitted: env_count("SEATLOOM_SANDBOX_DIRTY"),
+        // The label is stripped here, at the boundary, so the DTO carries a bare hash
+        // and the frontend never has to know the encoding. The label exists so that a
+        // binary reader (scripts/replace-sandbox.sh) can match an unambiguous marker
+        // instead of a bare 12-hex run — which measured `dbdbdbdbdbdb` and other
+        // placeholders that are not commits.
+        built_commit: build_identity::BUILD_COMMIT
+            .map(|v| v.strip_prefix(BUILD_COMMIT_LABEL).unwrap_or(v).to_string()),
+        built_dirty: build_identity::BUILD_DIRTY,
+        built_git_ok: build_identity::BUILD_GIT_OK,
     })
 }
 
@@ -159,6 +237,35 @@ mod tests {
     fn clear_sandbox_env() -> SandboxEnvGuard {
         let none: Vec<(&str, Option<&str>)> = KEYS.iter().map(|k| (*k, None)).collect();
         set_sandbox_env(&none)
+    }
+
+    /// The build-embedded commit is captured at COMPILE time, so a test cannot set it.
+    /// What it can assert, and what matters, is that the field is populated from the
+    /// build script rather than from the installer's env vars — i.e. that clearing the
+    /// launcher's variables leaves it untouched. Before this field existed, clearing
+    /// those variables removed the only identity the process had.
+    #[tokio::test]
+    async fn the_build_embedded_commit_survives_clearing_the_launcher_env() {
+        let _guard = clear_sandbox_env();
+        let id = cmd_get_runtime_identity().await.unwrap();
+        // 🔴 这一条断言必须是「捕获到了」,不能是「不是空串」。第一版写的是
+        //    `is_none() || != Some("")`,而 None 满足它 —— 于是我在 option_env! 与
+        //    build.rs 的 OUT_DIR 文件之间配错线、字段恒为 None 的那个版本,这条测试
+        //    是全绿的。**一个对「永远缺席」也通过的断言,等于没有断言。**
+        //
+        // 这里断言它确实拿到了一个非空提交。CI 上若 git 不可用,这条会红 —— 那是对的:
+        // 一个不能说明自己是什么的构建,本就不该被当成能验的。
+        assert!(
+            id.built_commit.as_deref().is_some_and(|c| !c.is_empty()),
+            "the build-embedded commit must be captured — got {:?}. If git is genuinely              unavailable in this environment, that is a real failure, not a skip.",
+            id.built_commit
+        );
+        // And the installer's claim is gone, which is exactly the state this field
+        // was added for: the binary still knows what it is when the launcher does not.
+        assert!(
+            id.commit.is_none(),
+            "the installer's commit should be absent after clearing"
+        );
     }
 
     #[tokio::test]
