@@ -51,7 +51,7 @@ Lyra 去找,找不到,于是她在自己的交付里写:
 
 | 文件 | 来自 | 内容 | 状态 |
 |---|---|---|---|
-| `nimbus-session-work-readmodel-20261031-1302.patch` | `packet/nimbus/session-work-readmodel` | 124 行,记忆去重前置检查。**是半个没打完的补丁**:在原来的 `let mut client` / `let tx` 之后又插了一对,第一个事务被遮蔽、从不提交也不回滚,`cargo check` 报 `unused variable: tx`。修法是删掉原来那两行,不是把补丁补完 —— 但那是 Nimbus 的决定。 | **11-02 11:02 验过仍贴得上** |
+| `nimbus-session-work-readmodel-20261031-1302.superseded.patch` | `packet/nimbus/session-work-readmodel` | 124 行,记忆去重前置检查。**是半个没打完的补丁**:在原来的 `let mut client` / `let tx` 之后又插了一对,第一个事务被遮蔽、从不提交也不回滚,`cargo check` 报 `unused variable: tx`。修法是删掉原来那两行,不是把补丁补完 —— 但那是 Nimbus 的决定。 | **已失效,别拿它恢复。** 2026-11-07 08:00 实测:它的内容已经作为提交落在同一个分支上,而且正是按上面那句话的方向修的 —— `git apply --check --reverse` 贴不回去(内容不在工作区里),`ee2d03b` 带着 `MemoryRejection::Duplicate`,`57b7737` 带着 `memory_dedup_key` 并且**删掉了那对死事务**。所以这不是工作丢失,是补丁完成了它的使命。 |
 | `lyra-milestone-summary-20261102-1102.patch` | `packet/lyra/milestone-summary` | 2 个文件的文档改动(都是既有文件,无新增)。 | **11-02 11:02 生成并验过贴得上** |
 | `lyra-milestone-summary-20261031-1302.superseded.patch` | 同上 | **已被上面那份取代,留着只为历史。** 它含那次 `version v2→v3` 的一行改动 —— 那一行 11-01 04:00 被她提交了(`61fcc11`),所以它不再是「未提交的工作」,而是**已经在版本库里的一个待裁决事项**。 | 已失效,别拿它恢复 |
 
@@ -66,6 +66,23 @@ Lyra 去找,找不到,于是她在自己的交付里写:
 **每次心跳都 `git diff` 一次、和 salvage 里的对一次,不一致就重存并把旧的标成 superseded。**
 一个过期却还在清单里、还标着「有效」的补丁,比没有补丁更糟 ——
 它会让人以为那份工作被保护着,而恢复出来的是一份旧状态。
+
+## 11-07 08:00 补:第二次抓到期盼失效,而这次那份工作已经落地
+
+`check-salvage-fresh.sh` 报 `nimbus-session-work-readmodel-20261031-1302.patch` 贴不回去。
+我按协议改了名、更新了清单,但**没有停在「补丁过期」这个结论上** ——
+过期有两种,而它们的含义相反:
+
+1. 工作被提交了(补丁该退役);
+2. 工作被丢弃/覆盖了(补丁是最后的副本)。
+
+量出来的是第一种,证据三条:反向应用贴不回去(内容不在工作区);
+`ee2d03b` 带着 `MemoryRejection::Duplicate`;`57b7737` 带着 `memory_dedup_key`
+**并且删掉了 README 里点名的那对死事务**。也就是说 Nimbus 做了 README
+里留给他的那个决定,而且做的是「删掉原来那两行」这一侧。
+
+**规矩:补丁过期不等于工作消失。改名前先量它是哪一种,不然我会把一次成功
+记成一次损失,或者把一次损失记成一次成功。**
 
 ## 一件仍然等你定的事
 
