@@ -290,10 +290,49 @@ fi
 # Aegis 的自醒必须由自醒之外的东西来查。心跳协议里那句"看日志验证自醒活着"
 # 只有心跳跑得起来才执行 —— 自醒死了就不会有心跳,那是循环依赖。
 # 所以这项检查放在任何人都会跑的这个脚本里(张先生随时会跑)。
+# 🔴 2026-11-07 22:15 修:上一版把「没有日志」直接打成 ❌ 自醒死了,
+#    那是把一个**无法证明**的结论说成了**已证明为假**。
+#
+#    实测形状:日志和 seatloom-waker 的日志**都**在 22:11 前从 /tmp 消失,
+#    而同一批里的 .txt 和子目录都在。两件事同时指向外部清理,而不是自醒死了。
+#    而我按协议去"修"它,只会把一个健康的系统改坏 —— 或者更糟:
+#    为了让它变绿而重装 cron,把原本正常的配置覆盖掉。
+#
+#    **判据必须是「能不能证明」,不是「文件在不在」。** 文件不在只说明
+#    这个信使不在了,不说明信使要说的事是假的。
+#
+#    现在分三层,每层只报告它能证明的东西:
+#      1. 日志在且新  → 在跑(可证)
+#      2. 日志在但旧  → ❌ 真的超过间隔没有记录(可证)
+#      3. 日志不在    → ⚠️ 无法证明,而不是宣布它死了。
+#         改去查两个独立事实:cron 条目在不在、被 cron 跑的那个脚本
+#         在不在且可执行。这两个在,自醒就是装着的;不在,才是真的坏了。
+#
+#    为什么不用「pane 里有没有心跳指令」当替代证据:试过,不可靠。
+#    pane 的 scrollback 里有**我自己**的命令输出 —— 我拿一个「绝不该出现」
+#    的控制字符串去撞它,返回 1,因为我那条含该字符串的命令本身就在里面。
+#    **一个会被测量动作自身污染的通道,不能当证据。**
 WLOG="/tmp/seatloom_aegis_waker.log"
+CRON_SCRIPT="$HOME/.local/bin/aegis-self-wake.sh"
 if [ ! -s "$WLOG" ]; then
-  printf "  Aegis 自醒           ❌ 没有日志(%s)—— 它可能从来没跑过,或日志被清\n" "$WLOG"
-  need=1
+  # 第三层:信使不在。查两个可证的独立事实,不宣布死亡。
+  cron_ok=0; script_ok=0
+  crontab -l 2>/dev/null | grep -q 'aegis-self-wake.sh' && cron_ok=1
+  [ -x "$CRON_SCRIPT" ] && script_ok=1
+  if [ "$cron_ok" = "1" ] && [ "$script_ok" = "1" ]; then
+    printf "  Aegis 自醒           ⚠️  无法证明(日志 %s 被删)\n" "$WLOG"
+    need=1
+    printf "                     cron 条目在,cron 跑的脚本也在且可执行 —— 所以它是装着的,\n"
+    printf "                     只是这一小时没有留下记录。别当成死了去重装。\n"
+    printf "                     真想确认:直接跑一次它,看 pane 收不收到:\n"
+    printf "                       bash %s\n" "$CRON_SCRIPT"
+  else
+    printf "  Aegis 自醒           ❌ 没有日志,而且自醒没装好\n"
+    need=1
+    [ "$cron_ok" = "0" ] && printf "                     crontab 里没有 aegis-self-wake 这一条\n"
+    [ "$script_ok" = "0" ] && printf "                     %s 不在或不可执行\n" "$CRON_SCRIPT"
+    printf "                     修:bash scripts/install-aegis-self-wake.sh\n"
+  fi
 else
   # 日志里最后一行的分钟数(宿主机时钟,只和宿主机时钟比,不碰数据库时钟)
   last_epoch="$(date -j -f "%Y-%m-%d %H:%M:%S" "$(grep -o '^[0-9-]* [0-9:]*' "$WLOG" | tail -1)" +%s 2>/dev/null)"
