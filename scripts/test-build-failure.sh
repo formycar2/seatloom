@@ -24,6 +24,10 @@
 #   5. 变异:还原那个 fail-open        → 第 2/3 条必须红。
 #   6. 变异:删掉 tauri 的退出码检查    → 第 4 条必须红。
 #   7. 注销:只删 rm -rf 在本条上不是承重闸(如实记录,不删断言)
+#   8. MUST_HAVE 给了就必须真的用(在→过,不在→非零,不给→明说没验)
+#   9. 多余的位置参数要被拒,不是被悄悄丢掉
+#  10. 变异:把 MUST_HAVE 再丢掉 → 第 8 条必须红
+#  11. detached 检出的拒绝必须说清原因和补法
 
 set -uo pipefail
 
@@ -111,8 +115,14 @@ case "$MODE" in
   tauri-fails) echo "error: failed to bundle" >&2; exit 1;;
 esac
 mkdir -p target/release/bundle/macos/SeatLoom.app/Contents/MacOS
-printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" \
-  > target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
+# 这个假 tauri 会把 MUST_HAVE_PRESENT_MARKER 这个字符串真的写进二进制 ——
+# 否则「给了 MUST_HAVE 且它在二进制里」这一条永远造不出前提,整节是空的。
+# 一个造不出前提的 fixture,测不出被测代码的任何东西。
+{
+  printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+  printf 'MUST_HAVE_PRESENT_MARKER\n'
+  printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+} > target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
 chmod +x target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
 exit 0
 FAKEEOF
@@ -146,14 +156,17 @@ echo ok > "$FIX/mode"
 [ -f "$WT/scripts/prepare-sandbox-build.sh" ] || { echo "❌ fixture 的脚本拷贝不在"; exit 1; }
 
 run_build(){
-  # $1 可选:extra 参数。变异那两节必须传 --allow-dirty ——
-  # 变异本身就是对一份**已跟踪**文件的修改,于是工作区变脏,
-  # 脏检查会先于被测的那道闸触发,变异等于没测到东西。实测踩到。
-  local extra="${1:-}"
+  # 后面跟的参数原样传给被测脚本。
+  # 🔴 曾经在这儿写死一个 MUST_HAVE_ME 尾巴,于是第 8 节(钉 MUST_HAVE 本身)
+  #    传进去的标记变成了第 2 个位置参数、MUST_HAVE_ME 变成第 3 个 ——
+  #    正好撞上第 9 节要钉的那道「位置参数太多」拒绝,整节全红,
+  #    而红的原因是这个 helper,不是被测代码。实测踩到。
+  #    **一个自己会干扰被测参数的 fixture,测不出那个参数的行为。**
+  local extra="$*"
   ( cd "$WT" && PATH="$FIX/bin:$PATH" \
       SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
-      bash scripts/prepare-sandbox-build.sh --build-only packet/fixture/test $extra MUST_HAVE_ME ) 2>&1
+      bash scripts/prepare-sandbox-build.sh --build-only packet/fixture/test $extra ) 2>&1
 }
 
 # 每一次跑之前把工作区弄干净,并且把上一次的产物删掉 ——
@@ -350,6 +363,117 @@ else
 fi
 
 echo ""
+
+echo ""
+echo "── 8. MUST_HAVE:给了就必须真的用,不给就要么拒要么明说没验 ──"
+# Flux 的 ev-TWL0d7liGTtboRRnO7B34 在 6dd68c5 上量到一个真缺陷,我复现了:
+#   MUST_HAVE 从来没被赋值过 —— `*)` 分支只把第一个位置参数给 $BRANCH,
+#   第二个开始全被 shift 悄悄吃掉。于是「证明这个构建带着那份活」这一节
+#   从来没跑过,而它打出来的建议命令又把 $MUST_HAVE 拼回去,看起来可用 ——
+#   照着敲一次,那个值又被吃掉一次。
+#   **一个跑不起来的检查,比没有检查更有害**:它让操作者以为那一节验过了。
+reset_fixture
+OUT0="$(run_build --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RC0=$?
+[ "$RC0" = "0" ] || die "给了 MUST_HAVE 而它真在二进制里时,必须成功(退出码 $RC0)"
+printf '%s\n' "$OUT0" | grep -q "二进制里找到 'MUST_HAVE_PRESENT_MARKER'" \
+  && pass "MUST_HAVE 在二进制里 → 说了找到,带处数" \
+  || die "没说「二进制里找到 MUST_HAVE_PRESENT_MARKER」—— 那个值还是没被用上"
+
+reset_fixture
+OUTA="$(run_build --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCA=$?
+[ "$RCA" != "0" ] && pass "MUST_HAVE 不在二进制里 → 非零退出($RCA)" \
+  || die "MUST_HAVE 不在二进制里却退出 0 —— 这一节仍然是个摆设"
+printf '%s\n' "$OUTA" | grep -q "二进制里找不到 'MUST_HAVE_ABSENT_MARKER'" \
+  && pass "并且说了为什么:二进制里找不到" || die "没说为什么找不到"
+
+reset_fixture
+OUTB="$(run_build --allow-dirty)"; RCB=$?
+[ "$RCB" = "0" ] && pass "不给 MUST_HAVE → 仍然成功(它是可选的)" \
+  || die "不给 MUST_HAVE 却失败了(退出码 $RCB)—— 它不该是必填"
+printf '%s\n' "$OUTB" | grep -q "没给必须存在的字符串" \
+  && pass "并且明说这一项没验 —— 不假装验过" \
+  || die "没说这一项没验 —— 一个静默跳过的检查比没有检查更有害"
+
+echo ""
+echo "── 9. 多余的位置参数必须被拒,不是被悄悄丢掉 ──"
+# 这个 bug 的形状就是「悄悄丢掉」,所以反过来也要钉:多给一个要被拒。
+reset_fixture
+OUTC="$(run_build --allow-dirty MARKER_A MARKER_B MARKER_C)"; RCC=$?
+[ "$RCC" != "0" ] && pass "第三个位置参数 → 非零退出($RCC)" \
+  || die "第三个位置参数被悄悄收下了 —— 那正是这个 bug 的形状"
+printf '%s\n' "$OUTC" | grep -q "位置参数太多" \
+  && pass "并且说了是位置参数太多,以及第几个" || die "没说为什么拒"
+
+echo ""
+echo "── 10. 变异:把 MUST_HAVE 再丢掉,第 8 条必须红 ──"
+# 承重命题。变异就是还原当初那个 bug:`*)` 分支只接第一个位置参数。
+cat > "$FIX/mut4.py" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = """       case "$POSITIONAL" in
+         1) BRANCH="$1";;
+         2) MUST_HAVE="$1";;
+         *) fail "位置参数太多了:'$1' 是第 $POSITIONAL 个。用法:prepare-sandbox-build.sh [旗标] <分支> [必须存在的字符串]"
+            ;;
+       esac
+       shift;;"""
+# 变异必须产出一个**仍然合法**的脚本:第一版把 case 换成
+# `[ -z "$BRANCH" ] && BRANCH="$1";;`,留下一个悬空的 ;; ——
+# bash 直接语法错误,脚本根本跑不起来。那样第 8 条"没红"是假的:
+# 它不是没守东西,是变异把脚本弄坏了,失败来自语法而不是来自 MUST_HAVE 被丢掉。
+# **一个把被测程序弄成跑不起来的变异,什么都证明不了。**
+# 所以这里保留 case 结构,只把第 2 个分支变成"什么都不做"。
+new = """       case "$POSITIONAL" in
+         1) BRANCH="$1";;
+         2) : ;;
+         *) fail "位置参数太多了:'$1' 是第 $POSITIONAL 个。用法:prepare-sandbox-build.sh [旗标] <分支> [必须存在的字符串]"
+            ;;
+       esac
+       shift;;"""
+assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
+assert s.count(old) == 1, "锚点出现 %d 次 —— 改到别的路径上去了" % s.count(old)
+out = s.replace(old, new, 1)
+open(p, 'w', encoding='utf-8').write(out)
+# 自检:变异后的脚本必须仍然是合法 bash。不是的话,这条变异什么都测不到。
+import subprocess
+rc = subprocess.run(["bash", "-n", p], capture_output=True).returncode
+if rc != 0:
+    sys.exit("变异后的脚本语法错误 —— 这条变异会弄坏程序而不是还原 bug")
+PYEOF
+if ! python3 "$FIX/mut4.py" "$MUT"; then
+  die "变异锚点没找到 —— 这条变异什么都没测"
+else
+  # 🔴 先 reset 再变异。reset_fixture 里有 `git checkout -- .`,它会把
+  #    刚打上的变异还原回提交里的版本 —— 第 5、6 节已经踩过一次并修好了,
+  #    新加的第 10 节又照抄了旧形状,于是变异被自己擦掉。
+  #    探针(下面那行 grep)就是为了让这件事在发生时直接说出来,
+  #    而不是绕个弯从"判据守的是空的"反推。
+  grep -q '2) : ;;' "$MUT" || die "变异没落到被执行的那份脚本上 —— 这一节什么都没测"
+  OUTM4="$(run_build --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCM4=$?
+  if printf '%s\n' "$OUTM4" | grep -q "二进制里找到"; then
+    die "变异后 MUST_HAVE 仍然生效 —— 第 8 条守的是空的"
+  else
+    pass "变异后 MUST_HAVE 再次被丢掉 —— 第 8 条真的在守东西"
+  fi
+  cp "$FIX/mut-orig.sh" "$MUT"
+  cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
+  rm -f "$FIX/mut4.py"
+fi
+
+echo ""
+echo "── 11. detached 检出的拒绝必须说清原因和补法 ──"
+# 第二条:Flux 在隔离 detached checkout 里验 6dd68c5,看到「不是任何工作区
+# 当前检出的分支」就走了投无路。消息列了工作区却没说他为什么不被接受。
+# **一条拒绝消息如果不能告诉人怎么满足它,它就只是宣布了失败。**
+grep -q 'DETACHED_HINT' "$SCRIPT" \
+  && pass "脚本里有 DETACHED_HINT 这段(拒绝里会印出补法)" \
+  || die "脚本里没有 DETACHED_HINT —— detached 的调用者还是只会看到一句没头没尾的拒绝"
+grep -q 'detached 检出,树正好在这个提交上' "$SCRIPT" \
+  && pass "并且把「树就在这儿、只差一个分支名」说出来了" \
+  || die "没说清树就在这个提交上"
+grep -q 'git -C ${d%/} branch' "$SCRIPT" \
+  && pass "并且给了具体可敲的补分支命令" || die "没给补分支的命令"
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
   exit 0

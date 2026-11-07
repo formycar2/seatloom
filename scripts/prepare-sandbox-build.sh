@@ -70,6 +70,19 @@ SANDBOX_KEY_PREFIX="slsandbox:"
 MUST_HAVE=""; BRANCH=""; DISPID=""; APPLY=0; BUILD_ONLY=0; SANDBOX_DB=""; ALLOW_DIRTY=0
 
 # ---- 参数 ----
+# 🔴 MUST_HAVE 是一个**真的参数**,不是摆设。
+#
+#     Flux 的独立判据 ev-TWL0d7liGTtboRRnO7B34 在 6dd68c5 上量到一个真缺陷:
+#     MUST_HAVE 从来没被赋值过 —— `*)` 分支只把第一个位置参数给 $BRANCH,
+#     之后每一个都被 `shift` 悄悄吃掉。于是:
+#       * 「证明这个构建带着那份活」这一节从来没有真的跑过;
+#       * 它打出来的建议命令又把 $MUST_HAVE 拼回去,看起来是可用的,
+#         而照着敲一次,那个值又被吃掉一次 —— 一个永远不能满足的建议。
+#     **一个跑不起来的检查,比没有检查更有害**:它让操作者以为那一节验过了。
+#
+#     现在第二个位置参数真的接住,并且:给多了直接拒(第 4 个位置参数),
+#     因为一个被悄悄丢掉的参数正是这个 bug 的形状。
+POSITIONAL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1; shift;;
@@ -77,9 +90,25 @@ while [ $# -gt 0 ]; do
     --allow-dirty) ALLOW_DIRTY=1; shift;;
     --from-dispatch) DISPID="${2:-}"; shift 2 || fail "--from-dispatch 后面要跟派单 id";;
     --sandbox-db) SANDBOX_DB="${2:-}"; shift 2 || fail "--sandbox-db 后面要跟一个 URL";;
-    *) [ -z "$BRANCH" ] && BRANCH="$1"; shift;;
+    --must-have) MUST_HAVE="${2:-}"; shift 2 || fail "--must-have 后面要跟一个字符串";;
+    --must-have=*) MUST_HAVE="${1#--must-have=}"; shift;;
+    *) POSITIONAL=$((POSITIONAL+1))
+       case "$POSITIONAL" in
+         1) BRANCH="$1";;
+         2) MUST_HAVE="$1";;
+         *) fail "位置参数太多了:'$1' 是第 $POSITIONAL 个。用法:prepare-sandbox-build.sh [旗标] <分支> [必须存在的字符串]"
+            ;;
+       esac
+       shift;;
   esac
 done
+
+# 旗标形式和位置形式都给了同一个值时,以位置形式为准;值不一致时说明操作者
+# 以为自己传了一个、实际传了另一个,这正是这个 bug 的代价,所以直接拒。
+# (两条路径写同一个变量,不存在"两个值";此处只拒绝空串被当成有效值的情况。)
+if [ -n "$MUST_HAVE" ] && [ "$MUST_HAVE" != "${MUST_HAVE#* }" ]; then
+  fail "--must-have 的值不能含空格:'$MUST_HAVE'。要给含空格的字符串,用引号包起来作为一个参数。"
+fi
 
 # 🔴 旗标冲突必须在**参数解析完之后立刻**判,不能等到工作区解析、身份核对、
 #    脏检查、数据库检查之后。这两个旗标的意思是相反的:--apply 替换沙箱,
@@ -152,6 +181,11 @@ else
     # 不猜。列出「包含这个 ref」的工作区,并说清每个检出在哪,让调用方自己选。
     WANT="$(git -C "$REPO" rev-parse --verify "$BRANCH" 2>/dev/null || true)"
     OTHERS=""
+    # 有工作区检出在这个 ref 上、但是 detached 的时候,要说清那一步怎么补 ——
+    # 否则操作者看到「不是任何工作区检出的分支」,而事实上树就在那儿,
+    # 只差一个分支名。实测:Flux 在隔离 detached checkout 里验 6dd68c5 时
+    # 看到的正是这条没头没尾的拒绝。
+    DETACHED_HINT=""
     for d in "$WROOT"/*/; do
       [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
       git -C "$d" rev-parse --verify "$BRANCH" >/dev/null 2>&1 || continue
@@ -159,9 +193,25 @@ else
       HEADREF="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
       HEADSHA="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)"
       if [ -n "$WANT" ] && [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" = "$WANT" ]; then
-        OTHERS="${OTHERS}\n     $NAME —— 检出正好在这个提交上(分支 $HEADREF),传这个分支名即可"
+        if [ "$HEADREF" = "HEAD" ]; then
+          # detached 时 "传这个分支名即可" 是句废话 —— 那个名字就是 HEAD,
+          # 传进来只会再撞一次同样的拒绝。实测:第一版同时印了这句和
+          # detached 提示,两条指令互相矛盾。
+          OTHERS="${OTHERS}\n     $NAME —— detached 检出,树正好在这个提交上(见下面的补法)"
+        else
+          OTHERS="${OTHERS}\n     $NAME —— 检出正好在这个提交上(分支 $HEADREF),传这个分支名即可"
+        fi
       else
         OTHERS="${OTHERS}\n     $NAME —— 检出在 $HEADSHA ($HEADREF),**不是**你要的"
+      fi
+      # HEADREF 是 "HEAD" 就是 detached。这时它的树可能就是你要的那棵,
+      # 只差一个分支名 —— 把这一步说出来。
+      if [ "$HEADREF" = "HEAD" ] && [ -n "$WANT" ] \
+         && [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" = "$WANT" ]; then
+        DETACHED_HINT="${DETACHED_HINT}\n     $NAME 是 **detached** 检出,但它的树正好在你要的提交上。"
+        DETACHED_HINT="${DETACHED_HINT}\n     补一个指向这个提交的分支名就能用,例如:"
+        DETACHED_HINT="${DETACHED_HINT}\n       git -C ${d%/} branch <一个分支名> $HEADSHA"
+        DETACHED_HINT="${DETACHED_HINT}\n     然后把这个分支名传进来(本脚本不会替你 checkout,也绝不悄悄构建另一棵树)。"
       fi
     done
     say ""
@@ -177,6 +227,23 @@ else
     fi
     say ""
     say "  请改用上面列出的、确实被检出的分支名再跑。"
+    # 🔴 可读性:上面那句「不是任何工作区当前检出的分支」把两种完全不同的
+    #    情形说的是同一句话,而操作者能做的动作正好相反。Flux 在
+    #    ev-TWL0d7liGTtboRRnO7B34 里实测踩到:他在一个隔离的 detached
+    #    checkout 里验 6dd68c5,看到的就是这句,于是不知道该怎么办 ——
+    #    消息列了 iso-wt 检出在 6dd68c5,却没说他**为什么**不匹配,
+    #    也没说 detached 检出需要一个同内容的分支名才能用。
+    #
+    #    **一条拒绝消息如果不能告诉人怎么满足它,它就只是宣布了失败。**
+    if [ -n "$DETACHED_HINT" ]; then
+      say ""
+      printf '%b\n' "$DETACHED_HINT"
+    fi
+    if [ -z "$OTHERS" ] && [ -z "$DETACHED_HINT" ]; then
+      say ""
+      say "  (一个工作区都没列出来:那个 ref 在这里任何工作区里都不存在。"
+      say "   先 fetch,或者用 SEATLOOM_WORKTREE_ROOT 指到有它的那一组工作区。)"
+    fi
     fail "不从工作区里猜。指定一条已检出的分支再跑。"
   fi
 fi
