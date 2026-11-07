@@ -44,18 +44,31 @@ for patch in "$SALVAGE"/*.patch; do
 
   CHECKED=$((CHECKED + 1))
   matched=""
+  UNREADABLE=""
 
   # 在每一个 worktree 里试一次反向应用。
+  # 🔴 必须能区分两种失败,而我 2026-11-07 16:00 正好把它们混过一次:
+  #    git apply 打不开补丁文件 = 退出 128("can't open patch")
+  #    补丁贴不上当前树   = 退出 1("patch does not apply")
+  #    我拿一个相对路径配 git -C 跑,于是文件根本找不到,读出 128,
+  #    就写下「这份快照不忠实」—— 补丁本身是好的,是我的调用方式是坏的。
+  #    **打不开文件不等于贴不上。** 把两者混同,会让一份忠实的快照被判成过期。
   for d in "$WORKTREES"/*; do
     [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
     if git -C "$d" apply --check --reverse "$patch" >/dev/null 2>&1; then
       matched="$(basename "$d")"
+      break
+    elif [ ! -r "$patch" ]; then
+      UNREADABLE="$d"
       break
     fi
   done
 
   if [ -n "$matched" ]; then
     echo "  ✓ $name → 贴回 $matched 的工作区(对得上)"
+  elif [ -n "$UNREADABLE" ]; then
+    echo "  ✗ $name → 读不到这个补丁文件本身。这不是「贴不回去」,是检查自己跑不了。"
+    FAIL=2
   else
     echo "  ✗ $name → 在任何一个工作区都贴不回去。它已经过期,而清单还写着它有效。"
     echo "      修:cd 对应工作区 && git diff > 新补丁,然后把这份改名成 .superseded.patch"
@@ -105,9 +118,17 @@ if [ "$FAIL" = "0" ] && [ "$UNCOVERED" = "0" ]; then
 fi
 
 if [ "$FAIL" != "0" ]; then
-  echo "❌ 有补丁过期而清单仍标着有效。"
+  if [ "$FAIL" = "2" ]; then
+    echo "❌ 检查自己跑不了:有补丁读不到。这不是「补丁过期」,是这一轮没有量到东西。"
+  else
+    echo "❌ 有补丁过期而清单仍标着有效。"
+  fi
 fi
 if [ "$UNCOVERED" != "0" ]; then
   echo "❌ 有 $UNCOVERED 个工作区的未提交工作没有任何补丁覆盖。"
 fi
+# 🔴 检查自己跑不了要报 2,不能报 1。1 的含义是「清单在说谎」,
+#    而 2 的含义是「这一轮什么都没量到」。把 2 压成 1,
+#    会让一次自己失败被读成一次外部发现 —— 而我 16:00 刚犯过反过来的错。
+[ "$FAIL" = "2" ] && exit 2
 exit 1
