@@ -502,7 +502,31 @@ say "  ✅ 应用包在:$BUILT"
 #     **真实使用下的行为一个字都没变**。测试把它指向 fixture 里的临时路径,
 #     于是每一条变异(包括把整道闸删掉)都被包含在 fixture 里。
 PROTECTED_PATH="${SEATLOOM_PROTECTED_SANDBOX_PATH:-/Applications/SeatLoom-Sandbox.app}"
-if [ "$SAND_APP" = "$PROTECTED_PATH" ] \
+# 🔴🔴🔴 两个**互相独立**的条件,任意一个命中就拒。
+#
+#     Lyra 的实测(在 3097320 上):整份脚本只有这一道闸,而它只判**相等**。
+#     四种组合逐个人工评估:
+#       SAND_APP    PROTECTED_PATH  → 结果
+#       real        real            → 拒
+#       scratch     scratch         → 拒
+#       scratch     other           → 静默
+#       real        scratch         → 静默   ← 就是这个洞
+#
+#     第四种正是 20:09 那次事故的形状:SAND_APP 没设,于是它**悄悄变成真实路径**;
+#     而 PROTECTED_PATH 被重定向到别处,两者不相等,这道闸闭嘴,
+#     执行一路走到对**真实**路径的 rm -rf 和 cp -R。
+#     **一道只拦相等的闸,在两边不相等时是沉默的 ——
+#     而不相等的那一刻,恰恰是目标最危险的那一刻。**
+#
+#     所以加第二个条件:目标**本身**是真实应用路径时就拒,
+#     不管 PROTECTED_PATH 被设成什么。两个条件各自独立,
+#     谁都不能替谁兜底 —— 因为能被单独绕开的闸,等于没有。
+#
+#     重定向照旧能用:临时目标 + 被重定向的 PROTECTED_PATH 仍然放行,
+#     否则 fixture 一步都跑不了。
+REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
+if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \
+     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then
   fail "拒绝在受保护路径上做破坏性动作:受保护的是 $PROTECTED_PATH,而目标正是它。
 
