@@ -152,24 +152,44 @@ else
     how=$(PSQL "select coalesce(how_to_verify,'(没写验法)') from acceptances where id='$id'")
     # base 必须是真实存在的分支,否则这张卡点了只会报错 —— 必须明说
     #
-    # 🔴 2026-10-28 13:00 补第二个条件,它才是真正会卡住 Accept 的那个:
-    #    base 存在**不代表**卡的分支包含 base。track 往前走一个提交,
-    #    分支就落后一个提交,验收门会拒绝未同步的分支 —— 张先生点任何一张
-    #    都收到拒绝,而他不知道为什么。这个检查原来只查 base 存在,
-    #    于是 23 张全点不动的卡被打成 23 个 "✅ 可以点"。
-    #    那天早上我正好在犯这个错(开卡后往 track 提了 8 次),
-    #    而唯一该提醒他的脚本在说反话。
+    # 🔴 2026-11-05 03:43:40 UTC 张先生裁定(dec-clickable-criterion-level-with-base):
+    #    clickability 只问「合并会不会丢掉主线提交或删掉文件」;
+    #    「和主线齐平」不再是拒绝的理由,containment 留在 request_acceptance。
+    #
+    # 🔴🔴 2026-11-08 01:50 修:上面那段 10-28 的理由**本身就是被推翻的那条**,
+    #    而它还一直在跑,并且打印一句假话:
+    #      「已派该席位的 owner 合并 track 进它的 packet 分支」
+    #    实测这一轮,两句话都不成立 —— 没有派过单,卡也点得动。
+    #    我用 check-cards-clickable.sh 量过同一对分支:合并干净、删 0 文件、丢 0 提交。
+    #    那个脚本 11-05 就按裁定改了,这一个没有 —— 于是同一个仓库里两个检查
+    #    给出相反答案,而张先生看的是这一个。
+    #
+    #    为什么 accept 路径真的不看齐平:它跑 `git merge --no-ff`(acceptance_cmds.rs:311),
+    #    --no-ff 天生不会丢提交。`branch_contains` 全代码只有一个调用点,
+    #    在 request_acceptance(dispatch.rs:1808)—— 开卡那一刻。
+    #
+    #    现在问裁定问的那个问题:合并会不会冲突、会不会删主线文件。
+    #    落后只作备注,不作拒绝 —— 原因写在下面。
     if ! git -C "$REPO" rev-parse --verify "refs/heads/$base" >/dev/null 2>&1; then
       echo "  ⚠️ 这张点不了(坏卡,不用管):$br"
       echo "     原因:要合进的分支「${base}」不存在,点了只会报错,不会损坏任何东西"
-    elif ! git -C "$REPO" merge-base --is-ancestor "$base" "$br" 2>/dev/null; then
-      behind=$(git -C "$REPO" rev-list --count "$br".."$base" 2>/dev/null)
-      echo "  ⛔ 这张点了会被拒:$br"
-      echo "     原因:分支落后「${base}」${behind} 个提交,验收门拒绝未同步的分支。"
-      echo "     已派该席位的 owner 合并 track 进它的 packet 分支;同步完这张就能点。"
     else
-      echo "  ✅ 可以点:$br"
-      echo "     怎么验:$how"
+      # 真正会让点击失败的东西:合并冲突,或删掉主线跟踪的文件。
+      # merge-tree 不动任何 ref、不改工作区,干净时退 0。
+      if MERGED=$(git -C "$REPO" merge-tree --write-tree "$base" "$br" 2>/dev/null); then
+        DELETED=$(git -C "$REPO" diff --diff-filter=D --name-only "$base" "$MERGED" 2>/dev/null | wc -l | tr -d ' ')
+        echo "  ✅ 可以点:$br"
+        echo "     怎么验:$how"
+        # 落后是事实,要说,但不是拒绝的理由(裁定原文)。
+        behind=$(git -C "$REPO" rev-list --count "$br".."$base" 2>/dev/null)
+        [ "$behind" = "0" ] || echo "     备注:分支落后「${base}」${behind} 个提交 —— 不影响点击,合并不会丢提交"
+        [ "$DELETED" = "0" ] || echo "     ⚠️ 合并会删掉 ${DELETED} 个主线文件,点之前先看清是什么"
+      else
+        echo "  ⛔ 这张点了会被拒:$br"
+        echo "     原因:把它合进「${base}」会冲突 —— 点了只会失败。"
+        echo "     修:让该席位 owner 把 ${base} 合进它的 packet 分支(用 merge,不要 rebase)再 push。"
+        echo "     这不是它的错,落后通常是我提交造成的。"
+      fi
     fi
     echo "     卡号 $id"
     echo "     类型:验收(交付做完了,要不要收)"
