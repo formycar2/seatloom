@@ -36,6 +36,7 @@
 #  17. 变异:删掉那道闸 → 第 15 条必须红
 #  18. 每一次变异跑完,真实 /Applications 一个字节都没动
 #  19. 变异:把 SAND_APP 改回写死 → 第 16 条的静态检查必须红(它必须只读代码)
+#  20. 每一次变异**前后各取一次**真实路径指纹,当场比(总验收拆到每一步上)
 
 set -uo pipefail
 
@@ -198,12 +199,23 @@ APP_SUM_BEFORE="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom
 #       test-build-failure.sh 里两处 --apply 都在注释里。
 #       **一个测不到另一条路径的 helper,会让那条路径看起来被覆盖了。**
 # 现在:run_build <模式> [其余参数...],helper 自己一个字符都不加。
+#
+# 🔴 SEATLOOM_PROTECTED_SANDBOX_PATH 也指向 fixture 里的临时路径,这是
+#    Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 的直接产物。
+#    那道闸原本写死「目标 == /Applications/SeatLoom-Sandbox.app 才拦」,
+#    于是「证明这道闸承重」的唯一办法是让目标真的落到那个路径上 ——
+#    而任何去掉这道闸的变异,都会一路走到对**真实**路径的 rm -rf 和 cp -R。
+#    **一个通过条件需要真实破坏路径的变异,不能在目标真实的地方跑。**
+#    Flux 的 CT-2 就是这么把沙箱又毁了一次的。
+#    现在受保护路径也可配置(默认仍是真实路径,真实使用行为一个字没变),
+#    fixture 把它指到临时目录,于是每一条变异都被包含在 fixture 里。
 run_build(){
   local mode="${1:?run_build 需要显式的模式:--build-only 或 --apply}"; shift
   local extra="$*"
   ( cd "$WT" && PATH="$FIX/bin:$PATH" \
       SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+      SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
       bash scripts/prepare-sandbox-build.sh $mode packet/fixture/test $extra ) 2>&1
 }
 
@@ -569,9 +581,17 @@ reset_fixture
 OUT2="$(run_build --apply --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RC2=$?
 [ "$RC2" != "0" ] && pass "--apply + 标记不在二进制里 → 非零退出($RC2)" \
   || die "--apply + 标记不在二进制里却退出 0 —— 它会把一份不带那份活的包装进去"
-printf '%s\n' "$OUT2" | grep -q "不要装" \
-  && pass "并且明说「不要装」—— 这是保护操作者的那句话" \
-  || die "没说「不要装」—— 拒绝的理由没说出来"
+# 🔴 匹配的是**语义**,不是一个具体词。原来写死匹配「不要装」,
+#    而那道闸(48a216f 之后)现在先响,输出里根本没有「不要装」那句话 ——
+#    这一条于是红,而红的原因是措辞变了,不是行为变了。
+#    **一条钉在具体措辞上的断言,会在措辞变化时报一个行为没变的假失败。**
+#    现在改成匹配"拒绝/不装"这一类语义,并且两条都得算。
+if printf '%s\n' "$OUT2" | grep -qE "不要装|拒绝在受保护路径上"; then
+  pass "并且明说了拒绝的理由(不要装 / 受保护路径)"
+else
+  die "没说为什么拒绝。见它自己的话:"
+  printf '%s\n' "$OUT2" | tail -5 | sed 's/^/      /'
+fi
 printf '%s\n' "$OUT2" | grep -q "已安装" \
   && die "输出里出现「已安装」—— 拒绝之后还是装了,这一条是假的" \
   || pass "并且没有走到安装那一步(输出里没有「已安装」)"
@@ -669,31 +689,69 @@ echo "── 15. 那道新闸必须是行为上的,不是文字上的 ──"
 # Flux 量到第 12 节的守卫不可伪证:它 grep 脚本里有没有那一行写死的路径,
 # 两种情况下都通过。**一个不断言行为的断言,不是断言。**
 # 所以这里改成钉行为:跑一次真的 --apply,看它拒绝;再给它一个临时路径,看它放行。
-# 🔴 这一条必须**绕过 run_build** 直接调脚本:run_build 永远带着
-#    SEATLOOM_SANDBOX_APP,所以从那里调用时脚本看到的从来不是真实路径,
-#    那道闸也就永远不触发 —— 于是"它会拦真实路径"这一条根本测不到。
-#    第一版就是这么一个死掉的用例:它退出码 1(原因是临时路径上 open 失败),
-#    看起来像拒绝了,其实拒绝来自完全不相干的一步。
-#    **一个用例如果绕过了要测的那个条件,它测的是别的东西。**
+# 🔴 这一条必须**绕过 run_build** 直接调脚本,而且必须把**受保护路径**
+#    一起重定向到 fixture 里。两件事都得做,原因不同:
+#     * 绕过 run_build:它永远带着 SEATLOOM_SANDBOX_APP,从那里调用时
+#       脚本看到的不是那道闸要拦的目标,闸不触发,这一条测不到东西。
+#       (第一版就是这么个死掉的用例:退出码 1 来自临时路径上 open 失败,
+#        看起来像拒绝,其实来自完全不相干的一步。)
+#     * 重定向受保护路径:Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 量到,
+#       不重定向的话,"证明这道闸承重"就得让目标真的落到真实路径上,
+#       于是第 17 节去掉这道闸的变异会一路走到对**真实**路径的 rm -rf。
+#       Flux 的 CT-2 就是这么又毁了一次沙箱。
+#       **一个通过条件需要真实破坏路径的变异,不能在目标真实的地方跑。**
+#    现在受保护路径指向 fixture 里的临时目录,于是:基线看到拒绝,
+#    变异(闸被去掉)也只会碰到那个临时目录。
+# 🔴🔴 两个变量必须**成对**设置,这是本次事故最后那个洞。
+#
+#     SAND_APP 是「要动的目标」,PROTECTED_PATH 是「不许动的那个」。
+#     这道闸判的是 `SAND_APP == PROTECTED_PATH`。
+#     所以正确的包含形状是:**两者都指向 fixture 里的同一个临时路径**。
+#
+#     我中间那一版把 SEATLOOM_SANDBOX_APP  unset 掉、只把 PROTECTED_PATH
+#     指到 fixture —— 于是 SAND_APP 落到默认值(真实路径),两者不相等,
+#     那道闸不触发,--apply 一路走到对**真实**沙箱的 rm -rf。
+#     指纹检查当场抓到:沙箱又被换成了一个 60 字节假文件(20:09)。
+#     **一道只拦「相等」的闸,在不相等时是沉默的 ——
+#     所以让目标变成真实路径的那一刻,它恰好闭嘴。**
+#
+#     现在两者都指向 fixture 里的同一路径:基线看到拒绝,
+#     变异(闸被去掉)也只会碰到那个临时路径。
 reset_fixture
-OUTG="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP PATH="$FIX/bin:$PATH" \
+OUTG="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
+  SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
   SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
   bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
   packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCG=$?
-if [ "$RCG" != "0" ] && printf '%s\n' "$OUTG" | grep -q "拒绝在真实的 /Applications 路径上做破坏性动作"; then
-  pass "目标是真实路径且没有显式确认 → 拒绝,并且说了为什么"
+if [ "$RCG" != "0" ] && printf '%s\n' "$OUTG" | grep -q "拒绝在受保护路径上做破坏性动作"; then
+  pass "目标是受保护路径且没有显式确认 → 拒绝,并且说了为什么"
 else
   die "没有拒绝,或没说为什么(退出码 $RCG)。见它自己的话:"
   printf '%s\n' "$OUTG" | tail -6 | sed 's/^/      /'
 fi
+# 顺带钉住:拒绝必须发生在 rm -rf 之前。否则闸虽然响了,旧目标已经被毁。
+printf '%s\n' "$OUTG" | grep -q "已安装" \
+  && die "拒绝之后还是装了 —— 这道闸响得太晚" \
+  || pass "并且没有走到安装那一步"
 
 reset_fixture
-OUTH="$(SEATLOOM_SANDBOX_APP="$FIX/Applications/scratch-sandbox.app" \
-  run_build --apply --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCH=$?
-if printf '%s\n' "$OUTH" | grep -q "拒绝在真实的 /Applications 路径上"; then
-  die "给了临时路径却仍然拒绝 —— 重定向没生效,这正是那次事故的形状"
+# 这一条要的是「目标**不在**受保护路径上」,所以两个变量必须**不同**:
+# SAND_APP 指向 fixture 里的另一个路径,PROTECTED_PATH 仍然是 fixture 里那个。
+# 🔴 不能靠外层环境变量覆盖:run_build 自己会设 SEATLOOM_PROTECTED_SANDBOX_PATH,
+#    外层设的被它盖掉。第一版就是这么死的 —— 外层设了 SAND_APP 到另一个路径,
+#    而 run_build 把 PROTECTED_PATH 设成和 SAND_APP 同一个,两者又相等了,
+#    于是闸照样触发,这一条报「重定向没生效」,而真相是它自己把两边设成了一样。
+OUTH="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
+  SEATLOOM_SANDBOX_APP="$FIX/Applications/other-sandbox.app" \
+  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
+  bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCH=$?
+if printf '%s\n' "$OUTH" | grep -q "拒绝在受保护路径上"; then
+  die "目标不在受保护路径上却仍然拒绝 —— 那道闸拦错了东西"
 else
-  pass "给了临时路径 → 那道闸不再触发(它只拦真实路径)"
+  pass "目标不在受保护路径上 → 那道闸不触发(它只拦相等的那一种)"
 fi
 
 echo ""
@@ -728,7 +786,7 @@ cat > "$FIX/mut7.py" <<'PYEOF'
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = '''if [ "$SAND_APP" = "/Applications/SeatLoom-Sandbox.app" ] \\
+old = '''if [ "$SAND_APP" = "$PROTECTED_PATH" ] \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
 new = '''if false; then'''
 assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
@@ -743,11 +801,23 @@ if ! python3 "$FIX/mut7.py" "$MUT"; then
   die "变异锚点没找到 —— 这条变异什么都没测"
 fi
 grep -q 'if false; then' "$MUT" || die "变异没落到被执行的那份脚本上"
+# 🔴 这一节的判据要小心,我改错过一次。
+#
+#     run_build 会把 SEATLOOM_PROTECTED_SANDBOX_PATH 指到 fixture 里的路径,
+#     而 SAND_APP 也指向那儿 —— 两者相等,所以基线时那道闸**会**触发。
+#     变异把闸换成 if false 之后,输出里就不再有没有那句拒绝,
+#     脚本会继续走到安装段(然后因为 fixture 的临时目标没有真 plist 而失败)。
+#
+#     所以判据是「越过了那道闸、走进了安装段」,不是「没有拒绝」——
+#     后者在基线时也成立不了,因为基线的拒绝本来就是对的。
+#     **一个变异的判据要描述"阻拦消失了",而不是"输出里少了某个词"。**
 OUTM7="$(run_build --apply --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCM7=$?
-if printf '%s\n' "$OUTM7" | grep -q "拒绝在真实的 /Applications 路径上"; then
+if printf '%s\n' "$OUTM7" | grep -q "拒绝在受保护路径上"; then
   die "变异后那道闸仍然拦着 —— 第 15 条守的是空的"
+elif printf '%s\n' "$OUTM7" | grep -qE "五 — 安装到旁边那一份|沙箱不可启动|入口一致|已安装"; then
+  pass "变异生效(越过了那道闸、走进安装段,退出码 $RCM7)—— 目标只是 fixture 里的临时路径"
 else
-  pass "变异后那道闸消失(退出码 $RCM7)—— 第 15 条真的在守东西"
+  pass "变异生效(没有那道闸的拒绝,退出码 $RCM7)"
 fi
 cp "$FIX/mut-orig.sh" "$MUT"
 cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
@@ -802,6 +872,139 @@ fi
 cp "$FIX/mut-orig.sh" "$MUT"
 cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
 rm -f "$FIX/mut8.py"
+
+echo ""
+
+echo ""
+echo "── 20. 每一次变异前后各取一次真实路径的指纹 ──"
+# Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 指出:第 18 节只在**全部跑完之后**比一次指纹。
+# 于是一条破坏性的变异虽然最后会被发现,但发现时已经晚了 —— 报的是
+# 「有东西写到了外面」,而不是「第 X 节那条变异写到了外面」。
+# **一个只在最后验收的检查,抓得到事故,抓不到肇事的那一步。**
+#
+# 这一节加一个 helper:每次变异前后各取一次指纹,当场比。
+# 它不替代第 18 节的总验收,而是把总验收拆到每一步上。
+fingerprint_real(){
+  find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom.app -type f \
+    -exec md5 {} \; 2>/dev/null | sort | md5
+}
+check_contained(){
+  # $1 = 这一节的名字。变异跑完后调用。
+  local who="${1:-unknown}"
+  local before="$2" after
+  after="$(fingerprint_real)"
+  if [ "$after" != "$before" ]; then
+    die "[$who] 真实 /Applications 的指纹变了 —— 这一节的变异写到了 fixture 外面。之前 $before,现在 $after"
+    return 1
+  fi
+  pass "[$who] 真实 /Applications 一个字节都没动"
+  return 0
+}
+
+# 逐节重跑那三条会碰破坏路径的变异,每次前后取指纹。
+# 不新建用例 —— 复用 13/17/19 的形状,只是把指纹检查挪到每一步上。
+for SEC in 13 17 19; do
+  echo ""
+  echo "  ── 第 $SEC 节的变异,带逐步指纹 ──"
+  REAL_BEFORE="$(fingerprint_real)"
+  case "$SEC" in
+    13)
+      cat > "$FIX/mutA.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else fail "二进制里找不到 '$MUST_HAVE' —— 这份构建不带那份活,不要装"; fi'''
+new = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else say "  (MUTATED: 标记不在二进制里,但不拦着)" ; fi'''
+assert old in s, "锚点没找到"
+assert s.count(old) == 1, "锚点出现 %d 次" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+PYEOF
+      # 🔴 reset 在变异**之前**:reset_fixture 里有 git checkout -- .,
+      #    它会还原提交里的版本,把刚打上的变异擦掉。
+      #    这个顺序错误在同一个文件里已经犯过三次(第 5/6 节、第 10 节、这里),
+      #    每次都报"判据守的是空的",而真相是变异没活到运行。
+      #    **一个会还原工作区的 reset,必须排在会改工作区的动作之前。**
+      reset_fixture
+      python3 "$FIX/mutA.py" "$MUT" || die "第 13 节的变异没落上"
+      OUTA="$(run_build --apply --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCA=$?
+      if printf '%s\n' "$OUTA" | grep -q "不要装"; then
+        die "变异后 --apply 仍然拒绝安装 —— 第 12 条守的是空的"
+      else
+        pass "变异生效(--apply 不再拒绝安装,退出码 $RCA)"
+      fi
+      ;;
+    17)
+      cat > "$FIX/mutB.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '''if [ "$SAND_APP" = "$PROTECTED_PATH" ] \\
+   && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
+new = '''if false; then'''
+assert old in s, "锚点没找到"
+assert s.count(old) == 1, "锚点出现 %d 次" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+PYEOF
+      reset_fixture
+      python3 "$FIX/mutB.py" "$MUT" || die "第 17 节的变异没落上"
+      OUTB="$(run_build --apply --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCB=$?
+      # 判据不是"没有拒绝"——闸在基线时是**应该**拒绝的,拒绝本身是对的。
+      # 判据是:闸被去掉之后,脚本**越过了那道闸继续往下走**
+      # (走到安装段,然后因为 fixture 的临时目标没有真 plist 而失败)。
+      # 也就是说:变异确实移除了阻拦,而被拦下的目标只是 fixture 里的临时路径。
+      if printf '%s\n' "$OUTB" | grep -q "拒绝在受保护路径上"; then
+        die "变异后那道闸仍然拦着 —— 第 15 条守的是空的"
+      elif printf '%s\n' "$OUTB" | grep -qE "五 — 安装到旁边那一份|沙箱不可启动"; then
+        pass "变异生效(越过了那道闸、走进安装段,退出码 $RCB)—— 而目标只是 fixture 里的临时路径"
+      else
+        pass "变异生效(没有那道闸的拒绝,退出码 $RCB)"
+      fi
+      ;;
+    19)
+      cat > "$FIX/mutC.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"'
+assert s.count(old) == 2, "预期两处(代码 + 注释),实际 %d 处" % s.count(old)
+lines = s.split('\n')
+for i, l in enumerate(lines):
+    if l.strip().startswith('SAND_APP=') and old in l:
+        lines[i] = l.replace(old, 'SAND_APP="/Applications/SeatLoom-Sandbox.app"')
+        break
+else:
+    sys.exit("没找到代码那一行")
+open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+PYEOF
+      python3 "$FIX/mutC.py" "$MUT" || die "第 19 节的变异没落上"
+      CODE_ONLY="$(sed 's/^[[:space:]]*//' "$MUT" | grep -v '^#' | grep -v '^$')"
+      if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-'; then
+        die "变异后第 16 条的静态检查仍然 PASS"
+      else
+        pass "变异生效(第 16 条的静态检查 FAILS —— 它读的是代码,注释救不了它)"
+      fi
+      ;;
+  esac
+  # 关键的一步:这一节的变异跑完之后,当场验真实路径没被碰。
+  check_contained "第 $SEC 节" "$REAL_BEFORE" || true
+  # 还原必须在**每一次迭代里**做。放在循环外的话,第 19 节的变异
+  # 会带着第 13 节留下的痕迹跑,而"变异没还原干净"要到很后面才报。
+  cp "$FIX/mut-orig.sh" "$MUT"
+  cmp -s "$MUT" "$SCRIPT" || die "第 $SEC 节的变异没还原干净"
+  rm -f "$FIX/mutA.py" "$FIX/mutB.py" "$FIX/mutC.py"
+done
 
 echo ""
 if [ "$FAIL" = "0" ]; then

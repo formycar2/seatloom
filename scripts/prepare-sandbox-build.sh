@@ -476,7 +476,7 @@ BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
 rm -f "$WT/target/tauri-build.log"
 say "  ✅ 应用包在:$BUILT"
 
-# ---- 第二道闸:目标就是真实 /Applications 路径时,要显式确认 ----
+# ---- 第二道闸:目标就是受保护路径时,要显式确认 ----
 # 🔴 这道闸是 2026-11-07 那次事故的直接产物。
 #
 #     SAND_APP 现在可以被 SEATLOOM_SANDBOX_APP 重定向了(见文件开头),
@@ -485,22 +485,35 @@ say "  ✅ 应用包在:$BUILT"
 #       2. 一个自动化流程(测试、脚本、别的席位)以为设了,其实设错了名字。
 #     这两种都是"以为在别处,其实在这儿"——正是那次事故的形状。
 #
-#     所以:目标是真实路径时,破坏性路径要一句显式确认。
+#     所以:目标是受保护路径时,破坏性路径要一句显式确认。
 #     宁可拒绝一次**真的**安装(操作者补一个环境变量再跑),
 #     也不能让一个忘了改路径的调用把真的沙箱删掉。
 #     **一个不可逆的破坏动作,不该由一个默认值触发。**
-if [ "$SAND_APP" = "/Applications/SeatLoom-Sandbox.app" ] \
+#
+# 🔴🔴 受保护路径本身也必须可配置。Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 量到:
+#     原来的判据写死 `[ "$SAND_APP" = "/Applications/SeatLoom-Sandbox.app" ]`,
+#     于是"证明这道闸承重"的唯一办法就是让 SAND_APP 真的落到那个路径上 ——
+#     而任何去掉这道闸的变异,都会一路走到对真实路径的 rm -rf 和 cp -R。
+#     **一个通过条件需要真实破坏路径的变异,不能在目标真实的地方跑。**
+#     Flux 的 CT-2 就是这么把沙箱又毁了一次的;而他们自己记录说,
+#     他们还设了 SEATLOOM_ALLOW_REAL_SANDBOX=1 —— 把他们正在验的那道闸关掉。
+#
+#     现在受保护路径由 SEATLOOM_PROTECTED_SANDBOX_PATH 决定,默认就是真实路径,
+#     **真实使用下的行为一个字都没变**。测试把它指向 fixture 里的临时路径,
+#     于是每一条变异(包括把整道闸删掉)都被包含在 fixture 里。
+PROTECTED_PATH="${SEATLOOM_PROTECTED_SANDBOX_PATH:-/Applications/SeatLoom-Sandbox.app}"
+if [ "$SAND_APP" = "$PROTECTED_PATH" ] \
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then
-  fail "拒绝在真实的 /Applications 路径上做破坏性动作。
+  fail "拒绝在受保护路径上做破坏性动作:受保护的是 $PROTECTED_PATH,而目标正是它。
 
-  要做的这一步会 rm -rf $SAND_APP,而它就是你机器上真的那份沙箱。
+  要做的这一步会 rm -rf ${SAND_APP}。
   2026-11-07 已经因为这个形状出过一次事故:一个测试以为把路径重定向了,
   实际没有,于是真的沙箱被删掉、换成一份假二进制,而且没有备份。
 
-  两条路,分开走:
+  三条路,分开走:
     * 只是想验证构建  → 用 --build-only,它不装、不替换、不停进程。
     * 真的要换沙箱    → 走 scripts/replace-sandbox.sh,它先备份再换。
-    * 明确就要动真的  → 设 SEATLOOM_ALLOW_REAL_SANDBOX=1 再跑(这是显式确认)。"
+    * 明确就要动它    → 设 SEATLOOM_ALLOW_REAL_SANDBOX=1 再跑(这是显式确认)。"
 fi
 
 # ---- 证明这个构建真的带着要验的东西 ----
