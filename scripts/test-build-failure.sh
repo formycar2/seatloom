@@ -35,6 +35,7 @@
 #  16. SEATLOOM_SANDBOX_APP 必须真的被读到(那次事故的直接教训)
 #  17. 变异:删掉那道闸 → 第 15 条必须红
 #  18. 每一次变异跑完,真实 /Applications 一个字节都没动
+#  19. 变异:把 SAND_APP 改回写死 → 第 16 条的静态检查必须红(它必须只读代码)
 
 set -uo pipefail
 
@@ -533,10 +534,21 @@ echo "── 12. --apply 那道 MUST_HAVE 检查:它**不能**在这个 fixture 
 #     所以这一节改成钉**能安全钉的那部分**:--apply 那道检查在 rm -rf **之前**,
 #     它拒绝时零副作用。要真的跑完 --apply,需要一个 SAND_APP 可重定向的版本,
 #     那是另一件事,不在这一个 fixture 里顺手做。
-echo "  (先确认:这个 fixture 没有任何东西能碰到 /Applications)"
-grep -q 'SAND_APP="/Applications/SeatLoom-Sandbox.app"' "$SCRIPT" \
-  && pass "确认了:被测脚本写死装到 /Applications —— 所以本 fixture 绝不跑 --apply 的安装段" \
-  || pass "被测脚本的安装路径看起来可重定向 —— 但仍按最坏情况对待,不跑安装段"
+# 🔴 这里曾经有一道「静态确认」,已删掉,原因值得记住。
+#
+#    它 grep 脚本里有没有 SAND_APP="/Applications/SeatLoom-Sandbox.app" 这一行,
+#    两个分支都 pass —— 不可伪证。Lyra 实测:拿当前脚本、和把那一行删掉的同一脚本
+#    分别喂给它,两次都 PASS。
+#
+#    更糟的是它**开始说假话**。那个字符串现在只存在于一处:第 71 行的**注释**,
+#    写着「老代码在这里写死了路径」。于是这道守卫走分支 1,打印
+#    「确认了:被测脚本写死装到 /Applications」—— 而 48a216f 恰恰把它改成了可重定向。
+#    **一道说着被它检查过的东西的假话的死检查,比什么都不说的死检查更糟,
+#    因为下一个人会相信它。**
+#
+#    现在这个性质由第 15、16 两节覆盖,而且是行为上的:同一命令,
+#    变量设了落到 fixture 里,不设就被拒。删掉这道重复的静态检查 ——
+#    同一个性质上堆两道检查,正是这道两道都 pass 的形状能存在的原因。
 # Lyra 实测出来的缺口:代码里有**两处** MUST_HAVE 检查,而这个套件只碰到一处。
 #   * 第 398 行,--build-only 路径:strings + grep -c,报处数。
 #   * 第 462 行,--apply 路径:同样 strings + grep -c,处数为 0 时
@@ -689,13 +701,22 @@ echo "── 16. SEATLOOM_SANDBOX_APP 必须真的被读到,不是看着接上�
 # 这一条是那次事故的直接教训:一个变量被设置、被引用、却没有接到任何
 # 能改变行为的地方。**一个看着接上了、其实没接上的控制,比没有控制更糟。**
 # 钉法不是 grep 那一行,而是让行为因它而不同。
-grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-' "$SCRIPT" \
-  && pass "脚本里 SAND_APP 由 SEATLOOM_SANDBOX_APP 决定(带默认值)" \
-  || die "脚本里 SAND_APP 不读 SEATLOOM_SANDBOX_APP —— 重定向是空的,任何测试都拦不住一次真实的 rm -rf"
+# 🔴 这两条静态检查必须只读**代码**,不能读注释。
+#
+#     第一版用 grep -q 在整个文件里找,而那段说明事故的注释里也写着同样一行 ——
+#     于是就算有人把第 84 行的代码改回写死,这两条照样 PASS。
+#     **一道会在注释上通过的检查,和没有检查一样。** 这和刚删掉的那道是同一个病:
+#     它检查的字符串,在文件里出现的位置不一定是它以为的地方。
+#
+#     所以先剥掉注释行再 grep。剥法是「行首去掉前导空白后不是 #」。
+CODE_ONLY="$(sed 's/^[[:space:]]*//' "$SCRIPT" | grep -v '^#' | grep -v '^$')"
+printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-' \
+  && pass "代码里 SAND_APP 由 SEATLOOM_SANDBOX_APP 决定(带默认值;注释里那一行不算)" \
+  || die "代码里 SAND_APP 不读 SEATLOOM_SANDBOX_APP —— 重定向是空的,任何测试都拦不住一次真实的 rm -rf"
 # 行为上的证明:上面第 15 节已经用「同一命令、不同变量值、不同结果」验过了。
 # 这里再补一条静态的,防止有人把默认值改成一个同样写死的临时路径
 # (那样第 15 节会因为两边都放行而悄悄失效)。
-DEFAULT_TARGET="$(grep -o 'SEATLOOM_SANDBOX_APP:-[^}]*' "$SCRIPT" | head -1 | sed 's/.*:-//')"
+DEFAULT_TARGET="$(printf '%s\n' "$CODE_ONLY" | grep -o 'SEATLOOM_SANDBOX_APP:-[^}]*' | head -1 | sed 's/.*:-//')"
 [ "$DEFAULT_TARGET" = "/Applications/SeatLoom-Sandbox.app" ] \
   && pass "默认值仍然是那个真实路径(所以第 15 节的拒绝一条是真的在拦)" \
   || die "默认值被改成了 '$DEFAULT_TARGET' —— 第 15 节两条都会放行,那道闸就测不出来了"
@@ -741,6 +762,48 @@ APP_SUM_NOW="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom.ap
 [ "$APP_SUM_NOW" = "${APP_SUM_BEFORE:-}" ] \
   && pass "两个真实应用的指纹和跑之前一致" \
   || die "真实应用的指纹变了 —— 有东西写到了 fixture 外面。之前 ${APP_SUM_BEFORE:-<未记录>},现在 $APP_SUM_NOW"
+
+echo ""
+echo "── 19. 变异:把 SAND_APP 改回写死,第 16 条的静态检查必须红 ──"
+# 承重命题,而且是这一次的核心:第 16 条的静态检查**必须只读代码**。
+#
+# 实测(在 /tmp 的丢弃副本里做的,不在这个 fixture 里):
+#   把第 84 行改回 SAND_APP="/Applications/SeatLoom-Sandbox.app" 之后,
+#   * 旧的 grep -q 在整个文件里找 → **PASS**。因为第 73 行的注释里
+#     也写着同样一行,是它把那道检查救活的。
+#   * 改成先剥注释再 grep   → **FAILS**。抓住了。
+#   一道会在注释上通过的检查,和没有检查一样。这一节就是把那个事实钉住。
+cat > "$FIX/mut8.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"'
+assert s.count(old) == 2, "预期两处(代码一行 + 注释一行),实际 %d 处" % s.count(old)
+lines = s.split('\n')
+for i, l in enumerate(lines):
+    if l.strip().startswith('SAND_APP=') and old in l:
+        lines[i] = l.replace(old, 'SAND_APP="/Applications/SeatLoom-Sandbox.app"')
+        break
+else:
+    sys.exit("没找到代码那一行 —— 变异会落到注释上,那什么都测不到")
+open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+PYEOF
+if ! python3 "$FIX/mut8.py" "$MUT"; then
+  die "变异锚点没找到 —— 这条变异什么都没测"
+fi
+CODE_ONLY="$(sed 's/^[[:space:]]*//' "$MUT" | grep -v '^#' | grep -v '^$')"
+if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-'; then
+  die "变异后第 16 条的静态检查仍然 PASS —— 它读到了注释,不是代码"
+else
+  pass "变异后第 16 条的静态检查 FAILS —— 它真的在读代码(注释救不了它)"
+fi
+cp "$FIX/mut-orig.sh" "$MUT"
+cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
+rm -f "$FIX/mut8.py"
+
+echo ""
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
   exit 0
