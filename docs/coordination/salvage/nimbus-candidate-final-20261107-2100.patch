@@ -1,0 +1,258 @@
+diff --git a/scripts/prepare-sandbox-build.sh b/scripts/prepare-sandbox-build.sh
+index 5d9ace1..ef3c5c3 100755
+--- a/scripts/prepare-sandbox-build.sh
++++ b/scripts/prepare-sandbox-build.sh
+@@ -502,7 +502,31 @@ say "  ✅ 应用包在:$BUILT"
+ #     **真实使用下的行为一个字都没变**。测试把它指向 fixture 里的临时路径,
+ #     于是每一条变异(包括把整道闸删掉)都被包含在 fixture 里。
+ PROTECTED_PATH="${SEATLOOM_PROTECTED_SANDBOX_PATH:-/Applications/SeatLoom-Sandbox.app}"
+-if [ "$SAND_APP" = "$PROTECTED_PATH" ] \
++# 🔴🔴🔴 两个**互相独立**的条件,任意一个命中就拒。
++#
++#     Lyra 的实测(在 3097320 上):整份脚本只有这一道闸,而它只判**相等**。
++#     四种组合逐个人工评估:
++#       SAND_APP    PROTECTED_PATH  → 结果
++#       real        real            → 拒
++#       scratch     scratch         → 拒
++#       scratch     other           → 静默
++#       real        scratch         → 静默   ← 就是这个洞
++#
++#     第四种正是 20:09 那次事故的形状:SAND_APP 没设,于是它**悄悄变成真实路径**;
++#     而 PROTECTED_PATH 被重定向到别处,两者不相等,这道闸闭嘴,
++#     执行一路走到对**真实**路径的 rm -rf 和 cp -R。
++#     **一道只拦相等的闸,在两边不相等时是沉默的 ——
++#     而不相等的那一刻,恰恰是目标最危险的那一刻。**
++#
++#     所以加第二个条件:目标**本身**是真实应用路径时就拒,
++#     不管 PROTECTED_PATH 被设成什么。两个条件各自独立,
++#     谁都不能替谁兜底 —— 因为能被单独绕开的闸,等于没有。
++#
++#     重定向照旧能用:临时目标 + 被重定向的 PROTECTED_PATH 仍然放行,
++#     否则 fixture 一步都跑不了。
++REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
++if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \
++     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \
+    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then
+   fail "拒绝在受保护路径上做破坏性动作:受保护的是 $PROTECTED_PATH,而目标正是它。
+ 
+diff --git a/scripts/test-build-failure.sh b/scripts/test-build-failure.sh
+index fd439e7..59ca201 100755
+--- a/scripts/test-build-failure.sh
++++ b/scripts/test-build-failure.sh
+@@ -200,8 +200,12 @@ APP_SUM_BEFORE="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom
+ #       **一个测不到另一条路径的 helper,会让那条路径看起来被覆盖了。**
+ # 现在:run_build <模式> [其余参数...],helper 自己一个字符都不加。
+ #
+-# 🔴 SEATLOOM_PROTECTED_SANDBOX_PATH 也指向 fixture 里的临时路径,这是
+-#    Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 的直接产物。
++# 🔴 两个变量都指向 fixture 里,但**必须是两个不同的临时路径**。
++#    这是 Lyra 在 3097320 上量到的那个洞的直接产物:
++#    那道闸判「目标 == 受保护路径」,所以如果两者设成同一个,
++#    基线就跑不动(被自己拒掉);而如果只设目标、不设受保护路径,
++#    目标会悄悄变成真实路径,闸又不响。
++#    **两个都得设,而且得设成不一样的两个临时路径。**
+ #    那道闸原本写死「目标 == /Applications/SeatLoom-Sandbox.app 才拦」,
+ #    于是「证明这道闸承重」的唯一办法是让目标真的落到那个路径上 ——
+ #    而任何去掉这道闸的变异,都会一路走到对**真实**路径的 rm -rf 和 cp -R。
+@@ -213,9 +217,9 @@ run_build(){
+   local mode="${1:?run_build 需要显式的模式:--build-only 或 --apply}"; shift
+   local extra="$*"
+   ( cd "$WT" && PATH="$FIX/bin:$PATH" \
+-      SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
++      SEATLOOM_SANDBOX_APP="$FIX/Applications/scratch-sandbox.app" \
+       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+-      SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
++      SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/protected-sandbox.app" \
+       bash scripts/prepare-sandbox-build.sh $mode packet/fixture/test $extra ) 2>&1
+ }
+ 
+@@ -684,75 +688,109 @@ else
+   rm -f "$FIX/mut6.py"
+ fi
+ 
++
+ echo ""
+-echo "── 15. 那道新闸必须是行为上的,不是文字上的 ──"
+-# Flux 量到第 12 节的守卫不可伪证:它 grep 脚本里有没有那一行写死的路径,
+-# 两种情况下都通过。**一个不断言行为的断言,不是断言。**
+-# 所以这里改成钉行为:跑一次真的 --apply,看它拒绝;再给它一个临时路径,看它放行。
+-# 🔴 这一条必须**绕过 run_build** 直接调脚本,而且必须把**受保护路径**
+-#    一起重定向到 fixture 里。两件事都得做,原因不同:
+-#     * 绕过 run_build:它永远带着 SEATLOOM_SANDBOX_APP,从那里调用时
+-#       脚本看到的不是那道闸要拦的目标,闸不触发,这一条测不到东西。
+-#       (第一版就是这么个死掉的用例:退出码 1 来自临时路径上 open 失败,
+-#        看起来像拒绝,其实来自完全不相干的一步。)
+-#     * 重定向受保护路径:Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 量到,
+-#       不重定向的话,"证明这道闸承重"就得让目标真的落到真实路径上,
+-#       于是第 17 节去掉这道闸的变异会一路走到对**真实**路径的 rm -rf。
+-#       Flux 的 CT-2 就是这么又毁了一次沙箱。
+-#       **一个通过条件需要真实破坏路径的变异,不能在目标真实的地方跑。**
+-#    现在受保护路径指向 fixture 里的临时目录,于是:基线看到拒绝,
+-#    变异(闸被去掉)也只会碰到那个临时目录。
+-# 🔴🔴 两个变量必须**成对**设置,这是本次事故最后那个洞。
+-#
+-#     SAND_APP 是「要动的目标」,PROTECTED_PATH 是「不许动的那个」。
+-#     这道闸判的是 `SAND_APP == PROTECTED_PATH`。
+-#     所以正确的包含形状是:**两者都指向 fixture 里的同一个临时路径**。
++echo "── 15. 那道闸必须两个条件都独立生效,四种组合全查 ──"
++# Lyra 在 3097320 上量到:整份脚本只有一道闸,而它只判「目标 == 受保护路径」。
++# 四种组合逐个人工评估:
++#     SAND_APP    PROTECTED_PATH  → 结果
++#     real        real            → 拒
++#     scratch     scratch         → 拒
++#     scratch     other           → 静默
++#     real        scratch         → 静默   ← 就是这个洞
++# 第四种正是 20:09 那次事故的形状:SAND_APP 没设 → 悄悄变成真实路径;
++# PROTECTED_PATH 被重定向 → 两者不相等 → 闸闭嘴 → 一路走到对**真实**路径的 rm -rf。
++# **一道只拦相等的闸,在不相等时沉默,而不相等那一刻恰恰最危险。**
+ #
+-#     我中间那一版把 SEATLOOM_SANDBOX_APP  unset 掉、只把 PROTECTED_PATH
+-#     指到 fixture —— 于是 SAND_APP 落到默认值(真实路径),两者不相等,
+-#     那道闸不触发,--apply 一路走到对**真实**沙箱的 rm -rf。
+-#     指纹检查当场抓到:沙箱又被换成了一个 60 字节假文件(20:09)。
+-#     **一道只拦「相等」的闸,在不相等时是沉默的 ——
+-#     所以让目标变成真实路径的那一刻,它恰好闭嘴。**
+-#
+-#     现在两者都指向 fixture 里的同一路径:基线看到拒绝,
+-#     变异(闸被去掉)也只会碰到那个临时路径。
++# 这一节把四种组合全钉住。判据只用 --apply ——
++# 🔴 --build-only 在第 442 行就 exit 0 了,根本走不到这道闸,
++#    所以一个 --build-only 的探针证明不了关于它的任何事。
++REAL="/Applications/SeatLoom-Sandbox.app"
++FAKE_REAL="$FIX/Applications/stand-in-for-real.app"
++PROT_A="$FIX/Applications/protected-a.app"
++TGT_B="$FIX/Applications/target-b.app"
++
++run_case(){
++  # $1 = SAND_APP 的值(空串表示不设这个变量);$2 = PROTECTED_PATH 的值
++  local tgt="$1" prot="$2" out rc
++  if [ -z "$tgt" ]; then
++    out="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP PATH="$FIX/bin:$PATH" \
++      SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
++      SEATLOOM_PROTECTED_SANDBOX_PATH="$prot" \
++      bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
++      packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; rc=$?
++  else
++    out="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
++      SEATLOOM_SANDBOX_APP="$tgt" \
++      SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
++      SEATLOOM_PROTECTED_SANDBOX_PATH="$prot" \
++      bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
++      packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; rc=$?
++  fi
++  printf '%s' "$out"
++  return $rc
++}
++
++echo ""
++echo "  组合 1/4:目标是真实路径,受保护路径也是它 → 必须拒"
+ reset_fixture
+-OUTG="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
+-  SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
+-  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+-  SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
+-  bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+-  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCG=$?
+-if [ "$RCG" != "0" ] && printf '%s\n' "$OUTG" | grep -q "拒绝在受保护路径上做破坏性动作"; then
+-  pass "目标是受保护路径且没有显式确认 → 拒绝,并且说了为什么"
++OUT1="$(run_case "$REAL" "$REAL")"; RC1=$?
++if [ "$RC1" != "0" ] && printf '%s\n' "$OUT1" | grep -q "拒绝在受保护路径上"; then
++  pass "拒了,并且说了为什么"
++else
++  die "没拒(退出码 $RC1)。见它自己的话:"; printf '%s\n' "$OUT1" | tail -5 | sed 's/^/      /'
++fi
++
++echo ""
++echo "  组合 2/4:目标是临时路径,受保护路径也是它 → 必须拒(闸不能只认真实路径)"
++reset_fixture
++OUT2="$(run_case "$FAKE_REAL" "$FAKE_REAL")"; RC2=$?
++if [ "$RC2" != "0" ] && printf '%s\n' "$OUT2" | grep -q "拒绝在受保护路径上"; then
++  pass "拒了 —— 受保护路径被重定向到临时路径时,闸照样拦那个路径"
+ else
+-  die "没有拒绝,或没说为什么(退出码 $RCG)。见它自己的话:"
+-  printf '%s\n' "$OUTG" | tail -6 | sed 's/^/      /'
++  die "没拒(退出码 $RC2) —— 那道闸只认真实路径的话,重定向之后它就失效了"
++  printf '%s\n' "$OUT2" | tail -5 | sed 's/^/      /'
+ fi
+-# 顺带钉住:拒绝必须发生在 rm -rf 之前。否则闸虽然响了,旧目标已经被毁。
+-printf '%s\n' "$OUTG" | grep -q "已安装" \
+-  && die "拒绝之后还是装了 —— 这道闸响得太晚" \
+-  || pass "并且没有走到安装那一步"
+ 
++echo ""
++echo "  组合 3/4:目标是临时路径,受保护路径是另一个临时路径 → 必须放行"
++reset_fixture
++OUT3="$(run_case "$TGT_B" "$PROT_A")"; RC3=$?
++if printf '%s\n' "$OUT3" | grep -q "拒绝在受保护路径上"; then
++  die "拒了 —— 可重定向的用法被堵死了,fixture 一步都跑不了"
++else
++  pass "放行(退出码 $RC3)—— 重定向的用法仍然可用"
++fi
++
++echo ""
++echo "  组合 4/4:目标悄悄变成真实路径,受保护路径被重定向 → 必须拒(20:09 那个洞)"
++reset_fixture
++OUT4="$(run_case "" "$PROT_A")"; RC4=$?
++if [ "$RC4" != "0" ] && printf '%s\n' "$OUT4" | grep -q "拒绝在受保护路径上"; then
++  pass "拒了 —— 目标本身是真实应用路径时,不管受保护路径被设成什么"
++else
++  die "没拒(退出码 $RC4)—— 这就是 20:09 那个洞:SAND_APP 没设 → 悄悄变成真实路径,闸闭嘴,rm -rf 落在真的沙箱上"
++  printf '%s\n' "$OUT4" | tail -5 | sed 's/^/      /'
++fi
++
++echo ""
++echo "── 15b. 显式确认能放行,而且只放行被点名的那一种 ──"
++# 没有这一条,那道闸就成了永远绕不过的墙,操作者会被迫去改代码。
+ reset_fixture
+-# 这一条要的是「目标**不在**受保护路径上」,所以两个变量必须**不同**:
+-# SAND_APP 指向 fixture 里的另一个路径,PROTECTED_PATH 仍然是 fixture 里那个。
+-# 🔴 不能靠外层环境变量覆盖:run_build 自己会设 SEATLOOM_PROTECTED_SANDBOX_PATH,
+-#    外层设的被它盖掉。第一版就是这么死的 —— 外层设了 SAND_APP 到另一个路径,
+-#    而 run_build 把 PROTECTED_PATH 设成和 SAND_APP 同一个,两者又相等了,
+-#    于是闸照样触发,这一条报「重定向没生效」,而真相是它自己把两边设成了一样。
+-OUTH="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
+-  SEATLOOM_SANDBOX_APP="$FIX/Applications/other-sandbox.app" \
++OUT5="$(cd "$WT" && PATH="$FIX/bin:$PATH" \
++  SEATLOOM_SANDBOX_APP="$FAKE_REAL" \
+   SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+-  SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/SeatLoom-Sandbox.app" \
++  SEATLOOM_PROTECTED_SANDBOX_PATH="$FAKE_REAL" \
++  SEATLOOM_ALLOW_REAL_SANDBOX=1 \
+   bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+-  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCH=$?
+-if printf '%s\n' "$OUTH" | grep -q "拒绝在受保护路径上"; then
+-  die "目标不在受保护路径上却仍然拒绝 —— 那道闸拦错了东西"
++  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RC5=$?
++if printf '%s\n' "$OUT5" | grep -q "拒绝在受保护路径上"; then
++  die "给了显式确认仍然拒 —— 操作者没有路可走了"
+ else
+-  pass "目标不在受保护路径上 → 那道闸不触发(它只拦相等的那一种)"
++  pass "给了显式确认 → 放行(退出码 $RC5)"
+ fi
++echo "  (注意:这一条的显式确认只对 fixture 里的临时路径有效,"
++echo "   它不碰 /Applications —— 真实路径的放行需要操作者自己敲那个变量。)"
+ 
+ echo ""
+ echo "── 16. SEATLOOM_SANDBOX_APP 必须真的被读到,不是看着接上了 ──"
+@@ -786,7 +824,9 @@ cat > "$FIX/mut7.py" <<'PYEOF'
+ import sys, subprocess
+ p = sys.argv[1]
+ s = open(p, encoding='utf-8').read()
+-old = '''if [ "$SAND_APP" = "$PROTECTED_PATH" ] \\
++old = '''REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
++if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
++     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
+ new = '''if false; then'''
+ assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
+@@ -946,7 +986,9 @@ PYEOF
+ import sys, subprocess
+ p = sys.argv[1]
+ s = open(p, encoding='utf-8').read()
+-old = '''if [ "$SAND_APP" = "$PROTECTED_PATH" ] \\
++old = '''REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
++if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
++     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
+ new = '''if false; then'''
+ assert old in s, "锚点没找到"
