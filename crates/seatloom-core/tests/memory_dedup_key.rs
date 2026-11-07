@@ -291,3 +291,53 @@ fn the_three_directions_are_mutually_distinguishable() {
     assert_ne!(other_substance, BASE.key());
     assert_eq!(other_substance.l2_file_path, BASE.l2_file_path);
 }
+
+// ─── the live-measured negative direction ─────────────────────────────────
+
+/// The four-distinct-groups claim is verifiable **in the negative** on the current
+/// live database: duplicate groups by this key = 0. This test pins the *shape* of
+/// that measurement so the property it demonstrates survives being re-run.
+///
+/// It does NOT query live — that would make a unit test depend on a database, which
+/// is the defect this file exists to avoid. It reproduces the shape instead: a set
+/// of rows that share pointers and differ only in substance must produce ZERO
+/// duplicate groups under this key, because sharing a pointer is not duplication.
+///
+/// Measured on live 2026-11-07: 0 duplicate groups by this key, 11 pointer-sharing
+/// groups with distinct `l0_summary`. Lyra measured 8 pointer-sharing groups and I
+/// measured 11 within the same hour, because live is written to by the fleet (43
+/// rows at one measurement, 47 an hour later). The direction of the finding does
+/// not depend on the number; the number itself must not be quoted as fixed.
+#[test]
+fn rows_sharing_pointers_but_differing_in_substance_produce_zero_duplicate_groups() {
+    // The shape measured on live: several rows citing the same file, some with no
+    // line range at all (38 of the 47 rows have `l2_line_start IS NULL`).
+    let live_shape: [(Option<&str>, Option<i32>, Option<i32>, &str); 6] = [
+        (Some("docs/a.md"), None, None, "first substance"),
+        (Some("docs/a.md"), None, None, "second substance"),
+        (Some("docs/a.md"), Some(1), Some(20), "first substance"),
+        (Some("docs/b.md"), None, None, "first substance"),
+        (Some("docs/b.md"), None, None, "third substance"),
+        (Some("docs/b.md"), Some(5), Some(6), "first substance"),
+    ];
+
+    let keys: Vec<MemoryDedupKey> = live_shape
+        .iter()
+        .map(|(p, s, e, l)| memory_dedup_key(*p, *s, *e, l))
+        .collect();
+
+    // Count duplicate groups the way the live measurement does: a group is any key
+    // value that appears more than once.
+    let mut sorted: Vec<String> = keys.iter().map(|k| format!("{k:?}")).collect();
+    sorted.sort();
+    let total = sorted.len();
+    sorted.dedup();
+    let distinct = sorted.len();
+
+    assert_eq!(
+        distinct, total,
+        "{total} rows collapsed into {distinct} keys — a pointer-sharing row was treated as a \
+         duplicate. On live this is the false-positive direction: 11 legitimate pointer-sharing \
+         groups exist and refusing them would silently break real writes."
+    );
+}

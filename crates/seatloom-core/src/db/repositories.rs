@@ -4143,9 +4143,20 @@ fn row_to_channel_action_receipt(r: &Row) -> ChannelActionReceiptRow {
 ///    writes, which is worse than the duplicate it was meant to catch.
 ///
 /// The claim that this key catches all four duplicate groups with zero false
-/// positives was measured on live **before** the 10-31 incident emptied that
-/// database. It is unverifiable now rather than confirmed, and it is not
-/// asserted here — the three directions above are what is pinned.
+/// positives was measured on live **before** the 10-31 incident. That incident
+/// emptied the database and the rows in question were among the loss, so the claim
+/// as stated cannot be re-measured. Measured 2026-11-07 against the current live
+/// database instead: duplicate groups by this key = **0**, and pointer-sharing
+/// groups with distinct `l0_summary` = **11**. So the four-groups claim is
+/// verifiable **in the negative** — those groups are not there — and the
+/// false-positive direction is verifiable **in the positive**, because those 11
+/// groups exist and the key must not refuse them.
+///
+/// 🔴 Those two counts are a moving target: live is written to by the fleet
+///    (43 rows at one measurement, 47 an hour later). Lyra measured 8
+///    pointer-sharing groups and I measured 11 within the same hour. The
+///    direction of the finding does not depend on the number; the number itself
+///    must not be quoted as fixed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryDedupKey<'a> {
     pub l2_file_path: Option<&'a str>,

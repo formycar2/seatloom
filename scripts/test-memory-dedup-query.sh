@@ -94,6 +94,30 @@ OUT="$(DATABASE_URL="$URL" cargo test -p seatloom-core --test memory_dedup_query
 RC=$?
 printf '%s\n' "$OUT" | grep -E '^test |test result' | sed 's/^/  /'
 
+# 🔴 失败时必须把**原因**一起印出来。
+#    第一版只 grep '^test |test result',于是失败时只印测试名和 FAILED ——
+#    panic 的文件、行号、原因全被过滤掉。Lyra 实测踩到:她复现 panic 那次,
+#    闸门报 3 个 FAILED 而一个字都没说它们为什么失败,她只能绕过闸门自己跑
+#    cargo test 才看到原因。
+#    **一个职责是让失败可读的闸门,报出「有东西失败了」却把「为什么」扔掉,
+#    比没有闸门更糟** —— 它让读的人以为已经看到了全部。
+#    退出码一直是对的,这是可读性缺陷,不是正确性缺陷;但可读性缺陷的成本
+#    真实存在:它花了 Lyra 一步。
+if [ "$RC" != "0" ]; then
+  echo ""
+  echo "  ── 失败的细节(为什么)──"
+  # 从第一个 '---- ' 分隔线印到结尾:那是 cargo test 写每个失败测试的
+  # stdout / panic 消息的地方。'\(^---- .*\)$' 之前的行也要,因为它们带着
+  # 'thread ... panicked at file:line' 这个消息本身。
+  printf '%s\n' "$OUT" | awk '/^---- /{p=1} p' | sed 's/^/  /'
+  # 兜底:万一上面什么都没匹配到(输出形状变了),就把原始输出全给出来。
+  # 一个永远不会报错的检查,比没有检查更有害。
+  if ! printf '%s\n' "$OUT" | awk '/^---- /{p=1} p' | grep -q .; then
+    echo "  (没匹配到失败块 —— 下面是完整输出)"
+    printf '%s\n' "$OUT" | sed 's/^/  /'
+  fi
+fi
+
 # The silent-skip guard. If zero tests ran, the suite measured nothing, and that
 # is a failure — not a pass.
 RAN="$(printf '%s\n' "$OUT" | grep -cE '^test .* \.\.\. (ok|FAILED)')"
