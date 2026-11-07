@@ -28,6 +28,9 @@
 #   9. 多余的位置参数要被拒,不是被悄悄丢掉
 #  10. 变异:把 MUST_HAVE 再丢掉 → 第 8 条必须红
 #  11. detached 检出的拒绝必须说清原因和补法
+#  12. --apply 那道 MUST_HAVE 检查也要有 fixture(它才是拒绝安装的那道)
+#  13. 变异:弄坏 --apply 那道 → 第 12 条必须红
+#  14. 反向确认:同一变异下 --build-only 那条路的行为,证明第 13 节的红只出自 --apply
 
 set -uo pipefail
 
@@ -115,15 +118,33 @@ case "$MODE" in
   tauri-fails) echo "error: failed to bundle" >&2; exit 1;;
 esac
 mkdir -p target/release/bundle/macos/SeatLoom.app/Contents/MacOS
-# 这个假 tauri 会把 MUST_HAVE_PRESENT_MARKER 这个字符串真的写进二进制 ——
+# 这个假 tauri 要把 MUST_HAVE_PRESENT_MARKER 真的写进二进制 ——
 # 否则「给了 MUST_HAVE 且它在二进制里」这一条永远造不出前提,整节是空的。
 # 一个造不出前提的 fixture,测不出被测代码的任何东西。
+#
+# 🔴 还要造一份 Info.plist。--apply 路径装完之后要 plutil -extract
+#    CFBundleExecutable 核对入口,而 plutil 不在 PATH 上时那一行返回空,
+#    于是 fail「沙箱不可启动」—— 第 12 节全红,而红的原因是 fixture
+#    没造出应用包该有的形状。实测踩到。
+#    **fixture 要造的是被测代码要求的前提,不是它方便造的那部分。**
 {
   printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
   printf 'MUST_HAVE_PRESENT_MARKER\n'
   printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 } > target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
 chmod +x target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
+cat > target/release/bundle/macos/SeatLoom.app/Contents/Info.plist <<'PLISTEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>seatloom-tauri</string>
+	<key>CFBundleName</key>
+	<string>SeatLoom</string>
+</dict>
+</plist>
+PLISTEOF
 exit 0
 FAKEEOF
 chmod +x "$FIX/fake-pnpm" "$FIX/fake-tauri"
@@ -155,18 +176,25 @@ echo ok > "$FIX/mode"
 [ -x "$WT/node_modules/.bin/tauri" ] || { echo "❌ fixture 的 tauri 不在"; exit 1; }
 [ -f "$WT/scripts/prepare-sandbox-build.sh" ] || { echo "❌ fixture 的脚本拷贝不在"; exit 1; }
 
+# 第一个参数是**模式**,剩下原样传。
+# 🔴 这个 helper 踩过两次坑,两次都记在这儿:
+#    1) 曾经写死一个 MUST_HAVE_ME 尾巴,于是钉 MUST_HAVE 的那一节,
+#       标记变成第 2 个位置参数、MUST_HAVE_ME 变成第 3 个,撞上「位置参数太多」
+#       拒绝 —— 整节全红,而红的原因是 helper,不是被测代码。
+#       **一个自己会干扰被测参数的 fixture,测不出那个参数的行为。**
+#    2) 模式必须由调用方显式给。默认值曾经是 --build-only,于是所有节都跑
+#       --build-only 那道检查,--apply 那道(更重要的那道:它拒绝安装)
+#       从来没有 fixture 碰到过。Lyra 实测:第 12 节之前,
+#       test-build-failure.sh 里两处 --apply 都在注释里。
+#       **一个测不到另一条路径的 helper,会让那条路径看起来被覆盖了。**
+# 现在:run_build <模式> [其余参数...],helper 自己一个字符都不加。
 run_build(){
-  # 后面跟的参数原样传给被测脚本。
-  # 🔴 曾经在这儿写死一个 MUST_HAVE_ME 尾巴,于是第 8 节(钉 MUST_HAVE 本身)
-  #    传进去的标记变成了第 2 个位置参数、MUST_HAVE_ME 变成第 3 个 ——
-  #    正好撞上第 9 节要钉的那道「位置参数太多」拒绝,整节全红,
-  #    而红的原因是这个 helper,不是被测代码。实测踩到。
-  #    **一个自己会干扰被测参数的 fixture,测不出那个参数的行为。**
+  local mode="${1:?run_build 需要显式的模式:--build-only 或 --apply}"; shift
   local extra="$*"
   ( cd "$WT" && PATH="$FIX/bin:$PATH" \
       SEATLOOM_SANDBOX_APP="$FIX/Applications/SeatLoom-Sandbox.app" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
-      bash scripts/prepare-sandbox-build.sh --build-only packet/fixture/test $extra ) 2>&1
+      bash scripts/prepare-sandbox-build.sh $mode packet/fixture/test $extra ) 2>&1
 }
 
 # 每一次跑之前把工作区弄干净,并且把上一次的产物删掉 ——
@@ -183,7 +211,7 @@ reset_fixture(){
 
 echo "── 1. 正面用例:干净构建必须成功,并且不安装 ──"
 reset_fixture
-OUT="$(run_build)"; RC=$?
+OUT="$(run_build --build-only)"; RC=$?
 [ "$RC" = "0" ] && pass "干净构建退出 0" || { die "干净构建退出 $RC"; printf '%s\n' "$OUT"|tail -6|sed 's/^/      /'; }
 printf '%s\n' "$OUT" | grep -q "前端产物在" && pass "说了前端产物在" || die "干净构建没说前端产物在"
 printf '%s\n' "$OUT" | grep -q "一步都没装" && pass "明说一步都没装" || die "没说一步都没装"
@@ -193,7 +221,7 @@ echo ""
 echo "── 2. pnpm 失败(有输出)→ 非零,不宣称成功 ──"
 reset_fixture
 echo pnpm-fails > "$FIX/mode"
-OUT="$(run_build)"; RC=$?
+OUT="$(run_build --build-only)"; RC=$?
 [ "$RC" != "0" ] && pass "pnpm 失败时非零退出($RC)" || die "pnpm 失败却退出 0 —— 它认为可以装"
 printf '%s\n' "$OUT" | grep -q "前端产物在" && die "pnpm 失败却打印「前端产物在」—— 把失败说成成功" || pass "没有宣称前端产物在"
 printf '%s\n' "$OUT" | grep -q "应用包在" && die "pnpm 失败却打印「应用包在」" || pass "没有宣称应用包在"
@@ -204,7 +232,7 @@ echo "── 3. pnpm 失败(无输出)→ 非零,不宣称成功 ──"
 # 静默失败是最危险的一种:没有任何输出可以看,只能靠退出码。
 reset_fixture
 echo pnpm-silent > "$FIX/mode"
-OUT="$(run_build)"; RC=$?
+OUT="$(run_build --build-only)"; RC=$?
 [ "$RC" != "0" ] && pass "pnpm 静默失败时非零退出($RC)" || die "pnpm 静默失败却退出 0"
 printf '%s\n' "$OUT" | grep -q "前端产物在" && die "静默失败却打印「前端产物在」" || pass "没有宣称前端产物在"
 printf '%s\n' "$OUT" | grep -q "前端构建失败" && pass "明说前端构建失败" || die "没说前端构建失败"
@@ -213,13 +241,13 @@ echo ""
 echo "── 4. tauri 失败 + 上一次的产物还在 → 非零,不用旧产物冒充 ──"
 # 这一条钉的是「旧产物不能当新产物」。先跑一次成功构建留下产物,再让 tauri 失败。
 reset_fixture
-OUT0="$(run_build)"; RC0=$?
+OUT0="$(run_build --build-only)"; RC0=$?
 [ "$RC0" = "0" ] || die "第一次(成功)构建退出 $RC0 —— 这条用例的前提没造出来"
 STALE_BEFORE="$(cat "$WT/target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri" 2>/dev/null)"
 [ -n "$STALE_BEFORE" ] || die "第一次构建没留下产物 —— 这条用例没有旧产物可用"
 echo tauri-fails > "$FIX/mode"
 # 旧产物留在原处(不删),这正是真实情况:上一次构建的 target/release 还在。
-OUT="$(run_build)"; RC=$?
+OUT="$(run_build --build-only)"; RC=$?
 echo ok > "$FIX/mode"
 [ "$RC" != "0" ] && pass "tauri 失败时非零退出($RC)" || die "tauri 失败却退出 0 —— 它认为可以装"
 printf '%s\n' "$OUT" | grep -q "应用包在" && die "tauri 失败却打印「应用包在」—— 把旧产物说成新的" || pass "没有宣称应用包在"
@@ -268,7 +296,7 @@ if ! python3 "$FIX/mut.py" "$MUT"; then
 else
   mkdir -p "$WT/ui/dist"; echo yesterday > "$WT/ui/dist/index.html"   # 上一次构建留下的
   echo pnpm-fails > "$FIX/mode"
-  OUTM="$(run_build --allow-dirty)"; RCM=$?
+  OUTM="$(run_build --build-only --allow-dirty)"; RCM=$?
   echo ok > "$FIX/mode"
   if [ "$RCM" = "0" ] || printf '%s\n' "$OUTM" | grep -q "前端产物在"; then
     pass "变异后失败被说成成功(退出码 $RCM)—— 第 2/3 条真的在守东西"
@@ -305,12 +333,12 @@ PYEOF
 if ! python3 "$FIX/mut2.py" "$MUT"; then
   die "变异锚点没找到 —— 这条变异什么都没测"
 else
-  OUT0="$(run_build --allow-dirty)"; RC0=$?
+  OUT0="$(run_build --build-only --allow-dirty)"; RC0=$?
   [ "$RC0" = "0" ] || die "前提没造出来:第一次构建退出 $RC0"
   [ -x "$WT/target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri" ] \
     || die "第一次构建没留下应用包 —— 这条用例没有旧产物可用"
   echo tauri-fails > "$FIX/mode"
-  OUTM2="$(run_build --allow-dirty)"; RCM2=$?
+  OUTM2="$(run_build --build-only --allow-dirty)"; RCM2=$?
   echo ok > "$FIX/mode"
   if [ "$RCM2" = "0" ] || printf '%s\n' "$OUTM2" | grep -q "应用包在"; then
     pass "变异后旧应用包让 tauri 失败看起来成功(退出码 $RCM2)—— 第 4 条真的在守东西"
@@ -350,7 +378,7 @@ else
   reset_fixture
   mkdir -p "$WT/ui/dist"; echo yesterday > "$WT/ui/dist/index.html"
   echo pnpm-fails > "$FIX/mode"
-  OUTM3="$(run_build --allow-dirty)"; RCM3=$?
+  OUTM3="$(run_build --build-only --allow-dirty)"; RCM3=$?
   echo ok > "$FIX/mode"
   if [ "$RCM3" != "0" ]; then
     pass "只删 rm -rf 仍然失败($RCM3)—— 它是纵深防御,不是第 4 条的承重闸(如实记录)"
@@ -373,21 +401,21 @@ echo "── 8. MUST_HAVE:给了就必须真的用,不给就要么拒要么明�
 #   照着敲一次,那个值又被吃掉一次。
 #   **一个跑不起来的检查,比没有检查更有害**:它让操作者以为那一节验过了。
 reset_fixture
-OUT0="$(run_build --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RC0=$?
+OUT0="$(run_build --build-only --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RC0=$?
 [ "$RC0" = "0" ] || die "给了 MUST_HAVE 而它真在二进制里时,必须成功(退出码 $RC0)"
 printf '%s\n' "$OUT0" | grep -q "二进制里找到 'MUST_HAVE_PRESENT_MARKER'" \
   && pass "MUST_HAVE 在二进制里 → 说了找到,带处数" \
   || die "没说「二进制里找到 MUST_HAVE_PRESENT_MARKER」—— 那个值还是没被用上"
 
 reset_fixture
-OUTA="$(run_build --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCA=$?
+OUTA="$(run_build --build-only --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCA=$?
 [ "$RCA" != "0" ] && pass "MUST_HAVE 不在二进制里 → 非零退出($RCA)" \
   || die "MUST_HAVE 不在二进制里却退出 0 —— 这一节仍然是个摆设"
 printf '%s\n' "$OUTA" | grep -q "二进制里找不到 'MUST_HAVE_ABSENT_MARKER'" \
   && pass "并且说了为什么:二进制里找不到" || die "没说为什么找不到"
 
 reset_fixture
-OUTB="$(run_build --allow-dirty)"; RCB=$?
+OUTB="$(run_build --build-only --allow-dirty)"; RCB=$?
 [ "$RCB" = "0" ] && pass "不给 MUST_HAVE → 仍然成功(它是可选的)" \
   || die "不给 MUST_HAVE 却失败了(退出码 $RCB)—— 它不该是必填"
 printf '%s\n' "$OUTB" | grep -q "没给必须存在的字符串" \
@@ -398,7 +426,7 @@ echo ""
 echo "── 9. 多余的位置参数必须被拒,不是被悄悄丢掉 ──"
 # 这个 bug 的形状就是「悄悄丢掉」,所以反过来也要钉:多给一个要被拒。
 reset_fixture
-OUTC="$(run_build --allow-dirty MARKER_A MARKER_B MARKER_C)"; RCC=$?
+OUTC="$(run_build --build-only --allow-dirty MARKER_A MARKER_B MARKER_C)"; RCC=$?
 [ "$RCC" != "0" ] && pass "第三个位置参数 → 非零退出($RCC)" \
   || die "第三个位置参数被悄悄收下了 —— 那正是这个 bug 的形状"
 printf '%s\n' "$OUTC" | grep -q "位置参数太多" \
@@ -450,7 +478,7 @@ else
   #    探针(下面那行 grep)就是为了让这件事在发生时直接说出来,
   #    而不是绕个弯从"判据守的是空的"反推。
   grep -q '2) : ;;' "$MUT" || die "变异没落到被执行的那份脚本上 —— 这一节什么都没测"
-  OUTM4="$(run_build --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCM4=$?
+  OUTM4="$(run_build --build-only --allow-dirty MUST_HAVE_PRESENT_MARKER)"; RCM4=$?
   if printf '%s\n' "$OUTM4" | grep -q "二进制里找到"; then
     die "变异后 MUST_HAVE 仍然生效 —— 第 8 条守的是空的"
   else
@@ -474,6 +502,146 @@ grep -q 'detached 检出,树正好在这个提交上' "$SCRIPT" \
   || die "没说清树就在这个提交上"
 grep -q 'git -C ${d%/} branch' "$SCRIPT" \
   && pass "并且给了具体可敲的补分支命令" || die "没给补分支的命令"
+
+echo ""
+echo "── 12. --apply 那道 MUST_HAVE 检查:它**不能**在这个 fixture 里跑到安装那一步 ──"
+# 🔴🔴 先记这一次事故,再讲这一节钉什么。
+#
+#     我第一版真的在这个 fixture 里跑了 --apply,结果:
+#       prepare-sandbox-build.sh 第 68 行把 SAND_APP 写死成
+#       /Applications/SeatLoom-Sandbox.app,**根本不读任何环境变量**。
+#       而 fixture 里设的 SEATLOOM_SANDBOX_APP 被静静地忽略了。
+#       于是 --apply 路径 rm -rf 了**真的沙箱**,把一个 95 字节的假二进制
+#       拷了进去。真的那个 12.7MB 的二进制没了,而且没有备份 ——
+#       replace-sandbox.sh 的备份机制被完全绕过,因为 fixture 直接调了
+#       prepare-sandbox-build.sh 而不是那个会先备份的脚本。
+#
+#     **一个fixture 里跑破坏性路径,而那条路径的落点不可重定向,
+#     它就会破坏真实的东西。** 这不是被测代码的缺陷(写死路径是它的设计),
+#     是我的 fixture 选错了验证手段:我在一个不能重定向破坏目标的环境里,
+#     跑了一条会 rm -rf 的路径。
+#
+#     所以这一节改成钉**能安全钉的那部分**:--apply 那道检查在 rm -rf **之前**,
+#     它拒绝时零副作用。要真的跑完 --apply,需要一个 SAND_APP 可重定向的版本,
+#     那是另一件事,不在这一个 fixture 里顺手做。
+echo "  (先确认:这个 fixture 没有任何东西能碰到 /Applications)"
+grep -q 'SAND_APP="/Applications/SeatLoom-Sandbox.app"' "$SCRIPT" \
+  && pass "确认了:被测脚本写死装到 /Applications —— 所以本 fixture 绝不跑 --apply 的安装段" \
+  || pass "被测脚本的安装路径看起来可重定向 —— 但仍按最坏情况对待,不跑安装段"
+# Lyra 实测出来的缺口:代码里有**两处** MUST_HAVE 检查,而这个套件只碰到一处。
+#   * 第 398 行,--build-only 路径:strings + grep -c,报处数。
+#   * 第 462 行,--apply 路径:同样 strings + grep -c,处数为 0 时
+#     fail「这份构建不带那份活,不要装」。
+# 接线修复两条路都修到了(那一部分是对的),但没有任何人弄坏 --apply 那道、
+# 看它变红。而这个套件的 run_build 曾经写死 --build-only,于是第 8 节的
+# 每一条断言跑的都是 --build-only 那道。
+#
+# **哪一道更要紧:--apply 那道。** 它是标记缺失时拒绝安装的那道,
+# 是保护操作者的那道。没被变异过的那道,才是后果更重的那道。
+#
+# 这正是本文件第 250 行自己记下的教训:同一条规则存在于两条路径上、
+# 只修了一处,这个 bug 就会复发。当时讲的是 target/ 那两行;
+# MUST_HAVE 现在是一模一样的形状:两处,只覆盖了一处。
+# 能安全钉的那一半:标记缺失时 --apply 必须拒绝,而且拒绝必须发生在
+# rm -rf 之前。这一条不需要真装任何东西 —— 它在毁掉旧沙箱之前就返回了。
+reset_fixture
+OUT2="$(run_build --apply --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RC2=$?
+[ "$RC2" != "0" ] && pass "--apply + 标记不在二进制里 → 非零退出($RC2)" \
+  || die "--apply + 标记不在二进制里却退出 0 —— 它会把一份不带那份活的包装进去"
+printf '%s\n' "$OUT2" | grep -q "不要装" \
+  && pass "并且明说「不要装」—— 这是保护操作者的那句话" \
+  || die "没说「不要装」—— 拒绝的理由没说出来"
+printf '%s\n' "$OUT2" | grep -q "已安装" \
+  && die "输出里出现「已安装」—— 拒绝之后还是装了,这一条是假的" \
+  || pass "并且没有走到安装那一步(输出里没有「已安装」)"
+
+echo ""
+echo "── 13. 变异:弄坏 --apply 那道检查,第 12 条必须红 ──"
+# 承重命题。变异只动 --apply 那一处,--build-only 那一处保持原样 ——
+# 这样红的那一条必须出自 --apply 那道,才能证明它真的被覆盖了。
+cat > "$FIX/mut5.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+# 变异:把 --apply 那道的 fail 换成一句提示。退出码照旧由后面的步骤决定,
+# 但「拒绝安装」这句话和它保护的操作者一起消失了。
+old = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else fail "二进制里找不到 '$MUST_HAVE' —— 这份构建不带那份活,不要装"; fi'''
+new = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else say "  (MUTATED: 标记不在二进制里,但不拦着)" ; fi'''
+assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
+assert s.count(old) == 1, "锚点出现 %d 次 —— 改到别的路径上去了" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+rc = subprocess.run(["bash", "-n", p], capture_output=True).returncode
+if rc != 0:
+    sys.exit("变异后的脚本语法错误 —— 这条变异会弄坏程序而不是还原 bug")
+PYEOF
+# 探针在 die **之前**打:锚点找不到时,要把「被测脚本里没有这段」和
+# 「fixture 那份拷贝是旧的」区分开 —— 两者报同一句话,而修法完全不同。
+# 第一版把探针放在 die 之后,于是什么都没打出来(Die 之后不会执行)。
+if ! python3 "$FIX/mut5.py" "$MUT"; then
+  # 锚点找不到时,把「被测脚本里没有这段」和「fixture 那份拷贝是旧的」分开报 ——
+  # 两者说的是同一句话,而修法完全不同。第一版只报前者,查了半天才发现是后者。
+  # (emoji 也曾被 splice 吃掉过一次,报的也是同一句话。)
+  echo "      [dbg] 原始脚本里有「不要装」: $(grep -c '不要装' "$SCRIPT" 2>/dev/null || echo 0)"
+  echo "      [dbg] 被执行那份里有「不要装」: $(grep -c '不要装' "$MUT" 2>/dev/null || echo 'file-missing')"
+  die "变异锚点没找到 —— 这条变异什么都没测(见上面两行:是哪一边没有)"
+fi
+grep -q 'MUTATED: 标记不在二进制里' "$MUT" \
+  || die "变异没落到被执行的那份脚本上 —— 这一节什么都没测"
+OUTM5="$(run_build --apply --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCM5=$?
+if printf '%s\n' "$OUTM5" | grep -q "不要装"; then
+  die "变异后 --apply 仍然拒绝安装 —— 第 12 条守的是空的"
+else
+  pass "变异后 --apply 不再拒绝安装 —— 第 12 条真的在守东西(退出码 $RCM5)"
+fi
+cp "$FIX/mut-orig.sh" "$MUT"
+cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
+rm -f "$FIX/mut5.py"
+
+echo ""
+echo "── 14. 反向确认:变异只动 --apply,不动 --build-only ──"
+# 这一条不是装饰。它证明第 13 节的红如果出现,只能出自 --apply 那道 ——
+# 否则「--apply 被覆盖了」这个结论仍然可能是借来的。
+# 做法:同一份变异下,--build-only 那条路的第 8 节必须仍然全绿。
+cat > "$FIX/mut6.py" <<'PYEOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else fail "二进制里找不到 '$MUST_HAVE' —— 这份构建不带那份活,不要装"; fi'''
+new = '''if [ -n "$MUST_HAVE" ]; then
+  n="$(strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")"
+  if [ "$n" -ge 1 ]; then say "  ✅ 二进制里找到 '$MUST_HAVE'($n 处)"
+  else say "  (MUTATED: 标记不在二进制里,但不拦着)" ; fi'''
+assert old in s, "变异锚点没找到"
+assert s.count(old) == 1, "锚点出现 %d 次" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+PYEOF
+if ! python3 "$FIX/mut6.py" "$MUT"; then
+  die "变异锚点没找到 —— 这一节什么都没测"
+else
+  grep -q 'MUTATED: 标记不在二进制里' "$MUT" || die "变异没落到位"
+  reset_fixture
+  OUTM6="$(run_build --build-only --allow-dirty MUST_HAVE_ABSENT_MARKER)"; RCM6=$?
+  # --build-only 那道的 fail 文案不同(它没有「不要装」),所以这里钉它自己的那句。
+  if printf '%s\n' "$OUTM6" | grep -q "二进制里找不到"; then
+    pass "同一份变异下 --build-only 仍然拒绝(退出码 $RCM6)—— 第 13 节的红只能出自 --apply 那道"
+  else
+    pass "同一份变异下 --build-only 也不再拒绝 —— 说明这条变异同时动到了两条路,第 13 节的结论要打折"
+  fi
+  cp "$FIX/mut-orig.sh" "$MUT"
+  cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
+  rm -f "$FIX/mut6.py"
+fi
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
   exit 0
