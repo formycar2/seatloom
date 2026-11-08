@@ -133,6 +133,18 @@ mkdir -p target/release/bundle/macos/SeatLoom.app/Contents/MacOS
 #    于是 fail「沙箱不可启动」—— 第 12 节全红,而红的原因是 fixture
 #    没造出应用包该有的形状。实测踩到。
 #    **fixture 要造的是被测代码要求的前提,不是它方便造的那部分。**
+# 二进制里的提交标签取自 fixture 自己那个一次性仓库的 HEAD ——
+# 这是**被测量的**,不是装饰:被测脚本会把二进制里的提交和工作区 HEAD 比,
+# 不一致就拒绝说「这份构建不是这棵树」。所以这里不能换成一个人造的标记串。
+#
+# 🔴 代价要说清楚:这个提交号在 fixture 仓库里是真的,在主仓库里**不存在**。
+#    Lyra 因此无法从 /Applications 里那份假二进制判断它是真是假。
+#    **一份取自看不见的仓库的真标签,和一份编造的标签一样误导。**
+#    两难是真的,不是可以靠换个字符串解决的:这个值既要「和工作区 HEAD 一致」
+#    (否则第 2/3 节造不出前提),又「在主仓库里不可验证」。
+#    真正的解在别处 —— 让 fixture 的仓库建在**主仓库的一个真实提交**上,
+#    这样标签既可验证、又和工作区 HEAD 一致。那是一次 fixture 结构的改动,
+#    不在这条派单的范围内,记在这里,不假装已经解决。
 {
   printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
   printf 'MUST_HAVE_PRESENT_MARKER\n'
@@ -1088,6 +1100,77 @@ PYEOF
   rm -f "$FIX/mutA.py" "$FIX/mutB.py" "$FIX/mutC.py"
 done
 
+
+echo ""
+echo "  ── 组合 4 **在变异之下** ──"
+# Lyra 的 disp-qPfPgpcXldYZ9SiX8Ksvw 说到了点子上,而且她说的那个缺口是真的:
+#
+#   第 17 节的变异是经 run_build 跑的,而 run_build **显式设了**
+#   SEATLOOM_SANDBOX_APP 指向 fixture 里的临时路径。也就是说,
+#   变异确实被容纳了 —— 但被容纳的是「目标被重定向」那一条,
+#   **不是**「目标回落到脚本认定的真实路径」那一条。
+#
+#   而组合 4 恰好是后者:它故意不设 SEATLOOM_SANDBOX_APP,
+#   让目标回落到 REAL_SANDBOX_PATH。基线时第二条件拦得住它;
+#   一旦把闸删掉,它就一路走到 rm -rf。
+#
+#   **到目前为止,「组合 4 在变异之下」这一条从来没被测过。**
+#   前面每一次修都证了基线,留下变异去碰真实路径 —— 这正是
+#   Flux 的 FAIL 和 Lyra 的派单共同指出的那个结构性缺口:
+#   证明闸有效的那一条,和把闸拆掉之后会走到真实路径的那一条,是同一条。
+#
+# 所以这里显式跑它:删掉那道闸,并且用组合 4 的环境(不设 SEATLOOM_SANDBOX_APP,
+# 三个路径全部指向 fixture 里的替身)。前后各取一次指纹。
+#
+# 判据有两条,第二条才是承重的:
+#   1. 闸真的被删掉了(输出里没有那句拒绝)
+#   2. 真实 /Applications 一个字节都没动 —— 因为目标回落到的是 fixture 里的替身
+# mut7.py 在上面那个循环里被 rm 掉了,这里自己再造一份 ——
+# 第一版直接引用它,报的是「can't open file .../mut7.py」,
+# 于是这一条什么都没测,而它看起来像一条失败的断言。
+# **一个引用了已被删掉的工具的检查,和不检查是两件事:它假装检查过。**
+cat > "$FIX/mut7.py" <<'MUT7_EOF'
+import sys, subprocess
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = """if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
+     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+   && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then"""
+assert old in s, "变异锚点没找到"
+assert s.count(old) == 1, "锚点出现 %d 次" % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, "if false; then", 1))
+if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
+    sys.exit("变异后的脚本语法错误")
+MUT7_EOF
+echo "     (删掉整道闸,然后用组合 4 的环境跑:目标不设,回落到 fixture 里的替身)"
+REAL_BEFORE="$(fingerprint_real)"
+reset_fixture
+python3 "$FIX/mut7.py" "$MUT" || die "第 17 节的变异没落上"
+OUTQ="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP PATH="$FIX/bin:$PATH" \
+  SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
+  SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/protected-a.app" \
+  SEATLOOM_REAL_SANDBOX_PATH="$FIX/Applications/real-sandbox-standin.app" \
+  bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RCQ=$?
+if printf '%s\n' "$OUTQ" | grep -q "拒绝在受保护路径上"; then
+  die "闸已经删了却还在拒绝 —— 这一条什么都没测"
+else
+  pass "闸确实被删掉了(没有那句拒绝,退出码 $RCQ)"
+fi
+# 承重的那一条:变异 + 组合 4 的环境,真实路径必须一个字节都没动。
+check_contained "组合 4 在变异之下" "$REAL_BEFORE"
+# 并且把目标落在哪儿说出来,让「容纳」不是一句空话:
+# 它必须是 fixture 里的替身,不能是真实路径。
+if printf '%s\n' "$OUTQ" | grep -qE '/Applications/SeatLoom-Sandbox\.app'; then
+  echo "      [dbg] 输出里提到了真实路径:"
+  printf '%s\n' "$OUTQ" | grep -n '/Applications/SeatLoom-Sandbox\.app' | head -3 | sed 's/^/        /'
+  die "变异之下的组合 4 提到了真实路径 —— 它随时可能落到那儿"
+else
+  pass "变异之下的组合 4 全程没提真实路径(目标回落到 fixture 里的替身)"
+fi
+cp "$FIX/mut-orig.sh" "$MUT"
+cmp -s "$MUT" "$SCRIPT" || die "第 17 节的变异没还原干净"
+rm -f "$FIX/mut7.py"
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "✅ 全部通过"
