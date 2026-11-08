@@ -803,6 +803,59 @@ else
 fi
 
 echo ""
+echo "── 15c. 同一个目录的**不同写法**,闸必须全部拒绝 ──"
+# Flux 的 ev-H6JDfr293lSV2kabLi8WI(PASS)量到了下一个洞,而且它和前面那些是同一类:
+# 判据比的是一份**表示**,而被保护的是**所指的那个东西**。
+#
+# 他实测(全部在 /tmp 里):同一个目录用六种写法指过去 ——
+#   末尾斜杠、. 组件、双斜杠、裸 .、Contents/.. 、大小写不同 ——
+# 其中五种被 `[ a = b ]` 判为「不相等」,全部走到安装,全部毁掉目标。
+# 他还在 /tmp 里复现了「同一目录加不加末尾斜杠,字符串不相等、磁盘上是同一个」。
+# macOS 默认文件系统大小写不敏感,所以小写变体是同一类。
+#
+# **这一节就是那个「缺失的断言」—— 它的缺席让同一类漏洞活过了五次修复。**
+# 没有它,下一次修复会留下下一种写法。
+#
+# 判据只有一条,而且必须是行为上的:换成另一种写法指向**同一个**替身目录,
+# 闸仍然拒绝。不是 grep 代码里有没有 realpath ——
+# **一道只在源码里找字符串的检查,和没有检查一样**(第 19 节已经钉过这件事)。
+echo "  (替身目录 $REAL ,用各种写法指过去)"
+for SPELL_SUFFIX in "/" "/." "/./" "//" "/Contents/.." "/Contents/MacOS/.."; do
+  SPELL="${REAL}${SPELL_SUFFIX}"
+  OUTS="$(run_case "$SPELL" "$PROT_A")"; RCS=$?
+  if [ "$RCS" != "0" ] && printf '%s\n' "$OUTS" | grep -q "拒绝在受保护路径上"; then
+    pass "写法 '${SPELL_SUFFIX}' → 仍然拒绝(同一个目录,不是同一个字符串)"
+  else
+    die "写法 '${SPELL_SUFFIX}' 没拒(退出码 $RCS)—— 这就是 Flux 量到的那个洞:字符串不相等,磁盘上是同一个,于是 rm -rf 落在真的沙箱上"
+    printf '%s\n' "$OUTS" | tail -4 | sed 's/^/      /'
+  fi
+done
+# 大小写变体单独一条:它只在大小写不敏感的文件系统上成立,
+# 所以它是**有条件的** —— 在一个大小写敏感的卷上这条不成立,那不算失败。
+# 但这里必须说出来它是什么,不能假装它无条件成立。
+LOWER="$(printf '%s' "$REAL" | tr 'A-Z' 'a-z')"
+if [ "$LOWER" != "$REAL" ]; then
+  OUTC="$(run_case "$LOWER" "$PROT_A")"; RCC=$?
+  if [ "$RCC" != "0" ] && printf '%s\n' "$OUTC" | grep -q "拒绝在受保护路径上"; then
+    pass "大小写变体 → 仍然拒绝(macOS 默认大小写不敏感,所以这是同一个目录)"
+  else
+    # 只在真的能通过小写路径读到同一个目录时才算失败,否则是卷的差异。
+    if [ "$(readlink -f -- "$LOWER" 2>/dev/null)" = "$(readlink -f -- "$REAL" 2>/dev/null)" ]; then
+      die "小写变体 '$LOWER' 指向同一个目录,却没拒 —— 大小写这个洞还开着"
+    else
+      pass "大小写变体在这个卷上不是同一个目录(大小写敏感),跳过 —— 有条件成立,不假装无条件成立"
+    fi
+  fi
+fi
+# 反方向也必须钉住:一个**真的**不同的路径,闸必须放行。
+# 否则这一节可以用「什么都拒」来通过,而那会让 fixture 一步都跑不了。
+OUTD="$(run_case "$TGT_B" "$PROT_A")"; RCD=$?
+if printf '%s\n' "$OUTD" | grep -q "拒绝在受保护路径上"; then
+  die "一个真正不同的路径也被拒了 —— 这一节可以用「什么都拒」蒙过去"
+else
+  pass "一个真正不同的路径仍然放行(所以上面那几条不是在「什么都拒」)"
+fi
+echo ""
 echo "── 15b. 显式确认能放行,而且只放行被点名的那一种 ──"
 # 没有这一条,那道闸就成了永远绕不过的墙,操作者会被迫去改代码。
 reset_fixture
@@ -885,8 +938,9 @@ cat > "$FIX/mut7.py" <<'PYEOF'
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = '''if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
-     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+old = '''if { [ "${CANON_FAILED:-0}" = "1" ] \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${REAL_CANON:-$REAL_SANDBOX_PATH}" \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${PROT_CANON:-$PROTECTED_PATH}"; } \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
 new = '''if false; then'''
 assert old in s, "变异锚点没找到 —— 这条变异没有测到任何东西"
@@ -1045,8 +1099,9 @@ PYEOF
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = '''if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
-     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+old = '''if { [ "${CANON_FAILED:-0}" = "1" ] \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${REAL_CANON:-$REAL_SANDBOX_PATH}" \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${PROT_CANON:-$PROTECTED_PATH}"; } \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
 new = '''if false; then'''
 assert old in s, "锚点没找到"
@@ -1133,8 +1188,9 @@ cat > "$FIX/mut7.py" <<'MUT7_EOF'
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = """if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
-     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
+old = """if { [ "${CANON_FAILED:-0}" = "1" ] \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${REAL_CANON:-$REAL_SANDBOX_PATH}" \\
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${PROT_CANON:-$PROTECTED_PATH}"; } \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then"""
 assert old in s, "变异锚点没找到"
 assert s.count(old) == 1, "锚点出现 %d 次" % s.count(old)

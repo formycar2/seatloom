@@ -92,6 +92,63 @@ MAIN_APP="${SEATLOOM_MAIN_APP:-/Applications/SeatLoom.app}"
 #     **一个可配置的判据配一个写死的调用点,等于没修。**
 REAL_SANDBOX_PATH="${SEATLOOM_REAL_SANDBOX_PATH:-/Applications/SeatLoom-Sandbox.app}"
 SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}"
+
+# ---- 把路径**解析之后再比**,不是比字符串 ----
+# 🔴 Flux 的 ev-H6JDfr293lSV2kabLi8WI(PASS)量到了下一个洞,而且它和
+#    前面那一个是同一类:判据比的是一份**表示**,而被保护的是**所指的那个东西**。
+#
+#    原来这里是 `[ "$SAND_APP" = "$REAL_SANDBOX_PATH" ]` —— bash 的字符串比较。
+#    文件系统不比较字符串。同一个目录有六种写法都指向它:
+#      末尾斜杠、. 组件、双斜杠、裸 .、Contents/.. 、以及大小写不同
+#      (macOS 默认文件系统大小写不敏感)。
+#    Flux 实测:六种写法里五种被这道闸判为「不相等」,全部走到安装,全部毁掉了目标。
+#    他还在 /tmp 里复现了「同一目录加不加末尾斜杠,作为字符串不相等、在磁盘上是同一个」。
+#
+#    所以这里改成**解析之后**再比。readlink -f 一次把符号链接、大小写、
+#    斜杠、. 和 .. 全部归一 —— 这是唯一的归一化入口,不是逐个补丁。
+#    前五次修的都是「比哪些字符串」,没有一次修「比的是字符串」这件事本身。
+#
+#    **比所指,不比表示。**
+canon_path(){
+  # 把一个路径解析成规范形式。打印到 stdout,失败返回非零、什么都不打印。
+  local p="$1" out cur base parent acc=""
+  # 相对路径按当前目录解开,否则 readlink 的行为取决于 cwd,不可比。
+  case "$p" in
+    /*) ;;
+    *)  p="$PWD/$p" ;;
+  esac
+  # 存在的路径 readlink -f 一次搞定。
+  if out="$(readlink -f -- "$p" 2>/dev/null)" && [ -n "$out" ]; then
+    printf '%s\n' "$out"; return 0
+  fi
+  # 还不存在的路径(全新安装目标就是这种):往上走到最近的、存在的祖先,
+  # 解析它,再把剩下的名字接回去。这样 /Applications/X.app/foo 这种
+  # 「真实路径底下的新东西」也能被正确解析 —— 它虽然不等于受保护路径,
+  # 但 rm -rf 它仍然是破坏,见下面的 under_path。
+  cur="$p"
+  while :; do
+    if out="$(readlink -f -- "$cur" 2>/dev/null)" && [ -n "$out" ]; then
+      printf '%s\n' "$out$acc"; return 0
+    fi
+    base="${cur##*/}"; parent="${cur%/*}"
+    [ "$parent" = "$cur" ] && break          # 到根了
+    [ -z "$parent" ] && break
+    [ -n "$base" ] && acc="/$base$acc"
+    cur="$parent"
+  done
+  return 1
+}
+# 目标是否落在受保护路径**里面**(而不只是相等)。
+# rm -rf 一个受保护目录底下的子目录,同样是破坏,所以这也得拦。
+under_path(){
+  # $1 = 已解析的目标;$2 = 已解析的受保护路径
+  local t="$1" p="$2"
+  [ "$t" = "$p" ] && return 0
+  case "$t" in
+    "$p"/*) return 0 ;;
+  esac
+  return 1
+}
 # 第二道闸:目标就是真实 /Applications 路径时,破坏性动作要显式确认。
 # 没有这个确认,--apply 直接拒绝 —— 宁可拒绝一次真的安装,
 # 也不能让一个忘了改路径的调用把真的沙箱删掉。
@@ -537,8 +594,18 @@ PROTECTED_PATH="${SEATLOOM_PROTECTED_SANDBOX_PATH:-/Applications/SeatLoom-Sandbo
 #
 #     REAL_SANDBOX_PATH 的定义在文件靠前处(和 SAND_APP 放在一起),因为
 #     SAND_APP 的默认值要读它。这里只留判据本身。
-if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \
-     || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \
+#
+#     🔴 现在比的是**解析之后的**路径。解析不出来时按「是受保护的」处理 ——
+#        一道分不清自己护着什么的闸,正确的动作是拦,不是放。
+SAND_APP_CANON="$(canon_path "$SAND_APP")" || SAND_APP_CANON=""
+REAL_CANON="$(canon_path "$REAL_SANDBOX_PATH")" || REAL_CANON=""
+PROT_CANON="$(canon_path "$PROTECTED_PATH")" || PROT_CANON=""
+if [ -z "$SAND_APP_CANON" ] || [ -z "$REAL_CANON" ] || [ -z "$PROT_CANON" ]; then
+  CANON_FAILED=1
+fi
+if { [ "${CANON_FAILED:-0}" = "1" ] \
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${REAL_CANON:-$REAL_SANDBOX_PATH}" \
+     || under_path "${SAND_APP_CANON:-$SAND_APP}" "${PROT_CANON:-$PROTECTED_PATH}"; } \
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then
   fail "拒绝在受保护路径上做破坏性动作:受保护的是 $PROTECTED_PATH,而目标正是它。
 
