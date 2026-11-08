@@ -81,7 +81,17 @@ MAIN_APP="${SEATLOOM_MAIN_APP:-/Applications/SeatLoom.app}"
 #
 #     现在两个脚本用同一种写法。下面还有第二道闸:目标是真实路径时,
 #     破坏性路径要求显式确认(见 ALLOW_REAL_SANDBOX)。
-SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"
+#
+# 🔴 这个「脚本认定的真实路径」本身可配置,而且必须定义在 SAND_APP **之前**。
+#     Flux 的 ev-R6oKNQif6drf1b_857MJd FAIL 说到了根子上:前面三次修的都是
+#     「判据」,没修「调用点」。SAND_APP 的默认值原来写死成真实路径,
+#     于是重定向 SEATLOOM_REAL_SANDBOX_PATH 而不重定向 SAND_APP 时,
+#     目标回落到**真实**路径,而 REAL_SANDBOX_PATH 是临时路径,两者不相等
+#     → 第二条件闭嘴;PROTECTED_PATH 也是临时的 → 第一条件也闭嘴;闸整个沉默。
+#     2026-11-08 我自己就这么把真的沙箱又毁了一次。
+#     **一个可配置的判据配一个写死的调用点,等于没修。**
+REAL_SANDBOX_PATH="${SEATLOOM_REAL_SANDBOX_PATH:-/Applications/SeatLoom-Sandbox.app}"
+SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}"
 # 第二道闸:目标就是真实 /Applications 路径时,破坏性动作要显式确认。
 # 没有这个确认,--apply 直接拒绝 —— 宁可拒绝一次真的安装,
 # 也不能让一个忘了改路径的调用把真的沙箱删掉。
@@ -524,7 +534,9 @@ PROTECTED_PATH="${SEATLOOM_PROTECTED_SANDBOX_PATH:-/Applications/SeatLoom-Sandbo
 #
 #     重定向照旧能用:临时目标 + 被重定向的 PROTECTED_PATH 仍然放行,
 #     否则 fixture 一步都跑不了。
-REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
+#
+#     REAL_SANDBOX_PATH 的定义在文件靠前处(和 SAND_APP 放在一起),因为
+#     SAND_APP 的默认值要读它。这里只留判据本身。
 if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \
      || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then

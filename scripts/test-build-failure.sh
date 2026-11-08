@@ -216,10 +216,18 @@ APP_SUM_BEFORE="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom
 run_build(){
   local mode="${1:?run_build 需要显式的模式:--build-only 或 --apply}"; shift
   local extra="$*"
+  # 🔴 SEATLOOM_REAL_SANDBOX_PATH 也必须指到 fixture 里。Flux 的
+  #    ev-R6oKNQif6drf1b_857MJd FAIL 说到了根子上:前面三次修的都是判据,
+  #    不是调用点。组合 4 故意不设 SEATLOOM_SANDBOX_APP,于是目标回落到
+  #    脚本认定的「真实路径」; 那个值若还是真的,变异去掉第二条件之后
+  #    rm -rf 就落在真的沙箱上。改成可配置之后,回落的是 fixture 里的路径,
+  #    组合 4 走的是同一条代码路径,而变异碰不到任何真实的东西。
+  #    **默认值在真实使用里仍然是真实路径,这一点单独有断言盯着。**
   ( cd "$WT" && PATH="$FIX/bin:$PATH" \
       SEATLOOM_SANDBOX_APP="$FIX/Applications/scratch-sandbox.app" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
       SEATLOOM_PROTECTED_SANDBOX_PATH="$FIX/Applications/protected-sandbox.app" \
+      SEATLOOM_REAL_SANDBOX_PATH="$FIX/Applications/real-sandbox-standin.app" \
       bash scripts/prepare-sandbox-build.sh $mode packet/fixture/test $extra ) 2>&1
 }
 
@@ -705,18 +713,26 @@ echo "── 15. 那道闸必须两个条件都独立生效,四种组合全查 �
 # 这一节把四种组合全钉住。判据只用 --apply ——
 # 🔴 --build-only 在第 442 行就 exit 0 了,根本走不到这道闸,
 #    所以一个 --build-only 的探针证明不了关于它的任何事。
-REAL="/Applications/SeatLoom-Sandbox.app"
+# 🔴 三个「路径」全都是 fixture 里的替身,一个真的都没有。
+#    REAL 现在是「脚本认定的真实路径」的替身 —— 组合 4 故意不设
+#    SEATLOOM_SANDBOX_APP,目标回落到它; 那个值一旦还是真的,
+#    去掉第二条件的变异就会让 rm -rf 落在真的沙箱上(Flux 就是这样
+#    把它毁了第四次)。回落的是替身,组合 4 走的就是同一条代码路径,
+#    而任何变异都碰不到真实的东西。
+REAL="$FIX/Applications/real-sandbox-standin.app"
 FAKE_REAL="$FIX/Applications/stand-in-for-real.app"
 PROT_A="$FIX/Applications/protected-a.app"
 TGT_B="$FIX/Applications/target-b.app"
 
 run_case(){
   # $1 = SAND_APP 的值(空串表示不设这个变量);$2 = PROTECTED_PATH 的值
+  # 两条路径都重定向:目标和受保护路径,以及「脚本认定的真实路径」的默认值。
   local tgt="$1" prot="$2" out rc
   if [ -z "$tgt" ]; then
     out="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP PATH="$FIX/bin:$PATH" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
       SEATLOOM_PROTECTED_SANDBOX_PATH="$prot" \
+      SEATLOOM_REAL_SANDBOX_PATH="$REAL" \
       bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
       packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; rc=$?
   else
@@ -724,6 +740,7 @@ run_case(){
       SEATLOOM_SANDBOX_APP="$tgt" \
       SEATLOOM_MAIN_APP="$FIX/Applications/SeatLoom.app" \
       SEATLOOM_PROTECTED_SANDBOX_PATH="$prot" \
+      SEATLOOM_REAL_SANDBOX_PATH="$REAL" \
       bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
       packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; rc=$?
   fi
@@ -812,10 +829,42 @@ printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-' \
 # 行为上的证明:上面第 15 节已经用「同一命令、不同变量值、不同结果」验过了。
 # 这里再补一条静态的,防止有人把默认值改成一个同样写死的临时路径
 # (那样第 15 节会因为两边都放行而悄悄失效)。
-DEFAULT_TARGET="$(printf '%s\n' "$CODE_ONLY" | grep -o 'SEATLOOM_SANDBOX_APP:-[^}]*' | head -1 | sed 's/.*:-//')"
-[ "$DEFAULT_TARGET" = "/Applications/SeatLoom-Sandbox.app" ] \
-  && pass "默认值仍然是那个真实路径(所以第 15 节的拒绝一条是真的在拦)" \
-  || die "默认值被改成了 '$DEFAULT_TARGET' —— 第 15 节两条都会放行,那道闸就测不出来了"
+# 🔴 sed 's/.*:-//' 是贪心的,会把路径一起吃掉 —— 第一版取出来是
+#    '$REAL_SANDBOX_PATH',于是这条断言报「默认值被改了」,而代码一个字没动。
+#    改成按变量名精确取,只留 :- 到 } 之间的那一段。
+DEFAULT_TARGET="$(printf '%s\n' "$CODE_ONLY" | grep -o 'SEATLOOM_SANDBOX_APP:-[^}]*' | head -1 | sed 's/^SEATLOOM_SANDBOX_APP:-//')"
+# 🔴 这里钉的是**调用点**,不是判据。SAND_APP 的默认值现在读 REAL_SANDBOX_PATH,
+#    这正是 Flux 的 FAIL 要的那个修法:判据可配,调用点也读同一个可配置的值,
+#    于是重定向一次,目标和「脚本认定的真实路径」一起动,不会各自漂移。
+#    如果这里又写回死字面量,重定向 REAL_SANDBOX_PATH 时目标会留在真实路径上,
+#    而 REAL_SANDBOX_PATH 是临时的 → 两边不相等 → 两道闸全闭嘴 → rm -rf 落真的。
+#    2026-11-08 我自己就这么又毁了一次真的沙箱。
+# 这个变量是**被测脚本**里的名字,测试脚本自己没有它 ——
+# 第一版写成 $REAL_SANDBOX_PATH,于是 set -u 直接报 unbound 把整条断言炸了。
+# **一个引用被自己环境里不存在的名字的断言,连它要检查什么都没说到。**
+[ "$DEFAULT_TARGET" = "\$REAL_SANDBOX_PATH" ] \
+  && pass "SAND_APP 的默认值读 REAL_SANDBOX_PATH(不是写死的字面量 —— 否则重定向一次,两边各漂各的,闸全闭嘴)" \
+  || die "SAND_APP 的默认值被改成了 '$DEFAULT_TARGET' —— 它必须是 \$REAL_SANDBOX_PATH,否则真实路径无法被重定向,而变异会 rm -rf 到真的沙箱上"
+# 🔴 新增的那个默认值(脚本认定的「真实路径」)同样必须是真实路径。
+#    Flux 的 FAIL 根因是:判据一直可配,调用点(这个字面量)不可配,
+#    于是组合 4 回落的永远是真实路径,变异去掉闸就 rm -rf 到真的沙箱上。
+#    现在它可配了,但**默认值不能跟着变成临时路径** —— 否则真实使用再也不拦,
+#    而这道闸唯一的真实用户就是真实使用。这里把两边都钉住。
+DEFAULT_REAL="$(printf '%s\n' "$CODE_ONLY" | grep -o 'SEATLOOM_REAL_SANDBOX_PATH:-[^}]*' | head -1 | sed 's/^SEATLOOM_REAL_SANDBOX_PATH:-//')"
+[ "$DEFAULT_REAL" = "/Applications/SeatLoom-Sandbox.app" ] \
+  && pass "「脚本认定的真实路径」默认值也仍然是真实路径(所以第 15 节组合 4 的拒绝也是真的在拦)" \
+  || die "SEATLOOM_REAL_SANDBOX_PATH 的默认值被改成了 '$DEFAULT_REAL' —— 真实使用里第二条件就废了"
+# 行为上再钉一次:一个环境变量都不给的时候,必须拒绝,而且拒绝文案里说的是真实路径。
+OUT_REAL_DEFAULT="$(cd "$WT" && env -u SEATLOOM_SANDBOX_APP -u SEATLOOM_PROTECTED_SANDBOX_PATH \
+  -u SEATLOOM_REAL_SANDBOX_PATH -u SEATLOOM_ALLOW_REAL_SANDBOX PATH="$FIX/bin:$PATH" \
+  bash scripts/prepare-sandbox-build.sh --apply --allow-dirty \
+  packet/fixture/test MUST_HAVE_PRESENT_MARKER 2>&1)"; RC_REAL=$?
+if [ "$RC_REAL" != "0" ] && printf '%s\n' "$OUT_REAL_DEFAULT" | grep -q "/Applications/SeatLoom-Sandbox.app"; then
+  pass "一个环境变量都不给 → 仍然拒绝,并且拒绝文案点的是真实路径"
+else
+  die "真实使用的默认行为变了(退出码 $RC_REAL)。见它自己的话:"
+  printf '%s\n' "$OUT_REAL_DEFAULT" | tail -5 | sed 's/^/      /'
+fi
 
 echo ""
 echo "── 17. 变异:把那道闸删掉,第 15 条必须红 ──"
@@ -824,8 +873,7 @@ cat > "$FIX/mut7.py" <<'PYEOF'
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = '''REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
-if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
+old = '''if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
      || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
 new = '''if false; then'''
@@ -874,37 +922,39 @@ APP_SUM_NOW="$(find /Applications/SeatLoom-Sandbox.app /Applications/SeatLoom.ap
   || die "真实应用的指纹变了 —— 有东西写到了 fixture 外面。之前 ${APP_SUM_BEFORE:-<未记录>},现在 $APP_SUM_NOW"
 
 echo ""
-echo "── 19. 变异:把 SAND_APP 改回写死,第 16 条的静态检查必须红 ──"
+echo "── 19. 变异:把 SAND_APP 的调用点改掉,第 16 条的静态检查必须红 ──"
 # 承重命题,而且是这一次的核心:第 16 条的静态检查**必须只读代码**。
 #
 # 实测(在 /tmp 的丢弃副本里做的,不在这个 fixture 里):
-#   把第 84 行改回 SAND_APP="/Applications/SeatLoom-Sandbox.app" 之后,
-#   * 旧的 grep -q 在整个文件里找 → **PASS**。因为第 73 行的注释里
+#   把 SAND_APP 那一行改成写死之后,
+#   * 旧的 grep -q 在整个文件里找 → **PASS**。因为注释里
 #     也写着同样一行,是它把那道检查救活的。
 #   * 改成先剥注释再 grep   → **FAILS**。抓住了。
 #   一道会在注释上通过的检查,和没有检查一样。这一节就是把那个事实钉住。
-cat > "$FIX/mut8.py" <<'PYEOF'
+#
+# 🔴 变异的形状必须跟着代码走。这一节原来是「改回那个写死的字面量」,
+#    但现在那一行已经变成读 $REAL_SANDBOX_PATH 了(正是 Flux 的 FAIL 要的修法),
+#    于是「预期两处」的前提没了 —— 那个字面量在文件里只剩注释里那一处。
+#    变异改成:把调用点改成一个**别的**写死临时路径。
+#    它测的是同一件事(那道检查读的是代码,不是注释),而不再依赖一个
+#    已经不在代码里的字符串。**一个变异的前提没了还照样跑,
+#    它报的红或绿都是假的。**
+cat > "$FIX/mut8.py" <<'MUT8_EOF'
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"'
-assert s.count(old) == 2, "预期两处(代码一行 + 注释一行),实际 %d 处" % s.count(old)
-lines = s.split('\n')
-for i, l in enumerate(lines):
-    if l.strip().startswith('SAND_APP=') and old in l:
-        lines[i] = l.replace(old, 'SAND_APP="/Applications/SeatLoom-Sandbox.app"')
-        break
-else:
-    sys.exit("没找到代码那一行 —— 变异会落到注释上,那什么都测不到")
-open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}"'
+assert s.count(old) == 1, "代码里应当只有一处 SAND_APP 的调用点,实际 %d 处" % s.count(old)
+new = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/tmp/some-hardcoded-scratch-path}"'
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
 if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
     sys.exit("变异后的脚本语法错误")
-PYEOF
+MUT8_EOF
 if ! python3 "$FIX/mut8.py" "$MUT"; then
   die "变异锚点没找到 —— 这条变异什么都没测"
 fi
 CODE_ONLY="$(sed 's/^[[:space:]]*//' "$MUT" | grep -v '^#' | grep -v '^$')"
-if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-'; then
+if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}"'; then
   die "变异后第 16 条的静态检查仍然 PASS —— 它读到了注释,不是代码"
 else
   pass "变异后第 16 条的静态检查 FAILS —— 它真的在读代码(注释救不了它)"
@@ -913,9 +963,6 @@ cp "$FIX/mut-orig.sh" "$MUT"
 cmp -s "$MUT" "$SCRIPT" || die "变异没还原干净"
 rm -f "$FIX/mut8.py"
 
-echo ""
-
-echo ""
 echo "── 20. 每一次变异前后各取一次真实路径的指纹 ──"
 # Flux 的 ev-Uo-kcMx0L_wS3xQNCnnrm 指出:第 18 节只在**全部跑完之后**比一次指纹。
 # 于是一条破坏性的变异虽然最后会被发现,但发现时已经晚了 —— 报的是
@@ -986,8 +1033,7 @@ PYEOF
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = '''REAL_SANDBOX_PATH="/Applications/SeatLoom-Sandbox.app"
-if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
+old = '''if { [ "$SAND_APP" = "$REAL_SANDBOX_PATH" ] \\
      || [ "$SAND_APP" = "$PROTECTED_PATH" ]; } \\
    && [ "${SEATLOOM_ALLOW_REAL_SANDBOX:-}" != "1" ]; then'''
 new = '''if false; then'''
@@ -1017,22 +1063,16 @@ PYEOF
 import sys, subprocess
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/Applications/SeatLoom-Sandbox.app}"'
-assert s.count(old) == 2, "预期两处(代码 + 注释),实际 %d 处" % s.count(old)
-lines = s.split('\n')
-for i, l in enumerate(lines):
-    if l.strip().startswith('SAND_APP=') and old in l:
-        lines[i] = l.replace(old, 'SAND_APP="/Applications/SeatLoom-Sandbox.app"')
-        break
-else:
-    sys.exit("没找到代码那一行")
-open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+old = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}"'
+assert s.count(old) == 1, "代码里应当只有一处 SAND_APP 的调用点,实际 %d 处" % s.count(old)
+new = 'SAND_APP="${SEATLOOM_SANDBOX_APP:-/tmp/some-hardcoded-scratch-path}"'
+open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
 if subprocess.run(["bash", "-n", p], capture_output=True).returncode != 0:
     sys.exit("变异后的脚本语法错误")
 PYEOF
       python3 "$FIX/mutC.py" "$MUT" || die "第 19 节的变异没落上"
       CODE_ONLY="$(sed 's/^[[:space:]]*//' "$MUT" | grep -v '^#' | grep -v '^$')"
-      if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-'; then
+      if printf '%s\n' "$CODE_ONLY" | grep -q 'SAND_APP="${SEATLOOM_SANDBOX_APP:-$REAL_SANDBOX_PATH}'; then
         die "变异后第 16 条的静态检查仍然 PASS"
       else
         pass "变异生效(第 16 条的静态检查 FAILS —— 它读的是代码,注释救不了它)"
