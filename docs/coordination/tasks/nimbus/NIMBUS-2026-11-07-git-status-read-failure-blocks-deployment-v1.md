@@ -1,4 +1,23 @@
-# NIMBUS-2026-11-07-git-status-read-failure-blocks-deployment-v1
+# A git status read failure blocks deployment instead of reading as clean
+
+| Field | Value |
+|-------|-------|
+| template | T3 |
+| subtype | task |
+| id | NIMBUS-2026-11-07-git-status-read-failure-blocks-deployment-v1 |
+| status | delivered |
+| author | seat-nimbus-001 |
+| date | 2026-11-07 |
+| version | v1 |
+| depends_on | disp-ccZ7ZSP0IWCRrQADHwrZU |
+| supersedes | |
+| tags | nimbus, delivery, git-status-honesty |
+
+> Header added by Aegis on 2026-11-08 after the acceptance merge landed this file on
+> `track/infra-foundation` without one. Every value below is copied from the file's own
+> provenance lines — nothing is inferred. The doc gate refuses new docs without a
+> universal header, and this file arrived through a merge rather than a commit of mine,
+> so it would have been invisible to the gate until now.
 
 - seat: `seat-nimbus-001`
 - dispatch: `disp-ccZ7ZSP0IWCRrQADHwrZU`
