@@ -307,9 +307,55 @@ impl From<DispatchRejection> for MemoryRejection {
                 value: String::new(),
                 expected: "pass project_id or set SEATLOOM_PROJECT_ID; a project is never fabricated",
             },
+            // DispatchRejection::Db already carries the rendered chain from
+            // `dispatch::db`; passing it through unchanged keeps one rendering.
             other => MemoryRejection::Db(other.to_string()),
         }
     }
+}
+
+/// Render a DB error with its full source chain, for the memory tools.
+///
+/// `tokio_postgres::Error`'s `Display` is the near-useless string "db error";
+/// the SQLSTATE, constraint name and server message live in its source chain.
+/// Without walking it, every foreign-key, CHECK and constraint failure in the
+/// memory path reached the caller as the literal `db error` — so a CORRECT
+/// refusal looked like a broken tool. Vela hit exactly that on 2026-11-09
+/// (two FK violations sixty seconds apart, both surfaced as `db error`) and
+/// concluded the write path itself was broken. The write path was refusing
+/// correctly; the reason never reached the caller.
+///
+/// The same walk already existed for the dispatch tools (`dispatch.rs`'s `db`).
+/// This is that shape applied here: one rule, one place. A refusal the caller
+/// cannot act on is a refusal that gets reported as a broken tool.
+///
+/// Only the `Postgres` variant carries a `tokio_postgres::Error` with a source
+/// chain; the others are domain errors that already name their own reason, so
+/// they are rendered as-is rather than walked.
+pub(crate) fn db_chain(e: &DbError) -> String {
+    match e {
+        DbError::Postgres(pg) => pg_chain(pg),
+        other => other.to_string(),
+    }
+}
+
+/// The source-chain walk itself, over a `tokio_postgres::Error`.
+fn pg_chain(e: &tokio_postgres::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(src) = cur {
+        parts.push(src.to_string());
+        if let Some(pg) = src.downcast_ref::<tokio_postgres::error::DbError>() {
+            parts.push(format!(
+                "sqlstate={} constraint={:?} table={:?}",
+                pg.code().code(),
+                pg.constraint(),
+                pg.table()
+            ));
+        }
+        cur = std::error::Error::source(src);
+    }
+    parts.join(" | ")
 }
 
 impl From<DbError> for MemoryRejection {
@@ -851,5 +897,225 @@ mod tests {
         }
         .to_string()
         .contains("l0 | l1 | l2"));
+    }
+
+    // =====================================================================
+    // The DB rejection message, in both directions.
+    //
+    // The defect this pins: `MemoryRejection::Db` was built from
+    // `tokio_postgres::Error::to_string()`, whose `Display` is the near-useless
+    // string `db error`. Every foreign-key, CHECK and constraint failure in the
+    // memory path therefore reached the caller as that literal, so a CORRECT
+    // refusal looked like a broken tool. Vela hit exactly that on 2026-11-09:
+    // two FK violations sixty seconds apart (postgres log lines naming
+    // `memories_topic_id_fkey` and `memories_l2_document_id_fkey`), both
+    // surfaced to her as `db error`, and she concluded the write path itself
+    // was broken. The write path was refusing correctly. The reason never
+    // reached her.
+    //
+    // The fix is the source-chain walk that already existed for the dispatch
+    // tools (`dispatch::db`), applied here. Both directions are proven, because
+    // the wrong fix is the one that swallows a refusal so the call appears to
+    // succeed — and that fix would be indistinguishable from this one if only
+    // the message were checked.
+    // =====================================================================
+
+    /// A pool for the scratch database, or a **panic** explaining how to supply
+    /// one. Deliberately not `Option` and not a skip: a silently skipped test is
+    /// green while measuring nothing.
+    async fn probe_pool() -> deadpool_postgres::Pool {
+        use seatloom_core::db::connection::{create_pool, DATABASE_URL_ENV};
+        let url = match std::env::var(DATABASE_URL_ENV) {
+            Ok(u) if !u.trim().is_empty() => u,
+            _ => panic!(
+                "{DATABASE_URL_ENV} is not set. These behavioural tests drive the real insert \
+                 and need a real PostgreSQL. Set it to a SCRATCH database, never the live \
+                 `seatloom` one."
+            ),
+        };
+        // Refuse the live database by NAME, not by inference.
+        let dbname = url.rsplit('/').next().unwrap_or("");
+        if dbname == "seatloom" || dbname.starts_with("seatloom?") {
+            panic!(
+                "REFUSING the live `seatloom` database for the memory-rejection tests — they \
+                 insert and delete rows. Point {DATABASE_URL_ENV} at a scratch database."
+            );
+        }
+        let pool =
+            create_pool().unwrap_or_else(|e| panic!("could not create a pool from {url}: {e}"));
+        let client = pool.get().await.expect("pool");
+        let has = client
+            .query_one("SELECT to_regclass('public.memories') IS NOT NULL", &[])
+            .await
+            .expect("to_regclass");
+        assert!(
+            has.get::<_, bool>(0),
+            "the scratch database has no public.memories table — apply the schema first"
+        );
+        pool
+    }
+
+    const PROBE_PROJECT: &str = "memref-probe-project";
+    /// Deliberately NOT created by `seed_scope`: writing a memory under it must
+    /// be refused by `memories_topic_id_fkey`.
+    const PROBE_MISSING_TOPIC: &str = "memref-probe-topic-does-not-exist";
+    const PROBE_LIVE_TOPIC: &str = "memref-probe-topic";
+
+    async fn seed_scope(pool: &deadpool_postgres::Pool) {
+        let mut client = pool.get().await.expect("pool");
+        let tx = client.transaction().await.expect("tx");
+        tx.execute(
+            "INSERT INTO projects (id, name, created_at, worker_budget_tokens, supervisor_budget_tokens) \
+              VALUES ($1, $2, now(), 1000, 1000) ON CONFLICT (id) DO NOTHING",
+            &[&PROBE_PROJECT, &"memref probe"],
+        )
+        .await
+        .expect("project");
+        // Column names read from the schema, not guessed: `topics` has
+        // `opened_at`, not `created_at`.
+        tx.execute(
+            "INSERT INTO topics (id, project_id, title, status, opened_by, opened_at) \
+              VALUES ($1, $2, $3, 'open', 'seat:seat-nimbus-001', now()) \
+              ON CONFLICT (id) DO NOTHING",
+            &[&PROBE_LIVE_TOPIC, &PROBE_PROJECT, &"memref probe topic"],
+        )
+        .await
+        .expect("topic");
+        tx.execute(
+            "DELETE FROM memories WHERE project_id = $1",
+            &[&PROBE_PROJECT],
+        )
+        .await
+        .expect("clear");
+        tx.commit().await.expect("commit");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_memory(
+        db: &SeatloomDb,
+        memory_id: &str,
+        topic_id: &str,
+        l0_summary: &str,
+        l2_ref_kind: &str,
+        l2_file_path: Option<&str>,
+    ) -> Result<(), DbError> {
+        db.insert_memory(
+            memory_id,
+            PROBE_PROJECT,
+            topic_id,
+            "a title",
+            &[],
+            l0_summary,
+            None,
+            l2_ref_kind,
+            None,
+            l2_file_path,
+            None,
+            "canonical_event",
+            "disp-Pca6m4qu1RERbP37cwlTL",
+            "fact",
+            "inferred",
+            None,
+            None,
+            None,
+            &[],
+            "seat:seat-nimbus-001",
+        )
+        .await
+    }
+
+    /// DIRECTION 1 — the required negative case. A write that must be refused IS
+    /// refused, and the refusal names the constraint and the table.
+    #[tokio::test]
+    #[ignore = "needs DATABASE_URL pointing at a SCRATCH database — run scripts/test-memory-rejection-message.sh"]
+    async fn a_refused_write_names_the_constraint_and_the_table() {
+        let pool = probe_pool().await;
+        seed_scope(&pool).await;
+        let db = SeatloomDb::new(pool.clone());
+
+        let err = write_memory(
+            &db,
+            "memref-probe-mem-missing-topic",
+            PROBE_MISSING_TOPIC,
+            "a summary for the missing-topic case",
+            "file",
+            Some("docs/coordination/probe.md"),
+        )
+        .await
+        .expect_err("an insert under a nonexistent topic must be refused");
+
+        let rendered = db_chain(&err);
+        let rejection = MemoryRejection::Db(rendered.clone());
+
+        assert!(
+            rendered.contains("memories_topic_id_fkey"),
+            "the refusal must name the constraint. Got: {rendered}"
+        );
+        assert!(
+            rendered.contains("memories"),
+            "the refusal must name the table. Got: {rendered}"
+        );
+        assert!(
+            rendered.contains("sqlstate="),
+            "the refusal must carry the SQLSTATE. Got: {rendered}"
+        );
+        assert_ne!(
+            rendered.trim(),
+            "db error",
+            "the caller must not receive the bare `db error` — that is the defect"
+        );
+        let msg = rejection.to_string();
+        assert!(
+            msg.contains("memories_topic_id_fkey"),
+            "the caller-visible message must name the constraint. Got: {msg}"
+        );
+        // A refusal that still inserts is worse than no refusal.
+        let n = pool
+            .get()
+            .await
+            .expect("pool")
+            .query_one(
+                "SELECT count(*) FROM memories WHERE id = 'memref-probe-mem-missing-topic'",
+                &[],
+            )
+            .await
+            .expect("count")
+            .get::<_, i64>(0);
+        assert_eq!(n, 0, "a refused write must not have inserted a row");
+    }
+
+    /// DIRECTION 2 — a write that should succeed still succeeds. Without this, a
+    /// change that turned every insert into a refusal would be
+    /// indistinguishable from the correct one.
+    #[tokio::test]
+    #[ignore = "needs DATABASE_URL pointing at a SCRATCH database — run scripts/test-memory-rejection-message.sh"]
+    async fn a_valid_write_still_succeeds() {
+        let pool = probe_pool().await;
+        seed_scope(&pool).await;
+        let db = SeatloomDb::new(pool.clone());
+
+        write_memory(
+            &db,
+            "memref-probe-mem-valid",
+            PROBE_LIVE_TOPIC,
+            "a summary for the valid case",
+            "file",
+            Some("docs/coordination/probe.md"),
+        )
+        .await
+        .expect("an insert under an existing topic with valid fields must succeed");
+
+        let n = pool
+            .get()
+            .await
+            .expect("pool")
+            .query_one(
+                "SELECT count(*) FROM memories WHERE id = 'memref-probe-mem-valid'",
+                &[],
+            )
+            .await
+            .expect("count")
+            .get::<_, i64>(0);
+        assert_eq!(n, 1, "the valid write must have landed");
     }
 }
