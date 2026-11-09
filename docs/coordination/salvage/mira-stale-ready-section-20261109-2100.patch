@@ -1,0 +1,393 @@
+diff --git a/ui/src/views/DispatchInboxView.tsx b/ui/src/views/DispatchInboxView.tsx
+index 53d89b1..69399c3 100644
+--- a/ui/src/views/DispatchInboxView.tsx
++++ b/ui/src/views/DispatchInboxView.tsx
+@@ -21,6 +21,7 @@ import { CanonicalEventDto, DispatchDto, DispatchDependencyDto, SeatDto } from '
+ import { eventToText } from '../app-v2/lib/eventText';
+ import AcceptanceSection from '../components/AcceptanceSection';
+ import OperatorDecisionSection from '../components/OperatorDecisionSection';
++import StaleReadySection from '../components/StaleReadySection';
+ 
+ // DispatchInboxView — the governed-dispatch (G19) seat inbox. Reads the live
+ // `dispatches` projection via cmd_list_dispatches. Mirrors the V1 AppShell
+@@ -1282,6 +1283,15 @@ const DispatchInboxView: React.FC = () => {
+                 to fix. Mounted here because this is the page the operator already
+                 opens to decide things — the first-screen structure is untouched. */}
+             <OperatorDecisionSection live={autoRefresh} />
++
++            {/* The THIRD obligation, and the one that was absent until
++                2026-11-09. The operator's actionable list lives in three tables;
++                this page read two of them. A dispatch that has been `ready` for
++                over 30 minutes with nobody claiming it is not work waiting for the
++                operator — it is the system failing to push, and it is framed that
++                way on purpose, copied from notify-operator.sh rather than
++                improved on. No backend change: the age is already on the wire. */}
++            <StaleReadySection live={autoRefresh} />
+           </div>
+         </div>
+       </div>
+diff --git a/ui/src/components/StaleReadySection.tsx b/ui/src/components/StaleReadySection.tsx
+new file mode 100644
+index 0000000..4394012
+--- /dev/null
++++ b/ui/src/components/StaleReadySection.tsx
+@@ -0,0 +1,172 @@
++// StaleReadySection — the third of the operator's three obligations.
++//
++// The operator's actionable list lives in THREE tables, and until this section
++// existed the interface read two of them: `acceptances` pending (AcceptanceSection)
++// and `operator_decisions` pending (OperatorDecisionSection). The third was absent
++// — dispatches that are `ready` and have been sitting there with nobody moving
++// them. Measured by Aegis 2026-11-09 (AEGIS-2026-11-09-2000): a grep for a staleness
++// threshold across AcceptanceSection.tsx and DispatchInboxView.tsx returned nothing.
++//
++// The rule is not invented here. `scripts/work-list.sh` implements exactly it, and
++// `scripts/notify-operator.sh` already did it correctly in the notification channel:
++//
++//   "有 N 张单躺了 30 分钟没人领" — "waker 停了,单子推不下去。
++//    这是系统问题,不是你的事,告知你一声。"
++//
++// That framing is copied verbatim in spirit and NOT improved on. A stale dispatch is
++// not the operator's task; it is evidence that the system stopped pushing. Showing it
++// as "work waiting for you" would make his number wrong, which is the same defect
++// class 020 fixed for acceptances vs decisions.
++//
++// No backend change: `cmd_list_dispatches` already takes a project_id, and
++// `DispatchDto` already carries `issued_at`. The staleness decision is a UI-side
++// computation against the clock, exactly as work-list.sh computes it against
++// `now() - interval '30 minutes'`.
++//
++// House rule, same as the other two sections: no mock stands in for a real dispatch
++// row. This section reads the same list the inbox reads.
++
++import React, { useEffect, useState } from 'react';
++import { AlertTriangle, Clock } from 'lucide-react';
++import { api } from '../lib/api';
++import { useDataStore } from '../stores/useDataStore';
++import type { DispatchDto } from '../lib/types-dto';
++
++/** The threshold, matching work-list.sh's STALL_MINUTES and the notification. */
++const STALE_AFTER_MINUTES = 30;
++
++export interface StaleReadySectionProps {
++  /** Poll on the same cadence as the inbox when true. */
++  live: boolean;
++}
++
++/**
++ * A dispatch that became ready more than STALE_AFTER_MINUTES ago.
++ *
++ * Only `ready` counts. `in_flight` means somebody picked it up; `done` means it
++ * finished; `blocked` means it is waiting on a declared dependency, which is not
++ * the same failure as nobody looking at it. Age alone never qualifies a row.
++ */
++export function isStaleReady(d: DispatchDto, now: number): boolean {
++  if (d.status !== 'ready') return false;
++  const issued = Date.parse(d.issuedAt);
++  if (Number.isNaN(issued)) return false;
++  return now - issued > STALE_AFTER_MINUTES * 60 * 1000;
++}
++
++const StaleReadySection: React.FC<StaleReadySectionProps> = ({ live }) => {
++  const activeProjectId = useDataStore((s) => s.activeProjectId);
++  const [stale, setStale] = useState<DispatchDto[] | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    if (!activeProjectId) return;
++    let cancelled = false;
++
++    const read = async () => {
++      try {
++        const rows = await api.listDispatches(activeProjectId, 500);
++        if (cancelled) return;
++        // Computed at read time, not at render time, so the number on screen and
++        // the rows behind it come from the same instant.
++        const now = Date.now();
++        setStale(rows.filter((d) => isStaleReady(d, now)));
++        setError(null);
++      } catch (e) {
++        // A failed read is not an empty list. Say so.
++        if (!cancelled) setError(String(e));
++      }
++    };
++
++    void read();
++    if (!live) return undefined;
++    const timer = setInterval(read, 15000);
++    return () => {
++      cancelled = true;
++      clearInterval(timer);
++    };
++  }, [activeProjectId, live]);
++
++  // Nothing to say yet, or a read that failed. Neither is "no stale dispatches".
++  if (error) {
++    return (
++      <div style={wrap}>
++        <div style={head}>
++          <AlertTriangle size={14} style={{ color: 'var(--sl-amber)' }} />
++          <span style={title}>读不到派单列表</span>
++        </div>
++        <div style={body}>
++          无法判断有没有派单躺了很久没人领。错误原文:{error}
++        </div>
++      </div>
++    );
++  }
++
++  if (stale === null) return null;
++
++  const count = stale.length;
++
++  return (
++    <div style={wrap}>
++      <div style={head}>
++        {count > 0 ? (
++          <AlertTriangle size={14} style={{ color: 'var(--sl-amber)' }} />
++        ) : (
++          <Clock size={14} style={{ color: 'var(--sl-ink-muted)' }} />
++        )}
++        <span style={title}>
++          {count > 0 ? `${count} 张单躺了 ${STALE_AFTER_MINUTES} 分钟没人领` : '没有单躺过 30 分钟'}
++        </span>
++      </div>
++
++      {count > 0 ? (
++        <>
++          {/* The framing copied from notify-operator.sh, deliberately not improved
++              on. This is a system symptom, not the operator's task. */}
++          <div style={body}>
++            waker 停了,单子推不下去。这是系统问题,不是你的事,告知你一声。
++          </div>
++          <ul style={list}>
++            {stale.map((d) => (
++              <li key={d.id} style={row}>
++                <span style={rowTitle}>{d.title}</span>
++                <span style={rowMeta}>
++                  {d.targetSeatId} · ready 于{' '}
++                  {Math.floor((Date.now() - Date.parse(d.issuedAt)) / 60000)} 分钟前
++                </span>
++              </li>
++            ))}
++          </ul>
++        </>
++      ) : (
++        /* The empty case must say something TRUE. "No dispatch has been ready for
++           more than 30 minutes" is a fact about the system and it is worth stating,
++           because a section that renders nothing when healthy looks identical to a
++           section that failed to load — and that is the same failure mode as a
++           check whose only result is green. */
++        <div style={body}>
++          每张 ready 的单都有人在动。这不是"没有活",是"没有东西卡住"。
++        </div>
++      )}
++    </div>
++  );
++};
++
++const wrap: React.CSSProperties = {
++  display: 'flex',
++  flexDirection: 'column',
++  gap: 6,
++  padding: '10px 12px',
++  border: '1px solid var(--sl-border)',
++  borderRadius: 'var(--sl-radius-sm)',
++  background: 'var(--sl-surface)',
++};
++const head: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 };
++const title: React.CSSProperties = { fontSize: 12, fontWeight: 700 };
++const body: React.CSSProperties = { fontSize: 11.5, lineHeight: 1.5, color: 'var(--sl-text-secondary)' };
++const list: React.CSSProperties = { margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 3 };
++const row: React.CSSProperties = { fontSize: 11.5 };
++const rowTitle: React.CSSProperties = { fontWeight: 600, marginRight: 6 };
++const rowMeta: React.CSSProperties = { color: 'var(--sl-text-tertiary)' };
++
++export default StaleReadySection;
+diff --git a/ui/src/components/StaleReadySection.test.tsx b/ui/src/components/StaleReadySection.test.tsx
+new file mode 100644
+index 0000000..b42f4ef
+--- /dev/null
++++ b/ui/src/components/StaleReadySection.test.tsx
+@@ -0,0 +1,181 @@
++// StaleReadySection — the third obligation, and its negative case.
++//
++// The whole value of this section is the DISCRIMINATION, not the rendering:
++// a dispatch that became ready 5 minutes ago must NOT appear; 31 minutes must;
++// in_flight and done must never appear regardless of age. A section that cannot
++// fail those cases is worse than no section, because it would put a number in
++// front of the operator that means nothing.
++//
++// And the empty case must say something true. Measured both directions: populated
++// with a genuinely stale row, and empty when none are — because a section that only
++// ever shows the populated state cannot distinguish a broken query from a quiet
++// system. That is the same failure mode as a check whose only result is green.
++//
++// No mock stands in for a real dispatch row. The rows here are constructed the way
++// the backend constructs them (DispatchDto), and the only thing under test is the
++// age-and-status decision plus what the section says.
++
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import { cleanup, render, screen, waitFor } from '@testing-library/react';
++import React from 'react';
++import StaleReadySection, { isStaleReady, STALE_AFTER_MINUTES } from './StaleReadySection';
++import type { DispatchDto } from '../lib/types-dto';
++
++const MINUTE = 60 * 1000;
++const NOW = Date.parse('2026-11-09T20:00:00.000Z');
++
++const disp = (over: Partial<DispatchDto> = {}): DispatchDto => ({
++  id: 'disp-1',
++  targetSeatId: 'seat-nimbus-001',
++  issuedBy: 'human:supervisor',
++  projectId: 'seatloom',
++  title: '一条派单',
++  payload: {},
++  status: 'ready',
++  priority: 5,
++  issuedAt: new Date(NOW - 40 * MINUTE).toISOString(),
++  startedAt: null,
++  completedAt: null,
++  deps: [],
++  ...over,
++});
++
++/** The age decision, without a component. This is the part that must discriminate. */
++describe('isStaleReady — the decision, in both directions', () => {
++  it('a dispatch ready 5 minutes ago is NOT stale', () => {
++    // The negative case. Without it, "everything ready shows up" passes and the
++    // section is just another list of ready work.
++    expect(isStaleReady(disp({ issuedAt: new Date(NOW - 5 * MINUTE).toISOString() }), NOW)).toBe(
++      false,
++    );
++  });
++
++  it('a dispatch ready 31 minutes ago IS stale', () => {
++    expect(
++      isStaleReady(disp({ issuedAt: new Date(NOW - 31 * MINUTE).toISOString() }), NOW),
++    ).toBe(true);
++  });
++
++  it('the boundary itself: exactly at the threshold is not stale, one minute past is', () => {
++    // Strictly greater, matching `issued_at < now() - interval '30 minutes'`.
++    expect(
++      isStaleReady(disp({ issuedAt: new Date(NOW - STALE_AFTER_MINUTES * MINUTE).toISOString() }), NOW),
++    ).toBe(false);
++    expect(
++      isStaleReady(
++        disp({ issuedAt: new Date(NOW - (STALE_AFTER_MINUTES + 1) * MINUTE).toISOString() }),
++        NOW,
++      ),
++    ).toBe(true);
++  });
++
++  it('in_flight and done are never stale, however old', () => {
++    // Age alone never qualifies a row. in_flight means somebody picked it up;
++    // done means it finished. Both are older than the threshold here on purpose.
++    for (const status of ['in_flight', 'done', 'blocked']) {
++      expect(
++        isStaleReady(disp({ status, issuedAt: new Date(NOW - 500 * MINUTE).toISOString() }), NOW),
++        `${status} must not count as stale`,
++      ).toBe(false);
++    }
++  });
++
++  it('a malformed issued_at is not stale — an unparseable age is not a zero age', () => {
++    // `Date.parse` on a malformed string is NaN, and NaN comparisons are false. That
++    // happens to give the right answer here, but only by accident; this pins it so a
++    // future change to the comparison cannot silently make NaN count as stale.
++    expect(isStaleReady(disp({ issuedAt: 'not-a-timestamp' }), NOW)).toBe(false);
++  });
++});
++
++const state = vi.hoisted(() => ({
++  rows: [] as DispatchDto[],
++  throws: '',
++  calls: [] as string[],
++}));
++
++vi.mock('../lib/api', () => ({
++  api: {
++    listDispatches: vi.fn(async (projectId: string) => {
++      state.calls.push(projectId);
++      if (state.throws) throw new Error(state.throws);
++      return state.rows;
++    }),
++  },
++}));
++
++vi.mock('../stores/useDataStore', () => ({
++  useDataStore: (sel: (s: unknown) => unknown) => sel({ activeProjectId: 'seatloom' }),
++}));
++
++beforeEach(() => {
++  state.rows = [];
++  state.throws = '';
++  state.calls = [];
++});
++
++afterEach(() => {
++  cleanup();
++});
++
++describe('StaleReadySection — what the operator reads', () => {
++  it('shows a genuinely stale row, framed as a system problem and not his task', async () => {
++    state.rows = [disp({ id: 'disp-old', title: '躺了很久的单' })];
++
++    render(<StaleReadySection live={false} />);
++
++    await waitFor(() => expect(screen.getByText(/1 张单躺了 30 分钟没人领/)).toBeTruthy());
++    // The framing copied from notify-operator.sh, not improved on.
++    expect(screen.getByText(/这是系统问题,不是你的事/)).toBeTruthy();
++    // And the row itself, with its age — not just a count he cannot act on.
++    expect(screen.getByText('躺了很久的单')).toBeTruthy();
++    expect(screen.getByText(/40 分钟前/)).toBeTruthy();
++  });
++
++  it('does NOT show a dispatch that became ready 5 minutes ago', async () => {
++    // The negative case, end to end. If this regresses the operator sees a number
++    // for work that is simply in progress.
++    state.rows = [
++      disp({ id: 'disp-fresh', title: '刚就绪的单', issuedAt: new Date(NOW - 5 * MINUTE).toISOString() }),
++    ];
++
++    render(<StaleReadySection live={false} />);
++
++    // The section must reach the EMPTY state, and the empty state must say
++    // something true rather than render nothing.
++    await waitFor(() => expect(screen.getByText(/没有单躺过 30 分钟/)).toBeTruthy());
++    expect(screen.queryByText('刚就绪的单')).toBeNull();
++    expect(screen.getByText(/没有东西卡住/)).toBeTruthy();
++  });
++
++  it('the empty state is a statement, not a blank — a quiet system is not a broken one', async () => {
++    // Measured in both directions on purpose: the populated case is above, this is
++    // the empty one. A section that renders nothing when healthy is
++    // indistinguishable from one whose query failed.
++    state.rows = [];
++
++    render(<StaleReadySection live={false} />);
++
++    await waitFor(() => expect(screen.getByText(/没有单躺过 30 分钟/)).toBeTruthy());
++  });
++
++  it('a failed read says so — it never renders as "no stale dispatches"', async () => {
++    // The same distinction one level down: a read that failed is not an empty list.
++    state.throws = 'db unreachable';
++
++    render(<StaleReadySection live={false} />);
++
++    await waitFor(() => expect(screen.getByText(/读不到派单列表/)).toBeTruthy());
++    expect(screen.getByText(/db unreachable/)).toBeTruthy();
++    // And it must NOT claim the system is quiet.
++    expect(screen.queryByText(/没有单躺过 30 分钟/)).toBeNull();
++  });
++
++  it('reads the project the operator is in', async () => {
++    // Scoped like every other read on this page. An unscoped read here would show
++    // him another project's stalled dispatches.
++    state.rows = [];
++    render(<StaleReadySection live={false} />);
++    await waitFor(() => expect(state.calls).toContain('seatloom'));
++  });
++});
