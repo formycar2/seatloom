@@ -1,8 +1,8 @@
 diff --git a/crates/seatloom-mcp-emit/src/memory.rs b/crates/seatloom-mcp-emit/src/memory.rs
-index c40176b..096ed26 100644
+index c40176b..f0bb962 100644
 --- a/crates/seatloom-mcp-emit/src/memory.rs
 +++ b/crates/seatloom-mcp-emit/src/memory.rs
-@@ -307,11 +307,57 @@ impl From<DispatchRejection> for MemoryRejection {
+@@ -307,11 +307,58 @@ impl From<DispatchRejection> for MemoryRejection {
                  value: String::new(),
                  expected: "pass project_id or set SEATLOOM_PROJECT_ID; a project is never fabricated",
              },
@@ -41,7 +41,8 @@ index c40176b..096ed26 100644
 +/// The source-chain walk itself, over a `tokio_postgres::Error`.
 +fn pg_chain(e: &tokio_postgres::Error) -> String {
 +    let mut parts = vec![e.to_string()];
-+    let mut cur: Option<&(dyn std::error::Error + 'static)> = e.source();
++    let mut cur: Option<&(dyn std::error::Error + 'static)> =
++        std::error::Error::source(e);
 +    while let Some(src) = cur {
 +        parts.push(src.to_string());
 +        if let Some(pg) = src.downcast_ref::<tokio_postgres::error::DbError>() {
@@ -52,7 +53,7 @@ index c40176b..096ed26 100644
 +                pg.table()
 +            ));
 +        }
-+        cur = src.source();
++        cur = std::error::Error::source(src);
 +    }
 +    parts.join(" | ")
 +}
