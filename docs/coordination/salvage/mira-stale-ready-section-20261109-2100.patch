@@ -28,10 +28,10 @@ index 53d89b1..69399c3 100644
        </div>
 diff --git a/ui/src/components/StaleReadySection.tsx b/ui/src/components/StaleReadySection.tsx
 new file mode 100644
-index 0000000..4394012
+index 0000000..9d6c371
 --- /dev/null
 +++ b/ui/src/components/StaleReadySection.tsx
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,155 @@
 +// StaleReadySection — the third of the operator's three obligations.
 +//
 +// The operator's actionable list lives in THREE tables, and until this section
@@ -65,30 +65,10 @@ index 0000000..4394012
 +import { api } from '../lib/api';
 +import { useDataStore } from '../stores/useDataStore';
 +import type { DispatchDto } from '../lib/types-dto';
++import { isStaleReady, STALE_AFTER_MINUTES } from '../lib/staleReady';
 +
-+/** The threshold, matching work-list.sh's STALL_MINUTES and the notification. */
-+const STALE_AFTER_MINUTES = 30;
 +
-+export interface StaleReadySectionProps {
-+  /** Poll on the same cadence as the inbox when true. */
-+  live: boolean;
-+}
-+
-+/**
-+ * A dispatch that became ready more than STALE_AFTER_MINUTES ago.
-+ *
-+ * Only `ready` counts. `in_flight` means somebody picked it up; `done` means it
-+ * finished; `blocked` means it is waiting on a declared dependency, which is not
-+ * the same failure as nobody looking at it. Age alone never qualifies a row.
-+ */
-+export function isStaleReady(d: DispatchDto, now: number): boolean {
-+  if (d.status !== 'ready') return false;
-+  const issued = Date.parse(d.issuedAt);
-+  if (Number.isNaN(issued)) return false;
-+  return now - issued > STALE_AFTER_MINUTES * 60 * 1000;
-+}
-+
-+const StaleReadySection: React.FC<StaleReadySectionProps> = ({ live }) => {
++const StaleReadySection: React.FC<StaleReadySectionProps> = ({ live, now }) => {
 +  const activeProjectId = useDataStore((s) => s.activeProjectId);
 +  const [stale, setStale] = useState<DispatchDto[] | null>(null);
 +  const [error, setError] = useState<string | null>(null);
@@ -103,8 +83,7 @@ index 0000000..4394012
 +        if (cancelled) return;
 +        // Computed at read time, not at render time, so the number on screen and
 +        // the rows behind it come from the same instant.
-+        const now = Date.now();
-+        setStale(rows.filter((d) => isStaleReady(d, now)));
++        setStale(rows.filter((d) => isStaleReady(d, now ?? Date.now())));
 +        setError(null);
 +      } catch (e) {
 +        // A failed read is not an empty list. Say so.
@@ -119,7 +98,7 @@ index 0000000..4394012
 +      cancelled = true;
 +      clearInterval(timer);
 +    };
-+  }, [activeProjectId, live]);
++  }, [activeProjectId, live, now]);
 +
 +  // Nothing to say yet, or a read that failed. Neither is "no stale dispatches".
 +  if (error) {
@@ -129,9 +108,7 @@ index 0000000..4394012
 +          <AlertTriangle size={14} style={{ color: 'var(--sl-amber)' }} />
 +          <span style={title}>读不到派单列表</span>
 +        </div>
-+        <div style={body}>
-+          无法判断有没有派单躺了很久没人领。错误原文:{error}
-+        </div>
++        <div style={body}>无法判断有没有派单躺了很久没人领。错误原文:{error}</div>
 +      </div>
 +    );
 +  }
@@ -157,16 +134,14 @@ index 0000000..4394012
 +        <>
 +          {/* The framing copied from notify-operator.sh, deliberately not improved
 +              on. This is a system symptom, not the operator's task. */}
-+          <div style={body}>
-+            waker 停了,单子推不下去。这是系统问题,不是你的事,告知你一声。
-+          </div>
++          <div style={body}>waker 停了,单子推不下去。这是系统问题,不是你的事,告知你一声。</div>
 +          <ul style={list}>
 +            {stale.map((d) => (
 +              <li key={d.id} style={row}>
 +                <span style={rowTitle}>{d.title}</span>
 +                <span style={rowMeta}>
 +                  {d.targetSeatId} · ready 于{' '}
-+                  {Math.floor((Date.now() - Date.parse(d.issuedAt)) / 60000)} 分钟前
++                  {Math.floor(((now ?? Date.now()) - Date.parse(d.issuedAt)) / 60000)} 分钟前
 +                </span>
 +              </li>
 +            ))}
@@ -178,9 +153,7 @@ index 0000000..4394012
 +           because a section that renders nothing when healthy looks identical to a
 +           section that failed to load — and that is the same failure mode as a
 +           check whose only result is green. */
-+        <div style={body}>
-+          每张 ready 的单都有人在动。这不是"没有活",是"没有东西卡住"。
-+        </div>
++        <div style={body}>每张 ready 的单都有人在动。这不是"没有活",是"没有东西卡住"。</div>
 +      )}
 +    </div>
 +  );
@@ -197,8 +170,18 @@ index 0000000..4394012
 +};
 +const head: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 };
 +const title: React.CSSProperties = { fontSize: 12, fontWeight: 700 };
-+const body: React.CSSProperties = { fontSize: 11.5, lineHeight: 1.5, color: 'var(--sl-text-secondary)' };
-+const list: React.CSSProperties = { margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 3 };
++const body: React.CSSProperties = {
++  fontSize: 11.5,
++  lineHeight: 1.5,
++  color: 'var(--sl-text-secondary)',
++};
++const list: React.CSSProperties = {
++  margin: 0,
++  paddingLeft: 16,
++  display: 'flex',
++  flexDirection: 'column',
++  gap: 3,
++};
 +const row: React.CSSProperties = { fontSize: 11.5 };
 +const rowTitle: React.CSSProperties = { fontWeight: 600, marginRight: 6 };
 +const rowMeta: React.CSSProperties = { color: 'var(--sl-text-tertiary)' };
@@ -206,10 +189,10 @@ index 0000000..4394012
 +export default StaleReadySection;
 diff --git a/ui/src/components/StaleReadySection.test.tsx b/ui/src/components/StaleReadySection.test.tsx
 new file mode 100644
-index 0000000..b42f4ef
+index 0000000..437242f
 --- /dev/null
 +++ b/ui/src/components/StaleReadySection.test.tsx
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,189 @@
 +// StaleReadySection — the third obligation, and its negative case.
 +//
 +// The whole value of this section is the DISCRIMINATION, not the rendering:
@@ -230,7 +213,8 @@ index 0000000..b42f4ef
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 +import { cleanup, render, screen, waitFor } from '@testing-library/react';
 +import React from 'react';
-+import StaleReadySection, { isStaleReady, STALE_AFTER_MINUTES } from './StaleReadySection';
++import StaleReadySection from './StaleReadySection';
++import { isStaleReady, STALE_AFTER_MINUTES } from '../lib/staleReady';
 +import type { DispatchDto } from '../lib/types-dto';
 +
 +const MINUTE = 60 * 1000;
@@ -263,15 +247,18 @@ index 0000000..b42f4ef
 +  });
 +
 +  it('a dispatch ready 31 minutes ago IS stale', () => {
-+    expect(
-+      isStaleReady(disp({ issuedAt: new Date(NOW - 31 * MINUTE).toISOString() }), NOW),
-+    ).toBe(true);
++    expect(isStaleReady(disp({ issuedAt: new Date(NOW - 31 * MINUTE).toISOString() }), NOW)).toBe(
++      true,
++    );
 +  });
 +
 +  it('the boundary itself: exactly at the threshold is not stale, one minute past is', () => {
 +    // Strictly greater, matching `issued_at < now() - interval '30 minutes'`.
 +    expect(
-+      isStaleReady(disp({ issuedAt: new Date(NOW - STALE_AFTER_MINUTES * MINUTE).toISOString() }), NOW),
++      isStaleReady(
++        disp({ issuedAt: new Date(NOW - STALE_AFTER_MINUTES * MINUTE).toISOString() }),
++        NOW,
++      ),
 +    ).toBe(false);
 +    expect(
 +      isStaleReady(
@@ -334,7 +321,7 @@ index 0000000..b42f4ef
 +  it('shows a genuinely stale row, framed as a system problem and not his task', async () => {
 +    state.rows = [disp({ id: 'disp-old', title: '躺了很久的单' })];
 +
-+    render(<StaleReadySection live={false} />);
++    render(<StaleReadySection live={false} now={NOW} />);
 +
 +    await waitFor(() => expect(screen.getByText(/1 张单躺了 30 分钟没人领/)).toBeTruthy());
 +    // The framing copied from notify-operator.sh, not improved on.
@@ -348,10 +335,14 @@ index 0000000..b42f4ef
 +    // The negative case, end to end. If this regresses the operator sees a number
 +    // for work that is simply in progress.
 +    state.rows = [
-+      disp({ id: 'disp-fresh', title: '刚就绪的单', issuedAt: new Date(NOW - 5 * MINUTE).toISOString() }),
++      disp({
++        id: 'disp-fresh',
++        title: '刚就绪的单',
++        issuedAt: new Date(NOW - 5 * MINUTE).toISOString(),
++      }),
 +    ];
 +
-+    render(<StaleReadySection live={false} />);
++    render(<StaleReadySection live={false} now={NOW} />);
 +
 +    // The section must reach the EMPTY state, and the empty state must say
 +    // something true rather than render nothing.
@@ -366,7 +357,7 @@ index 0000000..b42f4ef
 +    // indistinguishable from one whose query failed.
 +    state.rows = [];
 +
-+    render(<StaleReadySection live={false} />);
++    render(<StaleReadySection live={false} now={NOW} />);
 +
 +    await waitFor(() => expect(screen.getByText(/没有单躺过 30 分钟/)).toBeTruthy());
 +  });
@@ -375,7 +366,7 @@ index 0000000..b42f4ef
 +    // The same distinction one level down: a read that failed is not an empty list.
 +    state.throws = 'db unreachable';
 +
-+    render(<StaleReadySection live={false} />);
++    render(<StaleReadySection live={false} now={NOW} />);
 +
 +    await waitFor(() => expect(screen.getByText(/读不到派单列表/)).toBeTruthy());
 +    expect(screen.getByText(/db unreachable/)).toBeTruthy();
@@ -387,7 +378,7 @@ index 0000000..b42f4ef
 +    // Scoped like every other read on this page. An unscoped read here would show
 +    // him another project's stalled dispatches.
 +    state.rows = [];
-+    render(<StaleReadySection live={false} />);
++    render(<StaleReadySection live={false} now={NOW} />);
 +    await waitFor(() => expect(state.calls).toContain('seatloom'));
 +  });
 +});
