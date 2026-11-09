@@ -7,6 +7,12 @@ trap 'rm -rf "$T"' EXIT
 mkdir "$T/bin"
 printf '#!/bin/bash\nif [ "${FAIL_SOURCE:-0}" = 1 ]; then exit 9; fi\nprintf "%%s\\n" "$FIXTURE"\n' > "$T/bin/podman"
 chmod +x "$T/bin/podman"
+# Point the checker at an isolated declarations file. Without this the real
+# .gitlab/unclaimed-declared.txt is read, and a fixture whose rows match none of them
+# makes every real declaration look stale - so the quiet-mode assertion below fails on
+# repo state rather than on the behaviour under test.
+export UNCLAIMED_DECLARED="$T/declared.txt"
+: > "$UNCLAIMED_DECLARED"
 run() {
   local expected="$1"; shift
   if PATH="$T/bin:$PATH" bash "$ROOT/scripts/check-unclaimed-work.sh" "$@" > "$T/out" 2>&1; then rc=0; else rc=$?; fi

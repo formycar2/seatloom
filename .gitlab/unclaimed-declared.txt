@@ -1,0 +1,44 @@
+# Declared classifications for check-unclaimed-work.sh.
+#
+# Every entry carries a NON-EMPTY reason. An entry with an empty reason is NOT declared
+# and its candidate still shows, so `--classify` can never make this check go green.
+# Regenerate the id list with:  bash scripts/check-unclaimed-work.sh --classify
+#
+# WHY THIS FILE EXISTS (2026-11-10). The checker reported the same thirteen candidates
+# for two days. A report whose answer is permanently non-zero for structural reasons
+# stops being read, and the day it should catch something it is ignored again. I
+# classified all of them and found ZERO lost work: 5 blocked on one operator decision
+# (the sandbox), 2 superseded by a redo that passed and was carded, and 6 whose
+# deliverable IS a card or a verdict — which correctly carries the dispatch id of the
+# WORK it gates rather than the id of the dispatch that ASKED for it. That last group can
+# never be matched by this query, by design.
+#
+# Each reason below was verified against the ledger before being written, not assumed.
+# A declaration is a claim; the checker prints every one with its reason so it can be read.
+
+# ── Sandbox-blocked: the work is on the branch and cannot be carded ──────────────
+# The acceptance method for a sandbox-lifecycle change needs a real sandbox to
+# demonstrate against. /Applications/SeatLoom-Sandbox.app is a 95-byte ASCII text file
+# with no backup, so no card can be opened. ONE blocker wearing several costumes.
+# Not lost: each commit is reachable from packet/nimbus/candidate-final and pushed to
+# both remotes. Operator decision, not a defect.
+disp-uIOs7Wu0iP8gyR5lBVtw6|sandbox-blocked: the path-spelling fix 52cdb8b is committed on packet/nimbus/candidate-final and pushed to both remotes; no card can be opened because the acceptance method needs a real sandbox, which is a 95-byte fake with no backup. Operator decision, not lost work.
+disp-dV1TU7AxUCWhq8I0iENGV|sandbox-blocked: verification of the containment fix a1fddfb; that commit is on the branch and pushed, but demonstrating containment needs a real sandbox to write to, which does not exist. Operator decision, not lost work.
+disp-qPfPgpcXldYZ9SiX8Ksvw|sandbox-blocked: the fourth sandbox destruction; the structural mechanism 857ca85 and its successors are on the branch and pushed. Card blocked on the same missing real sandbox. Operator decision, not lost work.
+
+# ── Superseded by a redo that passed and was carded ──────────────────────────────
+# The verdict system working as designed: a failed verdict was NOT overwritten, the work
+# was redone, and the redo got its own verdict and its own card.
+disp-Pca6m4qu1RERbP37cwlTL|superseded: FAIL verdict ev-3rJ9wLmN2pQvKx8TbYcHfA against 1d2cabb, which found the renderer was written and tested but never wired to the caller's path. The redo is 41da35b, which has verdict ev-nRH3MeASZN_sK3E6Up1Ku (pass) and card acc-disp-4xBIRHNOnacKkCwCPJhJG. The failed verdict was left in place, not overwritten.
+
+# ── Deliverable is a card or a verdict, so its id is not the requester's ──────────
+# "One implementation subject needs its own verdict identity" means the artifact carries
+# the dispatch id of the WORK it gates. This query looks for a card under the REQUESTER's
+# id, so these six can never match — by design, not by accident.
+disp-O-3Pxj-Z4jl9VWFBH1esc|deliverable-is-a-card: asked Vela to open a card for the doc-gate change at 4927d34. The card is acc-disp-MlhRWjAlGcaPUj2BqMpOr, named for the implementation dispatch disp-MlhRWjAlGcaPUj2BqMpOr rather than for this request. Correct per the one-subject-one-verdict rule.
+disp-eBkpELwKY_geVRG0Y8xgI|deliverable-is-a-card: asked Vela to sync and open the card for the same doc-gate change. Same card acc-disp-MlhRWjAlGcaPUj2BqMpOr, same reason. Correct per the one-subject-one-verdict rule.
+disp-vDUTp_4rWlPjqD8TwRoAy|deliverable-is-a-card: asked Mira to open the card for the stale-ready section at 5810c7e. The card is acc-disp-bouEIM-49hK0xR_-B8EMm, named for the implementation dispatch. Correct per the one-subject-one-verdict rule.
+disp-zJpydAwfyrRj1VPSJj0Q6|deliverable-is-a-card: DUPLICATE of disp-vDUTp_4rWlPjqD8TwRoAy, which I issued by mistake. Mira correctly did not open a second card. The duplicate is my error and is recorded in AEGIS-2026-11-10-0000.
+disp-RLW1rHOazPBn45dZKQY6O|deliverable-is-a-card: asked Vela to correct the residual number inside an already-pending card. It is a card-correction step, not an implementation; the corrected card is acc-disp-MlhRWjAlGcaPUj2BqMpOr.
+disp-Lw03MbrCtl-b8b4LtKwzZ|deliverable-is-a-verdict: asked Flux to verify Nimbus's db-error fix. The verdict it emitted, ev-3rJ9wLmN2pQvKx8TbYcHfA, is named for the dispatch that DID the work (disp-Pca6m4qu1RERbP37cwlTL), not for the dispatch that ASKED. A verdict about someone else's dispatch is not a card for this one.
+disp-e5fmV66QT6HdtW1L8fnql|deliverable-is-a-card: asked Nimbus to open the card for the wired fix at 41da35b. The card is acc-disp-4xBIRHNOnacKkCwCPJhJG, named for the implementation dispatch. Correct per the one-subject-one-verdict rule.
