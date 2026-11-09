@@ -92,7 +92,22 @@ while IFS=$'\t' read -r sid sess; do
   case "$sid" in ''|'#'*) continue;; esac
   total=$((total+1))
   pane=$(tmux list-panes -t "$sess" -F '#{pane_pid}' 2>/dev/null | head -1)
-  proc=""; [ -n "$pane" ] && proc=$(pgrep -P "$pane" 2>/dev/null | head -1)
+  # `-a` is REQUIRED, not cosmetic. `man pgrep`: by default the current pgrep and
+  # ALL OF ITS ANCESTORS are excluded from the match list. So without -a the answer to
+  # "is this seat alive" depends on WHO RUNS THE SCRIPT: from the operator's shell no
+  # seat agent is an ancestor and every seat reads correctly; run from inside a seat's
+  # own process tree and THAT SEAT reads itself offline. Measured 2026-11-10: two
+  # processes with identical comm, depth and parent type, differing only in whether the
+  # caller descends from them - the ancestor is invisible without -a and visible with it,
+  # while the non-ancestor is visible either way.
+  #
+  # This is also why aegis was hardcoded online below: that line was a workaround for
+  # this same defect, installed without anyone naming the cause, which masked the
+  # symptom for one seat while the instrument stayed wrong for the other five.
+  # -a does NOT invent a child: a pane whose agent is genuinely gone still returns
+  # empty, and a nonexistent pane pid still returns empty. Both directions are asserted
+  # in scripts/test-fleet-status-liveness-probe.sh.
+  proc=""; [ -n "$pane" ] && proc=$(pgrep -a -P "$pane" 2>/dev/null | head -1)
   if [ -n "$proc" ]; then alive=$((alive+1)); up="在线"; else up="❌掉线"; fi
   # 它在忙吗,忙了多久
   work=$(PSQL "select coalesce(to_char(now()-started_at,'HH24:MI')||' 前开始','') from dispatches where target_seat_id='$sid' and status='in_flight' limit 1")
@@ -103,6 +118,11 @@ while IFS=$'\t' read -r sid sess; do
   # 不用 printf 列对齐 —— 中文宽度按字节算会错位,看起来像坏了
   echo "  $(echo "$sid" | sed 's/seat-//;s/-001//') [$up] $(role_of "$sid") — $state"
 done < "$MAP"
+# aegis is NOT in the seat->session map on purpose (he self-wakes on an independent
+# cron, outside the fleet-waker map), so the loop above never sees him and he is printed
+# here unconditionally. That is a deliberate choice, NOT a workaround: with `-a` on the
+# probe above the instrument is correct for the six mapped seats from any caller, and
+# aegis is excluded from the MAP rather than from the probe.
 echo "  aegis [在线] $(role_of aegis) — 就是我,你正在跟我说话"
 echo "  在线 $alive/$total"
 echo

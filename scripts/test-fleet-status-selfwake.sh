@@ -81,9 +81,12 @@ rm -f "$TMP/waker.log" "$TMP/waker2.log"
 [ -s "$WLOG" ] && pass "real log untouched by the test" || pass "real log was already absent; test did not fabricate one"
 # 已知例外 scripts/bind-seatloom-seats.sh 是有意留给张先生决定是否入库的,
 # 心跳协议的完成判据也把它算作已知未跟踪文件。把它算成"被测试改脏"是误报。
+# scripts/test-fleet-status-liveness-probe.sh 是同一类例外:它是这份检查自己的
+# 必败用例,2026-11-10 加进来证明 `pgrep -a -P` 那个修。它未入库前会被这里
+# 算成脏 —— 那是这份清单该包含的东西,不是误报。
 KNOWN_UNTACKED='scripts/bind-seatloom-seats.sh'
 unexpected=$(git -C "$REPO" status --porcelain \
-  | grep -v "scripts/fleet-status.sh\|test-fleet-status-selfwake\|$KNOWN_UNTACKED" || true)
+  | grep -v "scripts/fleet-status.sh\|test-fleet-status-selfwake\|test-fleet-status-liveness-probe\|$KNOWN_UNTACKED" || true)
 if [ -n "$unexpected" ]; then
   printf '%s\n' "$unexpected" | sed 's/^/   dirty: /'
   die "the test dirtied something it should not have"
