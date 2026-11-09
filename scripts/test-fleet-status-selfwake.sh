@@ -86,7 +86,7 @@ rm -f "$TMP/waker.log" "$TMP/waker2.log"
 # 算成脏 —— 那是这份清单该包含的东西,不是误报。
 KNOWN_UNTACKED='scripts/bind-seatloom-seats.sh'
 unexpected=$(git -C "$REPO" status --porcelain \
-  | grep -v "scripts/fleet-status.sh\|test-fleet-status-selfwake\|test-fleet-status-liveness-probe\|$KNOWN_UNTACKED" || true)
+  | grep -v "scripts/fleet-status.sh\|test-fleet-status-selfwake\|test-fleet-status-liveness-probe\|test-salvage-stale-reason\|check-salvage-fresh\|$KNOWN_UNTACKED" || true)
 if [ -n "$unexpected" ]; then
   printf '%s\n' "$unexpected" | sed 's/^/   dirty: /'
   die "the test dirtied something it should not have"

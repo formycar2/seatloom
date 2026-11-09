@@ -26,6 +26,17 @@ WORKTREES="${SEATLOOM_WORKTREES:-$REPO/../seatloom-worktrees}"
 
 [ -d "$SALVAGE" ] || { echo "❌ 找不到 $SALVAGE"; exit 2; }
 
+# 自检:git 到底能不能用。没有这一探,一个坏掉的 git 会让**每一份**补丁都"贴不回去",
+# 于是检查报「有三份补丁过期」—— 而那三份都是好的,坏的是仪器。
+# 已实测(2026-11-10):git rev-parse --git-dir 在好 git 上退 0,在坏 git 上退 128,
+# 而 git apply --check --reverse 在「贴得上」时也退 1,在「贴不上」时退 128 ——
+# 单看 apply 的退出码分不出「它说不行」和「它跑不了」。先探一次,把后者变成 exit 2。
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "UNCHECKABLE: git rev-parse --git-dir 失败 —— 检查自己跑不了,这不是『补丁过期』。" >&2
+  echo "              一个坏掉的 git 会让每一份补丁都贴不回去,然后被报成过期。" >&2
+  exit 2
+fi
+
 # 从补丁内容里推它是哪个工作区的:diff 的 a/ b/ 行不带路径,
 # 但每个工作区的分支名不同。改用更直接的办法 —— 逐个工作区试贴。
 # 不猜,试完在输出里说清是哪一个,这样「对得上」是一个量出来的结论。
@@ -70,8 +81,33 @@ for patch in "$SALVAGE"/*.patch; do
     echo "  ✗ $name → 读不到这个补丁文件本身。这不是「贴不回去」,是检查自己跑不了。"
     FAIL=2
   else
+    # 贴不回去有三种完全相反的含义,而旧版对三种打印同一条修法:
+    #   1. 工作长大了/还在写  → 该重抓补丁
+    #   2. 工作已经提交       → 该改名成 .superseded.patch
+    #   3. 工作真的丢了       → 该恢复
+    # 第一种是「现在有未提交的活」,后两种是「工作区干净」。这一半是可判的,
+    # 已实测:抓一份补丁后再改一行 → dirty=1 且补丁贴不回;把那行提交 →
+    # dirty=0 且补丁又能贴回。所以 dirty + 贴不回 = 第一种,clean + 贴不回 =
+    # 第二或第三种。
+    # 后两种分不开,原因是补丁**不记录它取自哪个提交**:它只记录两个文件
+    # 系统状态的差异,而那个状态不可寻址。要分开就得让补丁带基线提交,
+    # 那是改一个别的席位也在写的数据格式,不是这次能替张先生定的。
+    # 所以这里只说能说的那一半,剩下的明说分不开,不猜。
+    dirty_list=""
+    for d in "$WORKTREES"/*; do
+      [ -d "$d/.git" ] || [ -f "$d/.git" ] || continue
+      n=$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      [ "$n" -gt 0 ] && dirty_list="$dirty_list $(basename "$d"):$n"
+    done
     echo "  ✗ $name → 在任何一个工作区都贴不回去。它已经过期,而清单还写着它有效。"
-    echo "      修:cd 对应工作区 && git diff > 新补丁,然后把这份改名成 .superseded.patch"
+    if [ -n "$dirty_list" ]; then
+      echo "      可判的那一半:还有未提交的活(${dirty_list# })—— 工作长大了,该重抓:"
+      echo "        cd 对应工作区 && git diff > 新补丁,然后把这份改名成 .superseded.patch"
+    else
+      echo "      分不开的那一半:所有工作区都干净。它可能是「工作已提交」(该改名"
+      echo "        .superseded.patch),也可能是「工作真的丢了」(该恢复) —— 补丁不记录"
+      echo "        它取自哪个提交,所以这两种我分不开,不猜。请人看一眼。"
+    fi
     FAIL=1
   fi
 done
