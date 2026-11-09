@@ -1,0 +1,183 @@
+diff --git a/docs/coordination/tasks/flux/FLUX-2026-11-09-verify-mira-stale-ready-v1.md b/docs/coordination/tasks/flux/FLUX-2026-11-09-verify-mira-stale-ready-v1.md
+new file mode 100644
+index 0000000..c5f80a9
+--- /dev/null
++++ b/docs/coordination/tasks/flux/FLUX-2026-11-09-verify-mira-stale-ready-v1.md
+@@ -0,0 +1,177 @@
++# Flux verdict — Mira's stale-ready section at 5810c7e: PASS, and the framing claim is correct for a reason the commit did not state
++
++| Field | Value |
++|---|---|
++| template | T3 |
++| subtype | verification |
++| id | FLUX-2026-11-09-verify-mira-stale-ready-v1 |
++| status | delivered |
++| author | seat-flux-001 |
++| date | 2026-11-09 |
++| version | 1 |
++| tags | verification, verdict, stale-ready, operator-workload, framing, documentary-test, scope-limit |
++
++Governed dispatch `disp-Ztfe1-k78oc_wHlxJa7Ku` from Lyra.
++
++**Verdict: PASS.**
++
++Emitted as `ev-75p6okkZVBW5YvgRtULlf` with `payload.dispatch_id = disp-bouEIM-49hK0xR_-B8EMm` and a
++`role='subject'` referent on the same dispatch.
++
++**Subject commit: `5810c7e` on `packet/mira/knowledge-panel`.** Measured in an isolated detached
++worktree.
++
++**This verdict names the dispatch the card will name.** I copied the id from the ledger rather than
++guessing: `disp-bouEIM-49hK0xR_-B8EMm` is an **implementation** dispatch from Aegis, status `done`,
++and **no acceptance card and no verdict currently name it**. It is the dispatch whose work this commit
++is. See §5 for why I think it is the right referent rather than a fresh verification dispatch.
++
++---
++
++## 1. The subject, and what was already known
++
++`5810c7e` adds `StaleReadySection`, `ui/src/lib/staleReady.ts` and its test — 535 insertions across 5
++files — mounted on `DispatchInboxView` at line 1294.
++
++**Confirmed, not re-derived:** the component makes **no new IPC call**. It reads the dispatch list the
++view already has through `api.listDispatches`, and `DispatchDto` already carries `issued_at`
++(`src-tauri/src/dto.rs:333`), so no backend change was needed. The age is computed **at read time, not
++at render time**, with the comment saying why — so the number on screen and the rows behind it come from
++the same instant.
++
++## 2. The three measured directions, and the boundary
++
++Mira's 10 tests pass 10 of 10. I re-ran them and then mutated the source myself:
++
++| mutation | result |
++|---|---|
++| **status guard removed** (`if (d.status !== 'ready') return false;`) | **RED** |
++| **threshold 30 → 31** | **RED**, 2 assertions |
++| **the `Number.isNaN` guard removed** | **GREEN, 10/10** |
++
++**The first two are load-bearing and pinned, including the boundary at exactly the threshold and one
++minute past it.** The third is not, and Mira's own test comment says so — see §4.
++
++**The status guard being red is the important one.** It means the claim *"age alone never qualifies a
++row"* is enforced: `in_flight`, `done` and `blocked` never qualify however old they are. A dispatch
++that is old because it is blocked on a declared dependency is not a stalled dispatch, and conflating
++them would produce a number wrong in the other direction — the same error class as the one this change
++fixes.
++
++## 3. The framing claim: correct, and for a reason the commit did not state
++
++**The dispatch asked me to rule on whether rendering a stale dispatch as a system problem rather than
++the operator's task is correct. It is, and I can now give the structural reason rather than only the
++premise.**
++
++**The premise, verified:** `scripts/notify-operator.sh:168` says, with the same 30-minute threshold:
++
++> N dispatches have sat for 30 minutes unclaimed / the waker stopped, the dispatches cannot be pushed.
++> **This is a system problem, not your task** — telling you so.
++
++And `scripts/work-list.sh:56` uses `STALL_MINUTES=30`. The framing is copied, deliberately not improved
++on, and the copy is faithful.
++
++**The reason it is correct, which I measured rather than assumed:**
++
++1. **A `ready` dispatch carries `target_seat_id` — it is some seat's work, not the operator's.**
++2. **There is no operator-side entry point to claim one.** `get_next_dispatch`'s own description reads
++   *"Pull THIS seat's next ready, highest-priority dispatch when idle"* — it is per-seat. The
++   operator-facing tools are `get_dispatch`, `query_ledger`, `list_operator_decisions` and
++   `resolve_operator_decision`: **all reads and decisions, no claim.**
++3. **The thing that should be moving is the waker**, and I could see its shape directly — the crontab
++   on this machine is a per-seat self-wake, which is exactly the mechanism whose absence produces a
++   stale row.
++
++**So rendering a stale dispatch as work waiting for the operator would make his number wrong** — he has
++no action available that would clear it. The number would count a system symptom as his obligation, and
++the only thing that would reduce it is not something he can do.
++
++**The empty state is what a user actually sees.** Measured: the live ledger has **0 `ready`
++dispatches** (94 done, 3 cancelled, 2 failed, 1 in_flight). And the empty wording is honest: *"
++every ready dispatch has somebody moving on it. This is not "no work", it is "nothing stuck""* — which
++is exactly what it says. **A section that renders nothing when healthy would look
++identical to one that failed to load**, which the code says is the same failure mode as a check whose
++only result is green.
++
++## 4. The test that states the limit of its own evidence
++
++One of the ten is named *"a malformed `issued_at` is not stale — and this test does NOT prove the guard
++works."*
++
++**I agree with the framing, and I measured it.** Deleting the `Number.isNaN(issued)` guard from the
++source leaves 10/10 green, because `Date.parse('not-a-timestamp')` is `NaN` and every comparison
++against `NaN` is already false. The test comment records exactly this, and adds the case that would
++need the guard — a malformed date whose parse yields a finite number — noting that `Date.parse` on those
++is implementation-defined, so no case can pin the guard without pinning a JS engine behaviour.
++
++**This is the honest framing and I would not change it.** The test pins the **observable contract** (a
++row with a broken timestamp must not be shown as stalled), which is real, and it records why the
++mutation survives, which is rarer. **Making the guard "observable" would mean asserting on a JS engine
++behaviour, which would make the suite wrong on a different engine rather than right on this one.**
++
++**What I would add, and it is not a defect:** the guard is *load-bearing for a case that cannot be
++tested*, which is a legitimate position. It is the same shape as the earlier `MUST_HAVE` advisory — a
++capability that exists and is not exercised — except here the comment says so, which is the difference
++between a known limit and a hidden one.
++
++## 5. The referent, and why not a fresh verification dispatch
++
++Lyra offered to ask Aegis for a fresh verification dispatch if I thought that cleaner. **I do not, and
++here is the measurement.**
++
++| check | measured |
++|---|---|
++| `disp-bouEIM-49hK0xR_-B8EMm` | implementation, issued by Aegis, status **done** |
++| any acceptance card naming it | **none** |
++| any `ReviewVerdictIssued` naming it | **none** |
++
++**So the acceptance path for this work is open and this dispatch is the referent a card would need.**
++A fresh verification dispatch would add a second implementation-adjacent id for the same work and leave
++the original still unnamed — which is the ambiguity Lyra said she would rather name than resolve
++silently. **Naming `disp-bouEIM-49hK0xR_-B8EMm` closes it.** If Aegis disagrees, `payload.dispatch_id`
++is the one field to change and nothing in this verdict depends on it.
++
++## 6. Gates, all re-run at this commit
++
++| gate | measured |
++|---|---|
++| `tsc --noEmit` | **0 errors** |
++| UI suite | **32 files / 401 tests passed** |
++| `StaleReadySection.test.tsx` | **10 passed** |
++| `git merge-tree --write-tree` against current track | **exit 0, zero conflicts** |
++| Mira's own worktree | **clean**, 0 modified files |
++
++## 7. What remains uncertified
++
++1. **The Rust and workspace build gates were not re-run.** The change is TypeScript and one markdown
++   file; no `.rs` file differs. **Carried forward, and labelled as such** — I re-ran `tsc` and the UI
++   suite rather than inheriting them, but I did not rebuild the workspace.
++2. **Whether the waker should be running** — explicitly out of scope, and not part of this change. I did
++   not start one and did not edit anything that governs it.
++3. **The 30-minute threshold is now in three places** — `notify-operator.sh`, `work-list.sh`'s
++   `STALL_MINUTES`, and `STALE_AFTER_MINUTES` here. The comment says the constant is exported so a test
++   can assert the **boundary** rather than re-derive it, which is right, but nothing asserts that the
++   three numbers **agree**. That is a real and unfixed coupling, and it is the same class as a
++   `rerun-if-changed` path that does not exist.
++4. **No card, no merge, no install.** I did not open a card, did not edit her component, did not change
++   the threshold.
++
++## 8. What should happen next, without me doing it
++
++1. **Nothing is required of this change.** It is correct, the load-bearing mutations are red, and the
++   framing is right for a structural reason.
++2. **Pin the three thresholds to one source of truth** if anyone wants the coupling closed. That is a
++   separate change and it is not a defect in this one.
++3. **The card can be opened against `disp-bouEIM-49hK0xR_-B8EMm`** with this verdict as
++   `flux_verdict_ref`.
++4. **The waker question is the operator's and is separate.**
++
++## 9. Hygiene
++
++- One isolated detached worktree at `5810c7e`, removed
++- Three mutations of `staleReady.ts` (status guard removed, threshold changed, NaN guard removed), each
++  reverted from a byte-identical backup and confirmed with `git diff --quiet HEAD`
++- Four ledger reads to establish the referent
++- Mira's own worktree untouched (verified at `5810c7e`, 0 modified files)
++- No card, no merge, no install, no live-database write beyond the verdict event
