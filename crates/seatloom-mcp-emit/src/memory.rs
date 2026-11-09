@@ -308,7 +308,16 @@ impl From<DispatchRejection> for MemoryRejection {
                 expected: "pass project_id or set SEATLOOM_PROJECT_ID; a project is never fabricated",
             },
             // DispatchRejection::Db already carries the rendered chain from
-            // `dispatch::db`; passing it through unchanged keeps one rendering.
+            // `dispatch::db`, so it is passed through unchanged — that is the one
+            // case where rendering again would duplicate it. Every OTHER
+            // dispatch rejection here is a typed variant that already names its
+            // own reason, so `to_string()` is the complete message for those.
+            //
+            // 🔴 The distinction matters and is easy to get backwards: this arm
+            //     is NOT the one that swallowed the DB chain. The swallowed arm
+            //     was in `From<DbError>` below. Both were `other.to_string()`
+            //     and only one of them lost information — which is exactly why
+            //     the fix has to name which arm, not the shape.
             other => MemoryRejection::Db(other.to_string()),
         }
     }
@@ -383,7 +392,28 @@ impl From<DbError> for MemoryRejection {
                 l2_line_start,
                 l2_line_end,
             },
-            other => MemoryRejection::Db(other.to_string()),
+            // 🔴 The renderer must be CALLED here, not merely exist.
+            //
+            //     Lyra's dispatch-4xBIRHNOnacKkCwCPJhJG (routing Flux's FAIL on
+            //     1d2cabb) measured this: `db_chain` had exactly ONE caller in
+            //     the whole workspace — a test, immediately followed by an
+            //     assert. `remember` calls `db.insert_memory`, gets
+            //     `Err(DbError::Postgres)`, and `?` converts through THIS arm.
+            //     With `other.to_string()` here, the caller still saw
+            //     `postgres error: db error` while the suite was green, because
+            //     the suite asserted on `db_chain(&err)` directly rather than on
+            //     the message the caller receives.
+            //
+            //     **一个正确的 helper 没人调用,就是原来的 bug 换了一件重构的外套。**
+            //     Flux proved one line closes it: wired here in an isolated
+            //     worktree, the caller-visible message became
+            //     `memory tool rejected: db error | ERROR: insert or update on
+            //     table memories violates foreign key constraint
+            //     memories_topic_id_fkey | sqlstate=23503
+            //     constraint=Some(memories_topic_id_fkey) table=Some(memories)`,
+            //     with both production constraints legible, the valid write
+            //     still succeeding, and both refusals still inserting 0 rows.
+            other => MemoryRejection::Db(db_chain(&other)),
         }
     }
 }
@@ -1044,30 +1074,47 @@ mod tests {
         .await
         .expect_err("an insert under a nonexistent topic must be refused");
 
+        // 🔴 断言必须走**调用方真正走的那条路**,不是直接调 renderer。
+        //
+        //     第一版这里写的是 `db_chain(&err)`。那条断言是真的,而它是空的:
+        //     它证明 renderer 能用,却不证明调用方看得到它。Lyra 的
+        //     dispatch-4xBIRHNOnacKkCwCPJhJG 说这就是为什么 1d2cabb 的套件全绿
+        //     而调用方收到的仍然是 `postgres error: db error` ——
+        //     `db_chain` 在全工作区只有一个调用者,就是这里这个测试。
+        //     **一个只测 helper 的测试,证明的是 helper,不是那个 helper 该改变的行为。**
+        //
+        //     `?` 在 remember/promote/forget 里把 DbError 转成 MemoryRejection
+        //     走的是 `From<DbError>`。所以这里也用同一个转换 —— 它就是调用方
+        //     拿到那个东西的入口。
+        //
+        //     先查 renderer 自己(它还得出对的结果),再查调用方那条路。
+        //     两处都查,免得改对一条漏一条。
         let rendered = db_chain(&err);
-        let rejection = MemoryRejection::Db(rendered.clone());
-
         assert!(
             rendered.contains("memories_topic_id_fkey"),
-            "the refusal must name the constraint. Got: {rendered}"
+            "the renderer itself must name the constraint. Got: {rendered}"
         );
-        assert!(
-            rendered.contains("memories"),
-            "the refusal must name the table. Got: {rendered}"
-        );
-        assert!(
-            rendered.contains("sqlstate="),
-            "the refusal must carry the SQLSTATE. Got: {rendered}"
-        );
-        assert_ne!(
-            rendered.trim(),
-            "db error",
-            "the caller must not receive the bare `db error` — that is the defect"
-        );
+
+        // 调用方那条路:`?` 用的是这个 From。err 在这里被 move 掉。
+        let rejection: MemoryRejection = err.into();
         let msg = rejection.to_string();
+
         assert!(
             msg.contains("memories_topic_id_fkey"),
             "the caller-visible message must name the constraint. Got: {msg}"
+        );
+        assert!(
+            msg.contains("memories"),
+            "the caller-visible message must name the table. Got: {msg}"
+        );
+        assert!(
+            msg.contains("sqlstate="),
+            "the caller-visible message must carry the SQLSTATE. Got: {msg}"
+        );
+        assert_ne!(
+            msg.trim(),
+            "memory tool rejected: db error",
+            "the caller must not receive the bare `db error` — that is the defect"
         );
         // A refusal that still inserts is worse than no refusal.
         let n = pool
