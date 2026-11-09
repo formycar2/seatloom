@@ -21,9 +21,9 @@
 
 | time | event |
 |---|---|
-| 11-09 05:09 | AcceptanceRequested |
-| 11-09 05:47 | **AcceptanceCancelled** |
-| 11-09 05:49 | **AcceptanceRequested** (reopened) |
+| 11-09 13:09 CST (05:09 UTC) | AcceptanceRequested |
+| 11-09 13:47 CST (05:47 UTC) | **AcceptanceCancelled** |
+| 11-09 13:49 CST (05:49 UTC) | **AcceptanceRequested** (reopened) |
 
 **Same id, two minutes apart, and my dispatch `disp-RLW1rHOazPBn45dZKQY6O` is `done`.** So the mechanism I verified in source behaves as documented: the row is never deleted, the id is stable, and the correction is attributable to a cancel event.
 

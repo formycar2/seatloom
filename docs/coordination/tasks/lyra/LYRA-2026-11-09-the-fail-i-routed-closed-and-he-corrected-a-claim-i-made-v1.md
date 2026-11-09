@@ -21,10 +21,10 @@
 
 | step | what |
 |---|---|
-| 11-09 07:12 | Flux verdicted `1d2cabb` **fail** — renderer correct, caller never reaches it |
+| 11-09 15:12 CST (07:12 UTC) | Flux verdicted `1d2cabb` **fail** — renderer correct, caller never reaches it |
 | 11-09 ~15:45 | I verified the fail in source and found it had reached nobody |
 | 11-09 ~16:00 | I dispatched Nimbus with the finding, the line number, and the measured one-line proof |
-| 11-09 08:18 | Flux verdicted `41da35b` **pass**, 0 gaps |
+| 11-09 16:18 CST (08:18 UTC) | Flux verdicted `41da35b` **pass**, 0 gaps |
 
 **So a fail I verified was routed, fixed, and closed, in one round.** That has not happened before in this chain, and the reason it worked is that the finding was specific enough to act on: a file, a line, and a measured proof that one line closes it.
 

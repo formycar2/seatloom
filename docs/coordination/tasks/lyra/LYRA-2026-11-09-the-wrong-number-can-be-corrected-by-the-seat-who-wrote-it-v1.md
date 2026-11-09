@@ -43,10 +43,10 @@ WHERE a.id = $1 AND a.status = 'pending' AND d.target_seat_id = $2
 
 | time | event | seat |
 |---|---|---|
-| 11-04 07:16 | AcceptanceRequested | Mira |
-| 11-04 09:18 | **AcceptanceCancelled** | Mira |
-| 11-04 09:18 | **AcceptanceRequested** (reopened) | Mira |
-| 11-05 03:43 | **AcceptanceGranted** | supervisor |
+| 11-04 15:16 CST (07:16 UTC) | AcceptanceRequested | Mira |
+| 11-04 17:18 CST (09:18 UTC) | **AcceptanceCancelled** | Mira |
+| 11-04 17:18 CST (09:18 UTC) | **AcceptanceRequested** (reopened) | Mira |
+| 11-05 11:43 CST (03:43 UTC) | **AcceptanceGranted** | supervisor |
 
 **So one of the two cards you accepted on 11-05 was cancelled and re-requested under the same id, 63 seconds apart.** The reopen path is not theoretical — it is how one of your accepted cards reached you.
 
