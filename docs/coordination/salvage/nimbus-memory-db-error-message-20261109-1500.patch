@@ -1,0 +1,62 @@
+diff --git a/crates/seatloom-mcp-emit/src/memory.rs b/crates/seatloom-mcp-emit/src/memory.rs
+index c40176b..096ed26 100644
+--- a/crates/seatloom-mcp-emit/src/memory.rs
++++ b/crates/seatloom-mcp-emit/src/memory.rs
+@@ -307,11 +307,57 @@ impl From<DispatchRejection> for MemoryRejection {
+                 value: String::new(),
+                 expected: "pass project_id or set SEATLOOM_PROJECT_ID; a project is never fabricated",
+             },
++            // DispatchRejection::Db already carries the rendered chain from
++            // `dispatch::db`; passing it through unchanged keeps one rendering.
+             other => MemoryRejection::Db(other.to_string()),
+         }
+     }
+ }
+ 
++/// Render a DB error with its full source chain, for the memory tools.
++///
++/// `tokio_postgres::Error`'s `Display` is the near-useless string "db error";
++/// the SQLSTATE, constraint name and server message live in its source chain.
++/// Without walking it, every foreign-key, CHECK and constraint failure in the
++/// memory path reached the caller as the literal `db error` — so a CORRECT
++/// refusal looked like a broken tool. Vela hit exactly that on 2026-11-09
++/// (two FK violations sixty seconds apart, both surfaced as `db error`) and
++/// concluded the write path itself was broken. The write path was refusing
++/// correctly; the reason never reached the caller.
++///
++/// The same walk already existed for the dispatch tools (`dispatch.rs`'s `db`).
++/// This is that shape applied here: one rule, one place. A refusal the caller
++/// cannot act on is a refusal that gets reported as a broken tool.
++///
++/// Only the `Postgres` variant carries a `tokio_postgres::Error` with a source
++/// chain; the others are domain errors that already name their own reason, so
++/// they are rendered as-is rather than walked.
++pub(crate) fn db_chain(e: &DbError) -> String {
++    match e {
++        DbError::Postgres(pg) => pg_chain(pg),
++        other => other.to_string(),
++    }
++}
++
++/// The source-chain walk itself, over a `tokio_postgres::Error`.
++fn pg_chain(e: &tokio_postgres::Error) -> String {
++    let mut parts = vec![e.to_string()];
++    let mut cur: Option<&(dyn std::error::Error + 'static)> = e.source();
++    while let Some(src) = cur {
++        parts.push(src.to_string());
++        if let Some(pg) = src.downcast_ref::<tokio_postgres::error::DbError>() {
++            parts.push(format!(
++                "sqlstate={} constraint={:?} table={:?}",
++                pg.code().code(),
++                pg.constraint(),
++                pg.table()
++            ));
++        }
++        cur = src.source();
++    }
++    parts.join(" | ")
++}
++
+ impl From<DbError> for MemoryRejection {
+     fn from(e: DbError) -> Self {
+         match e {
