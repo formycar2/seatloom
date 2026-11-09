@@ -80,7 +80,30 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
                   translate(coalesce(array_to_string(array(SELECT jsonb_array_elements_text(
                      CASE WHEN jsonb_typeof(e.payload->'findings') = 'array'
                           THEN e.payload->'findings' ELSE '[]'::jsonb END)), ' | '), ''),
-                    chr(10)||chr(13), ' ')
+                    chr(10)||chr(13), ' '),
+                  -- THE ACCOUNT LENGTH, MEASURED OVER EVERY FIELD.
+                  -- This column exists because of ev-oO1C34dPuLklTsJRUETgj, the
+                  -- richest verdict in the ledger - 7351 chars across 20 keys, with
+                  -- behaviours, merges_and_holds, the_numbers, short_circuit,
+                  -- not_certified and verdict_rationale - which this check called
+                  -- an account-free verdict. It failed only because Flux spelled its
+                  -- account in field names none of the eleven above reads. The
+                  -- comment above already says a field name I did not anticipate is
+                  -- the same as a field that is not there, and then the check
+                  -- enumerated eleven spellings and called a verdict empty. That is
+                  -- the same bug rebuilt in the same afternoon, twice over.
+                  -- So the question is answered by measuring the payload instead of
+                  -- naming its fields. Identity and the verdict word are excluded:
+                  -- a payload holding only a verdict word plus an id is a claim, not
+                  -- an account.
+                  -- NO DOUBLE QUOTES AND NO BACKTICKS IN THIS COMMENT. The SQL lives
+                  -- inside a double-quoted bash string, so bash resolves them before
+                  -- psql sees anything; the rule at the top of this file was written
+                  -- after exactly that bug shipped, and I broke it here once.
+                  (select coalesce(sum(length(e.payload->>k.key)), 0)
+                     from jsonb_each_text(e.payload) k
+                    where k.key not in ('verdict','branch','commit','dispatch_id',
+                                        'verification_dispatch_id','id','subject'))
            from acceptances a
            join canonical_events e on e.id = a.flux_verdict_ref
            where a.status = 'pending'
@@ -97,10 +120,16 @@ rows=$(db "select a.id, a.flux_verdict_ref, e.payload->>'verdict',
            -- it, a join that silently matches nothing - e.g. a condition changed to
            -- a constant - returns only the sentinel and the check reports no pending
            -- cards, which is exactly the false clean it exists to catch.
+           -- THE COLUMN COUNT MUST MATCH THE CARD ARM. It is 15, and the trailing
+           -- empties are one per unread column. When account_len was added above,
+           -- this row was not, and postgres refused the whole UNION with each UNION
+           -- query must have the same number of columns - which the check then
+           -- reported correctly as the QUERY is broken. That is the sentinel doing
+           -- its job: it caught my own edit, in the same run I made it.
            select 'SENTINEL-CARD',
                   (select count(*)::text from acceptances a2
                     where a2.status = 'pending'),
-                  'pass', '', '', '', '', '', '', '', '', '', '', ''
+                  'pass', '', '', '', '', '', '', '', '', '', '', '', '0'
            order by 1")
 
 # An empty result and a broken query look identical. I shipped that bug once
@@ -168,7 +197,7 @@ fi
 
 bad=0
 
-while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified evidence directions mutations criteria product_code f1 f2 f3 farr; do
+while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verified evidence directions mutations criteria product_code f1 f2 f3 farr account_len; do
   [ -n "$card" ] || continue
   reasons=""
 
@@ -260,9 +289,18 @@ while IFS="$(printf '\037')" read -r card verdict verdict_word summary not_verif
   #    rebuilt the same bug in the did-it-look test the same afternoon.
   #    So the test asks whether ANY substantive account exists, across every
   #    field a verifier has actually used.
+  #
+  #    ...AND THEN MEASURES THE PAYLOAD INSTEAD OF LISTING ITS FIELDS, because
+  #    listing them is what failed. See the account_len column above. The floor is
+  #    deliberately generous and its value is not the point - the point is that a
+  #    verdict carrying thousands of characters of measured behaviour can no longer
+  #    be told it is empty, and a verdict carrying nothing but a verdict word still
+  #    can. A check whose only mode is "read a field name I thought of" has an
+  #    expiration date set by the next verifier's spelling.
   if [ -z "$summary" ] && [ -z "$f1" ] && [ -z "$f2" ] && [ -z "$f3" ] && [ -z "$farr" ] \
      && [ -z "$evidence" ] && [ -z "$directions" ] && [ -z "$mutations" ] \
-     && [ -z "$not_verified" ] && [ -z "$criteria" ] && [ -z "$product_code" ]; then
+     && [ -z "$not_verified" ] && [ -z "$criteria" ] && [ -z "$product_code" ] \
+     && [ "${account_len:-0}" -lt 200 ]; then
     reasons="${reasons}the verdict carries no account of what it did - nothing to distinguish it from 'I did not look'|"
   fi
 
