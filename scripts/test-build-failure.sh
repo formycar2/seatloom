@@ -145,12 +145,73 @@ mkdir -p target/release/bundle/macos/SeatLoom.app/Contents/MacOS
 #    真正的解在别处 —— 让 fixture 的仓库建在**主仓库的一个真实提交**上,
 #    这样标签既可验证、又和工作区 HEAD 一致。那是一次 fixture 结构的改动,
 #    不在这条派单的范围内,记在这里,不假装已经解决。
-{
-  printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
-  printf 'MUST_HAVE_PRESENT_MARKER\n'
-  printf 'seatloom-build-commit=%s\n' "$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
-} > target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
-chmod +x target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri
+# 🔴 这个假 tauri 现在必须产出一份**真的 Mach-O 可执行文件**。
+#
+#    Lyra 的 disp-fkLMc9KBolrwtEyoKi2EZ 量到:node_modules/.bin/tauri 是一个
+#    330 字节的 bash stub,它写出一份 48 字节的 ASCII 文本,而两条构建路径的
+#    四项检查(文件在、可执行、含 MUST_HAVE、含匹配 HEAD 的提交号)全部满足 ——
+#    构建于是报成功。修法就是给两条路径加 Mach-O 类型检查(见 prepare-sandbox-build.sh
+#    的 assert_macho)。
+#
+#    **而这套 fixture 自己的假 tauri 产的也是 ASCII 文本。** 类型检查加上之后,
+#    第 1-4 节全红 —— 红的不是被测代码,是 fixture 没造出被测代码要求的前提。
+#    这正是「fixture 不能替被测代码造前提」的反面:被测代码现在**要求**一个真的
+#    Mach-O,所以 fixture 必须给一个真的 Mach-O。一个造不出前提的 fixture,
+#    测不出被测代码的任何东西。
+#
+#    做法:用 clang 编一个极小的 Mach-O,把提交标签和 MUST_HAVE 写进它的
+#    __TEXT,__cstring 段。必须进**段里**,不能追加到文件尾部 —— BSD 的 strings
+#    只扫 Mach-O 的段,追加进去的字节它看不见(实测:strings -a 也看不见)。
+#    提交标签写成占位串再原地替换,保证长度不变、不必重新编译。
+COMMIT_NOW="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+# 🔴 mktemp 出来的名字没有 .c 后缀,clang 于是报
+#    `ld: unknown file type in '/var/folders/.../tmp.XXXX'` ——
+#    它靠后缀判断输入是什么。所以后缀必须是 .c。
+#    **一个中间文件的命名细节,能让整套 fixture 红在「造不出前提」。**
+FAKE_SRC="$(mktemp -t fake-tauri).c"
+cat > "$FAKE_SRC" <<'CLANGEOF'
+const char seatloom_build_commit[] = "seatloom-build-commit=PLACEHOLDERX";
+const char must_have_marker[] = "MUST_HAVE_PRESENT_MARKER";
+int main(void){ return 0; }
+CLANGEOF
+# 🔴 clang 不能从 stdin 读源文件:实测报 `-E or -x required when input is from
+#    standard input`。必须先落一个真文件。第一版用 heredoc 直接喂 clang,
+#    于是假 tauri 永远产不出东西,而整套 fixture 全红在「造不出前提」。
+clang -o target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri "$FAKE_SRC"
+CLANG_RC=$?
+rm -f "$FAKE_SRC"
+if [ "$CLANG_RC" != "0" ] || [ ! -f target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri ]; then
+  echo "fake-tauri: clang 没能产出 Mach-O —— fixture 造不出前提,这一套测不了任何东西" >&2
+  exit 1
+fi
+target_bin="target/release/bundle/macos/SeatLoom.app/Contents/MacOS/seatloom-tauri"
+chmod +x "$target_bin"
+# 🔴 占位串必须**原地等长替换**,而且不能动文件长度。
+#    `perl -pi -e` 会把整个文件读进来再写回去,即使替换本身等长,
+#    它写出的文件也可能差一个字节(实测:16960 -> 16959),于是
+#    `strings` 报 `truncated or malformed object (LC_SEGMENT_64 command 2
+#    fileoff field plus filesize field extends past the end of the file)`
+#    并拒绝读它 —— MUST_HAVE 那一条于是红,而红的原因是 fixture 弄坏了二进制。
+#    **一个会弄坏自己产物的 fixture,比没有 fixture 更糟:它让正确的代码看起来是错的。**
+#    所以用 python 的 bytes 原地替换,长度严格相等,写回同一个 inode。
+python3 - "$target_bin" "$COMMIT_NOW" <<'PYEOF2'
+import sys
+path, commit = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    data = bytearray(f.read())
+old = b"PLACEHOLDERX"
+i = data.find(old)
+if i < 0:
+    sys.exit("占位串没找到 —— fixture 的二进制形状变了")
+# 替换必须**严格等长**,否则文件长度一变,strings 就会因为 Mach-O 的
+# LC_SEGMENT_64 越界而拒绝读它。占位串 PLACEHOLDERX 正好 12 字符。
+# 短提交号不是 12 字符时拒绝,不截断也不补齐 —— 一个被截断的标签比没有标签更糟。
+if len(commit) != 12:
+    sys.exit("提交号长度不是 12,拒绝截断或补齐: %r" % commit)
+data[i:i+12] = commit.encode()
+with open(path, "wb") as f:
+    f.write(bytes(data))
+PYEOF2
 cat > target/release/bundle/macos/SeatLoom.app/Contents/Info.plist <<'PLISTEOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

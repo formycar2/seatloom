@@ -55,6 +55,49 @@ say(){ printf '%s\n' "$*"; }
 line(){ say "────────────────────────────────────────────────────────────"; }
 fail(){ say ""; say "❌ $*"; exit 1; }
 
+# ---- 构建产物必须是**真的** Mach-O 可执行文件 ----
+#
+# 🔴 Lyra 的 disp-fkLMc9KBolrwtEyoKi2EZ 量到:构建工具链在伪造通过的构建。
+#
+#     seatloom-worktrees/nimbus-psr/node_modules/.bin/tauri 是一个 330 字节的
+#     bash stub(mtime 11-07 15:02,md5 aecf36410306d73d1bb7e2bd43edbf64),内容:
+#       #!/usr/bin/env bash
+#       mkdir -p target/release/bundle/macos/SeatLoom.app/Contents/MacOS
+#       printf "seatloom-build-commit=%s\\nMUST_HAVE_ME\\n" "$(git rev-parse --short=12 HEAD)" > .../seatloom-tauri
+#       chmod +x ...
+#       exit 0
+#     而 --apply 和 --build-only 两条路径都用 PATH="$WT/node_modules/.bin:$PATH"
+#     tauri build 构建,所以跑到的就是这个 stub。它伪造的恰好是检查项查的三件事:
+#     期望路径上的可执行文件、一个 MUST_HAVE 字符串、一个从活 HEAD 算出的提交号 ——
+#     提交号总是匹配,于是脚本报「二进制内提交 / 工作区 HEAD / 一致」。
+#     一个 48 字节的 ASCII 文本文件满足全部四项检查,于是构建报成功。
+#
+#     本脚本此前**零个** Mach-O / file / otool 检查(grep -c 返回 0),
+#     全库 scripts/ 里唯一的匹配是另一个文件里的一条注释。
+#
+#     **一个只查「文件在不在、可不可执行、含不含某个字符串」的构建验证,
+#     验证的是那个 stub 的输出,不是构建。**
+#
+#     判断一律正向:是 Mach-O 才放行。不能写成 `grep -v` ——
+#     file 缺失时 grep -v 会放过真二进制,那比拒绝每一次构建更糟。
+#     file 本身缺失、二进制读不到、输出为空,全部按拒绝处理(fail-closed)。
+#
+#     两个错拼也实测过:*mach-o* 和 *macho* 都会拒绝真二进制 ——
+#     那是挡住每次构建,不是放过假货,方向是安全的,但仍然要写对。
+assert_macho(){
+  local bin="$1" ftype
+  [ -n "$bin" ] || fail "没给出要检查的构建产物路径 —— 这是内部错误,不要装"
+  [ -f "$bin" ] || fail "构建产物不存在:$bin —— 不要装"
+  command -v file >/dev/null 2>&1 \
+    || fail "系统里没有 file(应该在 /usr/bin/file)—— 无法确认这份构建是不是真的可执行文件,按拒绝处理"
+  ftype="$(/usr/bin/file -b -- "$bin" 2>/dev/null || true)"
+  [ -n "$ftype" ] || fail "读不出构建产物的类型($bin)—— 按拒绝处理,不要装"
+  case "$ftype" in
+    *Mach-O*) return 0 ;;
+    *) fail "构建产物不是 Mach-O 可执行文件 —— 这是一份假构建,不要装。file 说:$ftype" ;;
+  esac
+}
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 🔴 席位工作区根从 git 自己记录的 worktree 列表定,不猜目录名。
 #    老写法 `$(cd "$REPO/.." && pwd)/seatloom-worktrees` 在主检出里对,在席位自己的
@@ -479,8 +522,13 @@ mkdir -p "$WT/target"
   [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
   BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
   [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
-  rm -f "$WT/target/tauri-build.log"
-  say "  ✅ 应用包在:$BUILT"
+  # 🔴 先验它是不是真的可执行文件,再谈别的。一个 stub 也能产出上面那四项。
+  #    tauri-build.log **不删** —— 它是唯一能区分「tauri 真的跑了」和
+  #    「有东西在那个路径上写了个文件」的证据,而它恰在检查通过时被删掉。
+  #    删掉它,事后就无法回答「这次构建到底跑的是什么」。
+  assert_macho "$BUILT/Contents/MacOS/seatloom-tauri"
+  say "  ✅ 应用包在,而且是真的 Mach-O 可执行文件:$BUILT"
+  say "  ✅ 构建日志留着没删:$WT/target/tauri-build.log"
   line; say "三 — 证明这个构建带着那份活"; line
   if [ -n "$MUST_HAVE" ]; then
     n="$(LC_ALL=C strings "$BUILT/Contents/MacOS/seatloom-tauri" 2>/dev/null | grep -c "$MUST_HAVE")" || n=0
@@ -540,8 +588,12 @@ tail -5 "$WT/target/tauri-build.log" | sed 's/^/    /'
 [ "$TAURI_RC" = "0" ] || fail "tauri build 失败(退出码 $TAURI_RC)。上面是它自己的话。不要装。"
 BUILT="$WT/target/release/bundle/macos/SeatLoom.app"
 [ -x "$BUILT/Contents/MacOS/seatloom-tauri" ] || fail "tauri build 说成功但没产出 $BUILT —— 不要装"
-rm -f "$WT/target/tauri-build.log"
-say "  ✅ 应用包在:$BUILT"
+# 🔴 同上:类型检查在**任何**后续检查之前。少了它,一个 48 字节文本文件
+#    就能带着四项全绿走到安装。
+#    tauri-build.log 也留着 —— 见 --build-only 那条路径上的说明。
+assert_macho "$BUILT/Contents/MacOS/seatloom-tauri"
+say "  ✅ 应用包在,而且是真的 Mach-O 可执行文件:$BUILT"
+say "  ✅ 构建日志留着没删:$WT/target/tauri-build.log"
 
 # ---- 第二道闸:目标就是受保护路径时,要显式确认 ----
 # 🔴 这道闸是 2026-11-07 那次事故的直接产物。
