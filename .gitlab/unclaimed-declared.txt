@@ -22,9 +22,6 @@
 # with no backup, so no card can be opened. ONE blocker wearing several costumes.
 # Not lost: each commit is reachable from packet/nimbus/candidate-final and pushed to
 # both remotes. Operator decision, not a defect.
-disp-uIOs7Wu0iP8gyR5lBVtw6|sandbox-blocked: the path-spelling fix 52cdb8b is committed on packet/nimbus/candidate-final and pushed to both remotes; no card can be opened because the acceptance method needs a real sandbox, which is a 95-byte fake with no backup. Operator decision, not lost work.
-disp-dV1TU7AxUCWhq8I0iENGV|sandbox-blocked: verification of the containment fix a1fddfb; that commit is on the branch and pushed, but demonstrating containment needs a real sandbox to write to, which does not exist. Operator decision, not lost work.
-disp-qPfPgpcXldYZ9SiX8Ksvw|sandbox-blocked: the fourth sandbox destruction; the structural mechanism 857ca85 and its successors are on the branch and pushed. Card blocked on the same missing real sandbox. Operator decision, not lost work.
 
 # ── Superseded by a redo that passed and was carded ──────────────────────────────
 # The verdict system working as designed: a failed verdict was NOT overwritten, the work
@@ -42,3 +39,4 @@ disp-zJpydAwfyrRj1VPSJj0Q6|deliverable-is-a-card: DUPLICATE of disp-vDUTp_4rWlPj
 disp-RLW1rHOazPBn45dZKQY6O|deliverable-is-a-card: asked Vela to correct the residual number inside an already-pending card. It is a card-correction step, not an implementation; the corrected card is acc-disp-MlhRWjAlGcaPUj2BqMpOr.
 disp-Lw03MbrCtl-b8b4LtKwzZ|deliverable-is-a-verdict: asked Flux to verify Nimbus's db-error fix. The verdict it emitted, ev-3rJ9wLmN2pQvKx8TbYcHfA, is named for the dispatch that DID the work (disp-Pca6m4qu1RERbP37cwlTL), not for the dispatch that ASKED. A verdict about someone else's dispatch is not a card for this one.
 disp-e5fmV66QT6HdtW1L8fnql|deliverable-is-a-card: asked Nimbus to open the card for the wired fix at 41da35b. The card is acc-disp-4xBIRHNOnacKkCwCPJhJG, named for the implementation dispatch. Correct per the one-subject-one-verdict rule.
+disp-fkLMc9KBolrwtEyoKi2EZ|deliverable-is-a-fix-not-a-card: Lyra dispatched Nimbus to fix a build toolchain that reported success on a 48-byte ASCII text file. The fix fb83cd6 is committed on packet/nimbus/candidate-final and pushed to both remotes, but it has no verdict and no card yet, so the work cannot reach the operator. A Flux verification was dispatched 2026-11-10 (disp-LuC5D3g7M9i3BZbbWvYoI) and a card is the next step, owned by Nimbus. Not lost work: an unfinished path, not an absent one.
